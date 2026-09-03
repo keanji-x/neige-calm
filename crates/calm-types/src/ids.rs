@@ -36,11 +36,11 @@ pub enum ActorId {
     Kernel,
     KernelDispatcher,
     Plugin(String),
-    AiSpec(CardId),
+    AiPlanner(CardId),
     AiCodex(CardId),
     AiClaude(CardId),
     #[schema(value_type = String)]
-    AiSpecSession(WorkerSessionId),
+    AiPlannerSession(WorkerSessionId),
     #[schema(value_type = String)]
     AiCodexSession(WorkerSessionId),
     #[schema(value_type = String)]
@@ -54,14 +54,16 @@ impl std::fmt::Display for ActorId {
             Self::Kernel => f.write_str("kernel"),
             Self::KernelDispatcher => f.write_str("kernel-dispatcher"),
             Self::Plugin(id) => write!(f, "plugin:{id}"),
-            Self::AiSpec(id) if id.as_str().is_empty() => f.write_str("ai:spec"),
-            Self::AiSpec(id) => write!(f, "ai:spec:{}", id.as_str()),
+            Self::AiPlanner(id) if id.as_str().is_empty() => f.write_str("ai:planner"),
+            Self::AiPlanner(id) => write!(f, "ai:planner:{}", id.as_str()),
             Self::AiCodex(id) if id.as_str().is_empty() => f.write_str("ai:codex"),
             Self::AiCodex(id) => write!(f, "ai:codex:{}", id.as_str()),
             Self::AiClaude(id) if id.as_str().is_empty() => f.write_str("ai:claude"),
             Self::AiClaude(id) => write!(f, "ai:claude:{}", id.as_str()),
-            Self::AiSpecSession(id) if id.as_str().is_empty() => f.write_str("ai:spec-session"),
-            Self::AiSpecSession(id) => write!(f, "ai:spec-session:{}", id.as_str()),
+            Self::AiPlannerSession(id) if id.as_str().is_empty() => {
+                f.write_str("ai:planner-session")
+            }
+            Self::AiPlannerSession(id) => write!(f, "ai:planner-session:{}", id.as_str()),
             Self::AiCodexSession(id) if id.as_str().is_empty() => f.write_str("ai:codex-session"),
             Self::AiCodexSession(id) => write!(f, "ai:codex-session:{}", id.as_str()),
             Self::AiClaudeSession(id) if id.as_str().is_empty() => f.write_str("ai:claude-session"),
@@ -155,11 +157,11 @@ mod tests {
         let back: ActorId = serde_json::from_str(&s).unwrap();
         assert_eq!(back, codex_session);
 
-        let spec_session = ActorId::AiSpecSession(WorkerSessionId::from("sess-9"));
-        let s = serde_json::to_string(&spec_session).unwrap();
-        assert_eq!(s, r#"{"kind":"AiSpecSession","id":"sess-9"}"#);
+        let planner_session = ActorId::AiPlannerSession(WorkerSessionId::from("sess-9"));
+        let s = serde_json::to_string(&planner_session).unwrap();
+        assert_eq!(s, r#"{"kind":"AiPlannerSession","id":"sess-9"}"#);
         let back: ActorId = serde_json::from_str(&s).unwrap();
-        assert_eq!(back, spec_session);
+        assert_eq!(back, planner_session);
 
         let claude_session = ActorId::AiClaudeSession(WorkerSessionId::from("sess-9"));
         let s = serde_json::to_string(&claude_session).unwrap();
@@ -181,13 +183,13 @@ mod tests {
         assert_eq!(ActorId::User.to_string(), "user");
         assert_eq!(ActorId::Kernel.to_string(), "kernel");
         assert_eq!(
-            ActorId::AiSpec(CardId::from("card-7")).to_string(),
-            "ai:spec:card-7"
+            ActorId::AiPlanner(CardId::from("card-7")).to_string(),
+            "ai:planner:card-7"
         );
         assert_eq!(ActorId::AiCodex(CardId::from("")).to_string(), "ai:codex");
         assert_eq!(
-            ActorId::AiSpecSession(WorkerSessionId::from("sess-7")).to_string(),
-            "ai:spec-session:sess-7"
+            ActorId::AiPlannerSession(WorkerSessionId::from("sess-7")).to_string(),
+            "ai:planner-session:sess-7"
         );
         assert_eq!(
             ActorId::AiCodexSession(WorkerSessionId::from("sess-8")).to_string(),

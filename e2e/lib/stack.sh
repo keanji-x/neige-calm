@@ -97,9 +97,9 @@ check_server_logs() {
   [[ -n "$SERVER_CID" ]] || return 0
   local match
   match="$(docker logs --tail 500 "$SERVER_CID" 2>&1 \
-    | grep -F -e 'spec harness start submission failed' -e 'spec harness start wait failed' -e 'track created but spec agent is inert' \
+    | grep -F -e 'planner harness start submission failed' -e 'planner harness start wait failed' -e 'track created but planner agent is inert' \
     | tail -n 1 || true)"
-  [[ -z "$match" ]] || fail "server logs contain fatal spec-harness warning: $match"
+  [[ -z "$match" ]] || fail "server logs contain fatal planner-harness warning: $match"
 }
 
 wait_for_health() {

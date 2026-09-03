@@ -1175,7 +1175,7 @@ impl AppError {
 
     fn missing_env(name: &str, json: bool) -> Self {
         Self::new(
-            format!("missing {name} env var; run from a neige spec terminal"),
+            format!("missing {name} env var; run from a neige planner terminal"),
             2,
             json,
             json!({ "kind": "missing_env", "env": name }),

@@ -471,7 +471,7 @@ pub(super) fn card_meta_json(card: &CardProjection) -> Result<BlobContent> {
 fn card_meta_value(card: &CardProjection) -> Result<crate::track_fs_dto::TrackFsCardMeta> {
     // Hard-erroring on an unknown role is intentional and unreachable in practice:
     // migration 0037_drop_plain_role.sql backfilled 'plain'→'worker' and added
-    // insert/update triggers restricting cards.role to worker|spec|reportcard, so
+    // insert/update triggers restricting cards.role to worker|planner|reportcard, so
     // any parse failure here is DB corruption worth failing loudly on.
     let role = serde_json::from_value::<CardRole>(Value::String(card.role.clone()))?;
     Ok(track_fs_view::card_meta_value(&card.card, role))

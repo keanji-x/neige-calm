@@ -1,4 +1,4 @@
-//! Spec-only discovery reads for track-report links (#967 S4).
+//! Planner-only discovery reads for track-report links (#967 S4).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,33 +36,35 @@ where
 fn outline_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_AREA_OUTLINE.into(),
-        description: "Spec-only: list the reports and addressable block index for every track in \
+        description:
+            "Planner-only: list the reports and addressable block index for every track in \
             the caller's area. Takes no parameters. Create links as \
             `[label](neige://wave/<track_id>#<block_id>)`; the `#<block_id>` fragment is optional. \
             Block ids come from this outline or `calm.report.read`. Links resolve only within the \
             area. If an anchored block no longer exists, the link degrades to a whole-report link \
             instead of breaking. Returns `{ tracks: [{ id, title, lifecycle, blocks: [{ id, kind, \
             heading }] }], truncated? }`; it never returns report bodies."
-            .into(),
+                .into(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BACKLINKS.into(),
-        description: "Spec-only: list report links from tracks in the same area to the caller's \
+        description:
+            "Planner-only: list report links from tracks in the same area to the caller's \
             own track. Takes no parameters. Link syntax is \
             `[label](neige://wave/<track_id>#<block_id>)`; the fragment is optional, and block ids \
             come from `calm.area.outline` or `calm.report.read`. Links resolve only within the \
             area. An anchor whose block no longer exists degrades to a whole-report link rather \
             than breaking."
-            .into(),
+                .into(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -71,7 +73,7 @@ async fn area_outline(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let mut cards = ctx
         .repo
         .track_report_cards_by_area(identity.area_id.as_str())
@@ -277,7 +279,7 @@ async fn report_backlinks(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let track_id = identity.track_id.ok_or_else(|| {
         RpcError::invalid_params("calm.report.links.backlinks requires a track-scoped caller")
     })?;

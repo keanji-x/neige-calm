@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 pub(super) fn kinds_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_KINDS.into(),
-        description: "Spec-only: list the block kinds a track report can \
+        description: "Planner-only: list the block kinds a track report can \
              contain. Returns `{ kinds: [{ kind, schema, usage }] }` \
              where `schema` is the JSON Schema of that kind's payload. \
              Kinds: `prose` (markdown), `chart.candles` (inline candle \
@@ -28,11 +28,11 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
         annotations: Some(read_only_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
-        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
+        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
-/// The static kind table — the single self-description source a spec
+/// The static kind table — the single self-description source a planner
 /// agent discovers the block vocabulary from. Payload validation for
 /// the data kinds lives in `calm_types::report_blocks::kinds` (the
 /// schemas here must stay in lock-step with it).
@@ -247,7 +247,7 @@ pub(super) fn kinds_table() -> Value {
 pub(super) fn upsert_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_UPSERT.into(),
-        description: "Spec-only: create or replace ONE report block. \
+        description: "Planner-only: create or replace ONE report block. \
              Without `id`: creates a new block (appended at the end, \
              or inserted at `position`) and REQUIRES `if_doc_rev`; read \
              `docRev` from `calm.report.read`. With `id`: replaces that \
@@ -278,14 +278,14 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
         annotations: Some(role_gated_write_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
-        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
+        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
 pub(super) fn move_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_MOVE.into(),
-        description: "Spec-only: move a report block to `to_index` (its \
+        description: "Planner-only: move a report block to `to_index` (its \
              final 0-based index in document order). Content and rev \
              are untouched — ordering is not content. `if_doc_rev` is \
              REQUIRED because ordering is document-wide; read `docRev` \
@@ -304,14 +304,14 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
         annotations: Some(role_gated_write_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
-        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
+        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
 pub(super) fn delete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_DELETE.into(),
-        description: "Spec-only: delete a report block. `if_rev` is \
+        description: "Planner-only: delete a report block. `if_rev` is \
              REQUIRED (destructive op): pass the rev you last read; a \
              mismatch returns error -32001 (rev conflict) and deletes \
              nothing. Returns `{ updated_at, docRev }`."
@@ -327,14 +327,14 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
         annotations: Some(role_gated_write_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
-        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
+        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
 pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE_MARKDOWN.into(),
-        description: "Spec-only: the id-preserving whole-document write \
+        description: "Planner-only: the id-preserving whole-document write \
              — wholesale-replace the report from full-document \
              Markdown. Prefer this over `calm.report.write` for any \
              full rewrite: that tool re-derives block ids \
@@ -368,7 +368,7 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
         annotations: Some(role_gated_write_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
-        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
+        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 

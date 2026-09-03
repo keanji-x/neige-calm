@@ -21,7 +21,7 @@
 //! 3. ensure the launchpad exists;
 //! 4. create the summary conversation *if it is not there yet*, with static
 //!    bootstrap text and nothing else;
-//! 5. **unconditionally** send one spec input carrying the activity summary.
+//! 5. **unconditionally** send one planner input carrying the activity summary.
 //!
 //! Step 2 comes before step 3 so that a refusal materialises no workspace and
 //! starts no harness, not merely "no conversation".
@@ -51,11 +51,13 @@ use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversatio
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::ActorId;
 use crate::model::now_ms;
-use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, SpecHarnessStartOperationPayload,
+use crate::operation::planner_harness_start_adapter::{
+    HarnessProfile, PlannerHarnessStartOperationPayload,
 };
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{SendSpecInputRequest, run_spec_card_operation, send_spec_input};
+use crate::routes::cards::{
+    SendPlannerInputRequest, run_planner_card_operation, send_planner_input,
+};
 use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
 use crate::routes::track_conversations::{NewTrackConversationBody, create_track_conversation};
@@ -114,7 +116,7 @@ pub fn today_summary_card_id_for_test(track_id: &str) -> String {
 
 /// The actor every request from this endpoint is attributed to.
 ///
-/// **Fixed, and not read from the request.** `SpecHarnessStartOperationPayload`
+/// **Fixed, and not read from the request.** `PlannerHarnessStartOperationPayload`
 /// carries `actor`, the whole payload is hashed into the operation's
 /// `payload_hash`, and `insert_operation` answers "same idempotency key,
 /// different hash" with a 409 that never expires — `operations` has no pruner.
@@ -131,7 +133,7 @@ pub fn today_summary_card_id_for_test(track_id: &str) -> String {
 ///
 /// **Why `user` and not `kernel`.** The message is composed by the server, but
 /// the act is a human pressing a button, and that is what the audit log should
-/// say. The alternative is also not reachable honestly: `send_spec_input`
+/// say. The alternative is also not reachable honestly: `send_planner_input`
 /// derives its audit actor from the `Actor` it is handed, and
 /// `Actor("kernel").to_actor_id()` silently degrades to `ActorId::User` — so
 /// "attribute this to the kernel" would mean reimplementing the send rather
@@ -176,7 +178,7 @@ fn synthetic_actor() -> Actor {
 ///   that echo lands would both read "not delivered" and both send — turning a
 ///   rare suppressed bootstrap into a routine duplicated one, which is the
 ///   failure the per-card claim below exists to prevent. It is also erased by
-///   `/spec/reset` and by legacy-Today adoption.
+///   `/planner/reset` and by legacy-Today adoption.
 /// * A new marker means either a write-only flag — which
 ///   `conversations_shared::user_message_already_enqueued`'s own docs reject as
 ///   "wrong in one direction either way" — or adding a text digest to a shared
@@ -294,10 +296,10 @@ pub struct TodaySummaryStarted {
 /// Render the prompt. Template text plus five integers, and that is the whole
 /// contract.
 ///
-/// The length bound is why: `send_spec_input` rejects anything over
-/// `MAX_SPEC_INPUT_CHARS` (32,768), and a prompt built from a fixed template
+/// The length bound is why: `send_planner_input` rejects anything over
+/// `MAX_PLANNER_INPUT_CHARS` (32,768), and a prompt built from a fixed template
 /// and five `i64`s has a maximum length that can be computed by reading it —
-/// `the_prompt_is_bounded_far_below_the_spec_input_ceiling` computes it. Adding
+/// `the_prompt_is_bounded_far_below_the_planner_input_ceiling` computes it. Adding
 /// track titles or a detail list would remove that property, and the design says
 /// what re-adding it would then cost (a deterministic character budget plus
 /// 32,768/32,769/CJK boundary cases).
@@ -334,7 +336,7 @@ fn summary_prompt(activity: &WorkspaceActivityWindow) -> String {
     tag = "tracks",
     responses(
         (status = 200, description = "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.", body = TodaySummaryStarted),
-        (status = 409, description = "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.", body = ErrorBody),
+        (status = 409, description = "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a dormant harness is retried once automatically before it can reach here.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly", body = ErrorBody),
     ),
@@ -372,7 +374,7 @@ pub(crate) async fn write_today_summary(
     // frontend on purpose: hiding the button is UI, and a POST straight at this
     // endpoint would sail past it. The statement is deliberately narrow — it is
     // about *this* endpoint. `POST /api/tracks/{id}/conversations` and
-    // `POST /api/cards/{id}/spec/input` stay reachable and are not in scope: a
+    // `POST /api/cards/{id}/planner/input` stay reachable and are not in scope: a
     // user typing to an agent by hand is not the thing being prevented.
     if activity.is_empty() {
         return Err(CalmError::TodaySummaryNoActivity(
@@ -383,7 +385,7 @@ pub(crate) async fn write_today_summary(
     }
 
     // Idempotent, and the only bootstrap on this path. It materializes the
-    // workspace and waits on a `spec-harness-start`, which is exactly why the
+    // workspace and waits on a `planner-harness-start`, which is exactly why the
     // page-load resolve must never call it (INV-TODAYDOC-001) and why this —
     // an explicit action — is where it belongs (§5.1).
     let (_status, Json(launchpad)) =
@@ -401,7 +403,7 @@ pub(crate) async fn write_today_summary(
     //   behind (`deletable: false`, so the user cannot clear it) with no
     //   runtime and no first message.
     // * The create operation *succeeds* — card and harness minted — and then
-    //   `create_track_conversation`'s own first `send_spec_input` fails (a 503
+    //   `create_track_conversation`'s own first `send_planner_input` fails (a 503
     //   from a shared app-server that went down in between). It returns `Err`,
     //   so no summary is sent either, and the card is left with an empty
     //   transcript.
@@ -459,7 +461,7 @@ pub(crate) async fn write_today_summary(
         )
         .await;
         // D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒
-        // carry on to the spec input**, if the card is in fact there.
+        // carry on to the planner input**, if the card is in fact there.
         //
         // The window is real and is exactly one request wide: between the
         // `card_get` above and this create, a concurrent request under the same
@@ -486,7 +488,7 @@ pub(crate) async fn write_today_summary(
                 card_id = %derived.card_id,
                 %error,
                 "today summary: create lost a race under the fixed key; the \
-                 derived card exists, continuing to the spec input"
+                 derived card exists, continuing to the planner input"
             );
         }
     }
@@ -500,7 +502,7 @@ pub(crate) async fn write_today_summary(
     // material, and any earlier message has already spent it.
     //
     // **Two limits of the evidence, both inherited and neither hidden.**
-    // `send_spec_input` enqueues the observation and *then* writes the
+    // `send_planner_input` enqueues the observation and *then* writes the
     // `harness.user_message.enqueued` row (`routes/cards.rs`), so a send whose
     // audit write fails leaves the agent holding the message with no row, and
     // the next trigger sends it again. And the row is written per enqueue, not
@@ -526,9 +528,9 @@ pub(crate) async fn write_today_summary(
     // never goes away.
     //
     // Lock order, which this path must not be the one to break:
-    // `conversation_first_message_locks` → `spec_recovery_locks` is the only
+    // `conversation_first_message_locks` → `planner_recovery_locks` is the only
     // permitted nesting (see the field's docs), and it is what happens here —
-    // `send_summary` → `send_spec_input` → `ensure_live_spec_harness` takes the
+    // `send_summary` → `send_planner_input` → `ensure_live_planner_harness` takes the
     // recovery lock on a registry miss. The dormant restart nested inside also
     // submits an operation, whose adapter takes its own private per-card mint
     // locks; nothing in the tree takes those and then this claim, so that
@@ -553,7 +555,7 @@ pub(crate) async fn write_today_summary(
         }
         // Held across genuinely blocking work, which is worth stating because
         // the obvious assumption is the opposite: on the dormant branch
-        // `send_summary` submits a `spec-harness-start` and waits on it, and
+        // `send_summary` submits a `planner-harness-start` and waits on it, and
         // that operation performs a codex `thread/start` RPC. So a slow or
         // wedged app-server holds this claim for as long as the operation runs.
         // The blast radius is one card — the map is per-card and every other
@@ -603,7 +605,7 @@ pub(crate) async fn write_today_summary(
 /// catches it either, because the two states that would distinguish it are not
 /// constructible in-process without bypassing the production create route: a
 /// create that fails with a non-conflict *after* the launchpad's own
-/// `spec-harness-start` has already succeeded, and a permanent payload-hash 409
+/// `planner-harness-start` has already succeeded, and a permanent payload-hash 409
 /// under a key whose card does not exist. Do not claim the concurrency case
 /// covers this; it exercises the recoverable direction only.
 fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
@@ -612,14 +614,14 @@ fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool 
 
 /// Send the summary, recovering once from a dormant harness.
 ///
-/// `ensure_live_spec_harness` answers 409 `spec_harness_dormant` for three
+/// `ensure_live_planner_harness` answers 409 `planner_harness_dormant` for three
 /// states — no active runtime, no thread, unreadable snapshot — and with one
 /// long-lived conversation any of them would kill this button permanently: there
 /// is no other path back to a live session.
 ///
-/// **The recovery re-submits `spec-harness-start`; it must NOT call
-/// `/spec/reset`.** The two are not equivalent and the difference is exactly
-/// what the user came for: `reset_spec_harness_card` hard-codes
+/// **The recovery re-submits `planner-harness-start`; it must NOT call
+/// `/planner/reset`.** The two are not equivalent and the difference is exactly
+/// what the user came for: `reset_planner_harness_card` hard-codes
 /// `reset_harness_items: true`, which erases the transcript — and that
 /// transcript is the conversation this whole feature exists to produce. A plain
 /// start with `reset_harness_items: false` and `force_new_thread: true` restores
@@ -639,22 +641,22 @@ async fn send_summary(
     text: String,
 ) -> Result<()> {
     let send = |text: String| {
-        send_spec_input(
+        send_planner_input(
             State(s.clone()),
             State(w.clone()),
             State(cs.clone()),
             synthetic_actor(),
             Path(card_id.to_string()),
-            Json(SendSpecInputRequest { text }),
+            Json(SendPlannerInputRequest { text }),
         )
     };
     match send(text.clone()).await {
         Ok(_) => Ok(()),
-        Err(CalmError::SpecHarnessDormant(reason)) => {
+        Err(CalmError::PlannerHarnessDormant(reason)) => {
             tracing::info!(
                 card_id,
                 reason,
-                "today summary: harness dormant, re-submitting spec-harness-start"
+                "today summary: harness dormant, re-submitting planner-harness-start"
             );
             restart_summary_harness(s, card_id).await?;
             send(text).await.map(|_| ())
@@ -677,30 +679,30 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         .ok_or_else(|| {
             CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
         })?;
-    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
         // Constructed directly, because `Actor::to_actor_id` cannot produce it:
         // `Actor("kernel")` falls through to `ActorId::User`. This restart is
         // not the user's act — nobody asked for it — so it is the kernel's.
         actor: ActorId::Kernel,
         track_id: track.id.to_string(),
-        spec_card_id: card.id.clone(),
+        planner_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
         cwd: track.workspace.path.clone(),
         goal: None,
-        // The whole point. `true` here is `/spec/reset`'s behaviour and would
+        // The whole point. `true` here is `/planner/reset`'s behaviour and would
         // delete the conversation.
         reset_harness_items: false,
         force_new_thread: true,
         // This card is the assistant conversation this module minted, so its
-        // profile is known rather than inferred. Starting it as `Spec` would
-        // give the thread the spec prompt and role while the card row still
+        // profile is known rather than inferred. Starting it as `Planner` would
+        // give the thread the planner prompt and role while the card row still
         // said `assistant`.
         profile: HarnessProfile::Assistant,
         create_card: None,
         first_message_sha256: None,
     })?;
-    run_spec_card_operation(s, "spec-harness-start", payload).await
+    run_planner_card_operation(s, "planner-harness-start", payload).await
 }
 
 #[cfg(test)]
@@ -757,7 +759,7 @@ mod tests {
     /// integer. (Counts cannot go negative — `COUNT(*)` — so this is the bound,
     /// not a case.)
     #[test]
-    fn the_prompt_is_bounded_far_below_the_spec_input_ceiling() {
+    fn the_prompt_is_bounded_far_below_the_planner_input_ceiling() {
         let widest = summary_prompt(&WorkspaceActivityWindow {
             track_lifecycle_changed: i64::MIN,
             track_report_edited: i64::MIN,
@@ -766,8 +768,8 @@ mod tests {
             tracks_touched: i64::MIN,
         });
         assert!(
-            widest.chars().count() < crate::routes::cards::MAX_SPEC_INPUT_CHARS,
-            "the prompt must fit `spec/input` for every possible count; it is \
+            widest.chars().count() < crate::routes::cards::MAX_PLANNER_INPUT_CHARS,
+            "the prompt must fit `planner/input` for every possible count; it is \
              {} chars",
             widest.chars().count()
         );
@@ -775,7 +777,7 @@ mod tests {
         // `validate_first_message` under the identical ceiling.
         assert!(
             TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count()
-                < crate::routes::cards::MAX_SPEC_INPUT_CHARS
+                < crate::routes::cards::MAX_PLANNER_INPUT_CHARS
         );
         assert!(!TODAY_SUMMARY_BOOTSTRAP_TEXT.trim().is_empty());
     }

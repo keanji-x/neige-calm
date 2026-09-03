@@ -137,7 +137,7 @@ services:
       # (see state.rs) looks for it as a sibling of calm-server's exe and
       # falls back to a bare-name PATH lookup; mounting at /usr/local/bin
       # makes both paths resolve. Without this mount the codex MCP client
-      # exits with "os error 2" on every spec/worker card spawn — the
+      # exits with "os error 2" on every planner/worker card spawn — the
       # narrow #236 sync-spawn fix doesn't surface that because it only
       # awaits the daemon socket, not the codex MCP handshake.
       - ${CALM_MCP_SHIM_BIN:-./target/release/neige-mcp-stdio-shim}:/usr/local/bin/neige-mcp-stdio-shim:ro
@@ -147,7 +147,7 @@ services:
       # fails with `connect calm-proc-supervisor … No such file or directory`
       # if the binary isn't reachable inside the container.
       - ${CALM_PROC_SUPERVISOR_BIN:-./target/release/calm-proc-supervisor}:/usr/local/bin/calm-proc-supervisor:ro
-      # Issue #339 PR B — the `neige` CLI, invoked by spec/worker agents
+      # Issue #339 PR B — the `neige` CLI, invoked by planner/worker agents
       # from their terminals to read current-track file views over the
       # per-card MCP socket. Mounting it at /usr/local/bin keeps it on
       # PATH for the agent shell; without this mount `neige ls`/`cat`

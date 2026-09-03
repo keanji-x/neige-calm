@@ -4,10 +4,10 @@
 //!
 //! * **G1** — the same `Idempotency-Key` retried lands on the same card, and the
 //!   track namespace is separate from the area one.
-//! * **G2** — a `spec_card_id` the adapter did not derive itself is refused,
+//! * **G2** — a `planner_card_id` the adapter did not derive itself is refused,
 //!   including one derived for a different track.
 //! * **G3** — the list returns assistant conversations and nothing else, on a
-//!   track populated with a spec card, a report card and a real codex worker
+//!   track populated with a planner card, a report card and a real codex worker
 //!   card.
 
 #![cfg(unix)]
@@ -110,7 +110,7 @@ async fn boot() -> Boot {
 
 impl Boot {
     /// A real, user-visible track — created through `POST /api/tracks`, so it
-    /// carries the spec card, the report card and the workspace a production
+    /// carries the planner card, the report card and the workspace a production
     /// track has. G3 leans on that: a hand-rolled `track_create` would give the
     /// predicate nothing to exclude.
     async fn create_track(&self, title: &str) -> String {
@@ -328,7 +328,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
         1,
         "the session must mirror the card token"
     );
-    // `SharedSpec` would map to `WorkerContract::Planner` and hand the
+    // `SharedPlanner` would map to `WorkerContract::Planner` and hand the
     // assistant the track's root session pointer.
     let contract: String =
         sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
@@ -356,7 +356,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
     assert_ne!(
         root.as_deref(),
         Some(assistant_session.as_str()),
-        "the assistant displaced the spec card as the track's root session"
+        "the assistant displaced the planner card as the track's root session"
     );
     b.shutdown_harnesses().await;
 }
@@ -414,9 +414,9 @@ async fn retrying_one_idempotency_key_lands_on_the_same_conversation() {
 /// covered, and they are the three the design names — a conjured id, an id
 /// derived under a different key, and an id derived for a different track.
 #[tokio::test]
-async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
-    use calm_server::operation::spec_harness_start_adapter::{
-        HarnessProfile, LazyMintCardSeed, SpecHarnessStartOperationPayload,
+async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
+    use calm_server::operation::planner_harness_start_adapter::{
+        HarnessProfile, LazyMintCardSeed, PlannerHarnessStartOperationPayload,
     };
 
     let b = boot().await;
@@ -428,10 +428,10 @@ async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
         let state = b.state.clone();
         let cwd = track.workspace.path.clone();
         async move {
-            let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+            let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
                 actor: calm_server::ids::ActorId::User,
                 track_id: target_track,
-                spec_card_id: card_id.into(),
+                planner_card_id: card_id.into(),
                 report_card_id: None,
                 sort: None,
                 cwd,
@@ -450,7 +450,7 @@ async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
             state
                 .operation_runtime
                 .submit(
-                    "spec-harness-start",
+                    "planner-harness-start",
                     OperationKey {
                         operation_key: calm_server::model::new_id(),
                         idempotency_key: None,
@@ -542,10 +542,10 @@ async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
 
 /// **G3** — the list is assistant conversations and nothing else.
 ///
-/// The track is deliberately crowded: `POST /api/tracks` leaves a spec card and a
+/// The track is deliberately crowded: `POST /api/tracks` leaves a planner card and a
 /// report card, and a real codex worker card is minted on top through the
 /// production transaction. A predicate widened to "a codex card on this track"
-/// picks up the spec card and the worker; one widened to "not a report card"
+/// picks up the planner card and the worker; one widened to "not a report card"
 /// picks up both as well.
 ///
 /// The two half-marked decoys cover the remaining shape: the predicate is a
@@ -572,7 +572,7 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
         .fetch_all(b.repo.pool())
         .await
         .unwrap();
-    assert!(roles.contains(&"spec".to_string()), "roles={roles:?}");
+    assert!(roles.contains(&"planner".to_string()), "roles={roles:?}");
     assert!(roles.contains(&"reportcard".to_string()), "roles={roles:?}");
     assert!(roles.contains(&"worker".to_string()), "roles={roles:?}");
     assert_eq!(
@@ -597,7 +597,7 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
     assert_eq!(
         empty.as_array().unwrap().len(),
         0,
-        "a track with a spec card, a report card and a worker has no \
+        "a track with a planner card, a report card and a worker has no \
          conversations until one is created; got {empty}"
     );
 
@@ -639,13 +639,13 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
     b.shutdown_harnesses().await;
 }
 
-/// `POST /api/cards/{id}/spec/reset` restarts an assistant under the ASSISTANT
+/// `POST /api/cards/{id}/planner/reset` restarts an assistant under the ASSISTANT
 /// profile.
 ///
-/// The arm in `routes::cards::reset_spec_harness_card` that selects
+/// The arm in `routes::cards::reset_planner_harness_card` that selects
 /// `HarnessProfile::Assistant` had no caller in the suite: delete it and the
-/// card falls through to `HarnessProfile::Spec`, which `validate` refuses
-/// (`card ... is not a spec card`) — so the assertions below are the reset arm
+/// card falls through to `HarnessProfile::Planner`, which `validate` refuses
+/// (`card ... is not a planner card`) — so the assertions below are the reset arm
 /// itself, not incidental coverage.
 ///
 /// Both halves of the card's identity are re-read afterwards because reset
@@ -669,7 +669,7 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .unwrap();
     // Captured BEFORE the reset. A one-sided "the assistant did not become the
     // root" assertion also passes when reset clears `root_session_id` to NULL,
-    // which loses the spec card's root just as thoroughly, so the post-condition
+    // which loses the planner card's root just as thoroughly, so the post-condition
     // below is equality against this value, not absence of the assistant.
     let root_before: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
@@ -679,14 +679,14 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .unwrap();
     assert!(
         root_before.is_some(),
-        "the track must already have a spec root session before the reset, \
+        "the track must already have a planner root session before the reset, \
          otherwise the equality check below is vacuous"
     );
 
     let (status, body) = b
         .request(
             "POST",
-            &format!("/api/cards/{card_id}/spec/reset"),
+            &format!("/api/cards/{card_id}/planner/reset"),
             None,
             None,
         )
@@ -707,8 +707,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
         Some("assistant"),
         "reset must not rewrite the conversation's marker"
     );
-    // The profile actually taken, observed rather than asserted about: the Spec
-    // arm writes a `SharedSpec` session, which is `WorkerContract::Planner` and
+    // The profile actually taken, observed rather than asserted about: the Planner
+    // arm writes a `SharedPlanner` session, which is `WorkerContract::Planner` and
     // takes over `tracks.root_session_id`.
     let contracts: Vec<String> =
         sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
@@ -730,7 +730,7 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
         root_after, root_before,
         "reset must leave the track's root session exactly as it was: taking it \
          over for the assistant and clearing it to NULL are both losses of the \
-         spec card's root"
+         planner card's root"
     );
     let assistant_sessions: Vec<String> =
         sqlx::query_scalar("SELECT id FROM worker_sessions WHERE card_id = ?1")
@@ -742,7 +742,7 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
         !assistant_sessions
             .iter()
             .any(|id| root_after.as_deref() == Some(id.as_str())),
-        "the reset assistant displaced the spec card as the track's root session"
+        "the reset assistant displaced the planner card as the track's root session"
     );
     // A reset is a hard restart: a new thread, and the card still listed.
     // Ordered explicitly: reset supersedes the old row and starts a new one, so

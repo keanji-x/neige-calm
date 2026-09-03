@@ -286,7 +286,7 @@ describe('track create folders cache', () => {
   });
 });
 
-describe('spec history pagination', () => {
+describe('planner history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
     const firstPage = Array.from({ length: 300 }, (_, index) => ({
       id: 701 + index, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',

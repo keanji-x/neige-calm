@@ -494,7 +494,7 @@ impl CodexAppServer {
     /// client + its [`NotificationStream`] + the *server* end (which the
     /// caller must keep alive — dropping it closes the connection and
     /// stops the reader). Lets other modules' tests (e.g.
-    /// `spec_appserver`) construct a real client/handle without a `codex`
+    /// `planner_appserver`) construct a real client/handle without a `codex`
     /// binary. The server end is returned rather than parked so the
     /// caller controls its lifetime.
     #[cfg(test)]

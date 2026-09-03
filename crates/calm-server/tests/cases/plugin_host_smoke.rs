@@ -6,7 +6,7 @@
 //! minimal subset of the MCP `initialize` handshake — enough for the
 //! supervisor to flip a plugin to `Running`.
 //!
-//! Slice B's binding spec lists four assertions; this file covers all of them:
+//! Slice B's binding planner lists four assertions; this file covers all of them:
 //!
 //!   1. Spawn echo stub → `PluginRuntimeStatus::Running` within 2 s.
 //!   2. `stop()` → child exits within grace, status drops out of the table.

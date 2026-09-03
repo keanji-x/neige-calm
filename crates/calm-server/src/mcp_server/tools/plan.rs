@@ -1,4 +1,4 @@
-//! `calm.plan.*` — the spec card's durable per-track task plan
+//! `calm.plan.*` — the planner card's durable per-track task plan
 //! (issue #644, PR-A).
 //!
 //! Task declarations live in report `task` blocks; the `tasks` table is
@@ -9,13 +9,13 @@
 //!
 //! * `calm.plan.upsert` — hidden, zero-write compatibility shim for old
 //!   threads. New declarations use `calm.report.blocks.upsert`.
-//! * `calm.plan.cancel` — Spec-only, pending-only (`§3.1`): canceling
+//! * `calm.plan.cancel` — Planner-only, pending-only (`§3.1`): canceling
 //!   an already-`canceled` task is idempotent success; an in-flight
 //!   task returns the 409-style refusal.
-//! * `calm.plan.list` — Spec-only read. Gate **commands are not
+//! * `calm.plan.list` — Planner-only read. Gate **commands are not
 //!   echoed** (only `{present, steps: [names]}`) — workers must never
 //!   see gate bodies, and the listing layer enforces that shape even
-//!   for spec callers so a future role widening can't leak them (§6.7).
+//!   for planner callers so a future role widening can't leak them (§6.7).
 //!
 //! ## Template-to-block mapping
 //!
@@ -27,7 +27,7 @@
 //!
 //! Track identity is implicit from the calling card (same resolve chain
 //! as `track_state.rs`); it is never a parameter. The `plan.updated`
-//! event is track-scoped with actor `AiSpec`; the in-tx role gate
+//! event is track-scoped with actor `AiPlanner`; the in-tx role gate
 //! refuses it from worker actors (`role_gate.rs` section 2.5).
 
 use crate::db::sqlite::{task_cancel_tx, task_get_tx};
@@ -65,7 +65,7 @@ pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 
 /// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
 /// adapter re-clamps defensively at run time
-/// (`task_verify_adapter::GateSpec::timeout_secs_clamped`).
+/// (`task_verify_adapter::GatePlanner::timeout_secs_clamped`).
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
@@ -109,9 +109,9 @@ pub struct PlanTaskInput {
 }
 
 /// Convert the retained manifest template vocabulary to the report task-block
-/// wire vocabulary the spec agent can actually submit. Optional legacy fields
+/// wire vocabulary the planner agent can actually submit. Optional legacy fields
 /// are omitted instead of serialized as JSON null; readiness and authorship are
-/// explicit because projection only admits ready spec declarations.
+/// explicit because projection only admits ready planner declarations.
 pub fn plan_template_task_block_payload(input: &PlanTaskInput) -> Value {
     let Value::Object(mut payload) =
         serde_json::to_value(input).expect("PlanTaskInput must serialize")
@@ -145,7 +145,7 @@ struct NormalizedTask {
     depends_on: Vec<String>,
     priority: i64,
     /// Canonical gate serialization (rule 7 shape, validated; wire
-    /// shape = `task_verify_adapter::GateSpec`). Deterministic per
+    /// shape = `task_verify_adapter::GatePlanner`). Deterministic per
     /// input, so the rule-5 idempotency check covers gates too.
     gate_json: Option<String>,
     /// Rule 6 escape hatch was supplied.
@@ -275,7 +275,7 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
 /// canonical `gate_json` (a pure function of the input — `None` fields
 /// omitted, fixed key insertion order — so rule-5 byte-identical
 /// idempotency covers gates). The wire shape matches
-/// `task_verify_adapter::GateSpec`.
+/// `task_verify_adapter::GatePlanner`.
 #[cfg(test)]
 fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     validate_gate_shape(key, gate)?;
@@ -480,7 +480,7 @@ async fn plan_upsert(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     Ok(json!({
         "error": "calm.plan.upsert was retired (#985); no task declaration was written",
         "migration": {
@@ -498,7 +498,7 @@ async fn plan_upsert(
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_CANCEL.into(),
-        description: "Spec-only: cancel one still-pending task in the track's plan. \
+        description: "Planner-only: cancel one still-pending task in the track's plan. \
              Canceling an already-canceled task is an idempotent success. In-flight \
              tasks (dispatched/running/verifying) cannot be interrupted — cancel or \
              rewire their successors instead. `message` is required and persisted as \
@@ -515,7 +515,7 @@ fn plan_cancel_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -537,7 +537,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let write_args = parse_write_args(&args, "plan_cancel")?;
 
     let key = args
@@ -560,7 +560,7 @@ where
 
     // A `lifecycle` equal to the track's current state is the same-state
     // idempotency shortcut: `validate_transition` blesses it for
-    // lifecycle-authorized actors (spec-only tool, so always here) and
+    // lifecycle-authorized actors (planner-only tool, so always here) and
     // `apply_requested_transition_in_tx` would emit nothing — for
     // short-circuit purposes it is equivalent to no lifecycle at all
     // (#656 round 3, F2).
@@ -739,7 +739,7 @@ where
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
-        description: "Spec-only: read the track's full task plan with per-task status. \
+        description: "Planner-only: read the track's full task plan with per-task status. \
              Gate commands are not echoed (only step names); each entry carries the \
              latest machine gate verdict as `gate_result` (on failure `status_detail` \
              is gate-red / gate-timeout / gate-infra). Read the worker output for a \
@@ -750,7 +750,7 @@ fn plan_list_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -759,7 +759,7 @@ async fn plan_list(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let tasks = ctx
         .repo
@@ -1262,7 +1262,7 @@ mod tests {
 
     /// PR-C deleted the rule-8 slice guard: a well-shaped gate is now
     /// ACCEPTED and stored canonically. The stored bytes must parse as
-    /// the task-verify runner's `GateSpec` wire shape, and the
+    /// the task-verify runner's `GatePlanner` wire shape, and the
     /// canonicalization must be deterministic (rule-5 idempotency).
     #[test]
     fn declared_gate_accepted_and_stored_canonically() {
@@ -1274,13 +1274,13 @@ mod tests {
         ));
         let n = normalize_task_input(t).expect("gate accepted in PR-C");
         let gate_json = n.gate_json.expect("gate stored");
-        let spec: crate::operation::task_verify_adapter::GateSpec =
-            serde_json::from_str(&gate_json).expect("stored bytes parse as GateSpec");
-        assert_eq!(spec.cwd.as_deref(), Some("/repo"), "gate.cwd is trimmed");
-        assert_eq!(spec.timeout_secs, Some(600));
-        assert_eq!(spec.steps.len(), 2);
-        assert_eq!(spec.steps[0].name, "test");
-        assert_eq!(spec.steps[0].cmd, "cargo test");
+        let planner: crate::operation::task_verify_adapter::GatePlanner =
+            serde_json::from_str(&gate_json).expect("stored bytes parse as GatePlanner");
+        assert_eq!(planner.cwd.as_deref(), Some("/repo"), "gate.cwd is trimmed");
+        assert_eq!(planner.timeout_secs, Some(600));
+        assert_eq!(planner.steps.len(), 2);
+        assert_eq!(planner.steps[0].name, "test");
+        assert_eq!(planner.steps[0].cmd, "cargo test");
 
         // Deterministic: the same input normalizes to the same bytes.
         let mut t2 = raw_task("a");

@@ -125,7 +125,7 @@ async fn seed_rooted_track(repo: &SqlxRepo) {
         WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,

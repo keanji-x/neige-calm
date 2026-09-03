@@ -69,10 +69,10 @@ describe('ReportDocument', () => {
   describe('INV-A11Y-061 — a report emits no native link', () => {
     it('keeps a link label and drops its destination', () => {
       const { container } = render(
-        <ReportDocument report={flat('See [the spec](https://example.com/spec) for details.')} empty={EMPTY} />,
+        <ReportDocument report={flat('See [the planner](https://example.com/planner) for details.')} empty={EMPTY} />,
       );
       expect(container.querySelectorAll('a').length).toBe(0);
-      expect(container.textContent).toContain('the spec');
+      expect(container.textContent).toContain('the planner');
       expect(container.innerHTML).not.toContain('example.com');
     });
 

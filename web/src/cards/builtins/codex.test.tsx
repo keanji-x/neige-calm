@@ -69,8 +69,8 @@ import {
 
 const codexCard: CodexCardData = {
   type: 'codex',
-  id: 'card_spec',
-  terminalId: 'term_spec',
+  id: 'card_planner',
+  terminalId: 'term_planner',
 };
 
 type AgentCardData = CodexCardData | ClaudeCardData;
@@ -92,7 +92,7 @@ function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
 
 function Wrap({
   children,
-  cardId = 'card_spec',
+  cardId = 'card_planner',
   deletable = false,
   card,
 }: {
@@ -186,14 +186,14 @@ describe('Codex card controller behavior', () => {
 
     await screen.findByTestId('xterm-view-stub');
     await waitFor(() =>
-      expect(resolveCardById('card_spec')?.writer).toBeDefined(),
+      expect(resolveCardById('card_planner')?.writer).toBeDefined(),
     );
     act(() => {
-      resolveCardById('card_spec')!.writer.setVisible(false);
+      resolveCardById('card_planner')!.writer.setVisible(false);
     });
 
     expect(mocks.dlog).toHaveBeenCalledWith('CodexCard', 'visibility', {
-      cardId: 'card_spec',
+      cardId: 'card_planner',
       visible: false,
     });
     expect(mocks.xtermUnmount).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe('Codex card controller behavior', () => {
     renderAgentCard(codexCard, { deletable: false });
 
     await waitFor(() =>
-      expect(mocks.getTerminalForCard).toHaveBeenCalledWith('card_spec'),
+      expect(mocks.getTerminalForCard).toHaveBeenCalledWith('card_planner'),
     );
     expect(
       screen.queryByRole('button', { name: /Restart/ }),

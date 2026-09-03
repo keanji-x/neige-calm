@@ -1,8 +1,8 @@
 [
   {
-    "description": "AiSpec(spec card) emitting task.completed at the kernel write entry is ALLOWED (intentionally left so per PR7 decision (b))",
-    "note": "Characterization surprise: the in-tx role gate has no rule denying task.completed to AiSpec — sections 2/2.5 don't list it and section 3 only inspects AiCodex/AiClaude actors. The 'spec must not report task completion' rule lives ONLY in the MCP soft gate (mcp_server/tools/emit.rs task_complete -> require_role(Worker)). PR7 decision (b): INTENTIONALLY left allow — recorder-gate ENFORCE (PR7b-ii) already restricts track-state recording to the track root, so this kernel-gate AiSpec allow is a low-risk defense-in-depth backstop behind the soft gate. Flipping it to deny (which forces re-authoring accepted verdicts as ActorId::Kernel + a dispatcher self-push fix) is tracked in #733.",
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "description": "AiPlanner(planner card) emitting task.completed at the kernel write entry is ALLOWED (intentionally left so per PR7 decision (b))",
+    "note": "Characterization surprise: the in-tx role gate has no rule denying task.completed to AiPlanner — sections 2/2.5 don't list it and section 3 only inspects AiCodex/AiClaude actors. The 'planner must not report task completion' rule lives ONLY in the MCP soft gate (mcp_server/tools/emit.rs task_complete -> require_role(Worker)). PR7 decision (b): INTENTIONALLY left allow — recorder-gate ENFORCE (PR7b-ii) already restricts track-state recording to the track root, so this kernel-gate AiPlanner allow is a low-risk defense-in-depth backstop behind the soft gate. Flipping it to deny (which forces re-authoring accepted verdicts as ActorId::Kernel + a dispatcher self-push fix) is tracked in #733.",
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-r-47", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }

@@ -181,7 +181,7 @@ async fn events_diag(repo: &SqlxRepo) -> String {
         Some(items) => {
             let _ = writeln!(
                 out,
-                "-- harness_items ({} rows: the spec's real turn) --",
+                "-- harness_items ({} rows: the planner's real turn) --",
                 items.len()
             );
             for (id, turn, ty, method, params) in items {

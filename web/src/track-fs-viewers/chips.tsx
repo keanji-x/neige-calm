@@ -58,7 +58,7 @@ export const trackLifecycleTones = {
 
 export const cardRoleTones = {
   worker: 'neutral',
-  spec: 'accent',
+  planner: 'accent',
   reportcard: 'success',
   // #1189 — track-scoped assistant conversation card.
   assistant: 'accent',

@@ -36,18 +36,18 @@
     "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }
   },
   {
-    "description": "G-A' — and neither may another track's Spec card, whose role gate has no rule of its own (AiSpec never reaches the role match): the recorder gate is the ONLY thing refusing this write",
-    "principal": { "session_id": "$AWAY_SPEC_SESSION", "track_id": "$AWAY_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$AWAY_SPEC_CARD" },
-    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-away-spec-report", "summary_before": "", "summary_after": "away spec", "body_before": "", "body_after": "away spec body", "agent_message": "cross-track report" } },
+    "description": "G-A' — and neither may another track's Planner card, whose role gate has no rule of its own (AiPlanner never reaches the role match): the recorder gate is the ONLY thing refusing this write",
+    "principal": { "session_id": "$AWAY_PLANNER_SESSION", "track_id": "$AWAY_TRACK", "area_id": "$HOME_AREA" },
+    "actor": { "kind": "AiPlanner", "id": "$AWAY_PLANNER_CARD" },
+    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "planner", "edit_id": "pd-away-planner-report", "summary_before": "", "summary_after": "away planner", "body_before": "", "body_after": "away planner body", "agent_message": "cross-track report" } },
     "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "allow" }
   },
   {
-    "description": "the away track's own root session is the away Spec card, and marking it root buys it nothing here — proof that root-ness is no longer part of the criterion in either direction",
-    "principal": { "session_id": "$AWAY_SPEC_SESSION", "track_id": "$AWAY_TRACK", "area_id": "$HOME_AREA" },
-    "actor": { "kind": "AiSpec", "id": "$AWAY_SPEC_CARD" },
+    "description": "the away track's own root session is the away Planner card, and marking it root buys it nothing here — proof that root-ness is no longer part of the criterion in either direction",
+    "principal": { "session_id": "$AWAY_PLANNER_SESSION", "track_id": "$AWAY_TRACK", "area_id": "$HOME_AREA" },
+    "actor": { "kind": "AiPlanner", "id": "$AWAY_PLANNER_CARD" },
     "event": { "ev": "track.lifecycle_changed", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "cross-track lifecycle" } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,

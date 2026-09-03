@@ -392,62 +392,62 @@ pub async fn reset_from_fixture(
 }
 
 // ---------------------------------------------------------------------------
-// `force_spec_phase` — issue #682, dev hook behind `POST /dev/force-spec-phase`
+// `force_planner_phase` — issue #682, dev hook behind `POST /dev/force-planner-phase`
 // ---------------------------------------------------------------------------
 
-/// Sentinel thread id stamped on dev-forced spec runtimes. The stub
+/// Sentinel thread id stamped on dev-forced planner runtimes. The stub
 /// app-server can never start a real thread in replay mode, but the
 /// harness needs *a* thread id to be recoverable (boot recovery and
-/// `/spec/input` lazy recovery both refuse rows with no thread anywhere).
+/// `/planner/input` lazy recovery both refuse rows with no thread anywhere).
 #[cfg(feature = "fixtures")]
 pub const DEV_FORCED_THREAD_ID: &str = "dev-forced-thread";
 
-/// Outcome of [`force_spec_phase`], serialized verbatim into the replay
-/// binary's `POST /dev/force-spec-phase` response body.
+/// Outcome of [`force_planner_phase`], serialized verbatim into the replay
+/// binary's `POST /dev/force-planner-phase` response body.
 #[cfg(feature = "fixtures")]
 #[derive(Debug, serde::Serialize)]
-pub struct ForceSpecPhaseOutcome {
+pub struct ForcePlannerPhaseOutcome {
     pub card_id: String,
     pub runtime_id: String,
     pub old_phase: crate::harness::HarnessPhaseTag,
     pub new_phase: crate::harness::HarnessPhaseTag,
 }
 
-/// Issue #682 PR-1 — force a spec card's harness phase. Dev-only: this is
-/// the engine behind the replay binary's `POST /dev/force-spec-phase`, so
-/// Playwright e2e can drive `GET /spec/run`, `harness.phase.changed`
-/// events, and the SpecCurrentRun UI without a real codex daemon.
+/// Issue #682 PR-1 — force a planner card's harness phase. Dev-only: this is
+/// the engine behind the replay binary's `POST /dev/force-planner-phase`, so
+/// Playwright e2e can drive `GET /planner/run`, `harness.phase.changed`
+/// events, and the PlannerCurrentRun UI without a real codex daemon.
 ///
 /// Why the function must stand its own harness up (Step-0 probe, pinned by
-/// `tests/replay_force_spec_phase.rs`): in replay boot the shared codex
+/// `tests/replay_force_planner_phase.rs`): in replay boot the shared codex
 /// app-server is a stub (`is_running()` == false), so the
-/// `spec-harness-start` operation submitted by `POST /api/tracks` fails at
-/// `validate` — the spec card exists but has NO runtime row and NO
+/// `planner-harness-start` operation submitted by `POST /api/tracks` fails at
+/// `validate` — the planner card exists but has NO runtime row and NO
 /// registered harness. A 404 on registry miss would make e2e setup
-/// impossible, so this converges any valid spec card to a forceable
+/// impossible, so this converges any valid planner card to a forceable
 /// harness:
 ///
-/// 1. card guard mirrors the production `/spec/*` routes (404 unknown
-///    card / role, 403 non-spec-codex);
+/// 1. card guard mirrors the production `/planner/*` routes (404 unknown
+///    card / role, 403 non-planner-codex);
 /// 2. no active worker session → insert one (`session_start_runtime_tx`, kind
-///    `SharedSpec`) carrying an initial [`HarnessSnapshot`] and the
+///    `SharedPlanner`) carrying an initial [`HarnessSnapshot`] and the
 ///    [`DEV_FORCED_THREAD_ID`] sentinel;
 /// 3. registry miss → [`crate::harness::spawn_recovered_harness`] — the
 ///    exact seam boot recovery uses; it does no codex RPC;
-/// 4. [`crate::harness::SpecHarness::force_phase_for_dev`] sets the FSM
+/// 4. [`crate::harness::PlannerHarness::force_phase_for_dev`] sets the FSM
 ///    state and reuses the regular persist path, so snapshot, runtime
-///    status, `GET /spec/run`, and the `HarnessPhaseChanged` event all
+///    status, `GET /planner/run`, and the `HarnessPhaseChanged` event all
 ///    agree by construction.
 ///
 /// Errors use [`crate::error::CalmError`] so the binary's handler can map
 /// `e.status()` straight to an HTTP status.
 #[cfg(feature = "fixtures")]
-pub async fn force_spec_phase(
+pub async fn force_planner_phase(
     state: &AppState,
     repo: Arc<dyn crate::db::Repo>,
     card_id: &str,
     to: crate::harness::HarnessPhaseTag,
-) -> crate::error::Result<ForceSpecPhaseOutcome> {
+) -> crate::error::Result<ForcePlannerPhaseOutcome> {
     use axum::extract::FromRef;
 
     use crate::db::write_in_tx_typed;
@@ -462,21 +462,21 @@ pub async fn force_spec_phase(
 
     // Issue #682 review — `wedged` is not forceable: `persist_snapshot`
     // would write `WorkerSessionState::Failed` (via `run_status_for`), and the read
-    // path (`session_projection_active_for_card`, used by `GET /spec/run` and by
+    // path (`session_projection_active_for_card`, used by `GET /planner/run` and by
     // this function) filters failed rows — a "successful" force would
     // instantly report `{runtime_id: null, phase: null}` and the next
     // force would mint a second runtime. Body validation runs first,
-    // mirroring `send_spec_input`'s text guard.
+    // mirroring `send_planner_input`'s text guard.
     if to == HarnessPhaseTag::Wedged {
         return Err(CalmError::BadRequest(
             "`wedged` is not forceable (a failed runtime row is no longer projectable by \
-             GET /spec/run); supported phases: pending_thread_start, idle, issuing_turn, \
+             GET /planner/run); supported phases: pending_thread_start, idle, issuing_turn, \
              issuing_interrupt, turn_running, turn_completed, resumed"
                 .into(),
         ));
     }
 
-    // Guard chain mirrors `routes::cards::get_spec_run`: card → role → kind.
+    // Guard chain mirrors `routes::cards::get_planner_run`: card → role → kind.
     let card = repo
         .card_get(card_id)
         .await?
@@ -487,29 +487,29 @@ pub async fn force_spec_phase(
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
     if !crate::routes::cards::card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {card_id} is not a spec codex card",
+            "card {card_id} is not a planner codex card",
         )));
     }
     let track = repo
         .track_get(card.track_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
-    if role == CardRole::Spec && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
+    if role == CardRole::Planner && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
-            "spec harness is disabled for area chat track {}",
+            "planner harness is disabled for area chat track {}",
             track.id
         )));
     }
     // Issue #682 review — take the same per-card recovery lock
-    // `ensure_live_spec_harness` (`/spec/input` lazy recovery) and
-    // `/spec/reset` use, and hold it through stand-up + force. Without it
+    // `ensure_live_planner_harness` (`/planner/input` lazy recovery) and
+    // `/planner/reset` use, and hold it through stand-up + force. Without it
     // a concurrent Send racing this hook could double-spawn the harness
     // (the second `spawn_recovered_harness` shuts the first down), or a
     // reset could supersede the runtime between the fetch below and
     // registration. Everything after this line reads/writes runtime rows
     // and the registry under the lock.
     let route = RouteState::from_ref(state);
-    let _recovery_guard = lock_card(&route.spec_recovery_locks, card.id.as_str()).await;
+    let _recovery_guard = lock_card(&route.planner_recovery_locks, card.id.as_str()).await;
 
     // Ensure an active runtime row exists (Step-0: replay boot leaves none).
     let card_id_string = card.id.to_string();
@@ -532,13 +532,13 @@ pub async fn force_spec_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            // Only a real spec card gets the `SharedSpec` kind:
+                            // Only a real planner card gets the `SharedPlanner` kind:
                             // that kind maps to `WorkerContract::Planner`,
                             // which makes the session the track's root
                             // authority. Both conversation flavours are
                             // ordinary codex-card sessions.
-                            kind: if role == CardRole::Spec {
-                                WorkerSessionKind::SharedSpec
+                            kind: if role == CardRole::Planner {
+                                WorkerSessionKind::SharedPlanner
                             } else {
                                 WorkerSessionKind::CodexCard
                             },
@@ -546,9 +546,9 @@ pub async fn force_spec_phase(
                             // Deliberately `Idle`, not the `Starting` that
                             // `run_status_for(PendingThreadStart)` would
                             // derive from the snapshot phase: a `starting`
-                            // row trips `ensure_live_spec_harness`'s 503
+                            // row trips `ensure_live_planner_harness`'s 503
                             // "start still in flight" guard, breaking
-                            // `/spec/input` until the first force lands.
+                            // `/planner/input` until the first force lands.
                             // Harmless mismatch — the first
                             // `persist_snapshot` (end of this function)
                             // overwrites status from the live state anyway.
@@ -640,15 +640,15 @@ pub async fn force_spec_phase(
     // Issue #682 review — the recovered harness runs against the replay
     // stub app-server, so it must never issue turns: `turn_start` would
     // fail, the batch would re-buffer with `hard_fire`, and the run loop
-    // would churn phases every 50ms tick the moment `/spec/input` (or a
+    // would churn phases every 50ms tick the moment `/planner/input` (or a
     // catch-up observation) lands in an issuable phase. Observations still
-    // enqueue — PR-2's `/spec/input` happy path stays functional.
+    // enqueue — PR-2's `/planner/input` happy path stays functional.
     // Idempotent, so calling it on an already-paused (previously forced)
     // harness is fine.
     harness.pause_issuance_for_dev();
 
     let (old_phase, new_phase) = harness.force_phase_for_dev(to).await?;
-    Ok(ForceSpecPhaseOutcome {
+    Ok(ForcePlannerPhaseOutcome {
         card_id: card_id_string,
         runtime_id: runtime.id,
         old_phase,
@@ -656,7 +656,7 @@ pub async fn force_spec_phase(
     })
 }
 
-/// Issue #682 review — shut down and deregister every registered spec
+/// Issue #682 review — shut down and deregister every registered planner
 /// harness. The replay binary's `POST /dev/reset` calls this BEFORE
 /// reseeding the repo: `reset_from_fixture` wipes the runtime rows, so a
 /// harness left registered would survive as an orphaned 50ms-tick task
@@ -664,7 +664,7 @@ pub async fn force_spec_phase(
 /// long Playwright suite (`beforeEach` reset pattern) those accumulate.
 ///
 /// Uses the existing remove-then-`shutdown()` seam (`HarnessRegistry::
-/// remove` + `SpecHarness::shutdown`), the same path `spec-harness-shutdown`
+/// remove` + `PlannerHarness::shutdown`), the same path `planner-harness-shutdown`
 /// and track deletion take — no new kill mechanism. Shutdown against the
 /// replay stub daemon degrades to warn-logged no-op RPCs by design.
 ///
@@ -675,7 +675,7 @@ pub async fn shutdown_registered_harnesses(state: &AppState) -> usize {
     let count = harnesses.len();
     for harness in harnesses {
         if let Err(e) = harness.shutdown().await {
-            tracing::warn!(error = %e, "dev reset: spec harness shutdown failed");
+            tracing::warn!(error = %e, "dev reset: planner harness shutdown failed");
         }
     }
     count

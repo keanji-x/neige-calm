@@ -282,22 +282,22 @@ async fn session_start_mirror_tx(
     Ok(session)
 }
 
-pub async fn session_prepare_deferred_spec_tx(
+pub async fn session_prepare_deferred_planner_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
     if !matches!(
         init.kind,
-        WorkerSessionKind::SharedSpec | WorkerSessionKind::CodexCard
+        WorkerSessionKind::SharedPlanner | WorkerSessionKind::CodexCard
     ) || init.status != WorkerSessionState::Starting
     {
         return Err(runtime_message(
-            "deferred spec session placeholders require a starting shared-spec or codex runtime init",
+            "deferred planner session placeholders require a starting shared-spec or codex runtime init",
         ));
     }
     if init.thread_id.is_some() || init.terminal_run_id.is_some() || init.session_id.is_some() {
         return Err(runtime_message(
-            "deferred spec session placeholders must not have a thread, terminal run, or session",
+            "deferred planner session placeholders must not have a thread, terminal run, or session",
         ));
     }
     let existing_active_id: Option<String> = sqlx::query_scalar(
@@ -599,8 +599,12 @@ pub(super) async fn session_restore_from_superseded_tx(
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() > 0 {
-        return session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session")
-            .await;
+        return session_get_required_for_runtime_tx(
+            tx,
+            id,
+            "restoring old planner harness session",
+        )
+        .await;
     }
 
     let current: Option<(String,)> =
@@ -610,13 +614,14 @@ pub(super) async fn session_restore_from_superseded_tx(
             .await?;
     match current {
         Some((current,)) if current == state_db => {
-            session_get_required_for_runtime_tx(tx, id, "restoring old spec harness session").await
+            session_get_required_for_runtime_tx(tx, id, "restoring old planner harness session")
+                .await
         }
         Some((current,)) => Err(runtime_message(format!(
-            "worker session {id} has state {current}; cannot restore old spec harness session to {state_db}"
+            "worker session {id} has state {current}; cannot restore old planner harness session to {state_db}"
         ))),
         None => Err(runtime_message(format!(
-            "worker session {id} missing while restoring old spec harness session"
+            "worker session {id} missing while restoring old planner harness session"
         ))),
     }
 }

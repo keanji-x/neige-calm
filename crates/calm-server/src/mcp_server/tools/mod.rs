@@ -29,7 +29,7 @@ pub mod track_state;
 /// track-report tools, and read-only track-file views.
 ///
 /// #293 cutover: the old `calm.wait_for_events` long-poll tool is gone —
-/// spec agents are driven by pushed turn inputs, not polling.
+/// planner agents are driven by pushed turn inputs, not polling.
 pub fn register_default_tools(registry: &mut ToolRegistry) {
     emit::register_into(registry);
     plan::register_into(registry);

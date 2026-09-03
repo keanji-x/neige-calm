@@ -66,7 +66,7 @@ async fn boot_with_rendezvous(
     let tracks = TrackAreaCache::new();
     // Seeded from the DB, not left empty: `boot_with` is also used to build a
     // SECOND server over an existing database (the B1 upgrade fixture), and an
-    // empty role cache would make `ensure` fail to recognise the existing spec
+    // empty role cache would make `ensure` fail to recognise the existing planner
     // card and try to mint a second one.
     repo.seed_card_role_cache(&roles).await.unwrap();
     repo.seed_track_area_cache(&tracks).await.unwrap();
@@ -177,7 +177,7 @@ async fn ensure(app: axum::Router) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
-async fn first_ensure_mints_launchpad_with_all_cards_and_idle_spec() {
+async fn first_ensure_mints_launchpad_with_all_cards_and_idle_planner() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     let operation_error: Option<String> =
@@ -193,7 +193,7 @@ async fn first_ensure_mints_launchpad_with_all_cards_and_idle_spec() {
     );
     for key in [
         "track_id",
-        "spec_card_id",
+        "planner_card_id",
         "terminal_card_id",
         "terminal_id",
     ] {
@@ -217,7 +217,7 @@ async fn first_ensure_mints_launchpad_with_all_cards_and_idle_spec() {
             .unwrap();
     assert_eq!(kinds, ["codex", "terminal", "track-report"]);
     let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
-        .bind(body["spec_card_id"].as_str().unwrap())
+        .bind(body["planner_card_id"].as_str().unwrap())
         .fetch_one(pool)
         .await
         .unwrap();
@@ -227,14 +227,14 @@ async fn first_ensure_mints_launchpad_with_all_cards_and_idle_spec() {
 }
 
 #[tokio::test]
-async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
+async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
     let b = boot().await;
     let (first_status, first) = ensure(b.app.clone()).await;
     assert_eq!(first_status, StatusCode::CREATED);
     b.repo
         .harness_item_insert(
             "runtime",
-            first["spec_card_id"].as_str().unwrap(),
+            first["planner_card_id"].as_str().unwrap(),
             first["track_id"].as_str().unwrap(),
             "thread",
             Some("turn"),
@@ -249,7 +249,7 @@ async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
     assert_eq!(second_status, StatusCode::OK, "body={second}");
     assert_eq!(second, first);
     let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1")
-        .bind(first["spec_card_id"].as_str().unwrap())
+        .bind(first["planner_card_id"].as_str().unwrap())
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -263,7 +263,7 @@ async fn repeated_ensure_preserves_spec_transcript_and_ids_and_singleton() {
 }
 
 #[tokio::test]
-async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
+async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal() {
     let b = boot().await;
     let (_, original) = ensure(b.app.clone()).await;
     sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
@@ -274,7 +274,7 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
     b.repo
         .harness_item_insert(
             "legacy-runtime",
-            original["spec_card_id"].as_str().unwrap(),
+            original["planner_card_id"].as_str().unwrap(),
             original["track_id"].as_str().unwrap(),
             "legacy-thread",
             None,
@@ -286,7 +286,7 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
         .await
         .unwrap();
     sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
-        .bind(original["spec_card_id"].as_str().unwrap())
+        .bind(original["planner_card_id"].as_str().unwrap())
         .bind(r#"{"schemaVersion":1,"harness":{"snapshotVersion":9,"pendingQueue":["legacy"]}}"#)
         .execute(b.repo.pool())
         .await
@@ -296,7 +296,7 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
     assert_eq!(adopted, original);
     let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1")
-        .bind(original["spec_card_id"].as_str().unwrap())
+        .bind(original["planner_card_id"].as_str().unwrap())
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -655,7 +655,7 @@ async fn launchpad_workspace_is_materialized() {
 /// #1147 S2 (red-team B1, blocking) — a workspace re-point must not wedge the
 /// Today panel on a stale idempotency key.
 ///
-/// The `spec-harness-start` payload carries `cwd`, and the operation runtime
+/// The `planner-harness-start` payload carries `cwd`, and the operation runtime
 /// refuses a key already used with a *different* payload hash. A pre-S2
 /// database already holds `today-launchpad:<card>:reuse` rows hashed against
 /// the old path; once the upgrade re-points the workspace, every later `ensure`
@@ -735,13 +735,13 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
 }
 
 /// #1147 N3 (blocking) — a re-point that fails midway must still re-anchor the
-/// spec harness on the next `ensure`.
+/// planner harness on the next `ensure`.
 ///
 /// The intent used to be an in-memory comparison inside the transaction, true
 /// for exactly one request. Materialization runs *after* that transaction
 /// commits, so a failure there (500) threw the intent away: the next `ensure`
 /// saw `stored == desired`, called it steady state, and started the harness
-/// with `force_new_thread: false` — pinning the spec agent's codex thread to
+/// with `force_new_thread: false` — pinning the planner agent's codex thread to
 /// the OLD cwd forever while every worker used the new one.
 ///
 /// Sequence below is exactly that: upgrade, obstruct materialization so the
@@ -793,7 +793,7 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
     assert!(
         repoints > 0,
         "no `:repoint` operation exists: the re-point intent was lost when the \
-         first attempt failed, so the spec harness resumed its thread in the \
+         first attempt failed, so the planner harness resumed its thread in the \
          OLD workspace while every worker uses the new one"
     );
 
@@ -1128,7 +1128,7 @@ async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
 /// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
 /// exists it answers `200 null` and leaves the database and the workspace root
 /// exactly as it found them: no area, no track, no card, and above all no
-/// `spec-harness-start` operation, because submitting one is what would make
+/// `planner-harness-start` operation, because submitting one is what would make
 /// Today's first paint depend on codex being up.
 ///
 /// **`200 null`, not `404`, and that is a contract this pins rather than an

@@ -11,7 +11,7 @@
 // PR #304 fixed the close code but kept a full-card "process exited +
 // Restart" overlay. Issue #306 then collapsed that overlay too: the
 // terminal buffer stays visible, and a small header badge (`exit 0` /
-// `exit 137` / `signal`) carries the exit info. This spec pins the
+// `exit 137` / `signal`) carries the exit info. This planner pins the
 // post-#306 contract end-to-end.
 //
 // Chromium project only — the replay backend doesn't spawn daemons.
@@ -48,7 +48,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
       area_id: areaId,
       title: trackTitle,
       // #1147 S3 — no `cwd` on the track: take the kernel-managed
-      // workspace branch. This spec is about the terminal clean-exit
+      // workspace branch. This planner is about the terminal clean-exit
       // race, not working directories. See
       // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-clean-exit-<id>` attached path was never valid.
@@ -95,7 +95,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   // Step 4 — small breather so the daemon's spawn → child exit → unlink
   // cycle finishes BEFORE we open the page. `printf` is sub-50ms but
   // we give the kernel a generous half-second so the test is robust to
-  // a loaded CI box. The WHOLE point of this spec is reproducing the
+  // a loaded CI box. The WHOLE point of this planner is reproducing the
   // "child already gone by the time WS attaches" path that #306
   // persists across kernel restarts.
   await page.waitForTimeout(500);
@@ -108,7 +108,7 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   await expect(page).toHaveURL(/\/calm\/track\/[^/]+$/);
 
   // Step 6 — scope assertions to the worker terminal card we minted.
-  // The track's auto-created spec card also renders an XtermView, so a
+  // The track's auto-created planner card also renders an XtermView, so a
   // page-wide selector would hit both. `[data-terminal-id="..."]` on
   // the XtermView root pins the locator to our worker.
   const ourView = page.locator(`[data-terminal-id="${terminalId}"]`);

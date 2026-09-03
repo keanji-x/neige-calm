@@ -20,7 +20,7 @@
 //     `--surface-hover-overlay`) point at other tokens via `var()`. No dark
 //     override.
 //
-// This spec converts those conventions into a CI gate so the next refactor
+// This planner converts those conventions into a CI gate so the next refactor
 // can't silently regress them. We parse `calm.css` with a small regex set
 // (no postcss / no new dep — see #142 plan note) and pin the expected token
 // list at the top of the file. If you add or rename a token in `calm.css`,
@@ -38,7 +38,7 @@ import { MONO_STACK } from './font-stack';
 //
 // These arrays *are* the contract. Data-driven detection (e.g. "find all
 // `--surface-*` and infer which are aliases") was deliberately rejected: the
-// whole point of this spec is to make the next "what tokens do we have"
+// whole point of this planner is to make the next "what tokens do we have"
 // question a reviewable diff against this file. If you add a token to
 // `calm.css`, add it here and the reviewer will see both halves.
 

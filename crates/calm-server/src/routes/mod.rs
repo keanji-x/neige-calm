@@ -26,6 +26,7 @@ pub mod threads;
 pub mod today;
 pub mod today_summary;
 pub mod track_conversations;
+pub mod track_recipes;
 pub mod track_report_blocks;
 pub mod track_templates;
 pub mod tracks;
@@ -53,7 +54,7 @@ pub fn router() -> Router<AppState> {
 /// NOT here (they live in `auth::router`), and `/api/version` +
 /// `/api/openapi.json` are in [`public_router`] so a pre-auth client can
 /// still read them (compat probes need version, openapi consumers want
-/// the spec without logging in).
+/// the planner without logging in).
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(areas::router())
@@ -62,6 +63,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(tracks::router())
         .merge(track_conversations::router())
         .merge(track_report_blocks::router())
+        .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())
         .merge(overlays::router())
@@ -99,7 +101,7 @@ pub fn public_router() -> Router<AppState> {
     Router::new()
         .merge(version::router())
         // OpenAPI document — the source-of-truth for web-calm's generated
-        // TypeScript types. No swagger-ui — just the spec, served as JSON
+        // TypeScript types. No swagger-ui — just the planner, served as JSON
         // so the frontend toolchain can hit it during build.
         .route("/api/openapi.json", get(openapi_spec))
 }

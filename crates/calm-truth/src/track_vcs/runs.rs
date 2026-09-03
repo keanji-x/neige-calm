@@ -152,7 +152,7 @@ pub(super) async fn project_runs_tx(
                 idempotency_key, ..
             } => {
                 let event = run_event(row.id, row.at, "task.completed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
                     record_latest(&mut completed, idempotency_key, event);
@@ -162,7 +162,7 @@ pub(super) async fn project_runs_tx(
                 idempotency_key, ..
             } => {
                 let event = run_event(row.id, row.at, "task.failed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
                     record_latest(&mut failed, idempotency_key, event);
@@ -295,7 +295,7 @@ pub(super) async fn project_run_by_key_tx(
             }
             Event::TaskCompleted { .. } => {
                 let event = run_event(row.id, row.at, "task.completed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     if verdict_event
                         .as_ref()
                         .is_none_or(|existing: &RunEventProjection| {
@@ -313,7 +313,7 @@ pub(super) async fn project_run_by_key_tx(
             }
             Event::TaskFailed { .. } => {
                 let event = run_event(row.id, row.at, "task.failed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     if verdict_event
                         .as_ref()
                         .is_none_or(|existing: &RunEventProjection| {
@@ -516,7 +516,7 @@ fn latest_final_event<'a>(
     }
 }
 
-fn is_spec_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
+fn is_planner_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
     matches!(scope, EventScope::Track { .. }) && !matches!(actor, ActorId::KernelDispatcher)
 }
 

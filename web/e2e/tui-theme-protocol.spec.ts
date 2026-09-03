@@ -96,7 +96,7 @@ test.describe.serial('tui theme protocol', () => {
         area_id: areaId,
         title: trackTitle,
         // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-        // This spec is about the OSC theme protocol, not working
+        // This planner is about the OSC theme protocol, not working
         // directories (the terminal card below still passes its own
         // `cwd: '/tmp'`, which is a real directory inside the kernel).
         // See `helpers/reset.ts::createTrackInArea` for why the invented
@@ -118,7 +118,7 @@ test.describe.serial('tui theme protocol', () => {
     await expect(
       page.getByText(trackTitle, { exact: false }).first(),
     ).toBeVisible();
-    // Post-#510 PR-del: spec card is a chat panel (no XtermView). The
+    // Post-#510 PR-del: planner card is a chat panel (no XtermView). The
     // terminal-card created below is the first xterm-view in the track.
     const beforeIds = await terminalDumpIds(page);
     const dumpsBeforeAdd = await terminalDumpCount(page);

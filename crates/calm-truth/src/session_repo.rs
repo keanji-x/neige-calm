@@ -97,7 +97,7 @@ pub trait SessionRepo: Send + Sync {
     /// the DR-1 terminal edges (`Draft`, `Planning` only). The CARDINAL SAFETY
     /// RULE — never converge a live or merely just-created track — is enforced
     /// inside the SQL: a `Draft` track is a candidate only if its
-    /// `spec-harness-start` operation resolved to `phase='failed'` (a
+    /// `planner-harness-start` operation resolved to `phase='failed'` (a
     /// pending/succeeded/absent start-op ⇒ NOT dead); a `Planning` track only if
     /// its root session is NULL or terminal/missing. BOTH arms additionally
     /// require that NO active planner-contract `worker_session`

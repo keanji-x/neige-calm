@@ -49,7 +49,7 @@ export const PID_FILE = resolve(
 /** Sibling of `PID_FILE` — records the absolute path of a usable
  *  `codex` CLI binary that the setup step located on the developer
  *  machine, or the sentinel `__missing__` if no codex was found. The
- *  spec `a11y-177-theme-toggle-no-remount.spec.ts` (#177) reads this
+ *  planner `a11y-177-theme-toggle-no-remount.spec.ts` (#177) reads this
  *  file synchronously at module load to decide whether to `test.skip`
  *  itself.
  *
@@ -71,7 +71,7 @@ export const CODEX_BIN_FILE = resolve(
 
 /** Sentinel written into `CODEX_BIN_FILE` when the setup step could
  *  not locate a `codex` CLI on disk. Pulled out as a constant so the
- *  spec and the setup agree on the exact string. */
+ *  planner and the setup agree on the exact string. */
 export const CODEX_MISSING_SENTINEL = '__missing__';
 
 /**
@@ -91,7 +91,7 @@ export const CODEX_MISSING_SENTINEL = '__missing__';
  * Returns the absolute path on success, or `null` if every probe
  * misses. The caller (the `replay-setup` test) decides what to do
  * with that — typically writes `__missing__` into `CODEX_BIN_FILE`
- * so the e2e spec self-skips with a clear "codex CLI not installed"
+ * so the e2e planner self-skips with a clear "codex CLI not installed"
  * message.
  */
 export function resolveCodexBin(): string | null {

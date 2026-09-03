@@ -443,7 +443,7 @@ fn build_session_cookie(value: &str) -> Cookie<'static> {
 /// as the live cookie but with `Cookie::make_removal()` which sets value
 /// to empty + `Max-Age=0` so the browser drops the stored cookie. We
 /// preserve `Path=/` on the removal so the browser matches the same
-/// cookie scope as the original set; the cookie spec keys cookies by
+/// cookie scope as the original set; the cookie planner keys cookies by
 /// (name, domain, path), and a path mismatch would leave the original
 /// installed.
 fn build_logout_cookie() -> Cookie<'static> {

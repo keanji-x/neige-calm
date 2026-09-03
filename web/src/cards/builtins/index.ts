@@ -12,13 +12,13 @@
 import { registerCard } from '../registry';
 import { TerminalEntry } from './terminal';
 import { ClaudeEntry, CodexEntry } from './codex';
-import { SpecEntry } from './spec';
+import { PlannerEntry } from './planner';
 import { TrackReportEntry } from './track-report';
 import { FileViewerEntry } from './file-viewer';
 import { IframeEntry } from './iframe';
 import { PluginIframeEntry } from '../plugin-iframe';
 
-export { TerminalEntry, CodexEntry, SpecEntry, ClaudeEntry, TrackReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
+export { TerminalEntry, CodexEntry, PlannerEntry, ClaudeEntry, TrackReportEntry, FileViewerEntry, IframeEntry, PluginIframeEntry };
 
 let registered = false;
 
@@ -30,7 +30,7 @@ export function registerBuiltins(): void {
   registered = true;
   registerCard(TerminalEntry);
   registerCard(CodexEntry);
-  registerCard(SpecEntry);
+  registerCard(PlannerEntry);
   registerCard(ClaudeEntry);
   // Issue #229 PR B — track-report card. Kernel-minted (one per track),
   // kind = "track-report". No `addPanel` entry — users cannot add

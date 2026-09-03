@@ -375,7 +375,7 @@ export function TrackPage({
               typing. The header still reads the same; only the box changed.
 
               `emptyCommit="clear"` is the other half: a track has a second
-              namer (the spec agent's `calm.track.rename`, which succeeds only
+              namer (the planner agent's `calm.track.rename`, which succeeds only
               while the title is empty), so clearing the name is a real request
               here and not the cancel it is on an area.
             */}

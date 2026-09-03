@@ -3,8 +3,8 @@
 //! A template track is a regular track plus
 //! `(plugin_id=kernel, entity_kind=view, kind=template)`. Create with
 //! `as_template: true` upserts that overlay in the same tx as layout and
-//! skips `spec-harness-start`. Lists hide templates; detail and overlay
-//! list still expose them. Spec start / `/spec/reset` refuse with a 4xx
+//! skips `planner-harness-start`. Lists hide templates; detail and overlay
+//! list still expose them. Planner start / `/planner/reset` refuse with a 4xx
 //! that names the overlay.
 
 use std::path::PathBuf;
@@ -145,17 +145,17 @@ async fn operation_count(repo: &Arc<dyn Repo>, kind: &str) -> i64 {
         .expect("operations count")
 }
 
-async fn spec_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
+async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
     let pool = repo.sqlite_pool().expect("sqlite pool");
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM operations \
-         WHERE kind = 'spec-harness-start' \
-           AND json_extract(payload_json, '$.track_id') = ?1",
+         WHERE kind = 'planner-harness-start' \
+           AND json_extract(payload_json, '$.wave_id') = ?1",
     )
     .bind(track_id)
     .fetch_one(&pool)
     .await
-    .expect("track spec-harness-start count")
+    .expect("track planner-harness-start count")
 }
 
 fn create_body(area_id: &str, title: &str, cwd: &str, as_template: Option<bool>) -> Value {
@@ -173,7 +173,7 @@ fn create_body(area_id: &str, title: &str, cwd: &str, as_template: Option<bool>)
 }
 
 #[tokio::test]
-async fn post_api_tracks_as_template_writes_overlay_and_skips_spec_harness_start() {
+async fn post_api_tracks_as_template_writes_overlay_and_skips_planner_harness_start() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -208,7 +208,7 @@ async fn post_api_tracks_as_template_writes_overlay_and_skips_spec_harness_start
     let cards = boot.repo.cards_by_track(track_id).await.unwrap();
     assert!(
         cards.iter().any(|card| card.kind == "codex"),
-        "spec card still minted"
+        "planner card still minted"
     );
     assert!(
         cards.iter().any(|card| card.kind == "track-report"),
@@ -216,15 +216,18 @@ async fn post_api_tracks_as_template_writes_overlay_and_skips_spec_harness_start
     );
 
     assert_eq!(
-        spec_harness_ops_for_track(&boot.repo, track_id).await,
+        planner_harness_ops_for_track(&boot.repo, track_id).await,
         0,
-        "as_template must not enqueue spec-harness-start"
+        "as_template must not enqueue planner-harness-start"
     );
-    assert_eq!(operation_count(&boot.repo, "spec-harness-start").await, 0);
+    assert_eq!(
+        operation_count(&boot.repo, "planner-harness-start").await,
+        0
+    );
 }
 
 #[tokio::test]
-async fn post_api_tracks_omitted_as_template_still_starts_spec_harness() {
+async fn post_api_tracks_omitted_as_template_still_starts_planner_harness() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -249,8 +252,8 @@ async fn post_api_tracks_omitted_as_template_still_starts_spec_harness() {
         "omitted as_template must not write the template overlay"
     );
     assert!(
-        spec_harness_ops_for_track(&boot.repo, track_id).await >= 1,
-        "today's create still enqueues spec-harness-start"
+        planner_harness_ops_for_track(&boot.repo, track_id).await >= 1,
+        "today's create still enqueues planner-harness-start"
     );
 }
 
@@ -326,7 +329,7 @@ async fn template_tracks_are_hidden_from_lists_and_visible_by_id() {
 }
 
 #[tokio::test]
-async fn spec_reset_on_template_track_is_refused() {
+async fn planner_reset_on_template_track_is_refused() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -343,18 +346,18 @@ async fn spec_reset_on_template_track_is_refused() {
     let track_id = body["id"].as_str().unwrap();
     let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::OK);
-    let spec_id = detail["cards"]
+    let planner_id = detail["cards"]
         .as_array()
         .unwrap()
         .iter()
         .find(|card| card["kind"] == "codex")
         .and_then(|card| card["id"].as_str())
-        .expect("spec card")
+        .expect("planner card")
         .to_string();
 
     let (status, body) = post(
         boot.app.clone(),
-        &format!("/api/cards/{spec_id}/spec/reset"),
+        &format!("/api/cards/{planner_id}/planner/reset"),
         json!({}),
     )
     .await;
@@ -364,7 +367,7 @@ async fn spec_reset_on_template_track_is_refused() {
         error.contains("template overlay"),
         "4xx must name the template overlay; error={error}"
     );
-    assert_eq!(spec_harness_ops_for_track(&boot.repo, track_id).await, 0);
+    assert_eq!(planner_harness_ops_for_track(&boot.repo, track_id).await, 0);
 }
 
 /// #1297: marking an *existing* track as a template is a kernel-internal
@@ -374,7 +377,7 @@ async fn spec_reset_on_template_track_is_refused() {
 /// `GET /api/tracks`), so the public route now refuses it.
 ///
 /// The downstream behaviour that POST was standing in for — a template track
-/// refuses `/spec/reset` — is still proven, from the kernel-internal write
+/// refuses `/planner/reset` — is still proven, from the kernel-internal write
 /// that production actually uses.
 #[tokio::test]
 async fn overlay_post_cannot_mark_an_existing_track_as_template() {
@@ -442,7 +445,7 @@ async fn overlay_post_cannot_mark_an_existing_track_as_template() {
 }
 
 #[tokio::test]
-async fn template_overlay_written_internally_blocks_spec_reset() {
+async fn template_overlay_written_internally_blocks_planner_reset() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -457,7 +460,7 @@ async fn template_overlay_written_internally_blocks_spec_reset() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let track_id = body["id"].as_str().unwrap().to_string();
-    assert!(spec_harness_ops_for_track(&boot.repo, &track_id).await >= 1);
+    assert!(planner_harness_ops_for_track(&boot.repo, &track_id).await >= 1);
 
     boot.repo
         .overlay_upsert(NewOverlay {
@@ -472,17 +475,17 @@ async fn template_overlay_written_internally_blocks_spec_reset() {
 
     let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::OK);
-    let spec_id = detail["cards"]
+    let planner_id = detail["cards"]
         .as_array()
         .unwrap()
         .iter()
         .find(|card| card["kind"] == "codex")
         .and_then(|card| card["id"].as_str())
-        .expect("spec card")
+        .expect("planner card")
         .to_string();
     let (status, body) = post(
         boot.app,
-        &format!("/api/cards/{spec_id}/spec/reset"),
+        &format!("/api/cards/{planner_id}/planner/reset"),
         json!({}),
     )
     .await;

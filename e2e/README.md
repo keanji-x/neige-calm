@@ -43,7 +43,7 @@ failing command such as `false`; it must fail the case, not pass through to the
 next assertion.
 
 `CASE_CHECK_SERVER_LOGS` is optional and defaults to `1`. Set it to `0` only
-for cases where the spec-harness inert log signatures are expected by the
+for cases where the planner-harness inert log signatures are expected by the
 scenario; tier 2 Codex cases should leave the fail-fast check on.
 
 Cases may call `skip "reason"` when a valid host-local condition makes the
@@ -69,7 +69,7 @@ API helpers keep environment-first `.env` lookup, the autologin probe, and the
 compose-resolved `SERVER_CID` for `docker exec`. The multitask case keeps the
 done-only lifecycle gate, trailing-newline-safe JSON summaries, and fail-fast
 server log signatures. Tier 1 no-Codex cases that intentionally exercise an
-inert shared spec harness should declare `CASE_CHECK_SERVER_LOGS=0`.
+inert shared planner harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 
 `.env` is optional for tier 1: helper lookups read the process environment
 first, then `.env` when present, then call-site defaults. Tier 2 selections

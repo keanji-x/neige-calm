@@ -68,7 +68,7 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['track', id]` | `queryKeys.trackDetail(id)` | |
 | `['overlays','track'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
 | `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
-| `['spec-run', cardId]` | `queryKeys.specRun(cardId)` | fe current harness phase is query-backed |
+| `['planner-run', cardId]` | `queryKeys.plannerRun(cardId)` | fe current harness phase is query-backed |
 | `['track-files', …]` | — | **no-op**: no track-files query is built yet (stub) |
 | `['track-report', id]` | `queryKeys.trackReport(id)` | the track's task verdicts (TASKS panel) |
 | `['track-report']` | `queryKeys.trackReportPrefix()` | prefix; the four `task.*` events carry no track-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
@@ -95,9 +95,9 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
 | `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
 | `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |
-| `harness.phase.changed` | invalidate spec run + both conversation lists | |
-| `harness.transcript.cleared` | invalidate harness items + spec run | a reset always emits `harness.phase.changed` too, which carries the lists |
-| `harness.user_message.enqueued` | invalidate harness items + spec run + both conversation lists | reset and enqueue cross the transcript/run boundary |
+| `harness.phase.changed` | invalidate planner run + both conversation lists | |
+| `harness.transcript.cleared` | invalidate harness items + planner run | a reset always emits `harness.phase.changed` too, which carries the lists |
+| `harness.user_message.enqueued` | invalidate harness items + planner run + both conversation lists | reset and enqueue cross the transcript/run boundary |
 | `plugin.*`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 

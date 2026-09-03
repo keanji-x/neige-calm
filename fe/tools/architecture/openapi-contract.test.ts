@@ -17,10 +17,10 @@ const PATH_ITEM_FIELDS = new Set([...METHODS, 'summary', 'description', 'servers
  * belongs in the generator, not in this list.
  */
 const RESPONSE_WIRE_EXCEPTIONS = new Set([
-  'ErrorBody', 'GetSpecRunResponse', 'GitDiffResponse', 'GitStatusResponse',
-  'InterruptSpecCardResponse', 'ListdirResponse', 'PluginDetail', 'PluginListItem',
+  'ErrorBody', 'GetPlannerRunResponse', 'GitDiffResponse', 'GitStatusResponse',
+  'InterruptPlannerCardResponse', 'ListdirResponse', 'PluginDetail', 'PluginListItem',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
-  'ResetSpecCardResponse', 'SendSpecInputResponse', 'SettingsBag', 'Terminal',
+  'ResetPlannerCardResponse', 'SendPlannerInputResponse', 'SettingsBag', 'Terminal',
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadResolved', 'TodaySummaryStarted',
   'VersionInfo',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',

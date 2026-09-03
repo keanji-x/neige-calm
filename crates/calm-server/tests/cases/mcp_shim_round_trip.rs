@@ -120,15 +120,15 @@ async fn boot() -> Boot {
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect("mint spec card");
+    .expect("mint planner card");
     tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Spec card must mint a token");
+    let raw_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 

@@ -38,7 +38,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);
   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
-  if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);
+  if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);
   /* The track's task verdicts. Both arities are mapped, and the bare one is not
      an oversight: the four `task.*` events carry no track-id *field*, so
      `derivedTrackId` cannot name one and the plan emits the prefix. (Their

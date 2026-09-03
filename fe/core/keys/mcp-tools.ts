@@ -14,7 +14,7 @@
  * adds next.
  */
 
-/** Everything that changes the report. `blocks.upsert` is what the spec agent
+/** Everything that changes the report. `blocks.upsert` is what the planner agent
  *  actually calls today; `write`/`write_markdown`/`edit` are the older and
  *  whole-document routes, all still served. */
 export const REPORT_WRITE_TOOLS: readonly string[] = Object.freeze([

@@ -5,7 +5,7 @@
 // branch) requires that path to be absolute, to already exist, and to
 // sit inside a Git work tree — see
 // `crates/calm-server/src/workspace_materialize.rs::validate_attached_workspace`.
-// Specs that only need *a* track should omit `cwd` entirely and take the
+// Planners that only need *a* track should omit `cwd` entirely and take the
 // kernel-managed branch (see `helpers/reset.ts::createTrackInArea`).
 // This module is for the ones that cannot: the legacy `web/` NewTaskForm
 // always puts the cwd input's value on the wire, and a handful of specs
@@ -14,13 +14,13 @@
 // ## Why $HOME
 //
 // The path has to exist *inside the kernel*, and the kernel is not always
-// in the same filesystem as the spec:
+// in the same filesystem as the planner:
 //
 //   * `chromium e2e` / `fe e2e` run the kernel in the docker stack
 //     (`docker-compose.yml`), whose `server` service bind-mounts
 //     `${HOME}:${HOME}` — the host's home directory at the *identical*
 //     path inside the container. So a directory this module creates is
-//     visible to the kernel under the same absolute path, and the spec
+//     visible to the kernel under the same absolute path, and the planner
 //     can type that one path into the form and assert it back off the
 //     track row.
 //   * `a11y` runs the `replay` binary natively on the runner, so the
@@ -73,7 +73,7 @@ function scrubbedGitEnv(): NodeJS.ProcessEnv {
 
 /**
  * An absolute path under `$HOME` for a per-run fixture. `name` should
- * already carry the spec's uniqueness (a timestamp, usually) so parallel
+ * already carry the planner's uniqueness (a timestamp, usually) so parallel
  * or repeated runs never collide on `area_folders.UNIQUE(path)`.
  */
 export function attachedWorkspacePath(name: string): string {

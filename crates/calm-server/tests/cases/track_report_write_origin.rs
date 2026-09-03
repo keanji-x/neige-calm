@@ -67,7 +67,7 @@ fn agent(role: CardRole, provider: AgentProvider) -> WriteOrigin {
 fn assert_role_list_is_complete(roles: &[CardRole]) {
     fn label(role: CardRole) -> &'static str {
         match role {
-            CardRole::Spec => "Spec",
+            CardRole::Planner => "Planner",
             CardRole::Assistant => "Assistant",
             CardRole::Worker => "Worker",
             CardRole::ReportCard => "ReportCard",
@@ -122,7 +122,7 @@ fn assert_provider_list_is_complete(providers: &[AgentProvider]) {
 #[test]
 fn policy_for_is_total_over_the_origins_a_caller_can_build_here() {
     let roles = [
-        CardRole::Spec,
+        CardRole::Planner,
         CardRole::Assistant,
         CardRole::Worker,
         CardRole::ReportCard,
@@ -136,7 +136,7 @@ fn policy_for_is_total_over_the_origins_a_caller_can_build_here() {
         for provider in providers.iter().cloned() {
             let origin = agent(role, provider);
             match role {
-                CardRole::Spec | CardRole::Assistant => {
+                CardRole::Planner | CardRole::Assistant => {
                     policy_for(&origin).unwrap_or_else(|error| {
                         panic!("{origin:?} must have a policy, got {error:?}")
                     });

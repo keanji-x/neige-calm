@@ -893,7 +893,7 @@ mod tests {
 
     fn sample_payload() -> TrackReportPayload {
         TrackReportPayload::new(
-            "spec agent did a thing",
+            "planner agent did a thing",
             "# Goal\n\nReplace the foo with the bar.\n\n# Progress\n\nfoo->bar.\n",
         )
     }
@@ -922,7 +922,7 @@ mod tests {
 
         // Body edit → new head.
         doc.update(
-            "spec agent did a thing",
+            "planner agent did a thing",
             "# Goal
 
 changed.

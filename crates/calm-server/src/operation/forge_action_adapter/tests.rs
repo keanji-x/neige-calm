@@ -757,7 +757,7 @@ fn merge_payload(
                     "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
                 }
             }))
-            .expect("merge event spec"),
+            .expect("merge event planner"),
         ),
         context: Map::new(),
         probe: Some(probe),

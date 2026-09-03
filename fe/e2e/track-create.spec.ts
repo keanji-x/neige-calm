@@ -29,7 +29,7 @@ test.afterEach(async ({ request }) => {
  * #1211 — a track is created without *naming* it first.
  *
  * Nothing here collects a title any more: the title is not the intent (S2), the
- * kernel takes `#[serde(default)]` for it, and the spec agent names the track
+ * kernel takes `#[serde(default)]` for it, and the planner agent names the track
  * through `calm.track.rename` once it knows what the track is for — which only
  * works while the stored title is empty. So this case asserts the `title`
  * **key** is absent from the POST rather than asserting a value: an empty
@@ -91,7 +91,7 @@ test('creates a track from the area page with no title, and persists it', async 
   expect(body).toMatchObject({ area_id: area.id });
   expect(body).toHaveProperty('theme');
   /* #1211 — the sentence is the track's intent, not its name. The kernel stores
-     the empty string and the spec agent renames later via `calm.track.rename`. */
+     the empty string and the planner agent renames later via `calm.track.rename`. */
   expect(body).not.toHaveProperty('title');
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
@@ -120,7 +120,7 @@ test('creates a track from the area page with no title, and persists it', async 
   );
   /*
    * #1299 — the sentence is deliberately NOT delivered from this page yet, so
-   * this asserts the *absence*: the track carries a spec card and that card has
+   * this asserts the *absence*: the track carries a planner card and that card has
    * no user message on it. Written as an assertion rather than left out, because
    * "we do not do this yet" is a property worth failing on if someone re-adds
    * the three-write sequence here instead of moving it into the create.
@@ -128,11 +128,11 @@ test('creates a track from the area page with no title, and persists it', async 
   const detail = await request.get(`/api/tracks/${trackId ?? ''}`);
   expect(detail.ok()).toBe(true);
   const cards = (await detail.json() as { cards: { id: string; kind: string; payload: unknown }[] }).cards;
-  const specCard = cards.find((card) => card.kind === 'codex'
+  const plannerCard = cards.find((card) => card.kind === 'codex'
     && typeof card.payload === 'object' && card.payload !== null
-    && (card.payload as { spec_harness?: unknown }).spec_harness === true);
-  expect(specCard, 'the created track must carry a spec card').toBeTruthy();
-  const items = await request.get(`/api/cards/${specCard?.id ?? ''}/harness/items?after_id=0&limit=50&direction=asc`);
+    && (card.payload as { planner_harness?: unknown }).planner_harness === true);
+  expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
+  const items = await request.get(`/api/cards/${plannerCard?.id ?? ''}/harness/items?after_id=0&limit=50&direction=asc`);
   expect(items.ok()).toBe(true);
   const params = (await items.json() as { params?: unknown }[])
     .map((item) => (typeof item.params === 'string' ? item.params : '')).join('\n');

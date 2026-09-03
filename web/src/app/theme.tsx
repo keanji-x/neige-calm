@@ -19,7 +19,7 @@
 // Persistence
 // -----------
 // Key: `calm.theme`. Value: one of 'light' / 'dark' / 'system'. Default is
-// 'system' on first run — the spec from issue #22. We read the localStorage
+// 'system' on first run — the planner from issue #22. We read the localStorage
 // value *synchronously* during the lazy `useState` initializer so the first
 // paint already has the correct `data-theme` attribute on <html> (avoiding
 // a light→dark flash on reload when the user previously chose 'dark').
@@ -179,7 +179,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
   // production users never see the global. Exposes a driver the e2e
-  // regression spec (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
+  // regression planner (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
   // uses to flip the theme WITHOUT navigating to the Settings page —
   // navigation would unmount any track-page XtermView under test and
   // defeat the whole observation.

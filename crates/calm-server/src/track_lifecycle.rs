@@ -16,7 +16,7 @@ use sqlx::{Sqlite, Transaction};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. Source
 // definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::track_lifecycle::{
-    ActorKind, TransitionError, actor_is_spec_author, actor_kind, validate_transition,
+    ActorKind, TransitionError, actor_is_planner_author, actor_kind, validate_transition,
 };
 
 /// Auto-promote a draft track to planning from inside an audited write tx.
@@ -33,12 +33,12 @@ pub async fn auto_promote_draft_in_tx(
         TrackLifecycle::Draft,
         TrackLifecycle::Planning,
         &crate::ids::ActorId::Kernel,
-        Some("[auto] first spec write".to_string()),
+        Some("[auto] first planner write".to_string()),
     )
     .await
 }
 
-/// Apply an explicit spec-requested lifecycle transition inside the caller's
+/// Apply an explicit planner-requested lifecycle transition inside the caller's
 /// write tx and return the lifecycle/update events for the same batch.
 ///
 /// If the requested target equals current lifecycle, no lifecycle events are

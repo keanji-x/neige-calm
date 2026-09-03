@@ -40,7 +40,7 @@ export const areaSchema = z.object({
 
 /**
  * Issue #145 — `model::TrackLifecycle`. Single source of truth for the
- * lifecycle state machine the Spec Agent drives. Wire values are
+ * lifecycle state machine the Planner Agent drives. Wire values are
  * lowercase (`#[serde(rename_all = "lowercase")]` on the Rust enum).
  * `archived` is intentionally NOT a lifecycle state — archive is
  * orthogonal visibility on `track.archived_at`.
@@ -118,7 +118,7 @@ const trackObjectSchema = z.object({
    */
   lifecycle: trackLifecycleSchema,
   /**
-   * Issue #250 PR 2 — track's working directory (spec-daemon cwd).
+   * Issue #250 PR 2 — track's working directory (planner-daemon cwd).
    * Defaulted to `""` at the schema layer for symmetry with the
    * server-side `#[serde(default)]` on `Track.cwd`: pre-#250 event-log
    * replay fixtures (no `cwd` key on `TrackUpdated`) parse cleanly.
@@ -418,10 +418,10 @@ export const harnessUserMessageEnqueuedSchema = z.object({
  * `card.updated` stays the generic "row changed, re-fetch" signal
  * existing frontend subscribers consume; `track.report_edited` is the
  * *additional* timeline entry the new edit-history UI (PR4) and the
- * spec agent's user-edit notifier (PR5) read.
+ * planner agent's user-edit notifier (PR5) read.
  *
  * `author` discriminates who produced the edit. PR2 only emits
- * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'assistant'`
+ * `'planner'`; PR3 introduces `'user'` for REST-driven edits; `'assistant'`
  * is #1189's track-scoped assistant conversation (no emitter until S2);
  * `'kernel'`
  * is reserved for future server-internal rewrites; `'plugin'` is
@@ -442,7 +442,7 @@ export const trackReportEditedSchema = z.object({
   data: z.object({
     track_id: z.string(),
     card_id: z.string(),
-    author: z.enum(['spec', 'user', 'assistant', 'kernel', 'plugin']),
+    author: z.enum(['planner', 'user', 'assistant', 'kernel', 'plugin']),
     author_plugin_id: z.string().optional(),
     edit_id: z.string(),
     summary_before: z.string(),
@@ -557,7 +557,7 @@ export const claudeHookSchema = z.object({
 // element of `task.completed.artifacts[]` is a bare string.
 
 /**
- * `Event::CodexWorkerRequested` — spec/worker card asks the kernel
+ * `Event::CodexWorkerRequested` — planner/worker card asks the kernel
  * dispatcher to spawn a codex worker card. PR5's `Dispatcher` consumes
  * via `EventBus::subscribe(kinds=["*.requested"])` and correlates the
  * eventual `task.completed` / `task.failed` back to the requester via
@@ -579,8 +579,8 @@ export const codexWorkerRequestedSchema = z.object({
 });
 
 /**
- * `Event::TerminalWorkerRequested` — spec card asks the dispatcher to spawn
- * a terminal worker card. `cwd` is `None` when the spec card defers to
+ * `Event::TerminalWorkerRequested` — planner card asks the dispatcher to spawn
+ * a terminal worker card. `cwd` is `None` when the planner card defers to
  * the track/area default working directory.
  */
 export const terminalWorkerRequestedSchema = z.object({
@@ -596,7 +596,7 @@ export const terminalWorkerRequestedSchema = z.object({
 /**
  * `Event::TaskCompleted` — worker card reports task completion.
  * `idempotency_key` echoes the matching `*.worker_requested` key so the
- * spec can correlate without parsing the worker card's identity.
+ * planner can correlate without parsing the worker card's identity.
  *
  * `artifacts` is `Vec<ArtifactRef>` server-side; `ArtifactRef` is a
  * transparent newtype around `String`, so each element is a bare string
@@ -617,7 +617,7 @@ export const taskCompletedSchema = z.object({
  * `Event::TaskFailed` — worker card reports task failure. `reason` is a
  * free-form failure string; the kernel never parses it but persists it
  * on the events table so audit-log replay can surface the rationale the
- * worker gave its spec.
+ * worker gave its planner.
  */
 export const taskFailedSchema = z.object({
   ev: z.literal('task.failed'),
@@ -629,7 +629,7 @@ export const taskFailedSchema = z.object({
 });
 
 /**
- * `Event::PlanUpdated` — issue #644: the spec revised the track's task
+ * `Event::PlanUpdated` — issue #644: the planner revised the track's task
  * plan via `calm.plan.upsert` / `calm.plan.cancel`. Track-scoped audit
  * record; `changed_keys` lists the task keys whose rows were
  * created/updated/canceled by the call (`unchanged` upserts are not
@@ -765,7 +765,7 @@ export const forgePrMergedSchema = z.object({
 });
 
 /**
- * `Event::ReviewRound` — issue #760 slice ⑤-b-i: the spec recorded one
+ * `Event::ReviewRound` — issue #760 slice ⑤-b-i: the planner recorded one
  * dual-review convergence round for a logical review subject.
  */
 export const reviewRoundSchema = z.object({

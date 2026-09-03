@@ -160,7 +160,7 @@ describe('TrackPage delete confirm contract', () => {
   });
 
   /*
-   * #1211 — clearing the name is a request on a track, because the spec agent's
+   * #1211 — clearing the name is a request on a track, because the planner agent's
    * `calm.track.rename` is a second namer that only fires while the title is
    * empty. On an area the same gesture is a cancel; the difference is the
    * explicit `emptyCommit` this page passes, and this is its track-side half.

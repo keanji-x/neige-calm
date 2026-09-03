@@ -1,16 +1,16 @@
-//! Issue #1211 S3 — `calm.track.rename`, the spec agent's naming write.
+//! Issue #1211 S3 — `calm.track.rename`, the planner agent's naming write.
 //!
 //! Same shape as `mcp_track_state`: an in-memory repo + a directly-constructed
 //! `AppContext`, tools driven through the registry the way the transport
 //! drives them. What is under test here is the *guard*, not the prompt — the
-//! spec prompt tells the agent to name the track, and the golden in
+//! planner prompt tells the agent to name the track, and the golden in
 //! `plugin_host::manifest` pins that text, but a prompt is advice. These tests
 //! pin the refusals a misbehaving (or merely confused) agent runs into.
 //!
 //! Covered:
 //!
 //!   1. Happy path — an unnamed track gets its name, the row changes, and the
-//!      `TrackUpdated` event is attributed to the **spec session**, not to the
+//!      `TrackUpdated` event is attributed to the **planner session**, not to the
 //!      user.
 //!   2. Name-once — a track that already has a title refuses with
 //!      `already_named` and does not change the row or emit anything.
@@ -48,7 +48,7 @@ use calm_types::worker::{
 };
 use serde_json::{Value, json};
 
-const SPEC_SESSION_ID: &str = "spec-session-rename";
+const PLANNER_SESSION_ID: &str = "planner-session-rename";
 
 struct Boot {
     ctx: Arc<AppContext>,
@@ -57,7 +57,7 @@ struct Boot {
     sqlx_repo: Arc<SqlxRepo>,
     area_id: AreaId,
     track_id: TrackId,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     other_card_id: CardId,
 }
 
@@ -167,11 +167,11 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         tx.commit().await.unwrap();
         track
     };
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: serde_json::Value::Null,
         })
@@ -187,15 +187,21 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         })
         .await
         .unwrap();
-    seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_track_root_session(
+        repo.as_ref(),
+        &track.id,
+        &planner_card.id,
+        PLANNER_SESSION_ID,
+    )
+    .await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     crate::support::mcp::set_persisted_card_role(
         repo.as_ref(),
-        spec_card.id.as_str(),
-        CardRole::Spec,
+        planner_card.id.as_str(),
+        CardRole::Planner,
     )
     .await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
@@ -223,7 +229,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         sqlx_repo,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         other_card_id: other_card.id,
     }
 }
@@ -257,8 +263,13 @@ fn identity_for(boot: &Boot, card_id: &CardId, role: CardRole, session: &str) ->
     }
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
-    identity_for(boot, &boot.spec_card_id, CardRole::Spec, SPEC_SESSION_ID)
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
+    identity_for(
+        boot,
+        &boot.planner_card_id,
+        CardRole::Planner,
+        PLANNER_SESSION_ID,
+    )
 }
 
 async fn track_title(boot: &Boot) -> String {
@@ -281,18 +292,18 @@ async fn track_title(boot: &Boot) -> String {
 /// this track" is exactly the question a user asks when a name surprises them,
 /// and an `ActorId::User` row answers it with a lie.
 #[tokio::test]
-async fn spec_names_an_unnamed_track_and_the_event_is_attributed_to_the_spec_session() {
+async fn planner_names_an_unnamed_track_and_the_event_is_attributed_to_the_planner_session() {
     let boot = boot_unnamed().await;
     let mut rx = boot.ctx.events.subscribe();
 
     let out = call_tool(
         &boot,
         TOOL_TRACK_RENAME,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "title": "  drop the title→goal seeding  ", "message": "named from the conversation" }),
     )
     .await
-    .expect("spec may name an unnamed track");
+    .expect("planner may name an unnamed track");
 
     assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
     assert_eq!(
@@ -307,8 +318,8 @@ async fn spec_names_an_unnamed_track_and_the_event_is_attributed_to_the_spec_ses
         .expect("bus delivers")
         .expect("bus open");
     match &envelope.actor {
-        ActorId::AiSpecSession(session) => assert_eq!(session.as_str(), SPEC_SESSION_ID),
-        other => panic!("rename must be attributed to the spec session, got {other:?}"),
+        ActorId::AiPlannerSession(session) => assert_eq!(session.as_str(), PLANNER_SESSION_ID),
+        other => panic!("rename must be attributed to the planner session, got {other:?}"),
     }
     assert!(
         !matches!(envelope.actor, ActorId::User),
@@ -340,8 +351,8 @@ async fn spec_names_an_unnamed_track_and_the_event_is_attributed_to_the_spec_ses
     assert!(
         stored
             .iter()
-            .any(|a| matches!(a, ActorId::AiSpecSession(s) if s.as_str() == SPEC_SESSION_ID)),
-        "persisted event row must carry the spec session actor: {actors:?}"
+            .any(|a| matches!(a, ActorId::AiPlannerSession(s) if s.as_str() == PLANNER_SESSION_ID)),
+        "persisted event row must carry the planner session actor: {actors:?}"
     );
     assert!(
         !stored.iter().any(|a| matches!(a, ActorId::User)),
@@ -363,7 +374,7 @@ async fn already_named_track_refuses_structurally_and_changes_nothing() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_RENAME,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "title": "the agent's idea" }),
     )
     .await
@@ -381,9 +392,9 @@ async fn already_named_track_refuses_structurally_and_changes_nothing() {
 /// Name-once means once. The second call refuses even though the first call
 /// is the thing that made the track named.
 #[tokio::test]
-async fn a_second_rename_by_the_same_spec_refuses() {
+async fn a_second_rename_by_the_same_planner_refuses() {
     let boot = boot_unnamed().await;
-    let identity = spec_identity(&boot);
+    let identity = planner_identity(&boot);
 
     call_tool(
         &boot,
@@ -418,7 +429,7 @@ async fn whitespace_only_existing_title_still_counts_as_unnamed() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_RENAME,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "title": "a real name" }),
     )
     .await
@@ -431,12 +442,12 @@ async fn whitespace_only_existing_title_still_counts_as_unnamed() {
 // Role gate
 // ---------------------------------------------------------------------------
 
-/// The prompt is not the guard. Every non-Spec role is refused by
+/// The prompt is not the guard. Every non-Planner role is refused by
 /// `require_role` before the handler reaches a write, and the message is
 /// checked because a malformed-arguments rejection carries the same
 /// `-32602` code.
 #[tokio::test]
-async fn non_spec_roles_are_forbidden() {
+async fn non_planner_roles_are_forbidden() {
     for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
         let boot = boot_unnamed().await;
         let identity = identity_for(&boot, &boot.other_card_id, role, "other-session");
@@ -447,7 +458,7 @@ async fn non_spec_roles_are_forbidden() {
             json!({ "title": "not yours to name" }),
         )
         .await
-        .expect_err("only a spec card may name a track");
+        .expect_err("only a planner card may name a track");
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "role={role:?}");
         assert!(
             err.message.contains("tool requires role"),
@@ -482,7 +493,7 @@ async fn template_track_refuses_rename() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_RENAME,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "title": "renaming a template" }),
     )
     .await
@@ -502,7 +513,7 @@ async fn area_chat_track_refuses_rename() {
     let out = call_tool(
         &boot,
         TOOL_TRACK_RENAME,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "title": "renaming the chat track" }),
     )
     .await
@@ -526,9 +537,14 @@ async fn empty_or_missing_title_is_an_argument_error() {
         json!({ "title": "  \t " }),
     ] {
         let boot = boot_unnamed().await;
-        let err = call_tool(&boot, TOOL_TRACK_RENAME, spec_identity(&boot), args.clone())
-            .await
-            .expect_err("a nameless rename is an argument error");
+        let err = call_tool(
+            &boot,
+            TOOL_TRACK_RENAME,
+            planner_identity(&boot),
+            args.clone(),
+        )
+        .await
+        .expect_err("a nameless rename is an argument error");
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "args={args}");
         assert_eq!(track_title(&boot).await, "", "args={args}");
     }

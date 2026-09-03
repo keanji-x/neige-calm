@@ -73,7 +73,7 @@
 # they reach it ONLY when forwarded here, and ONLY when set in the runner's env
 # (explicit named knobs, NOT a blanket ambient passthrough). Unset -> the
 # fixture's built-in defaults apply:
-#   NEIGE_SPEC_PLANNING_BUDGET=<sec>    spec plan.updated wait         (def 240)
+#   NEIGE_PLANNER_PLANNING_BUDGET=<sec>    planner plan.updated wait         (def 240)
 #   NEIGE_CODEX_FORGE_E2E_BUDGET=<sec>  worker/worktree.committed wait (def 180)
 #
 # Make wrappers: `make e2e-codex-isolated` / `e2e-proxy-forwarder-up|down` /
@@ -121,15 +121,15 @@ KILLER_LOG=/home/kenji/neige-killer.log
 # (bind-mounted into the --network host forwarder container); deterministic
 # path of a workspace bin crate (no deps/ hash like the test binary).
 PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
-# The `neige` shell CLI (crates/neige-cli, bin name `neige`) — the SPEC agent's
+# The `neige` shell CLI (crates/neige-cli, bin name `neige`) — the PLANNER agent's
 # ONLY track-read channel: the production prompt (crates/calm-server/src/
-# spec_card.rs) tells it to run `neige state`/`neige ls`/`neige cat` EACH TURN
+# planner_card.rs) tells it to run `neige state`/`neige ls`/`neige cat` EACH TURN
 # ("This is your ground truth"); writes go through the calm.* MCP tools. Like
 # codex and the stdio-shim it is host-compiled and bind-mounted (NOT an apt
 # package — it's a workspace bin crate), at the same deterministic target path
 # as the proxy. Bind-mounted onto the run container's PATH at /usr/local/bin so
 # the agent's env-cleared exec-shell can resolve the bare `neige` command
-# (without it: `neige: command not found`, and the spec agent stalls at step 1).
+# (without it: `neige: command not found`, and the planner agent stalls at step 1).
 NEIGE_BIN="$TARGET_DIR/debug/neige"
 
 CONTAINER_HOME=/home/e2e
@@ -294,7 +294,7 @@ ensure_forwarder() {
                 # using the existing forwarder; cutting it would strand that
                 # run's egress mid-suite. Human decides.
                 log "FATAL: forwarder '$E2E_PROXY_FORWARDER_NAME' exists with a DIFFERENT config:"
-                log "  existing: ${existing:-<no spec label>}"
+                log "  existing: ${existing:-<no planner label>}"
                 log "  wanted:   $spec"
                 log "refusing to recreate (a concurrent run may depend on it)."
                 log "if no isolated e2e run is live, run: make e2e-proxy-forwarder-down   (or scripts/e2e-isolated/run.sh --forwarder-down), then retry."
@@ -380,11 +380,11 @@ build_test_bin() {
     ensure_neige_bin
 }
 
-# ---- neige CLI (SPEC agent's track-read channel — host-compiled, PATH-mounted)
+# ---- neige CLI (PLANNER agent's track-read channel — host-compiled, PATH-mounted)
 # Built here alongside the test binary + shim (same host-compile model, same
 # warm shared target): a run-container dependency compiled from source, NOT an
 # apt package. The bind-mount that puts it on the container PATH lives in
-# docker_run_args; connectivity is free — the real spec/worker spawn already
+# docker_run_args; connectivity is free — the real planner/worker spawn already
 # injects NEIGE_MCP_SOCKET+NEIGE_MCP_TOKEN into the exec-shell via
 # shell_environment_policy.set (crates/calm-server/src/mcp_server/wiring.rs),
 # pointing at the SAME in-container kernel socket the stdio-shim reaches. So the
@@ -434,8 +434,8 @@ docker_run_args() {
         -v "$TARGET_DIR:$TARGET_DIR:ro"
         -v "$CODEX_REAL:$CODEX_MOUNT:ro"
         -v "$AUTH_REAL:$CONTAINER_HOME/.codex/auth.json:ro"
-        # The `neige` CLI on the run container's PATH — the SPEC agent's only
-        # track-read channel (bare `neige state`/`cat`/`ls`, spec_card.rs prompt).
+        # The `neige` CLI on the run container's PATH — the PLANNER agent's only
+        # track-read channel (bare `neige state`/`cat`/`ls`, planner_card.rs prompt).
         # /usr/local/bin is on the exec-shell PATH (container-default PATH is
         # forwarded live through the env-cleared daemon spawn — SPAWN_ENV_PASS-
         # THROUGH "PATH" — then codex inherit=Core passes it to exec-shells;
@@ -469,8 +469,8 @@ docker_run_args() {
     # 240s/180s defaults. Unset -> nothing is appended, so the default CI argv
     # (and the check_dry_run.sh golden) stays byte-identical. Named, intentional,
     # opt-in — this stays inside the explicit-allowlist philosophy.
-    if [ -n "${NEIGE_SPEC_PLANNING_BUDGET:-}" ]; then
-        DOCKER_ARGS+=(-e "NEIGE_SPEC_PLANNING_BUDGET=$NEIGE_SPEC_PLANNING_BUDGET")
+    if [ -n "${NEIGE_PLANNER_PLANNING_BUDGET:-}" ]; then
+        DOCKER_ARGS+=(-e "NEIGE_PLANNER_PLANNING_BUDGET=$NEIGE_PLANNER_PLANNING_BUDGET")
     fi
     if [ -n "${NEIGE_CODEX_FORGE_E2E_BUDGET:-}" ]; then
         DOCKER_ARGS+=(-e "NEIGE_CODEX_FORGE_E2E_BUDGET=$NEIGE_CODEX_FORGE_E2E_BUDGET")
@@ -535,7 +535,7 @@ fi
 [ -x "$TEST_BIN" ] || die "test binary not executable: $TEST_BIN"
 [ -x "$TARGET_DIR/debug/neige-mcp-stdio-shim" ] || die "neige-mcp-stdio-shim missing beside the test binary (build it first)"
 # Bind-mounting a missing source silently creates a directory in the container
-# (docker), so fail loud here instead: without the binary the spec agent's
+# (docker), so fail loud here instead: without the binary the planner agent's
 # `neige state`/`neige cat` reads hit `neige: command not found`.
 [ -x "$NEIGE_BIN" ] || die "neige CLI missing at $NEIGE_BIN (build it first, or drop --no-build)"
 [ -f "$AUTH_REAL" ] || die "codex auth.json not found at $AUTH_REAL"

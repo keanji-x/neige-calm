@@ -203,8 +203,8 @@ fn card_meta_dto_serializes_like_old_json_builder() {
         &old_card_meta_value(&card, json!("worker")),
     );
     assert_same_json_bytes(
-        &card_meta_value(&card, CardRole::Spec),
-        &old_card_meta_value(&card, json!("spec")),
+        &card_meta_value(&card, CardRole::Planner),
+        &old_card_meta_value(&card, json!("planner")),
     );
     assert_same_json_bytes(
         &card_meta_value(&card, CardRole::ReportCard),
@@ -334,7 +334,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
         6,
         600,
         // Kernel-emitted completion (terminal-exit path) — actor
-        // KernelDispatcher means NOT a spec verdict.
+        // KernelDispatcher means NOT a planner verdict.
         ActorId::KernelDispatcher,
         Event::TaskCompleted {
             idempotency_key: "w:k".into(),
@@ -356,7 +356,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
     assert_eq!(run.kind, "terminal");
     assert!(
         run.verdict.is_none(),
-        "KernelDispatcher completion must never classify as a spec verdict"
+        "KernelDispatcher completion must never classify as a planner verdict"
     );
 }
 

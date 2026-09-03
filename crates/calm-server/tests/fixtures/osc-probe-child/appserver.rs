@@ -2,7 +2,7 @@
 //!
 //! Since the #293 push cutover, `POST /api/tracks` ALWAYS boots a real
 //! `codex app-server` (the kernel-owned push channel) before spawning the
-//! spec card's PTY. The OSC-roundtrip tests can't ship a real codex, so this
+//! planner card's PTY. The OSC-roundtrip tests can't ship a real codex, so this
 //! stub stands in: invoked as `codex app-server --listen unix://<sock>`, it
 //! binds the socket, accepts the kernel's WebSocket connection, and answers
 //! just enough of the v2 JSON-RPC protocol for the shared app-server handshake

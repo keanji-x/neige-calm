@@ -22,10 +22,10 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     Card, CardPatch, CardRole, HarnessItem, NewCard, Track, TrackLifecycle, new_id,
 };
-use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
-use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
-use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, SpecHarnessStartOperationPayload, template_track_spec_harness_error,
+use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
+use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
+use crate::operation::planner_harness_start_adapter::{
+    HarnessProfile, PlannerHarnessStartOperationPayload, template_track_planner_harness_error,
 };
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -34,7 +34,7 @@ use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
 use crate::ratify_state::ratify_request_pending_tx;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::session_projection_lookup::{
-    card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
+    card_is_shared_planner, project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -144,13 +144,13 @@ pub(crate) async fn card_scope_tx(
 /// routes. Unknown/malformed profile values deliberately fail closed.
 ///
 /// #1189 added the assistant arm, and it is not decoration: this predicate
-/// gates `POST /api/cards/{id}/spec/input`, which is how a track conversation's
+/// gates `POST /api/cards/{id}/planner/input`, which is how a track conversation's
 /// messages — including the first one, sent by
 /// `POST /api/tracks/{id}/conversations` — reach the harness. Without it the
 /// endpoint mints a card it can then never talk to.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     card.kind == "codex"
-        && (role == CardRole::Spec
+        && (role == CardRole::Planner
             || crate::plain_chat::card_is_plain_chat(card, Some(role), true)
             || crate::plain_chat::card_is_track_assistant(card, Some(role), true))
 }
@@ -175,7 +175,7 @@ pub(crate) async fn interrupt_shared_card_active_turn(
             None
         }
     };
-    if !card_is_shared_spec(card, active_runtime.as_ref()) {
+    if !card_is_shared_planner(card, active_runtime.as_ref()) {
         return;
     }
     if let Err(e) = cs
@@ -204,11 +204,14 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(update_card).delete(delete_card),
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
-        .route("/api/cards/{id}/spec/input", post(send_spec_input))
+        .route("/api/cards/{id}/planner/input", post(send_planner_input))
         .route("/api/cards/{id}/ratify", post(ratify_card))
-        .route("/api/cards/{id}/spec/interrupt", post(interrupt_spec_card))
-        .route("/api/cards/{id}/spec/run", get(get_spec_run))
-        .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
+        .route(
+            "/api/cards/{id}/planner/interrupt",
+            post(interrupt_planner_card),
+        )
+        .route("/api/cards/{id}/planner/run", get(get_planner_run))
+        .route("/api/cards/{id}/planner/reset", post(reset_planner_card))
 }
 
 #[utoipa::path(
@@ -256,12 +259,12 @@ pub struct HarnessItemsQuery {
     path = "/api/cards/{id}/harness/items",
     tag = "cards",
     params(
-        ("id" = String, Path, description = "Spec card id"),
+        ("id" = String, Path, description = "Planner card id"),
         HarnessItemsQuery,
     ),
     responses(
-        (status = 200, description = "Persisted spec harness items", body = Vec<HarnessItem>),
-        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 200, description = "Persisted planner harness items", body = Vec<HarnessItem>),
+        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -282,7 +285,7 @@ pub(crate) async fn get_harness_items(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
 
@@ -418,7 +421,7 @@ pub(crate) async fn create_card(
             Box::pin(async move {
                 // Issue #585 — user-driven creates mint Worker cards and are
                 // user-deletable. The `false` path is reserved for
-                // kernel-owned cards minted by internal code (spec card
+                // kernel-owned cards minted by internal code (planner card
                 // here in PR A; report card in PR B).
                 let card = card_create_with_id_tx(
                     tx,
@@ -444,7 +447,7 @@ pub(crate) async fn create_card(
 
 /// M2 handler: kernel invokes `tools/call` on the plugin, then writes a Card
 /// row keyed off `_meta.ui.resourceUri`. Error mapping per the migration
-/// doc's M2 spec:
+/// doc's M2 planner:
 ///   * plugin not running → 404
 ///   * `permissions.cards_create` not granted → 403
 ///   * tool returned `isError: true` → 502 with content joined as text
@@ -590,7 +593,7 @@ async fn create_via_tool_call(
             Box::pin(async move {
                 // Issue #585 — user-driven creates mint Worker cards and are
                 // user-deletable. The `false` path is reserved for
-                // kernel-owned cards minted by internal code (spec card
+                // kernel-owned cards minted by internal code (planner card
                 // here in PR A; report card in PR B).
                 let card = card_create_with_id_tx(
                     tx,
@@ -687,7 +690,7 @@ pub(crate) async fn update_card(
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ResetSpecCardResponse {
+pub struct ResetPlannerCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub terminal_id: String,
@@ -697,7 +700,7 @@ pub struct ResetSpecCardResponse {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct SendSpecInputRequest {
+pub struct SendPlannerInputRequest {
     pub text: String,
 }
 
@@ -734,14 +737,14 @@ pub struct RatifyCardResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct SendSpecInputResponse {
+pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub runtime_id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct InterruptSpecCardResponse {
+pub struct InterruptPlannerCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub runtime_id: String,
@@ -755,7 +758,7 @@ pub struct InterruptSpecCardResponse {
     pub stopped: bool,
 }
 
-/// Issue #668 fix — current spec-harness run snapshot for a card.
+/// Issue #668 fix — current planner-harness run snapshot for a card.
 ///
 /// `harness.phase.changed` is the only live phase signal, so a page opened
 /// mid-turn would otherwise sit on `phase: null` until the next transition.
@@ -763,7 +766,7 @@ pub struct InterruptSpecCardResponse {
 /// active runtime row, or no registered harness) is NOT an error here —
 /// it's the `{runtime_id: null, phase: null}` answer.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct GetSpecRunResponse {
+pub struct GetPlannerRunResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     /// Active runtime id, or null when the harness is dormant.
@@ -782,10 +785,10 @@ pub struct GetSpecRunResponse {
     /// no meter until something respawns it. The UI slice decides whether
     /// that is acceptable or whether the dormant path should fall back to the
     /// persisted snapshot; the kernel slice does not pick for it.
-    pub token_usage: Option<SpecRunTokenUsage>,
+    pub token_usage: Option<PlannerRunTokenUsage>,
 }
 
-/// #1255 S3 — the context-usage half of [`GetSpecRunResponse`].
+/// #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
 ///
 /// A wire type distinct from the stored [`TokenUsage`], and the differences
 /// are the point rather than an accident of layering:
@@ -803,7 +806,7 @@ pub struct GetSpecRunResponse {
 ///   the right one is how that bug gets written. It cannot pick wrong if only
 ///   one number crosses the wire.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct SpecRunTokenUsage {
+pub struct PlannerRunTokenUsage {
     /// Tokens in the model's context as of the most recent response
     /// (`tokenUsage.last.totalTokens` upstream). Always present — this is the
     /// raw evidence, and it ships even when `percent` does not.
@@ -829,7 +832,7 @@ pub struct SpecRunTokenUsage {
     pub at_ms: i64,
 }
 
-impl From<&TokenUsage> for SpecRunTokenUsage {
+impl From<&TokenUsage> for PlannerRunTokenUsage {
     fn from(usage: &TokenUsage) -> Self {
         Self {
             used_tokens: usage.used_tokens,
@@ -840,51 +843,51 @@ impl From<&TokenUsage> for SpecRunTokenUsage {
     }
 }
 
-pub(crate) const MAX_SPEC_INPUT_CHARS: usize = 32_768;
+pub(crate) const MAX_PLANNER_INPUT_CHARS: usize = 32_768;
 
-fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
+fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     match actor.to_actor_id() {
         ActorId::AiCodex(c) if c.as_str().is_empty() => ActorId::AiCodex(card_id.clone()),
         // Middleware currently only admits `ai:codex`, but keep these
         // branches ready if REST actor validation later gains more AI kinds.
         ActorId::AiClaude(c) if c.as_str().is_empty() => ActorId::AiClaude(card_id.clone()),
-        ActorId::AiSpec(c) if c.as_str().is_empty() => ActorId::AiSpec(card_id.clone()),
+        ActorId::AiPlanner(c) if c.as_str().is_empty() => ActorId::AiPlanner(card_id.clone()),
         other => other,
     }
 }
 
 #[utoipa::path(
     post,
-    path = "/api/cards/{id}/spec/input",
+    path = "/api/cards/{id}/planner/input",
     tag = "cards",
-    params(("id" = String, Path, description = "Spec card id")),
-    request_body = SendSpecInputRequest,
+    params(("id" = String, Path, description = "Planner card id")),
+    request_body = SendPlannerInputRequest,
     responses(
-        (status = 200, description = "User text queued for next harness turn", body = SendSpecInputResponse),
+        (status = 200, description = "User text queued for next harness turn", body = SendPlannerInputResponse),
         (status = 400, description = "Empty text", body = ErrorBody),
-        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly", body = ErrorBody),
+        (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
-pub(crate) async fn send_spec_input(
+pub(crate) async fn send_planner_input(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(body): Json<SendSpecInputRequest>,
-) -> Result<Json<SendSpecInputResponse>> {
+    Json(body): Json<SendPlannerInputRequest>,
+) -> Result<Json<SendPlannerInputResponse>> {
     if body.text.trim().is_empty() {
         return Err(CalmError::BadRequest("text must not be empty".into()));
     }
     let char_count = body.text.chars().count();
-    if char_count > MAX_SPEC_INPUT_CHARS {
+    if char_count > MAX_PLANNER_INPUT_CHARS {
         return Err(CalmError::BadRequest(format!(
-            "text must be at most {MAX_SPEC_INPUT_CHARS} characters",
+            "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
         )));
     }
 
@@ -899,16 +902,16 @@ pub(crate) async fn send_spec_input(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
 
     // `_recovery_guard` (Some only on the lazy-recovery path) holds the
     // per-card recovery lock until end of handler scope, so a concurrent
-    // `/spec/reset` can't supersede the just-recovered runtime between
+    // `/planner/reset` can't supersede the just-recovered runtime between
     // recovery and the observe/audit below.
     let (runtime, harness, _recovery_guard) =
-        ensure_live_spec_harness(&s, &w, &cs, &card.id).await?;
+        ensure_live_planner_harness(&s, &w, &cs, &card.id).await?;
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -919,18 +922,18 @@ pub(crate) async fn send_spec_input(
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
-    // Migrate ONLY the AI-header path (empty placeholder card) to the live spec
+    // Migrate ONLY the AI-header path (empty placeholder card) to the live planner
     // session actor; the human web-UI path (`actor` == User) and any other actor
     // MUST stay unchanged so the audit log keeps distinguishing human input from
     // agent actions. Falls back to the existing card-shaped rebind when the
     // runtime is not in an active-authority state.
     let audit_actor = match actor.to_actor_id() {
-        ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiSpec(c)
+        ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiPlanner(c)
             if c.as_str().is_empty() && runtime.status.is_active_authority() =>
         {
-            ActorId::AiSpecSession(WorkerSessionId::from(runtime.id.clone()))
+            ActorId::AiPlannerSession(WorkerSessionId::from(runtime.id.clone()))
         }
-        _ => spec_input_audit_actor(&actor, &card.id),
+        _ => planner_input_audit_actor(&actor, &card.id),
     };
 
     let text = body.text;
@@ -941,7 +944,7 @@ pub(crate) async fn send_spec_input(
         card_id = %card.id,
         runtime_id = %runtime.id,
         char_count,
-        "spec harness user message enqueued"
+        "planner harness user message enqueued"
     );
 
     s.repo
@@ -961,7 +964,7 @@ pub(crate) async fn send_spec_input(
         )
         .await?;
 
-    Ok(Json(SendSpecInputResponse {
+    Ok(Json(SendPlannerInputResponse {
         card_id: card.id,
         runtime_id: runtime.id.clone(),
     }))
@@ -971,12 +974,12 @@ pub(crate) async fn send_spec_input(
     post,
     path = "/api/cards/{id}/ratify",
     tag = "cards",
-    params(("id" = String, Path, description = "Spec card id")),
+    params(("id" = String, Path, description = "Planner card id")),
     request_body = RatifyCardRequest,
     responses(
         (status = 200, description = "Human ratify verdict recorded", body = RatifyCardResponse),
         (status = 400, description = "Malformed request", body = ErrorBody),
-        (status = 403, description = "Card is not a spec codex card, or actor is not the authenticated user", body = ErrorBody),
+        (status = 403, description = "Card is not a planner codex card, or actor is not the authenticated user", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
         (status = 409, description = "Track is not awaiting ratification", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -1003,9 +1006,9 @@ pub(crate) async fn ratify_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if card.kind != "codex" || role != CardRole::Planner {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
     let track = s
@@ -1073,13 +1076,13 @@ pub(crate) async fn ratify_card(
     }))
 }
 
-/// Issue #668 — stop the running spec turn.
+/// Issue #668 — stop the running planner turn.
 ///
-/// Guard chain mirrors `/spec/input` (card → role → kind), but deliberately
+/// Guard chain mirrors `/planner/input` (card → role → kind), but deliberately
 /// WITHOUT the lazy-recovery path and its per-card lock: a harness that
 /// needs recovering has, by construction, no running turn to stop, so a
 /// registry miss (or no active runtime row) is the same typed 409
-/// `spec_harness_dormant` the input route uses — the client steers the user
+/// `planner_harness_dormant` the input route uses — the client steers the user
 /// to Reset.
 ///
 /// Idle is a graceful no-op, not an error: the harness's own
@@ -1103,22 +1106,22 @@ pub(crate) async fn ratify_card(
 /// the Issuing window and fire it on `turn/start` completion.
 #[utoipa::path(
     post,
-    path = "/api/cards/{id}/spec/interrupt",
+    path = "/api/cards/{id}/planner/interrupt",
     tag = "cards",
-    params(("id" = String, Path, description = "Spec card id")),
+    params(("id" = String, Path, description = "Planner card id")),
     responses(
-        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptSpecCardResponse),
-        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptPlannerCardResponse),
+        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn interrupt_spec_card(
+pub(crate) async fn interrupt_planner_card(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-) -> Result<Json<InterruptSpecCardResponse>> {
+) -> Result<Json<InterruptPlannerCardResponse>> {
     let card = s
         .repo
         .card_get(&id)
@@ -1130,13 +1133,13 @@ pub(crate) async fn interrupt_spec_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
 
     let dormant = || {
-        CalmError::SpecHarnessDormant(format!(
-            "no live spec harness session for card {id}; reset to start a session",
+        CalmError::PlannerHarnessDormant(format!(
+            "no live planner harness session for card {id}; reset to start a session",
         ))
     };
     let runtime = s
@@ -1155,11 +1158,11 @@ pub(crate) async fn interrupt_spec_card(
     );
     let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
     if dispatch {
-        let payload = serde_json::to_value(SpecHarnessInterruptOperationPayload {
+        let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
             runtime_id: runtime.id.clone(),
             reason: "user_stop".into(),
         })?;
-        run_spec_card_operation(&s, "spec-harness-interrupt", payload).await?;
+        run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
     }
 
     tracing::info!(
@@ -1168,38 +1171,38 @@ pub(crate) async fn interrupt_spec_card(
         runtime_id = %runtime.id,
         ?phase,
         stopped,
-        "spec harness user stop requested"
+        "planner harness user stop requested"
     );
 
-    Ok(Json(InterruptSpecCardResponse {
+    Ok(Json(InterruptPlannerCardResponse {
         card_id: card.id,
         runtime_id: runtime.id.clone(),
         stopped,
     }))
 }
 
-/// Issue #668 fix — read the current spec-harness phase for a card.
+/// Issue #668 fix — read the current planner-harness phase for a card.
 ///
-/// Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike
+/// Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike
 /// the write routes a dormant harness is a normal answer for a read: no
 /// active runtime row, or an active row with no registered harness, is
 /// `200 {runtime_id: null, phase: null}` rather than a 409.
 #[utoipa::path(
     get,
-    path = "/api/cards/{id}/spec/run",
+    path = "/api/cards/{id}/planner/run",
     tag = "cards",
-    params(("id" = String, Path, description = "Spec card id")),
+    params(("id" = String, Path, description = "Planner card id")),
     responses(
-        (status = 200, description = "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetSpecRunResponse),
-        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 200, description = "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetPlannerRunResponse),
+        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn get_spec_run(
+pub(crate) async fn get_planner_run(
     State(s): State<RouteState>,
     Path(id): Path<String>,
-) -> Result<Json<GetSpecRunResponse>> {
+) -> Result<Json<GetPlannerRunResponse>> {
     let card = s
         .repo
         .card_get(&id)
@@ -1211,11 +1214,11 @@ pub(crate) async fn get_spec_run(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
 
-    let dormant = GetSpecRunResponse {
+    let dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         runtime_id: None,
         phase: None,
@@ -1236,15 +1239,18 @@ pub(crate) async fn get_spec_run(
     // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
     // way round.
     let snapshot = harness.snapshot().await;
-    Ok(Json(GetSpecRunResponse {
+    Ok(Json(GetPlannerRunResponse {
         card_id: card.id,
         runtime_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
-        token_usage: snapshot.token_usage.as_ref().map(SpecRunTokenUsage::from),
+        token_usage: snapshot
+            .token_usage
+            .as_ref()
+            .map(PlannerRunTokenUsage::from),
     }))
 }
 
-/// Issue #649 i2 — resolve a live [`SpecHarness`] handle for a spec card.
+/// Issue #649 i2 — resolve a live [`PlannerHarness`] handle for a planner card.
 ///
 /// Fast path: active runtime row + registry hit (untouched behavior).
 ///
@@ -1258,8 +1264,8 @@ pub(crate) async fn get_spec_run(
 /// No active runtime row, or an active row that is unrecoverable
 /// (no thread anywhere — neither `runtime.thread_id` nor the snapshot's
 /// `last_thread_id` — from a half-failed start, or a corrupt snapshot)
-/// → typed 409 [`CalmError::SpecHarnessDormant`] so the client can steer
-/// the user to `/spec/reset` instead of retrying.
+/// → typed 409 [`CalmError::PlannerHarnessDormant`] so the client can steer
+/// the user to `/planner/reset` instead of retrying.
 ///
 /// Hardenings (design review):
 /// 1. per-card async lock + re-fetch/re-probe under the lock, so racing
@@ -1269,9 +1275,9 @@ pub(crate) async fn get_spec_run(
 /// 3. a thread must exist (row `thread_id`, or the snapshot's
 ///    `last_thread_id` — the same fallback boot recovery applies), else a
 ///    recovered harness would queue messages forever;
-/// 4. `/spec/reset` takes the SAME per-card lock (see
-///    [`reset_spec_card_shared`]), and the recovery path RETURNS its guard
-///    to the caller (`send_spec_input` holds it through enqueue/audit), so
+/// 4. `/planner/reset` takes the SAME per-card lock (see
+///    [`reset_planner_card_shared`]), and the recovery path RETURNS its guard
+///    to the caller (`send_planner_input` holds it through enqueue/audit), so
 ///    a reset can't supersede the runtime between the in-lock refetch here
 ///    and harness registration — nor in the gap between recovery and the
 ///    caller's `observe` enqueue — eliminating the resurrect-stale-session
@@ -1280,19 +1286,19 @@ pub(crate) async fn get_spec_run(
 ///    (503), so an unrecoverable row tells the user to Reset rather than
 ///    to retry.
 #[allow(deprecated)]
-async fn ensure_live_spec_harness(
+async fn ensure_live_planner_harness(
     s: &RouteState,
     w: &WorkerState,
     cs: &CodexShellState,
     card_id: &CardId,
 ) -> Result<(
     WorkerSessionProjection,
-    crate::harness::SpecHarness,
+    crate::harness::PlannerHarness,
     Option<PerCardLockGuard>,
 )> {
     let dormant = || {
-        CalmError::SpecHarnessDormant(format!(
-            "no recoverable spec harness session for card {card_id}; reset to start a session",
+        CalmError::PlannerHarnessDormant(format!(
+            "no recoverable planner harness session for card {card_id}; reset to start a session",
         ))
     };
     let runtime = s
@@ -1304,8 +1310,8 @@ async fn ensure_live_spec_harness(
         return Ok((runtime, harness, None));
     }
 
-    let guard = lock_card(&s.spec_recovery_locks, card_id.as_str()).await;
-    // Re-fetch under the lock and use only this row: `/spec/reset` may have
+    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
+    // Re-fetch under the lock and use only this row: `/planner/reset` may have
     // superseded the pre-lock runtime, and a racing Send may have already
     // recovered the harness.
     let runtime = s
@@ -1316,7 +1322,7 @@ async fn ensure_live_spec_harness(
     if let Some(harness) = s.harness.get(&runtime.id) {
         return Ok((runtime, harness, Some(guard)));
     }
-    // #649 review round 3 — a `starting` row means `spec-harness-start` is
+    // #649 review round 3 — a `starting` row means `planner-harness-start` is
     // still in flight: the adapter writes the row (and, in the deferred
     // path, the thread id + snapshot) BEFORE `spawn_side_effect` registers
     // the harness. Recovering here would spawn a harness the start op then
@@ -1327,7 +1333,7 @@ async fn ensure_live_spec_harness(
     // harness (running / idle / turn_pending).
     if runtime.status == WorkerSessionState::Starting {
         return Err(CalmError::ServiceUnavailable(
-            "spec harness is starting; retry shortly".into(),
+            "planner harness is starting; retry shortly".into(),
         ));
     }
     // Row-intrinsic dormancy checks run BEFORE the daemon liveness probe:
@@ -1377,32 +1383,32 @@ async fn ensure_live_spec_harness(
     tracing::info!(
         card_id = %card_id,
         runtime_id = %runtime_id,
-        "spec harness lazily recovered on /spec/input registry miss"
+        "planner harness lazily recovered on /planner/input registry miss"
     );
     // #649 review round 4 — return the guard so the caller keeps the
     // per-card lock alive through `harness.observe` and the audit event;
-    // dropping it here would let a concurrent `/spec/reset` supersede the
+    // dropping it here would let a concurrent `/planner/reset` supersede the
     // recovered runtime before the message is enqueued.
     Ok((runtime, harness, Some(guard)))
 }
 
 #[utoipa::path(
     post,
-    path = "/api/cards/{id}/spec/reset",
+    path = "/api/cards/{id}/planner/reset",
     tag = "cards",
-    params(("id" = String, Path, description = "Spec card id")),
+    params(("id" = String, Path, description = "Planner card id")),
     responses(
-        (status = 200, description = "Spec session reset", body = ResetSpecCardResponse),
-        (status = 403, description = "Card is not a spec codex card", body = ErrorBody),
+        (status = 200, description = "Planner session reset", body = ResetPlannerCardResponse),
+        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn reset_spec_card(
+pub(crate) async fn reset_planner_card(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-) -> Result<Json<ResetSpecCardResponse>> {
+) -> Result<Json<ResetPlannerCardResponse>> {
     let card = s
         .repo
         .card_get(&id)
@@ -1414,14 +1420,14 @@ pub(crate) async fn reset_spec_card(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
-            "card {id} is not a spec codex card",
+            "card {id} is not a planner codex card",
         )));
     }
-    // Recovery deliberately declines malformed persisted Spec runtimes so a
+    // Recovery deliberately declines malformed persisted Planner runtimes so a
     // boot pass can continue. This user-facing reset boundary preserves the
     // established HTTP 403 contract instead of turning that decline into a
     // generic operation failure.
-    if role == CardRole::Spec {
+    if role == CardRole::Planner {
         let track = s
             .repo
             .track_get(card.track_id.as_str())
@@ -1429,7 +1435,7 @@ pub(crate) async fn reset_spec_card(
             .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
         if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
             return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for area chat track {}",
+                "planner harness is disabled for area chat track {}",
                 track.id
             )));
         }
@@ -1439,20 +1445,20 @@ pub(crate) async fn reset_spec_card(
             .iter()
             .any(is_template_overlay)
         {
-            return Err(template_track_spec_harness_error(track.id.as_str()));
+            return Err(template_track_planner_harness_error(track.id.as_str()));
         }
     }
-    let response = reset_spec_card_shared(s, actor, card).await?;
+    let response = reset_planner_card_shared(s, actor, card).await?;
     Ok(Json(response))
 }
 
-async fn reset_spec_card_shared(
+async fn reset_planner_card_shared(
     s: RouteState,
     actor: Actor,
     card: Card,
-) -> Result<ResetSpecCardResponse> {
+) -> Result<ResetPlannerCardResponse> {
     // #649 review round 1 — reset takes the SAME per-card lock as the
-    // `/spec/input` lazy-recovery path (`ensure_live_spec_harness`).
+    // `/planner/input` lazy-recovery path (`ensure_live_planner_harness`).
     // Without it, a reset racing a registry-miss Send could supersede the
     // runtime after recovery's in-lock refetch but before harness
     // registration, resurrecting the reset-away session (and routing the
@@ -1460,21 +1466,21 @@ async fn reset_spec_card_shared(
     // start+shutdown operations is deadlock-free: both adapters either
     // take no locks (shutdown) or use their own private map
     // (`per_card_mint_locks` in the start adapter) — neither can re-enter
-    // `spec_recovery_locks`.
-    let _recovery_guard = lock_card(&s.spec_recovery_locks, card.id.as_str()).await;
+    // `planner_recovery_locks`.
+    let _recovery_guard = lock_card(&s.planner_recovery_locks, card.id.as_str()).await;
     let active_runtime = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    reset_spec_harness_card(s, actor, card, active_runtime).await
+    reset_planner_harness_card(s, actor, card, active_runtime).await
 }
 
-async fn reset_spec_harness_card(
+async fn reset_planner_harness_card(
     s: RouteState,
     actor: Actor,
     card: Card,
     runtime: Option<WorkerSessionProjection>,
-) -> Result<ResetSpecCardResponse> {
+) -> Result<ResetPlannerCardResponse> {
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -1482,8 +1488,8 @@ async fn reset_spec_harness_card(
         .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
 
     // #1098 §5.3 / #1189: a marked conversation card restarts under its OWN
-    // profile. Restarting an assistant under `Spec` would re-mint its thread
-    // with the spec prompt and the spec role — the card row would still say
+    // profile. Restarting an assistant under `Planner` would re-mint its thread
+    // with the planner prompt and the planner role — the card row would still say
     // `assistant`, so the thread and the card would disagree about what the
     // session may do.
     //
@@ -1492,7 +1498,7 @@ async fn reset_spec_harness_card(
     // speak before the user does, and this path no longer treats the title as
     // intent — whether the title is currently blank or not, and whoever wrote
     // it. (Child tracks are the one remaining place where a title IS intent:
-    // `operation/child_track_adapter.rs` copies the parent spec's declared task
+    // `operation/child_track_adapter.rs` copies the parent planner's declared task
     // goal into it. That is machine-written and stays; it just is not read
     // here.)
     let role = s.write.verify_role(&card.id);
@@ -1501,12 +1507,12 @@ async fn reset_spec_harness_card(
     } else if crate::plain_chat::card_is_track_assistant(&card, role, true) {
         HarnessProfile::Assistant
     } else {
-        HarnessProfile::Spec
+        HarnessProfile::Planner
     };
-    let start_request = SpecHarnessStartOperationPayload {
+    let start_request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
-        spec_card_id: card.id.clone(),
+        planner_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
         cwd: track.workspace.path.clone(),
@@ -1518,13 +1524,13 @@ async fn reset_spec_harness_card(
         first_message_sha256: None,
     };
     let start_payload = serde_json::to_value(start_request)?;
-    run_spec_card_operation(&s, "spec-harness-start", start_payload).await?;
+    run_planner_card_operation(&s, "planner-harness-start", start_payload).await?;
 
     if let Some(runtime) = runtime {
-        let shutdown_payload = serde_json::to_value(SpecHarnessShutdownOperationPayload {
+        let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
             runtime_id: runtime.id.clone(),
         })?;
-        run_spec_card_operation(&s, "spec-harness-shutdown", shutdown_payload).await?;
+        run_planner_card_operation(&s, "planner-harness-shutdown", shutdown_payload).await?;
     }
 
     let active = s
@@ -1534,7 +1540,7 @@ async fn reset_spec_harness_card(
         .ok_or_else(|| CalmError::Internal(format!("runtime for card {} missing", card.id)))?;
     let new_thread_id = active.thread_id.clone().ok_or_else(|| {
         CalmError::Internal(format!(
-            "spec harness reset succeeded without a thread_id for card {}",
+            "planner harness reset succeeded without a thread_id for card {}",
             card.id
         ))
     })?;
@@ -1544,7 +1550,7 @@ async fn reset_spec_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
 
-    Ok(ResetSpecCardResponse {
+    Ok(ResetPlannerCardResponse {
         card_id: card.id,
         terminal_id: String::new(),
         new_thread_id,
@@ -1552,15 +1558,15 @@ async fn reset_spec_harness_card(
     })
 }
 
-/// Submit one spec-card operation and wait for it, mapping its outcome onto a
+/// Submit one planner-card operation and wait for it, mapping its outcome onto a
 /// `CalmError`.
 ///
 /// `pub(crate)` since #1253: `routes::today_summary`'s dormant recovery
-/// re-submits `spec-harness-start` through it. Calling this rather than
+/// re-submits `planner-harness-start` through it. Calling this rather than
 /// re-implementing the submit/wait/map is the point — an operation that mapped
 /// its failure classes differently would answer 500 where this answers 400 or
 /// 503, and the divergence would only show up under failure.
-pub(crate) async fn run_spec_card_operation(
+pub(crate) async fn run_planner_card_operation(
     s: &RouteState,
     kind: &str,
     payload: Value,
@@ -1623,7 +1629,7 @@ pub(crate) async fn delete_card(
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    // Issue #229 PR A — kernel-owned card guard. Spec cards (and PR B's
+    // Issue #229 PR A — kernel-owned card guard. Planner cards (and PR B's
     // report cards) carry `deletable = false`; refuse direct REST delete.
     // Track delete via `DELETE /api/tracks/:id` still cascades through the
     // FK chain — the guard fires only on this `/api/cards/:id` path.
@@ -1652,7 +1658,7 @@ pub(crate) async fn delete_card(
     // same shape as track-delete cascading through cards). If cleanup
     // fails *before* the txn opens we surface 500; the row stays and
     // the sweeper retries on the next tick, so we don't end up with
-    // a half-torn-down terminal. Spec cards (CardRole::Spec) take the
+    // a half-torn-down terminal. Planner cards (CardRole::Planner) take the
     // same path: terminals share one table with no role-specific cleanup
     // divergence.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;

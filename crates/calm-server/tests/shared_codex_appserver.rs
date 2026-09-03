@@ -1424,9 +1424,13 @@ async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
 
     let repo = repo().await;
     let card_id = seed_card(&repo, 1).await;
-    let runtime_id =
-        seed_runtime_thread_with_kind(&repo, &card_id, "thread-hot", WorkerSessionKind::SharedSpec)
-            .await;
+    let runtime_id = seed_runtime_thread_with_kind(
+        &repo,
+        &card_id,
+        "thread-hot",
+        WorkerSessionKind::SharedPlanner,
+    )
+    .await;
     let old_hash = auth::hash_token("old-hot-token");
     let mut tx = repo.pool().begin().await.unwrap();
     card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
@@ -1483,7 +1487,7 @@ async fn restart_resumes_rollout_backed_threads() {
         &repo,
         &card_id,
         "thread-resume",
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
     )
     .await;
     let old_hash = auth::hash_token("old-resume-token");
@@ -1582,7 +1586,7 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
         &repo,
         &card_id,
         "thread-active",
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
     )
     .await;
     let old_hash = auth::hash_token("old-active-token");

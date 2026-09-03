@@ -77,7 +77,7 @@ const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const ISSUE_VIEW_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.view";
 const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-const SPEC_SESSION_ID: &str = "forge-template-spec-session";
+const PLANNER_SESSION_ID: &str = "forge-template-planner-session";
 
 const TEMPLATE_ID: &str = "issue-development";
 
@@ -96,7 +96,7 @@ struct Fixture {
     thread_id: String,
     track_id: String,
     area_id: String,
-    spec_card_id: String,
+    planner_card_id: String,
     worker_card_id: String,
     lease_id: String,
     lease_abs: PathBuf,
@@ -905,7 +905,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
                     "merge_sha": { "json_field": { "path": "/mergeCommit/oid" } }
                 }
             }))
-            .expect("merge event spec"),
+            .expect("merge event planner"),
         ),
         context: serde_json::Map::new(),
         probe: Some(ProbeSpec {
@@ -1335,10 +1335,10 @@ async fn review_round_recovers_into_pending_queue() {
 
     let runtime = fx
         .repo
-        .session_projection_by_id(&SPEC_SESSION_ID.to_string())
+        .session_projection_by_id(&PLANNER_SESSION_ID.to_string())
         .await
-        .expect("query spec runtime")
-        .expect("spec runtime");
+        .expect("query planner runtime")
+        .expect("planner runtime");
     let repo: Arc<dyn Repo> = fx.repo.clone();
     let daemon = SharedCodexAppServer::new_stub(repo.clone());
     let registry = HarnessRegistry::new();
@@ -1564,7 +1564,7 @@ async fn boot_fixture() -> Fixture {
         .await
         .expect("seed track/area cache");
 
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
@@ -1573,11 +1573,15 @@ async fn boot_fixture() -> Fixture {
             payload: Value::Null,
         })
         .await
-        .expect("create spec card");
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
-    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
-        .await;
-    seed_spec_runtime(&sqlx_repo, &track.id, &spec_card.id).await;
+        .expect("create planner card");
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
+    support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
+    seed_planner_runtime(&sqlx_repo, &track.id, &planner_card.id).await;
 
     let caller =
         create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await;
@@ -1672,7 +1676,7 @@ async fn boot_fixture() -> Fixture {
         thread_id: caller.thread_id,
         track_id: caller.track_id,
         area_id: area.id.to_string(),
-        spec_card_id: spec_card.id.to_string(),
+        planner_card_id: planner_card.id.to_string(),
         worker_card_id: caller.card_id,
         lease_id: caller.lease_id,
         lease_abs: caller.lease_abs,
@@ -1750,21 +1754,21 @@ async fn create_worker_caller(
     }
 }
 
-async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, spec_card_id: &CardId) {
+async fn seed_planner_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, planner_card_id: &CardId) {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some("spec-thread".into());
-    let mut tx = sqlx_repo.pool().begin().await.expect("begin spec tx");
+    snapshot.last_thread_id = Some("planner-thread".into());
+    let mut tx = sqlx_repo.pool().begin().await.expect("begin planner tx");
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: SPEC_SESSION_ID.to_string(),
-            card_id: spec_card_id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            id: PLANNER_SESSION_ID.to_string(),
+            card_id: planner_card_id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
-            thread_id: Some("spec-thread".into()),
+            thread_id: Some("planner-thread".into()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot).expect("snapshot json")),
@@ -1773,11 +1777,15 @@ async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, spec_card_i
         },
     )
     .await
-    .expect("start spec runtime");
-    session_mark_track_root_tx(&mut tx, track_id, &WorkerSessionId::from(SPEC_SESSION_ID))
-        .await
-        .expect("mark spec root session");
-    tx.commit().await.expect("commit spec tx");
+    .expect("start planner runtime");
+    session_mark_track_root_tx(
+        &mut tx,
+        track_id,
+        &WorkerSessionId::from(PLANNER_SESSION_ID),
+    )
+    .await
+    .expect("mark planner root session");
+    tx.commit().await.expect("commit planner tx");
 }
 
 fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
@@ -2030,15 +2038,15 @@ async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
     .await
 }
 
-fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
+fn planner_identity(fx: &Fixture) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: fx.spec_card_id.clone(),
-        role: CardRole::Spec,
+        card_id: fx.planner_card_id.clone(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: SPEC_SESSION_ID.to_string(),
+        session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(fx.track_id.clone()),
         area_id: fx.area_id.clone(),
-        thread_id: "spec-thread".into(),
+        thread_id: "planner-thread".into(),
     }
 }
 
@@ -2051,7 +2059,7 @@ async fn call_review_tool(
         .review_registry
         .lookup(name)
         .unwrap_or_else(|| panic!("review tool not registered: {name}"));
-    handler(fx.review_ctx.clone(), spec_identity(fx), args).await
+    handler(fx.review_ctx.clone(), planner_identity(fx), args).await
 }
 
 fn approved_channels() -> Vec<ChannelVerdict> {
@@ -2205,7 +2213,7 @@ async fn post_ratify(fx: &Fixture, decision: &str) -> (StatusCode, Value) {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -2238,7 +2246,7 @@ async fn transition_track_along(fx: &Fixture, targets: &[TrackLifecycle], messag
         track: track_id.clone(),
         area: AreaId::from(fx.area_id.clone()),
     };
-    let actor = ActorId::AiSpec(CardId::from(fx.spec_card_id.clone()));
+    let actor = ActorId::AiPlanner(CardId::from(fx.planner_card_id.clone()));
     let targets = targets.to_vec();
     let message = message.to_string();
     write_with_actor_events_typed::<(), _>(
@@ -2512,7 +2520,7 @@ async fn close_issue(fx: &Fixture, id: i64, repo_arg: &str, issue_number: u64) -
 }
 
 async fn wait_for_recovered_pending(
-    handle: &calm_server::harness::SpecHarness,
+    handle: &calm_server::harness::PlannerHarness,
 ) -> Vec<Observation> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

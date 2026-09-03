@@ -714,9 +714,9 @@ function declarationWord(state: ReportTaskState): string | null {
  * split `pending` on `verdict.schedulable`, printing `blocked` when it was
  * false and reserving that word for "waiting on a dependency". `schedulable`
  * does not mean that — `evaluate_schedulability_with_tree_term` clears the flag
- * for *every* candidate past the spec ceiling or the track-tree budget
+ * for *every* candidate past the planner ceiling or the track-tree budget
  * (`task_projection.rs`, the `verdicts[index].schedulable = false` that follows
- * the `spec_task_ceiling` diagnostic) — so an ordinary queue behind capacity
+ * the `planner_task_ceiling` diagnostic) — so an ordinary queue behind capacity
  * rendered as `blocked` and made a healthy track look stuck. The status the
  * kernel gave is the status the row carries, unedited.
  */

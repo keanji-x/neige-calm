@@ -380,9 +380,9 @@ function sourceAnchorResult(source: unknown, statement: unknown, repoRoot: strin
   ignoredIdentifiers: ReadonlySet<string>): AnchorResult {
   const empty: AnchorResult = { error: null, subtype: null, unsupported: [] };
   if (typeof source !== 'string') return empty;
-  const anchorSpecs = extractStatementAnchors(statement).filter((anchor) => !ignoredIdentifiers.has(anchor.text));
-  const identifiers = anchorSpecs.map((anchor) => anchor.text);
-  const caseInsensitive = new Set(anchorSpecs.filter((anchor) => anchor.caseInsensitive).map((anchor) => anchor.text));
+  const anchorPlanners = extractStatementAnchors(statement).filter((anchor) => !ignoredIdentifiers.has(anchor.text));
+  const identifiers = anchorPlanners.map((anchor) => anchor.text);
+  const caseInsensitive = new Set(anchorPlanners.filter((anchor) => anchor.caseInsensitive).map((anchor) => anchor.text));
   const locations = parseLocations(source);
   if (locations.some((location) => typeof location === 'string')) return empty;
   const sourceFiles = new Map<string, { contents: string; anchors: Map<string, Set<number>> | null }>();

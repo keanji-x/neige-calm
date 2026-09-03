@@ -108,7 +108,7 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
 }
 
 #[tokio::test]
-async fn upgrade_0068_backfills_preexisting_tasks_as_spec_declared() {
+async fn upgrade_0068_backfills_preexisting_tasks_as_planner_declared() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -137,7 +137,7 @@ async fn upgrade_0068_backfills_preexisting_tasks_as_spec_declared() {
             .expect("read 0068 attribution backfill");
     assert_eq!(
         declared_by, "spec",
-        "0068 must put every preexisting task in the spec occupancy domain"
+        "0068 must put every preexisting task in the planner occupancy domain"
     );
 }
 
@@ -217,9 +217,9 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         .expect("apply migrations through 0069");
     sqlx::query(
         "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,created_at_ms,updated_at_ms) VALUES \
-         ('flight','w','flight','codex','g','null','[]','running','spec','block','[]',1,1), \
-         ('pending','w','pending','codex','g','null','[]','pending','spec','block',NULL,1,1), \
-         ('terminal','w','terminal','codex','g','null','[]','done','spec','block','[]',1,1)",
+         ('flight','w','flight','codex','g','null','[]','running','planner','block','[]',1,1), \
+         ('pending','w','pending','codex','g','null','[]','pending','planner','block',NULL,1,1), \
+         ('terminal','w','terminal','codex','g','null','[]','done','planner','block','[]',1,1)",
     )
     .execute(&pool)
     .await
@@ -276,7 +276,7 @@ async fn sqlx_repo_open_rejects_nonterminal_legacy_rows_at_0073() {
             .expect("apply migrations through 0072");
         sqlx::query(
             "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,spawn,decl_ready,decl_released_by_user,context_verify_failures,created_at_ms,updated_at_ms) \
-             VALUES (?1,'w',?1,'codex','g','null','[]',?2,'spec','legacy','[]','in-wave',0,0,0,1,1)",
+             VALUES (?1,'w',?1,'codex','g','null','[]',?2,'planner','legacy','[]','in-wave',0,0,0,1,1)",
         )
         .bind(format!("legacy-{status}"))
         .bind(status)
@@ -422,7 +422,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
          ) VALUES (\
            'block-flight','w','block-flight','claude','keep me','{\"source\":\"block\"}',\
            'accept','/tmp','[\"dep\"]',7,'{\"cmd\":\"true\"}','running','working','worker',\
-           '{\"ok\":true}',2,101,202,'boot',303,11,12,NULL,'[]',404,1,'spec','block',1,1,5,\
+           '{\"ok\":true}',2,101,202,'boot',303,11,12,NULL,'[]',404,1,'planner','block',1,1,5,\
            'child-track',NULL\
          )",
     )

@@ -261,16 +261,16 @@ impl Boot {
         }
     }
 
-    /// `POST /api/cards/{id}/spec/input` — the *other*, public way to put a
+    /// `POST /api/cards/{id}/planner/input` — the *other*, public way to put a
     /// user message on a conversation card. Used to drive the known gap where
     /// this route's first-message claim mistakes a foreign message for its own.
-    async fn send_spec_input(&self, card_id: &str, text: &str) -> StatusCode {
+    async fn send_planner_input(&self, card_id: &str, text: &str) -> StatusCode {
         self.app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/cards/{card_id}/spec/input"))
+                    .uri(format!("/api/cards/{card_id}/planner/input"))
                     .header("content-type", "application/json")
                     .body(Body::from(json!({ "text": text }).to_string()))
                     .unwrap(),
@@ -502,7 +502,7 @@ async fn concurrent_same_key_creates_send_the_first_message_once() {
 
 /// KNOWN GAP, pinned as current behaviour — NOT an invariant.
 ///
-/// `send_spec_input` does two things that are not one thing:
+/// `send_planner_input` does two things that are not one thing:
 /// `harness.observe(UserMessage)` pushes onto an in-memory queue, then
 /// `log_pure_event(HarnessUserMessageEnqueued)` writes the row this endpoint's
 /// dedup reads. If the first succeeds and the second fails, the agent already
@@ -521,7 +521,7 @@ async fn concurrent_same_key_creates_send_the_first_message_once() {
 /// being used as evidence for a non-transactional step. The fix is to fold the
 /// first message into the same operation (seed `Observation::UserMessage` into
 /// the harness snapshot's `pending_queue` in `prepare_tx`, as
-/// `initial_snapshot_with_goal` already does for a spec harness's goal).
+/// `initial_snapshot_with_goal` already does for a planner harness's goal).
 /// Tracked on #1098; out of scope for this slice.
 #[tokio::test]
 async fn first_send_whose_audit_event_fails_is_re_sent_on_retry() {
@@ -594,7 +594,7 @@ async fn first_send_whose_audit_event_fails_is_re_sent_on_retry() {
 ///   1. a create whose audit write fails leaves the CARD behind (the mint
 ///      operation succeeded, so no compensation runs),
 ///   2. `GET /api/areas/{area}/conversations` hands out that card's id,
-///   3. `POST /api/cards/{id}/spec/input` — a public endpoint — writes the
+///   3. `POST /api/cards/{id}/planner/input` — a public endpoint — writes the
 ///      very event kind the claim reads,
 ///   4. the retry under the same `Idempotency-Key` reads that FOREIGN message
 ///      and skips its own send.
@@ -654,7 +654,8 @@ async fn foreign_send_between_a_failed_first_send_and_its_retry_skips_the_first_
 
     // Step 3: a foreign message through the public per-card endpoint.
     assert_eq!(
-        b.send_spec_input(&card_id, "SOMEBODY-ELSES-MESSAGE").await,
+        b.send_planner_input(&card_id, "SOMEBODY-ELSES-MESSAGE")
+            .await,
         StatusCode::OK
     );
     assert_eq!(
@@ -689,7 +690,7 @@ async fn foreign_send_between_a_failed_first_send_and_its_retry_skips_the_first_
 /// Same key, DIFFERENT first message ⇒ 409, and nothing happens.
 ///
 /// The message body travels into the operation payload as a SHA-256
-/// (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part of
+/// (`PlannerHarnessStartOperationPayload::first_message_sha256`), so it is part of
 /// `stable_payload_hash` and `OperationRuntime::submit` rejects the mismatch
 /// before it does anything else. Without that binding the payload hash could
 /// not see the text at all and this call would silently answer 201 with the
@@ -875,7 +876,7 @@ async fn list_on_unknown_area_is_not_found_and_without_chat_track_is_empty() {
 }
 
 /// The list is fail-closed on the card marker (INV-CHAT-007): the chat track's
-/// own kernel-owned spec and report cards never appear, an unmarked codex card
+/// own kernel-owned planner and report cards never appear, an unmarked codex card
 /// on the chat track never appears, and a marked codex card on an ordinary track
 /// never appears either (it is not this area's conversation container).
 #[tokio::test]
@@ -931,14 +932,14 @@ async fn list_returns_only_marked_chat_cards() {
     // fixture as proving three independent walls.
     //
     // TAMPERING MODEL, NOT A REACHABLE STATE: nothing in production ever puts
-    // the `plain_chat` marker on a chat track's kernel-owned spec/report card —
-    // their payload comes from `create_track_with_spec_harness` and the
+    // the `plain_chat` marker on a chat track's kernel-owned planner/report card —
+    // their payload comes from `create_track_with_planner_harness` and the
     // adapter's payload rewrite only touches thread keys. This `json_set`
     // forges that row by hand, so the `role = 'worker'` conjunct it exercises
     // is defence in depth against a corrupt/hand-edited DB, not a guard with a
     // reachable counterexample.
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.harness_profile', 'plain_chat') WHERE track_id = ?1 AND role IN ('spec','reportcard')",
+        "UPDATE cards SET payload = json_set(payload, '$.harness_profile', 'plain_chat') WHERE track_id = ?1 AND role IN ('planner','reportcard')",
     )
     .bind(&chat_track)
     .execute(b.repo.pool())
@@ -965,14 +966,17 @@ async fn list_returns_only_marked_chat_cards() {
         chat_track.clone().into(),
     );
 
-    let spec_and_report: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM cards WHERE track_id = ?1 AND role IN ('spec','reportcard')",
+    let planner_and_report: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards WHERE track_id = ?1 AND role IN ('planner','reportcard')",
     )
     .bind(&chat_track)
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    assert_eq!(spec_and_report, 2, "the chat track really does carry both");
+    assert_eq!(
+        planner_and_report, 2,
+        "the chat track really does carry both"
+    );
 
     let (status, body) = b.list_conversations().await;
     assert_eq!(status, StatusCode::OK);
@@ -1024,9 +1028,9 @@ async fn card_without_a_live_session_stays_visible_with_null_state() {
 }
 
 /// INV-CHAT-004 pairing on the freshly minted conversation: the chat card
-/// accepts `/spec/input`, a PTY-backed codex card does not.
+/// accepts `/planner/input`, a PTY-backed codex card does not.
 #[tokio::test]
-async fn spec_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
+async fn planner_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
     let b = boot().await;
     let (status, created) = b.create_conversation("idem-input", "hello").await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
@@ -1038,7 +1042,7 @@ async fn spec_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
             app.oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/cards/{card_id}/spec/input"))
+                    .uri(format!("/api/cards/{card_id}/planner/input"))
                     .header("content-type", "application/json")
                     .body(Body::from(json!({"text": "follow-up"}).to_string()))
                     .unwrap(),

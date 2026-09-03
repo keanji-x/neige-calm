@@ -183,11 +183,11 @@ async fn backfill_mints_report_card_per_track() {
     // diverged from `TrackReportPayload::initial()` since the prompt
     // rewrite (5f3278e6), which moved `initial()` to a Chinese seed
     // for new tracks while keeping migration 0014 frozen for historical
-    // backfills. #1185 S2 deleted the `spec_card.rs` paragraph that used
-    // to order the spec agent to rewrite these backfilled reports into the
+    // backfills. #1185 S2 deleted the `planner_card.rs` paragraph that used
+    // to order the planner agent to rewrite these backfilled reports into the
     // kernel's shape; structure now travels with each document, so a report
     // that arrived with `# Goal` keeps `# Goal` and is maintained in place.
-    // See `spec_card.rs::spec_prompt_carries_no_section_vocabulary`.
+    // See `planner_card.rs::planner_prompt_carries_no_section_vocabulary`.
     let payload: TrackReportPayload = serde_json::from_value(report.payload.clone())
         .expect("payload is a valid TrackReportPayload");
     // Migration 0014 SQL stays frozen at the historical v1 shape; v1
@@ -272,8 +272,8 @@ async fn backfill_seeds_layout_overlay_when_absent() {
 
     // The layout overlay now exists, with the report card pinned
     // at (6, 0, 6, 12) — the right column of the canonical two-column
-    // layout. (This track has no spec card — see the test setup —
-    // so the spec position is absent from the seed.)
+    // layout. (This track has no planner card — see the test setup —
+    // so the planner position is absent from the seed.)
     let overlays = repo.overlays_for("view", track.id.as_str()).await.unwrap();
     let layout = overlays
         .iter()

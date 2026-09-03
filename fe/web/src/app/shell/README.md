@@ -22,7 +22,7 @@ The create moved to `app/router`'s `NewTrackRoute` with the page (#1211); this
 section stays because the rail is still one of the two `+` surfaces. The
 new-track page's Folder chip is optional and decides the request shape — and the
 body carries **no `title`** since #1211: the kernel stores the empty string and
-the spec agent names the track through `calm.track.rename`.
+the planner agent names the track through `calm.track.rename`.
 
 | Folder | `POST /api/tracks` body | Kernel branch |
 | --- | --- | --- |

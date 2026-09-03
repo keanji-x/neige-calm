@@ -26,13 +26,13 @@ export type TrackSource = 'pages' | 'area';
 declare module '@tanstack/history' {
   interface HistoryState {
     ncPanelPushed?: boolean;
-    /** See {@link useSpecOpenIntent}. */
-    ncOpenSpec?: boolean;
+    /** See {@link usePlannerOpenIntent}. */
+    ncOpenPlanner?: boolean;
   }
 }
 
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
-export const SPEC_OPEN_STATE_KEY = 'ncOpenSpec';
+export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
@@ -61,8 +61,8 @@ export type NavTarget =
    * `cardId` opens the card-grid overlay on that card (`?card=`).
    * `panel` opens the mobile report's secondary panel (`?panel=`), `from`
    * records the surface to return to (`?from=`).
-   * `openSpec` asks the track being navigated *to* to open its spec
-   * conversation on arrival — see {@link useSpecOpenIntent}.
+   * `openPlanner` asks the track being navigated *to* to open its planner
+   * conversation on arrival — see {@link usePlannerOpenIntent}.
    */
   | Readonly<{
     name: 'track';
@@ -71,7 +71,7 @@ export type NavTarget =
     cardId?: string;
     panel?: MobilePanel;
     from?: TrackSource;
-    openSpec?: boolean;
+    openPlanner?: boolean;
   }>
   | Readonly<{ name: 'settings' }>
   /**
@@ -136,11 +136,11 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     const search: TrackSearch = target.name === 'track'
       ? buildTrackSearch({ card: target.cardId, panel: target.panel, from: target.from })
       : {};
-    // The spec-open intent rides on the history entry this navigation creates,
-    // and nowhere else (#1211 S2) — see `useSpecOpenIntent`. Written only when
+    // The planner-open intent rides on the history entry this navigation creates,
+    // and nowhere else (#1211 S2) — see `usePlannerOpenIntent`. Written only when
     // asked for, so an ordinary move leaves `state` alone.
-    const state = target.name === 'track' && target.openSpec === true
-      ? { [SPEC_OPEN_STATE_KEY]: true }
+    const state = target.name === 'track' && target.openPlanner === true
+      ? { [PLANNER_OPEN_STATE_KEY]: true }
       : undefined;
     void navigate({
       to: pathFor(target),
@@ -153,18 +153,18 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
 }
 
 /**
- * "Open the spec conversation of the track this navigation is going to."
+ * "Open the planner conversation of the track this navigation is going to."
  *
  * ── Why this is a property of the *navigation* and not a slot somewhere ─────
  *
  * The track a create answers with has no name and nothing said in it, and the
- * spec card's id does not exist yet — `POST /api/tracks` answers with a `Track`,
+ * planner card's id does not exist yet — `POST /api/tracks` answers with a `Track`,
  * and the card arrives a route later with the track detail. So the shell cannot
- * say "open card X"; it can only say "open the spec conversation of track W",
+ * say "open card X"; it can only say "open the planner conversation of track W",
  * and something on the other side of the navigation has to redeem that.
  *
  * The first shape put it in a provider above the outlet, as one global
- * `requestedSpecTrackId`, and the review found it broken from both ends at
+ * `requestedPlannerTrackId`, and the review found it broken from both ends at
  * once. Whoever redeems it must also clear it, and no single component can own
  * that: a route body that clears what it cannot redeem takes the intent away
  * from the track it was meant for (the rail's `+` is on screen on every route,
@@ -188,7 +188,7 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  * The intent belongs to **that one history entry**. It is consumed the first
  * time the entry's route body mounts at all — that is, the first time the track
  * detail lands — and struck off unconditionally at that moment; if the detail
- * in hand has a spec card, the same pass opens it. So "no spec card" is not a
+ * in hand has a planner card, the same pass opens it. So "no planner card" is not a
  * reason to keep the mark: the entry has been displayed, the create has been
  * answered as well as it can be, and a card that arrives on a later read of the
  * same entry finds nothing armed (`track-untitled.test.tsx` pins exactly that).
@@ -216,17 +216,17 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  * and a caller asking about a track the location does not name should be told
  * `false` rather than handed somebody else's marker.
  */
-export type SpecOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
+export type PlannerOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
 
-export function hasSpecOpenMarker(state: unknown): boolean {
+export function hasPlannerOpenMarker(state: unknown): boolean {
   if (typeof state !== 'object' || state === null) return false;
-  return (state as Record<string, unknown>)[SPEC_OPEN_STATE_KEY] === true;
+  return (state as Record<string, unknown>)[PLANNER_OPEN_STATE_KEY] === true;
 }
 
-export function useSpecOpenIntent(trackId: string): SpecOpenIntent {
+export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
   const navigate = useNavigate();
   const location = useRouterState({ select: (state) => state.location });
-  const armed = hasSpecOpenMarker(location.state)
+  const armed = hasPlannerOpenMarker(location.state)
     && routeParamFromPath(location.pathname, '/track/') === trackId;
   const disarm = useCallback(() => {
     void navigate({
@@ -238,7 +238,7 @@ export function useSpecOpenIntent(trackId: string): SpecOpenIntent {
       replace: true,
       state: (previous) => {
         const next = { ...previous };
-        delete next[SPEC_OPEN_STATE_KEY];
+        delete next[PLANNER_OPEN_STATE_KEY];
         return next;
       },
     });

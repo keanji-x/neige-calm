@@ -31,12 +31,25 @@ fn is_tombstone(block: &ReportBlock) -> bool {
     field(block, "tombstone").is_some_and(|value| !value.is_null())
 }
 
+/// The **document** name for an author — the value that goes into a task
+/// block's `declared_by` / `tombstoned_by`.
+///
+/// This is the one place the kernel's renamed vocabulary meets the frozen
+/// document vocabulary, so the asymmetry is deliberate: the enum variant is
+/// `Planner` (#1316 S3 renamed the actor everywhere the kernel owns it) while
+/// the string stays `"spec"`, because `declared_by` is written by agents into
+/// stored report documents and projected back out of them — migration 0083's
+/// header states why those cannot be rewritten. Returning `"planner"` here
+/// deadlocks the two guards against each other: this one demands `planner`
+/// while `report_blocks::kinds::validate_declared_by` accepts only
+/// `"spec" | "user"`, so every new task block is rejected whichever value the
+/// agent writes.
 fn author_name(author: EditAuthor) -> Option<&'static str> {
     match author {
-        EditAuthor::Spec => Some("spec"),
+        EditAuthor::Planner => Some("spec"),
         EditAuthor::User => Some("user"),
         // `None` = "may not author task declaration blocks". Assistant
-        // (#1189) is deliberately here rather than aliased onto "spec":
+        // (#1189) is deliberately here rather than aliased onto "planner":
         // half of the §3.2a P2 guard falls out of this line.
         EditAuthor::Kernel | EditAuthor::Plugin | EditAuthor::Assistant => None,
     }
@@ -93,7 +106,7 @@ pub(crate) fn normalize_report_op(
 /// The provenance rules below already stop an assistant from *creating*
 /// a task (no attribution name), from touching a **user**-controlled one,
 /// and from dropping a live task through a whole-document write. What they
-/// leave open is the middle of the range: editing a **spec**-declared live
+/// leave open is the middle of the range: editing a **planner**-declared live
 /// task in place (flipping `ready`, rewriting `goal`) and block-level
 /// deleting one. Both feed `task_projection`, i.e. both can dispatch or
 /// re-dispatch a worker — which is the entire thing §3.2 says an assistant
@@ -132,7 +145,7 @@ fn guard_assistant_leaves_task_blocks_alone(
             None => {
                 return Err(bad(format!(
                     "an assistant may not create task block {id}; task declarations \
-                     are the spec's and the user's to write"
+                     are the planner's and the user's to write"
                 )));
             }
             Some(was) if was != content => {
@@ -358,7 +371,7 @@ mod tests {
         )
     }
 
-    fn forged_spec_tombstone_fence() -> String {
+    fn forged_planner_tombstone_fence() -> String {
         render_fence(
             KIND_TASK,
             &json!({
@@ -371,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn user_delete_of_spec_task_becomes_canonical_in_place_tombstone() {
+    fn user_delete_of_planner_task_becomes_canonical_in_place_tombstone() {
         let payload = live("spec");
         let body = render_fence(KIND_TASK, &payload);
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", &body));
@@ -417,7 +430,7 @@ mod tests {
     /// shape that can tell the two implementations apart: with the current
     /// fail-closed `None`, `guard_task_declarations` refuses before it ever
     /// compares `declared_by`; alias Assistant onto any name at all and the
-    /// same call succeeds. Attributing the block to `"spec"` instead would
+    /// same call succeeds. Attributing the block to `"planner"` instead would
     /// keep failing under both (on the attribution mismatch), i.e. it would
     /// be a vacuous assertion.
     #[test]
@@ -439,16 +452,16 @@ mod tests {
              attribution mismatch; got: {message}"
         );
 
-        // Control: the same shape from Spec, self-attributed, goes through —
+        // Control: the same shape from Planner, self-attributed, goes through —
         // so the refusal above is about *who the author is*, not about task
         // creation being blocked for everyone.
         guard_task_declarations(
             &[],
             std::slice::from_ref(&block("b_task", live("spec"))),
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             None,
         )
-        .expect("Spec may still declare its own task block");
+        .expect("Planner may still declare its own task block");
     }
 
     /// #1189 §3.2a P2 — the gap the provenance table leaves open, and the
@@ -462,19 +475,19 @@ mod tests {
     /// reject every prose edit made in a report that happens to hold a
     /// task list.
     #[test]
-    fn assistant_may_not_touch_a_spec_declared_task_but_may_leave_it_alone() {
-        let spec = block("b_task", live("spec"));
+    fn assistant_may_not_touch_a_planner_declared_task_but_may_leave_it_alone() {
+        let planner = block("b_task", live("spec"));
         let user = block("b_user_task", live("user"));
 
-        let mut rewritten = spec.clone();
+        let mut rewritten = planner.clone();
         rewritten.payload["goal"] = json!("assistant rewrite");
         let error = guard_task_declarations(
-            std::slice::from_ref(&spec),
+            std::slice::from_ref(&planner),
             &[rewritten],
             EditAuthor::Assistant,
             None,
         )
-        .expect_err("an assistant may not rewrite a spec-declared task");
+        .expect_err("an assistant may not rewrite a planner-declared task");
         let CalmError::BadRequest(message) = &error else {
             panic!("expected a 400, got {error:?}");
         };
@@ -487,7 +500,7 @@ mod tests {
         // Deleting one — including through the block-level exemption the
         // #1179 rule grants every *other* author.
         let error = guard_task_declarations(
-            std::slice::from_ref(&spec),
+            std::slice::from_ref(&planner),
             &[],
             EditAuthor::Assistant,
             Some("b_task"),
@@ -497,20 +510,20 @@ mod tests {
             panic!("expected a 400, got {error:?}");
         };
         assert!(message.contains("may not delete task block"), "{message}");
-        // Control: the exemption is real for the spec.
+        // Control: the exemption is real for the planner.
         guard_task_declarations(
-            std::slice::from_ref(&spec),
+            std::slice::from_ref(&planner),
             &[],
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             Some("b_task"),
         )
-        .expect("the block-level delete exemption still works for the spec");
+        .expect("the block-level delete exemption still works for the planner");
 
         // And the positive: both declarations carried through untouched,
         // prose (which this diff does not even model) free to change.
         guard_task_declarations(
-            &[spec.clone(), user.clone()],
-            &[user, spec],
+            &[planner.clone(), user.clone()],
+            &[user, planner],
             EditAuthor::Assistant,
             None,
         )
@@ -522,7 +535,7 @@ mod tests {
 
     #[test]
     fn task_declaration_rules_reject_every_forbidden_transition() {
-        let spec = block("b_task", live("spec"));
+        let planner = block("b_task", live("spec"));
         let user = block("b_task", live("user"));
         let user_tombstone = block(
             "b_task",
@@ -531,7 +544,7 @@ mod tests {
 
         // 1: attribution is pinned to the writer; reserved writers fail closed.
         assert!(
-            guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Spec, None)
+            guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Planner, None)
                 .is_err()
         );
         // #1189 — Assistant belongs in this list, not the "may author"
@@ -543,13 +556,13 @@ mod tests {
             EditAuthor::Assistant,
         ] {
             assert!(
-                guard_task_declarations(&[], std::slice::from_ref(&spec), author, None).is_err()
+                guard_task_declarations(&[], std::slice::from_ref(&planner), author, None).is_err()
             );
         }
         // 2: declared_by cannot change, including the live -> tombstone transition.
         assert!(
             guard_task_declarations(
-                std::slice::from_ref(&spec),
+                std::slice::from_ref(&planner),
                 std::slice::from_ref(&user),
                 EditAuthor::User,
                 None
@@ -562,7 +575,7 @@ mod tests {
         );
         assert!(
             guard_task_declarations(
-                std::slice::from_ref(&spec),
+                std::slice::from_ref(&planner),
                 &[changed_owner_tombstone],
                 EditAuthor::User,
                 None
@@ -570,14 +583,14 @@ mod tests {
             .is_err()
         );
         // 2b: a tombstone's author is immutable and it cannot revive in place.
-        let spec_tombstone = block(
+        let planner_tombstone = block(
             "b_task",
             json!({"key":"build","tombstone":{},"declared_by":"spec","tombstoned_by":"spec"}),
         );
         assert!(
             guard_task_declarations(
                 std::slice::from_ref(&user_tombstone),
-                &[spec_tombstone],
+                &[planner_tombstone],
                 EditAuthor::User,
                 None
             )
@@ -586,7 +599,7 @@ mod tests {
         assert!(
             guard_task_declarations(
                 std::slice::from_ref(&user_tombstone),
-                std::slice::from_ref(&spec),
+                std::slice::from_ref(&planner),
                 EditAuthor::User,
                 None
             )
@@ -596,7 +609,7 @@ mod tests {
         // #1189 — Assistant is a non-user writer like the rest, so the
         // user-control rule must bind it too.
         for author in [
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             EditAuthor::Kernel,
             EditAuthor::Plugin,
             EditAuthor::Assistant,
@@ -611,7 +624,7 @@ mod tests {
         }
         // 4': whole-document deletion cannot bypass the block delete rewrite.
         assert!(
-            guard_task_declarations(std::slice::from_ref(&spec), &[], EditAuthor::User, None)
+            guard_task_declarations(std::slice::from_ref(&planner), &[], EditAuthor::User, None)
                 .is_err()
         );
         let older_same_key_tombstone = block(
@@ -620,7 +633,7 @@ mod tests {
         );
         assert!(
             guard_task_declarations(
-                &[spec.clone(), older_same_key_tombstone.clone()],
+                &[planner.clone(), older_same_key_tombstone.clone()],
                 &[older_same_key_tombstone],
                 EditAuthor::User,
                 None
@@ -629,13 +642,13 @@ mod tests {
             "an unrelated pre-existing same-key tombstone must not authorize deletion"
         );
         // 5: only a user may introduce or alter released_by_user.
-        let mut released = spec.clone();
+        let mut released = planner.clone();
         released.payload["released_by_user"] = json!(true);
         assert!(
             guard_task_declarations(
-                std::slice::from_ref(&spec),
+                std::slice::from_ref(&planner),
                 &[released],
-                EditAuthor::Spec,
+                EditAuthor::Planner,
                 None
             )
             .is_err()
@@ -643,9 +656,9 @@ mod tests {
     }
 
     #[test]
-    fn spec_cannot_modify_or_delete_user_task_through_any_write_shape() {
+    fn planner_cannot_modify_or_delete_user_task_through_any_write_shape() {
         let mut changed = live("user");
-        changed["goal"] = json!("spec rewrite");
+        changed["goal"] = json!("planner rewrite");
         let changed_fence = render_fence(KIND_TASK, &changed);
 
         let (mut doc, task, _) = doc_with_task("user");
@@ -675,7 +688,7 @@ mod tests {
         ];
         for operation in operations {
             let mut attempt = ReportDoc::from_bytes(&doc.to_bytes()).unwrap();
-            let error = apply_report_op(&mut attempt, &operation, EditAuthor::Spec).unwrap_err();
+            let error = apply_report_op(&mut attempt, &operation, EditAuthor::Planner).unwrap_err();
             assert!(matches!(error, CalmError::BadRequest(_)));
         }
     }
@@ -688,7 +701,7 @@ mod tests {
                 body: forged_user_tombstone_fence(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         );
     }
 
@@ -700,7 +713,7 @@ mod tests {
                 body: forged_user_tombstone_fence(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         );
     }
 
@@ -715,16 +728,16 @@ mod tests {
                 if_doc_rev: Some(0),
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         );
     }
 
     #[test]
-    fn replace_cannot_create_spec_tombstone_as_user() {
+    fn replace_cannot_create_planner_tombstone_as_user() {
         assert_cannot_create_tombstone_as_another_author(
             ReportDocOp::Replace {
                 summary: None,
-                body: forged_spec_tombstone_fence(),
+                body: forged_planner_tombstone_fence(),
                 if_doc_rev: 0,
             },
             EditAuthor::User,
@@ -732,11 +745,11 @@ mod tests {
     }
 
     #[test]
-    fn write_markdown_cannot_create_spec_tombstone_as_user() {
+    fn write_markdown_cannot_create_planner_tombstone_as_user() {
         assert_cannot_create_tombstone_as_another_author(
             ReportDocOp::WriteMarkdown {
                 summary: None,
-                body: forged_spec_tombstone_fence(),
+                body: forged_planner_tombstone_fence(),
                 if_doc_rev: 0,
             },
             EditAuthor::User,
@@ -744,12 +757,12 @@ mod tests {
     }
 
     #[test]
-    fn upsert_block_cannot_create_spec_tombstone_as_user() {
+    fn upsert_block_cannot_create_planner_tombstone_as_user() {
         assert_cannot_create_tombstone_as_another_author(
             ReportDocOp::UpsertBlock {
                 id: None,
                 kind: KIND_TASK.into(),
-                content: forged_spec_tombstone_fence(),
+                content: forged_planner_tombstone_fence(),
                 if_rev: None,
                 if_doc_rev: Some(0),
                 position: None,
@@ -773,7 +786,7 @@ mod tests {
                 to_index: 1,
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("order is not task content, so a non-user move is allowed");
 
@@ -783,7 +796,7 @@ mod tests {
 
     #[test]
     fn live_task_transition_cannot_forge_tombstone_author_or_change_key() {
-        for (author, forged_by) in [(EditAuthor::Spec, "user"), (EditAuthor::User, "spec")] {
+        for (author, forged_by) in [(EditAuthor::Planner, "user"), (EditAuthor::User, "spec")] {
             let (mut doc, task, _) = doc_with_task("spec");
             let payload = json!({
                 "key": "build",
@@ -820,7 +833,7 @@ mod tests {
                 if_doc_rev: None,
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap_err();
         assert!(matches!(error, CalmError::BadRequest(_)));
@@ -851,7 +864,7 @@ mod tests {
         // a silent hole.
         for author in [
             EditAuthor::User,
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             EditAuthor::Kernel,
             EditAuthor::Plugin,
             EditAuthor::Assistant,
@@ -888,15 +901,15 @@ mod tests {
         // #1189 — `Assistant` is deliberately ABSENT from this loop. The
         // escape hatch is not authorship-scoped (the task here is
         // declared_by "spec" for every author listed), so adding Assistant
-        // would freeze "an assistant may delete a spec-declared live task
+        // would freeze "an assistant may delete a planner-declared live task
         // outright, no tombstone, no attribution" as a tested capability —
         // the mirror image of §3.2a P2, which says an assistant cannot even
-        // declare a task block. Today `blocks.delete` is `require_role(Spec)`
+        // declare a task block. Today `blocks.delete` is `require_role(Planner)`
         // so nothing reaches this guard as Assistant; when S2 opens the
         // block channel, the assistant's block-level delete right is an
         // explicit S2 decision, not something inherited by default from a
         // list this test happened to widen.
-        for author in [EditAuthor::Spec, EditAuthor::Kernel, EditAuthor::Plugin] {
+        for author in [EditAuthor::Planner, EditAuthor::Kernel, EditAuthor::Plugin] {
             let (mut doc, task, _) = doc_with_task("spec");
             apply_report_op(
                 &mut doc,
@@ -942,7 +955,7 @@ mod tests {
         let error = guard_task_declarations(
             &[deleted.clone(), collateral],
             std::slice::from_ref(&deleted),
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             Some("b_deleted"),
         )
         .unwrap_err();
@@ -955,7 +968,7 @@ mod tests {
     fn whole_document_retirement_needs_a_fresh_tombstone_signed_by_the_writer() {
         for (author, writer, other) in [
             (EditAuthor::User, "user", "spec"),
-            (EditAuthor::Spec, "spec", "user"),
+            (EditAuthor::Planner, "spec", "user"),
         ] {
             let old = block("b_task", live(writer));
             let mine = block(

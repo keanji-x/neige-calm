@@ -158,7 +158,7 @@ pub struct CardCreationFromTool {
 /// caller (M2's `routes::cards::create`) treats that as 422 / `not_a_card_tool`.
 ///
 /// We **do not** inspect `is_error` here — that's the caller's responsibility
-/// (per spec, a tool returning `isError: true` may still legitimately omit
+/// (per planner, a tool returning `isError: true` may still legitimately omit
 /// `_meta.ui.resourceUri`, but the route should surface the failure as 502
 /// before reaching this extractor).
 ///
@@ -572,7 +572,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .map_err(internal_repo_err)?
         .ok_or_else(|| entity_not_found(format!("card {}", p.card_id)))?;
     // Issue #229 PR A — kernel-owned card guard. Same shape as the REST
-    // path in `routes::cards::delete_card`: undeletable cards (spec
+    // path in `routes::cards::delete_card`: undeletable cards (planner
     // today, report card in PR B) refuse this entry point. In practice
     // plugins can't reach a kernel-owned card via `can_card_delete`
     // (which gates on kind ownership), but the guard runs first so the
@@ -865,7 +865,7 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 // ===========================================================================
 // Unit tests — direct calls against `dispatch` with a hand-rolled
 // CallbackCtx (in-memory SqlxRepo + in-process EventBus + a stub McpClient
-// that we build with `tokio::io::duplex`). Slice C's binding spec calls these
+// that we build with `tokio::io::duplex`). Slice C's binding planner calls these
 // "acceptable as long as they cover every method"; the end-to-end stub
 // alternative is heavier and adds little extra signal once the router is
 // directly exercised.
@@ -1408,7 +1408,7 @@ mod tests {
     /// even when the plugin would otherwise be authorized for the
     /// card kind (`can_card_delete` would say yes). We mint the
     /// undeletable card via `card_create_with_id_tx` directly so the
-    /// test does not depend on the production track-create→spec path
+    /// test does not depend on the production track-create→planner path
     /// (which carries a terminal row and a daemon stub we don't need
     /// here). Plugin-owned `plugin:p1:demo` kind ensures the kind
     /// check would otherwise let the plugin through — proving the

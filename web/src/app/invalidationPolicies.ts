@@ -228,11 +228,11 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   },
   'task.completed': {
     requiresContext: trackFilesDerivedEventKeys,
-    reason: 'Dispatcher and spec-agent waiters consume task completion directly.',
+    reason: 'Dispatcher and planner-agent waiters consume task completion directly.',
   },
   'task.failed': {
     requiresContext: trackFilesDerivedEventKeys,
-    reason: 'Dispatcher and spec-agent waiters consume task failure directly.',
+    reason: 'Dispatcher and planner-agent waiters consume task failure directly.',
   },
   'plan.updated': noop(
     'No task-plan query exists yet; the PR-B scheduler consumes plan revisions server-side.',
@@ -258,13 +258,13 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     'Forge merge lifecycle is card/track-scoped; no React Query cache consumes forge merge rows yet.',
   ),
   'review.round': noop(
-    'Review convergence rounds are spec-observed workflow history; no React Query cache consumes them yet.',
+    'Review convergence rounds are planner-observed workflow history; no React Query cache consumes them yet.',
   ),
   'ratify.requested': noop(
-    'Ratification requests are spec-observed workflow history; no React Query cache consumes them yet.',
+    'Ratification requests are planner-observed workflow history; no React Query cache consumes them yet.',
   ),
   'ratify.resolved': noop(
-    'Ratification decisions are spec-observed workflow history; no React Query cache consumes them yet.',
+    'Ratification decisions are planner-observed workflow history; no React Query cache consumes them yet.',
   ),
   'proposal.submitted': noop(
     'Historical proposal events remain parseable, but the proposal channel and its UI are withdrawn.',

@@ -34,7 +34,7 @@ pub struct TrackFsView<'a> {
     /// `(caller role, gate-logs dir)`. `None` (the default) keeps the
     /// path unavailable — surfaces that don't carry a card identity
     /// (HTTP track routes) never expose gate logs. Even when wired, only
-    /// `CardRole::Spec` passes (§6.7: workers must not read gate
+    /// `CardRole::Planner` passes (§6.7: workers must not read gate
     /// material).
     gate_log_access: Option<(CardRole, std::path::PathBuf)>,
 }
@@ -243,7 +243,7 @@ impl<'a> TrackFsView<'a> {
         }
     }
 
-    /// `plan/<key>/gate.log` (issue #644 PR-C): spec-role-gated read of
+    /// `plan/<key>/gate.log` (issue #644 PR-C): planner-role-gated read of
     /// `<gate_logs_dir>/{task_id}-g{gate_attempt}.log`. Advisory
     /// content per §6.7 — the log is worker-reachable on disk; the
     /// verdict rides the wrapper exit status, never this file.
@@ -254,9 +254,9 @@ impl<'a> TrackFsView<'a> {
                     .to_string(),
             ));
         };
-        if *role != CardRole::Spec {
+        if *role != CardRole::Planner {
             return Err(TrackFsError::Forbidden(format!(
-                "track_file: forbidden: plan/{key}/gate.log is spec-only (§6.7); caller role {role:?}"
+                "track_file: forbidden: plan/{key}/gate.log is planner-only (§6.7); caller role {role:?}"
             )));
         }
         let task_id = format!("{}:{key}", track.id.as_str());
@@ -654,7 +654,7 @@ fn project_runs(
                 idempotency_key, ..
             } => {
                 let event = run_event(row.id, row.at, "task.completed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
                     // Track-scoped verdicts are routed to `verdict`, not `completed`.
@@ -668,7 +668,7 @@ fn project_runs(
                 idempotency_key, ..
             } => {
                 let event = run_event(row.id, row.at, "task.failed", row.event.payload_value());
-                if is_spec_verdict_event(&row.scope, &row.actor) {
+                if is_planner_verdict_event(&row.scope, &row.actor) {
                     record_latest(&mut verdict, idempotency_key, event);
                 } else {
                     record_latest(&mut failed, idempotency_key, event);
@@ -801,14 +801,14 @@ fn latest_final_event<'a>(
     }
 }
 
-/// Spec verdicts are task terminal events emitted at Track scope by the
+/// Planner verdicts are task terminal events emitted at Track scope by the
 /// `update_task_meta` MCP tool in `track_state.rs`, where
-/// `identity.to_actor_id()` produces the spec actor. Non-verdict task events
+/// `identity.to_actor_id()` produces the planner actor. Non-verdict task events
 /// may also be Track-scoped: the dispatcher spawn-failure path in
 /// `dispatcher.rs` emits `Event::TaskFailed` as `ActorId::KernelDispatcher`
 /// while preserving the request scope. Those dispatcher failures remain run
 /// failures, not verdicts, even though they share the Track scope.
-fn is_spec_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
+fn is_planner_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
     matches!(scope, EventScope::Track { .. }) && !matches!(actor, ActorId::KernelDispatcher)
 }
 
@@ -1042,7 +1042,7 @@ fn flow_truncate(s: &str) -> String {
     format!("{head}…")
 }
 
-/// #695 PR3 — render the captured worker-flow transcript a verifying spec
+/// #695 PR3 — render the captured worker-flow transcript a verifying planner
 /// agent reads via `cards/<id>/conversation.md`. This is the meaningful
 /// transcript (messages, commands + outcomes, file changes, tool calls),
 /// not a bare tool log. Items are grouped by `env().turn` and rendered in
@@ -1399,7 +1399,7 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
     if let Some(verdict) = run.verdict.as_ref() {
         let reason = verdict.reason.as_deref().unwrap_or("");
         out.push_str(&format!(
-            "\n## Verdict\n\nVerdict: {} by spec at {}: {}\n",
+            "\n## Verdict\n\nVerdict: {} by planner at {}: {}\n",
             verdict.status, verdict.at, reason
         ));
     }

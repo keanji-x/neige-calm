@@ -3,7 +3,7 @@
 //! This is the FIRST buildable slice of the §3 crash-recovery epic. Every
 //! existing boot-recovery test is *in-process*: it builds `AppState` over
 //! `sqlite::memory:` and calls a recovery fn directly (see
-//! `spec_harness_boot_recovery.rs`). None of them spawns the shipped binary or
+//! `planner_harness_boot_recovery.rs`). None of them spawns the shipped binary or
 //! kills a real process, so none of them proves the durable-DB kill/reboot
 //! machinery actually survives a `SIGKILL`.
 //!
@@ -172,7 +172,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,

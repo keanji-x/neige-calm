@@ -16,7 +16,7 @@
 //! * **the card that gets minted** — `CardRole::Assistant` with an MCP token and
 //!   the block-channel tool surface, versus a `CardRole::Worker` plain chat with
 //!   no MCP at all;
-//! * **the list predicate** — this track carries a spec card, a report card and
+//! * **the list predicate** — this track carries a planner card, a report card and
 //!   however many dispatched worker cards (#1149), so the predicate has to be
 //!   exact about the role rather than merely "a codex card with a marker".
 
@@ -33,15 +33,15 @@ use crate::actor::Actor;
 use crate::conversation_keys::derive_track_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{CardRole, TrackConversationSummary};
-use crate::operation::spec_harness_start_adapter::{
+use crate::operation::planner_harness_start_adapter::{
     ASSISTANT_HARNESS_PROFILE_MARKER, HarnessProfile, LazyMintCardSeed,
-    SpecHarnessStartOperationPayload,
+    PlannerHarnessStartOperationPayload,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{SendSpecInputRequest, send_spec_input};
+use crate::routes::cards::{SendPlannerInputRequest, send_planner_input};
 use crate::routes::conversations_shared::{
-    SPEC_HARNESS_START, first_message_digest, retryable_operation_key,
+    PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
     user_message_already_enqueued, validate_first_message,
 };
 use crate::routes::terminal_cards::{
@@ -64,7 +64,7 @@ pub fn router() -> Router<AppState> {
 /// Body of `POST /api/tracks/{track_id}/conversations`: the first message.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct NewTrackConversationBody {
-    /// The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+    /// The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
     /// (non-blank after trim, at most 32768 chars) and validated *before*
     /// anything is minted, so a rejected message leaves no card behind.
     pub text: String,
@@ -76,7 +76,7 @@ pub struct NewTrackConversationBody {
     tag = "tracks",
     params(("track_id" = String, Path, description = "Track id")),
     responses(
-        (status = 200, description = "Assistant conversations on this track, newest activity first. The track's spec card, report card and dispatched worker cards are never listed here.", body = Vec<TrackConversationSummary>),
+        (status = 200, description = "Assistant conversations on this track, newest activity first. The track's planner card, report card and dispatched worker cards are never listed here.", body = Vec<TrackConversationSummary>),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -104,7 +104,7 @@ pub(crate) async fn list_track_conversations(
     request_body = NewTrackConversationBody,
     responses(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
-        (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
+        (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
         (status = 403, description = "The track is an area chat track; its conversations are created through the area endpoint.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
@@ -122,7 +122,7 @@ pub(crate) async fn list_track_conversations(
 ///
 /// * the first-message claim asks "has this CARD ever had a user message
 ///   enqueued?", not "has THIS request's message landed?", so a foreign
-///   `POST /api/cards/{id}/spec/input` between a failed send and its retry
+///   `POST /api/cards/{id}/planner/input` between a failed send and its retry
 ///   satisfies the claim;
 /// * the evidence is written non-transactionally, so a send whose audit write
 ///   fails is re-sent on retry.
@@ -175,10 +175,10 @@ pub(crate) async fn create_track_conversation(
 
     let derived = derive_track_conversation_keys(track.id.as_str(), &idempotency_key);
 
-    let payload = SpecHarnessStartOperationPayload {
+    let payload = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
-        spec_card_id: derived.card_id.clone().into(),
+        planner_card_id: derived.card_id.clone().into(),
         report_card_id: None,
         sort: None,
         cwd: track.workspace.path.clone(),
@@ -207,7 +207,7 @@ pub(crate) async fn create_track_conversation(
     let op_id = s
         .operation_runtime
         .submit(
-            SPEC_HARNESS_START,
+            PLANNER_HARNESS_START,
             OperationKey {
                 operation_key: operation_key.clone(),
                 idempotency_key: Some(operation_key),
@@ -248,13 +248,13 @@ pub(crate) async fn create_track_conversation(
         // Call the real handler rather than reimplementing it: the first
         // message and every later message must go through byte-identical
         // validation, locking, harness recovery and audit.
-        let _queued = send_spec_input(
+        let _queued = send_planner_input(
             State(s.clone()),
             State(w.clone()),
             State(cs),
             actor,
             Path(derived.card_id.clone()),
-            Json(SendSpecInputRequest { text }),
+            Json(SendPlannerInputRequest { text }),
         )
         .await?;
     }
@@ -277,7 +277,7 @@ pub(crate) async fn create_track_conversation(
 /// the difference is the whole point of G3. That query selects
 /// `role = 'worker' AND kind = 'codex' AND harness_profile = 'plain_chat'`,
 /// which on an area chat track is exact because nothing else lives there. An
-/// ordinary track is populated: a spec card, a report card, and every codex
+/// ordinary track is populated: a planner card, a report card, and every codex
 /// worker card the dispatcher has spawned for the plan (#1149). Widen this
 /// predicate to "a codex card" and the conversation list fills up with the
 /// track's workers.

@@ -295,7 +295,7 @@ impl RepoRead for SqlxRepo {
         //
         // Small tracks — the overwhelmingly common shape — get FASTER: one
         // round trip beats three. Tracks carrying large payloads (report /
-        // spec cards) get 2–3.5× slower, because the row is materialized as
+        // planner cards) get 2–3.5× slower, because the row is materialized as
         // text and then parsed into the same values a second time. That is a
         // real regression on the tail, and the reason it is accepted here is
         // that the alternative shapes are worse in kind, not in degree: three
@@ -314,7 +314,7 @@ impl RepoRead for SqlxRepo {
         // fabricates a card, silently and with no error anywhere. Write-side
         // `json_valid` triggers (migration 0070, reverted with it) do not
         // close that — they cannot see disk corruption, a hand-edited row, or
-        // a restored bad backup, and `spec_harness_track_vcs`'s
+        // a restored bad backup, and `planner_harness_track_vcs`'s
         // `transcript_refresh_failure_from_corrupt_card_payload…` shows the
         // codebase deliberately EXERCISES a corrupt payload and expects the
         // read to fail loudly rather than degrade into structure. `json()`
@@ -936,10 +936,11 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
-    async fn shared_spec_cards_for_initial_prompt_takeover(
+    async fn shared_planner_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
-        let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
+        let (provider, _mode, contract) =
+            derive_session_identity(&WorkerSessionKind::SharedPlanner);
         // Join `terminals` and require a LIVE row so a card whose TUI was
         // already reaped (reconcile_supervisor_on_boot marked it exited,
         // or a SIGKILL set signal_killed=1) is NOT re-registered into the
@@ -963,7 +964,7 @@ impl RepoRead for SqlxRepo {
                    AND ws.thread_id IS NULL
                    AND ws.state IN ('starting','running','idle','turn_pending')
                JOIN terminals t ON t.id = ws.terminal_run_id
-               WHERE c.role = 'spec'
+               WHERE c.role = 'planner'
                  AND t.exit_code IS NULL
                  AND COALESCE(t.signal_killed, 0) = 0
                  AND NOT EXISTS (

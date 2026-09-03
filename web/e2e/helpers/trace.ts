@@ -4,7 +4,7 @@
 // Slice 5 of issue #56 plumbs each WS frame into a 200-entry ring buffer
 // (shape: `{id, eventVersion, ev, data, ts}`). These helpers are the
 // browser-side counterpart — `page.evaluate` calls that read or clear the
-// buffer, plus a couple of convenience assertions for keeping spec files
+// buffer, plus a couple of convenience assertions for keeping planner files
 // concise.
 //
 // The TraceEvent type intentionally mirrors the bridge's exported shape

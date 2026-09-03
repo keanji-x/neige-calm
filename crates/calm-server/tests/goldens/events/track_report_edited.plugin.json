@@ -1,5 +1,5 @@
 {
-  "description": "track.report_edited with the #955 plugin author arm: author=\"plugin\" (bare lowercase, same encoding family as spec/user/kernel) plus the sibling author_plugin_id carrying the submitter. The min golden pins the old-row replay path (field absent => None); this one pins the populated shape the accept transaction emits.",
+  "description": "track.report_edited with the #955 plugin author arm: author=\"plugin\" (bare lowercase, same encoding family as planner/user/kernel) plus the sibling author_plugin_id carrying the submitter. The min golden pins the old-row replay path (field absent => None); this one pins the populated shape the accept transaction emits.",
   "wire": {
     "ev": "track.report_edited",
     "data": {

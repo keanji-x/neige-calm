@@ -3,8 +3,8 @@
 //! These tests pin the CURRENT behavior of the dispatch→push→observation
 //! loop as a regression anchor for the PR5-8 dispatcher rewrite. They are
 //! deliberately black-box-ish (events table + `Dispatcher` public surface +
-//! `SpecHarness` observation channel) and run with **zero real processes**:
-//! the spec harness is constructed via `run_unstarted_for_test` (its run
+//! `PlannerHarness` observation channel) and run with **zero real processes**:
+//! the planner harness is constructed via `run_unstarted_for_test` (its run
 //! loop never starts, so deliveries are read deterministically from the
 //! observation channel — no wall-clock polling against a live turn loop),
 //! the shared daemon is the in-process fake, and the worker "spawn" in the
@@ -14,7 +14,7 @@
 //!
 //!   1. `catch_up_push` with persisted `task.completed` / `task.failed`
 //!      envelopes → exact `Observation` content + push-cursor advance +
-//!      watermark dedup (the existing `spec_harness_dual_run_filter` test
+//!      watermark dedup (the existing `planner_harness_dual_run_filter` test
 //!      only covers `track.report_edited` through this path).
 //!   2. A live worker-actor `task.failed` push is **observation-only**:
 //!      it must not touch the track lifecycle and must not append events
@@ -22,7 +22,7 @@
 //!      unchanged). The Working→Reviewing fallback exists ONLY on the
 //!      dispatcher's own spawn-failure path (pinned by
 //!      `dispatcher_spawn_failure_auto_promotes_working_to_reviewing`).
-//!   3. AiSpec-authored task events never push back into the harness
+//!   3. AiPlanner-authored task events never push back into the harness
 //!      (anti-feedback-loop), asserted at the live transport level.
 //!   4. The dead-worker stall: a worker that spawns successfully and then
 //!      never reports leaves the track parked in `Working` forever — no
@@ -44,8 +44,8 @@ use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::run_loop::HarnessObservationDelivery;
 use calm_server::harness::{
-    HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, SpecHarness,
-    SpecHarnessParams,
+    HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, PlannerHarness,
+    PlannerHarnessParams,
 };
 use calm_server::ids::{ActorId, AreaId, TrackId};
 use calm_server::model::{
@@ -75,7 +75,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
-// Fixture: spec card + worker card + unstarted harness + live dispatcher.
+// Fixture: planner card + worker card + unstarted harness + live dispatcher.
 // ---------------------------------------------------------------------------
 
 struct LoopFixture {
@@ -86,9 +86,9 @@ struct LoopFixture {
     track_area_cache: TrackAreaCache,
     track_id: TrackId,
     area_id: AreaId,
-    spec_card: Card,
+    planner_card: Card,
     worker_card: Card,
-    harness: SpecHarness,
+    harness: PlannerHarness,
     /// Observation deliveries the dispatcher pushes into the harness. The
     /// harness run loop is intentionally NOT started, so every delivery
     /// stays in this channel and can be received deterministically.
@@ -125,7 +125,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     track_area_cache.insert(track.id.clone(), area.id.clone());
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let spec_card = card_create_with_id_tx(
+    let planner_card = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
@@ -135,7 +135,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             sort: None,
             payload: json!({"schemaVersion": 1}),
         },
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &role_cache,
     )
@@ -159,8 +159,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Harness-backed SharedSpec runtime row — `harness_runtime_id_for_spec_card`
-    // requires an active SharedSpec runtime whose handle_state is a harness
+    // Harness-backed SharedPlanner runtime row — `harness_runtime_id_for_planner_card`
+    // requires an active SharedPlanner runtime whose handle_state is a harness
     // snapshot.
     let thread_id = format!("thread-{tag}");
     let runtime_id = new_id();
@@ -172,8 +172,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         &mut tx,
         WorkerSessionInit {
             id: runtime_id.clone(),
-            card_id: spec_card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            card_id: planner_card.id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
@@ -197,11 +197,11 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     // Unstarted: the run loop never consumes the observation channel, so
     // the test reads deliveries deterministically (no debounce / turn
     // issuance racing the assertions).
-    let (harness, obs_rx) = SpecHarness::run_unstarted_for_test(
-        SpecHarnessParams {
+    let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
+        PlannerHarnessParams {
             runtime_id: runtime_id.clone(),
             track_id: track.id.clone(),
-            card_id: spec_card.id.clone(),
+            card_id: planner_card.id.clone(),
             thread_id: Some(thread_id),
             repo: repo_dyn.clone(),
             events: events.clone(),
@@ -239,7 +239,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         track_area_cache,
         track_id: track.id,
         area_id: area.id,
-        spec_card,
+        planner_card,
         worker_card,
         harness,
         obs_rx,
@@ -346,10 +346,10 @@ fn task_failed(idem: &str, reason: &str) -> Event {
 
 /// Inject persisted `task.completed` / `task.failed` envelopes through
 /// `Dispatcher::catch_up_push` and pin:
-///   - the exact `Observation` mapping the spec harness receives
+///   - the exact `Observation` mapping the planner harness receives
 ///     (`result` carried verbatim; `task.failed`'s `reason` becomes the
 ///     observation's `error`);
-///   - the per-spec-card push cursor advancing to each delivered envelope id;
+///   - the per-planner-card push cursor advancing to each delivered envelope id;
 ///   - synthetic id-0 envelopes never delivering (cursor starts at 0,
 ///     pushes require `envelope_id > cursor`);
 ///   - watermark dedup: replaying an already-delivered (lower-or-equal id)
@@ -371,7 +371,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         fx.obs_rx.try_recv().is_err(),
         "id-0 envelope must not be delivered to the harness"
     );
-    assert_eq!(fx.dispatcher.push_cursor_for_test(&fx.spec_card.id), 0);
+    assert_eq!(fx.dispatcher.push_cursor_for_test(&fx.planner_card.id), 0);
 
     // task.completed: persisted by the worker actor in its own card scope,
     // replayed through catch_up_push.
@@ -399,7 +399,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         "task.completed observation must carry the idempotency key and verbatim result"
     );
     assert_eq!(
-        fx.dispatcher.push_cursor_for_test(&fx.spec_card.id),
+        fx.dispatcher.push_cursor_for_test(&fx.planner_card.id),
         completed_id,
         "delivered envelope must advance the push cursor"
     );
@@ -429,7 +429,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         "task.failed reason must surface as the observation error"
     );
     assert_eq!(
-        fx.dispatcher.push_cursor_for_test(&fx.spec_card.id),
+        fx.dispatcher.push_cursor_for_test(&fx.planner_card.id),
         failed_id
     );
 
@@ -443,7 +443,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         "redelivered envelope must be deduped by the push watermark"
     );
     assert_eq!(
-        fx.dispatcher.push_cursor_for_test(&fx.spec_card.id),
+        fx.dispatcher.push_cursor_for_test(&fx.planner_card.id),
         failed_id,
         "dedup must not move the cursor"
     );
@@ -452,18 +452,18 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
 }
 
 // ---------------------------------------------------------------------------
-// 2 + 3. Live push is observation-only; AiSpec self-events never push back.
+// 2 + 3. Live push is observation-only; AiPlanner self-events never push back.
 // ---------------------------------------------------------------------------
 
 /// A worker-actor `task.failed` arriving on the live bus is delivered to the
-/// spec harness as an observation and does NOTHING else: no track lifecycle
+/// planner harness as an observation and does NOTHING else: no track lifecycle
 /// change (the dispatcher's Working→Reviewing fallback fires only on its own
 /// spawn failures) and no new rows in the event log (T2 precursor —
 /// observation delivery leaves the event count unchanged). A subsequent
-/// AiSpec-authored task event must not push back into the harness
+/// AiPlanner-authored task event must not push back into the harness
 /// (anti-feedback-loop).
 #[tokio::test]
-async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_push_back() {
+async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_not_push_back() {
     let mut fx = loop_fixture("live-task-failed").await;
     fx.repo
         .track_update(
@@ -488,7 +488,7 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
     // observation channel.
     let delivery = tokio::time::timeout(Duration::from_secs(5), fx.obs_rx.recv())
         .await
-        .expect("live task.failed must reach the spec harness within 5s")
+        .expect("live task.failed must reach the planner harness within 5s")
         .expect("observation channel open");
     assert_eq!(delivery.envelope_id, Some(failed_id));
     assert_eq!(
@@ -499,7 +499,7 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
         }
     );
     assert_eq!(
-        fx.dispatcher.push_cursor_for_test(&fx.spec_card.id),
+        fx.dispatcher.push_cursor_for_test(&fx.planner_card.id),
         failed_id
     );
 
@@ -529,25 +529,25 @@ async fn live_task_failed_push_is_observation_only_and_spec_self_events_do_not_p
         Event::TaskFailed { idempotency_key, .. } if idempotency_key == "live-loop-pin"
     ));
 
-    // AiSpec self-event (higher envelope id, so the watermark cannot mask
+    // AiPlanner self-event (higher envelope id, so the watermark cannot mask
     // the warrant check): must never push back into the harness.
-    let spec_self_id = fx
+    let planner_self_id = fx
         .persist_live(
-            ActorId::AiSpec(fx.spec_card.id.clone()),
+            ActorId::AiPlanner(fx.planner_card.id.clone()),
             fx.track_scope(),
-            task_completed("spec-self-echo", json!({"ok": true})),
+            task_completed("planner-self-echo", json!({"ok": true})),
         )
         .await;
-    assert!(spec_self_id > failed_id, "ids are monotonic");
+    assert!(planner_self_id > failed_id, "ids are monotonic");
     let echo = tokio::time::timeout(Duration::from_millis(250), fx.obs_rx.recv()).await;
     assert!(
         echo.is_err(),
-        "AiSpec-authored task events must not be pushed back to the spec harness; got {echo:?}"
+        "AiPlanner-authored task events must not be pushed back to the planner harness; got {echo:?}"
     );
     assert_eq!(
-        fx.dispatcher.push_cursor_for_test(&fx.spec_card.id),
+        fx.dispatcher.push_cursor_for_test(&fx.planner_card.id),
         failed_id,
-        "ignored AiSpec event must not advance the push cursor"
+        "ignored AiPlanner event must not advance the push cursor"
     );
 
     fx.harness.shutdown().await.unwrap();

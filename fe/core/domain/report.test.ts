@@ -456,9 +456,9 @@ describe('deriveReportTasks', () => {
   /*
    * `schedulable` does NOT mean "not waiting on a dependency", and an earlier
    * cut of this join read it that way: `pending && !schedulable` printed
-   * `blocked`. The kernel clears the flag for every candidate past the spec
+   * `blocked`. The kernel clears the flag for every candidate past the planner
    * ceiling or the track-tree budget (`task_projection.rs`, the
-   * `verdicts[index].schedulable = false` after the `spec_task_ceiling`
+   * `verdicts[index].schedulable = false` after the `planner_task_ceiling`
    * diagnostic), so an ordinary queue behind capacity rendered as `blocked` and
    * a healthy track looked stuck. Task-budget reasoning is out of this slice, so
    * both rows get the one word the kernel actually gave them.

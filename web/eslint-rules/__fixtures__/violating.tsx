@@ -2,10 +2,10 @@
 //
 // This file intentionally violates the rule — `useState<Persistent<...>>`
 // — and is excluded from the regular lint pass via the `ignores` entry in
-// `eslint.config.js`. The companion vitest spec
+// `eslint.config.js`. The companion vitest planner
 // (`../no-persistent-in-usestate.test.ts`) runs ESLint programmatically
 // against this file and asserts that the violation is reported. If
-// someone breaks the rule in the future the spec turns red.
+// someone breaks the rule in the future the planner turns red.
 //
 // Why a separate fixture file instead of an inline string source? The
 // rule walks TS types through `@typescript-eslint/parser`, which requires

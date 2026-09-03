@@ -165,7 +165,7 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
   it('never bootstraps the launchpad while rendering Today', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
     await screen.findByText(EMPTY_COPY);
-    /* `ensure` materializes a workspace and waits on a `spec-harness-start`
+    /* `ensure` materializes a workspace and waits on a `planner-harness-start`
        operation, so putting it on this path would make Today's first paint
        depend on codex being up. Asserting on the whole request log rather than
        on the one path: any write at all during a page load is the defect. */
@@ -323,7 +323,7 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
   it('announces a real failure, and keeps the document it did not change', async () => {
     renderToday({
       resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n',
-      summary: refuse(409, 'spec_harness_dormant', 'the harness is dormant'),
+      summary: refuse(409, 'planner_harness_dormant', 'the harness is dormant'),
     });
     await userEvent.click(await screen.findByRole('button', { name: REWRITE }));
     const alerts = await screen.findAllByRole('alert');

@@ -34,35 +34,35 @@ describe('CODEX_CARD_ENTRY', () => {
 
   /*
    * `INV-CARD-180`. Kind `'codex'` mints three different cards; the payload's
-   * `spec_harness` bit is the only thing separating a harness from an ordinary
+   * `planner_harness` bit is the only thing separating a harness from an ordinary
    * worker. If codex stopped refusing harness payloads it would swallow every
-   * spec card into a surface-owning card — spec cards are headless by
+   * planner card into a surface-owning card — planner cards are headless by
    * `INV-CARD-181` and must not appear in the CARDS list at all. (The refusal
-   * is the mechanism; codex being registered before spec and carrying no
+   * is the mechanism; codex being registered before planner and carrying no
    * `claim` is not — `resolve`'s exact-claim path falls through on `null`.)
    */
-  it('[INV-CARD-180] refuses spec harness payloads so they fall through to spec', () => {
+  it('[INV-CARD-180] refuses planner harness payloads so they fall through to planner', () => {
     expect(CODEX_CARD_ENTRY.fromKernel?.({
-      id: 's1', kind: 'codex', payload: { spec_harness: true },
+      id: 's1', kind: 'codex', payload: { planner_harness: true },
     })).toBeNull();
-    // A refusal is only useful if the card really lands on spec afterwards, so
+    // A refusal is only useful if the card really lands on planner afterwards, so
     // assert it through the booted production registry, in production order.
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(
-      registry.resolve({ id: 's1', kind: 'codex', payload: { spec_harness: true } })?.type,
-      'a spec harness card must still resolve as spec through the production registry',
-    ).toBe('spec');
-    expect(registry.get('spec')?.headless).toBe(true);
-    // …and an ordinary codex card must not be taken by spec.
+      registry.resolve({ id: 's1', kind: 'codex', payload: { planner_harness: true } })?.type,
+      'a planner harness card must still resolve as planner through the production registry',
+    ).toBe('planner');
+    expect(registry.get('planner')?.headless).toBe(true);
+    // …and an ordinary codex card must not be taken by planner.
     expect(registry.resolve({ id: 'x1', kind: 'codex', payload: { terminal_id: 't1' } })?.type)
       .toBe('codex');
   });
 
-  it('reads only the exact discriminator, not any truthy spec_harness', () => {
-    // `isSpecHarnessPayload` is `=== true`; sharing it with spec is what keeps
+  it('reads only the exact discriminator, not any truthy planner_harness', () => {
+    // `isPlannerHarnessPayload` is `=== true`; sharing it with planner is what keeps
     // the two entries from disagreeing about which cards are harnesses.
-    for (const payload of [{ spec_harness: false }, { spec_harness: 'true' }, { spec_harness: 1 }, null, 'x']) {
+    for (const payload of [{ planner_harness: false }, { planner_harness: 'true' }, { planner_harness: 1 }, null, 'x']) {
       expect(CODEX_CARD_ENTRY.fromKernel?.({ id: 'p', kind: 'codex', payload })?.type).toBe('codex');
     }
   });
@@ -70,7 +70,7 @@ describe('CODEX_CARD_ENTRY', () => {
   /*
    * `INV-CHAT-016` — the *third* shape under kind `'codex'`. An area plain-chat
    * conversation card carries `harness_profile: "plain_chat"` and deliberately
-   * no `spec_harness` key, and has no PTY at all: the adapter writes
+   * no `planner_harness` key, and has no PTY at all: the adapter writes
    * `terminal_run_id: None`, so `terminal_id` is never projected for it.
    * Claiming it would give every conversation a real grid slot rendering
    * `TerminalCardView` with a null terminal — "Starting codex…" forever.
@@ -113,12 +113,12 @@ describe('CODEX_CARD_ENTRY', () => {
   });
 
   /*
-   * The no-claim rule, pinned the way `spec.test.ts` pins spec's.
+   * The no-claim rule, pinned the way `planner.test.ts` pins planner's.
    *
    * It is *not* the mechanism that separates the shared kind — `resolve` runs
    * the exact-claim entry's `fromKernel` and, on `null`, continues to the
    * insertion-order scan, so an exact claim here would resolve harnesses as
-   * `spec` all the same and `validateEntry` would not object. Without this
+   * `planner` all the same and `validateEntry` would not object. Without this
    * assertion, adding the claim is a green mutation. Read through the
    * interface: the entry literal is checked with `satisfies`, so the constant's
    * own type only lists the members it declares.
@@ -132,8 +132,8 @@ describe('CODEX_CARD_ENTRY', () => {
    * comes from a task row rather than a gesture. That was a statement about the
    * front-end, not about the kernel: `POST /api/tracks/:id/codex-cards` has
    * always minted one atomically, and the panel now offers it. What the kernel
-   * genuinely reserves to itself is the *spec harness* — a `codex` row with a
-   * harness payload — and that is a different entry (`SPEC_CARD_ENTRY`), which
+   * genuinely reserves to itself is the *planner harness* — a `codex` row with a
+   * harness payload — and that is a different entry (`PLANNER_CARD_ENTRY`), which
    * keeps its `kernel-minted-only` and its own assertion.
    */
   it('is user-creatable through the kind\'s own atomic endpoint', () => {
@@ -175,7 +175,7 @@ describe('CODEX_CARD_ENTRY', () => {
       wire('k-codex', 'codex', { terminal_id: 't1' }),
       wire('k-term', 'terminal', { terminal_id: 't2' }),
       // Same kernel kind, harness bit set: still headless, still filtered out.
-      wire('k-spec', 'codex', { spec_harness: true }),
+      wire('k-planner', 'codex', { planner_harness: true }),
     ]);
     expect(visible.map((slot) => slot.card.type)).toEqual(['codex', 'terminal']);
     expect(unknown).toEqual([]);

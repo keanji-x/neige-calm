@@ -2,7 +2,7 @@
 //! `mcp_server::handshake` path + per-connection identity binding.
 //!
 //! Boots a real `McpServer` against an in-memory `SqlxRepo` + a UDS
-//! tempdir, mints a Spec card with a per-card MCP token, and drives a mock
+//! tempdir, mints a Planner card with a per-card MCP token, and drives a mock
 //! client over the socket. Covers:
 //!
 //!   * `initialize` with a valid token → success + capabilities echoed.
@@ -67,7 +67,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-/// Boot an `McpServer` against an in-memory SqlxRepo with a Spec card
+/// Boot an `McpServer` against an in-memory SqlxRepo with a Planner card
 /// plus an MCP token already minted. The card's track + area are seeded so
 /// the emit tools (PR7a) can resolve the scope chain.
 async fn boot() -> Boot {
@@ -113,7 +113,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
 
-    // Mint Spec card + token inside a tx. We bypass the route layer
+    // Mint Planner card + token inside a tx. We bypass the route layer
     // and write directly via `card_with_codex_create_tx` — the
     // route layer would also work, but this keeps the test focused
     // on the handshake / tools surface.
@@ -131,8 +131,8 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         None,
         None,
         None,
-        CardRole::Spec,
-        // #229 PR A — spec cards are kernel-owned in production. The
+        CardRole::Planner,
+        // #229 PR A — planner cards are kernel-owned in production. The
         // mcp-handshake test focuses on the MCP surface, not on the
         // delete guard; minting `false` here also mirrors the prod
         // track-create path (`routes/tracks.rs`).
@@ -141,9 +141,9 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect("mint spec card");
+    .expect("mint planner card");
     tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Spec card must mint a token");
+    let raw_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
@@ -405,7 +405,7 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
             assert_eq!(identity.area_id, b.area_id);
             assert_eq!(
                 identity.to_actor_id(),
-                ActorId::AiSpecSession(WorkerSessionId::from(b.session_id.as_str())),
+                ActorId::AiPlannerSession(WorkerSessionId::from(b.session_id.as_str())),
                 "persisted-event actor must be session-derived"
             );
             assert_eq!(
@@ -720,7 +720,7 @@ async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
 }
 
 #[tokio::test]
-async fn spec_role_cannot_call_task_complete_or_fail() {
+async fn planner_role_cannot_call_task_complete_or_fail() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
@@ -736,14 +736,14 @@ async fn spec_role_cannot_call_task_complete_or_fail() {
             12,
             "calm.task.complete",
             &b.thread_id,
-            json!({"idempotency_key": "tc-spec-refused", "result": "ok"}),
+            json!({"idempotency_key": "tc-planner-refused", "result": "ok"}),
         ),
     )
     .await;
     let completed = recv_frame(&mut rd).await;
     let err = completed
         .get("error")
-        .expect("spec task.complete must be rejected");
+        .expect("planner task.complete must be rejected");
     assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
 
     send_frame(
@@ -752,14 +752,14 @@ async fn spec_role_cannot_call_task_complete_or_fail() {
             13,
             "calm.task.fail",
             &b.thread_id,
-            json!({"idempotency_key": "tf-spec-refused", "reason": "nope"}),
+            json!({"idempotency_key": "tf-planner-refused", "reason": "nope"}),
         ),
     )
     .await;
     let failed = recv_frame(&mut rd).await;
     let err = failed
         .get("error")
-        .expect("spec task.fail must be rejected");
+        .expect("planner task.fail must be rejected");
     assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
     let _ = (&b.server, &b.repo);
 }

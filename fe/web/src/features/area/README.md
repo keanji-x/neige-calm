@@ -48,15 +48,15 @@ required and both default to nothing.
 
 `NewTrackDraft` is `{ message, template_id?, template_input?, cwd? }`. **`message`
 is the track's intent, not its title**: `NewTrackRoute` posts `POST /api/tracks`
-with *no* `title` at all — the kernel stores the empty string and the spec agent
+with *no* `title` at all — the kernel stores the empty string and the planner agent
 names the track later through `calm.track.rename`.
 
-`message`'s destination is the new track's spec card as its first message, and
+`message`'s destination is the new track's planner card as its first message, and
 **that delivery is not implemented here** (#1299). Doing it from this page takes
 three writes and cannot be made sound from a component — an unmount mid-flight
-loses the sentence silently, and `/spec/input` has no idempotency key so any
+loses the sentence silently, and `/planner/input` has no idempotency key so any
 retry can double-send. It moves into the create request instead. Until then the
-page says so on screen and the route opens the track's spec conversation on
+page says so on screen and the route opens the track's planner conversation on
 arrival, so saying it again is one keystroke. See `NewTrackRoute`'s doc comment.
 
 **The `cwd` key is absent, not empty, when no folder was chosen.** That

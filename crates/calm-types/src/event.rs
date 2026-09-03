@@ -115,7 +115,7 @@ impl AsRef<str> for ArtifactRef {
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum EditAuthor {
-    Spec,
+    Planner,
     User,
     /// #1189 — a track-scoped assistant conversation (`CardRole::Assistant`).
     /// Deliberately a unit variant, like `Plugin`: the bare-lowercase wire
@@ -138,7 +138,7 @@ pub enum EditAuthor {
 impl EditAuthor {
     /// The bare-lowercase spelling this variant takes on the wire, taken
     /// from the derived `Serialize` impl rather than re-spelled by hand —
-    /// both the spec system prompt and `Observation::ReportEdited`'s turn
+    /// both the planner system prompt and `Observation::ReportEdited`'s turn
     /// text name the author to the agent, and those two must agree with the
     /// `track.report_edited` payload the agent can also see.
     pub fn wire_str(self) -> String {
@@ -337,7 +337,7 @@ pub enum Event {
     /// and **no event is persisted**.
     ///
     /// Cleaner than overloading `TrackUpdated`: lifecycle subscribers
-    /// (sidebar pills, Today schedule, the spec agent's own status
+    /// (sidebar pills, Today schedule, the planner agent's own status
     /// loop) can filter on `kind = track.lifecycle_changed` without
     /// inspecting every track-row update for a possibly-unchanged
     /// `lifecycle` field.
@@ -418,14 +418,14 @@ pub enum Event {
     ///     `events_for_track` rebuild stored rows. A required field makes
     ///     those rows fail to deserialize, and both readers `continue` past
     ///     the error — the row vanishes from WS replay while its id still
-    ///     advances the client cursor, splicing a client's spec history
+    ///     advances the client cursor, splicing a client's planner history
     ///     across a reset it never heard about.
     ///   * `Option` (rather than a defaulted bare `i64`) is required because a
     ///     defaulted `0` would be indistinguishable from a genuinely empty
     ///     transcript. `None` means "this reset predates #1252 and was never
     ///     measured"; `Some(0)` means "measured, and it really was empty".
     ///
-    /// The emit path (`spec_harness_start_adapter`) always writes `Some(..)`;
+    /// The emit path (`planner_harness_start_adapter`) always writes `Some(..)`;
     /// `None` exists only for historical rows read back off the events table.
     #[serde(rename = "harness.transcript.cleared")]
     HarnessTranscriptCleared {
@@ -447,9 +447,9 @@ pub enum Event {
         #[serde(default)]
         card_age_ms_at_clear: Option<i64>,
     },
-    /// #615 F1 — emitted when `POST /api/cards/{id}/spec/input` queues
-    /// a user-authored text observation onto the spec harness. Card-scoped
-    /// (the spec card), `track_id` carried so track-timeline subscribers can
+    /// #615 F1 — emitted when `POST /api/cards/{id}/planner/input` queues
+    /// a user-authored text observation onto the planner harness. Card-scoped
+    /// (the planner card), `track_id` carried so track-timeline subscribers can
     /// filter without a card→track lookup. Actor is on the envelope
     /// (`X-Calm-Actor` → `events.actor`), `char_count` lets audit/replay
     /// surface size without keeping the body text on the event row.
@@ -469,7 +469,7 @@ pub enum Event {
     /// Issue #247 PR2 — structured track-report edit-log entry. Emitted
     /// alongside `Event::CardUpdated` from every successful
     /// `calm_server::track_report::write::persist` call so PR4's UI can
-    /// render an edit timeline and PR5's spec agent can wake on
+    /// render an edit timeline and PR5's planner agent can wake on
     /// user-authored edits. (#1318 §1 fixed the path here: the writer has
     /// never lived under `mcp_server::tools`, and it is now private to
     /// `track_report::write`, reachable through that module's three entry
@@ -491,8 +491,8 @@ pub enum Event {
     /// JSON cache and CRDT both end up persisting (matches the
     /// "projection is the truth" contract in `persist_report`).
     ///
-    /// `author` is hard-coded to [`EditAuthor::Spec`] in PR2 — the
-    /// spec-MCP tools are the only write path. PR3 plumbs an `Actor`
+    /// `author` is hard-coded to [`EditAuthor::Planner`] in PR2 — the
+    /// planner-MCP tools are the only write path. PR3 plumbs an `Actor`
     /// through `persist_report` and starts emitting
     /// [`EditAuthor::User`] for REST-driven edits.
     ///
@@ -587,7 +587,7 @@ pub enum Event {
         /// `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
         /// the codex payload; defaults to `hook.codex.unknown` if missing.
         kind: String,
-        /// Stable hook ingest key used by the server and spec harness to
+        /// Stable hook ingest key used by the server and planner harness to
         /// suppress duplicate lifecycle posts.
         #[serde(default)]
         hook_idempotency_key: String,
@@ -605,7 +605,7 @@ pub enum Event {
         card_id: CardId,
         /// Hook discriminator supplied by the future Claude hook route.
         kind: String,
-        /// Stable hook ingest key used by the server and spec harness to
+        /// Stable hook ingest key used by the server and planner harness to
         /// suppress duplicate lifecycle posts.
         #[serde(default)]
         hook_idempotency_key: String,
@@ -617,7 +617,7 @@ pub enum Event {
     /// Deprecated: retired in #644 PR-D; retained for old-log
     /// deserialization only.
     ///
-    /// Spec/worker card asked the kernel dispatcher to spawn a codex worker
+    /// Planner/worker card asked the kernel dispatcher to spawn a codex worker
     /// card. PR4 of #136 introduced this **schema-only**. PR5's `Dispatcher`
     /// subscribed to the event bus and reacted by minting a worker card;
     /// #644 PR-D removed that live dispatch arm. The wire shape remains so
@@ -647,11 +647,11 @@ pub enum Event {
     /// Deprecated: retired in #644 PR-D; retained for old-log
     /// deserialization only.
     ///
-    /// Spec card asked the kernel dispatcher to spawn a terminal worker
+    /// Planner card asked the kernel dispatcher to spawn a terminal worker
     /// card. PR4 schema-only; PR5's `Dispatcher` was the consumer until
     /// #644 PR-D removed that live dispatch arm.
     ///
-    /// `cwd` is `None` when the spec card defers to the track/area default
+    /// `cwd` is `None` when the planner card defers to the track/area default
     /// working directory.
     #[serde(rename = "terminal.worker_requested", alias = "terminal.job_requested")]
     TerminalWorkerRequested {
@@ -666,9 +666,9 @@ pub enum Event {
     },
 
     /// Worker card reports task completion. PR4 schema-only; the
-    /// dispatcher's push path delivers this to the requesting spec card. The
+    /// dispatcher's push path delivers this to the requesting planner card. The
     /// `idempotency_key` echoes back the one from the matching
-    /// `*.worker_requested` event so the spec can correlate without parsing
+    /// `*.worker_requested` event so the planner can correlate without parsing
     /// the worker card's identity.
     ///
     /// `result` is opaque agent payload (free-form text, structured
@@ -687,11 +687,11 @@ pub enum Event {
     },
 
     /// Worker card reports task failure. PR4 schema-only; the dispatcher's
-    /// push path delivers this to the requesting spec card.
+    /// push path delivers this to the requesting planner card.
     ///
     /// `reason` is a free-form failure string — the kernel never parses
     /// it, but persists it on the events table so audit-log replay can
-    /// surface the rationale a worker gave its spec.
+    /// surface the rationale a worker gave its planner.
     #[serde(rename = "task.failed")]
     TaskFailed {
         idempotency_key: String,
@@ -706,7 +706,7 @@ pub enum Event {
     /// inserted, declaration-updated, and deleted rows; unchanged
     /// declarations are omitted.
     ///
-    /// Worker-AI actors are excluded by the in-tx role gate; spec and user
+    /// Worker-AI actors are excluded by the in-tx role gate; planner and user
     /// report edits may produce this event.
     #[serde(rename = "plan.updated")]
     PlanUpdated {
@@ -727,7 +727,7 @@ pub enum Event {
     /// `idempotency_key` is the task id (`"{track_id}:{key}"`); `kind` is
     /// the worker kind (`"codex"` / `"terminal"`). Track-scoped, actor
     /// `ActorId::KernelDispatcher`, kernel-only: the in-tx role gate
-    /// refuses it from any card-derived actor (spec included) — only the
+    /// refuses it from any card-derived actor (planner included) — only the
     /// scheduler may claim tasks.
     #[serde(rename = "task.dispatched")]
     TaskDispatched {
@@ -938,7 +938,7 @@ pub enum Event {
     /// gate observer's completion tx, or the scheduler's reconcile
     /// backstop), track-scoped, actor `ActorId::KernelDispatcher` —
     /// every kernel-emitted task event uses `KernelDispatcher` so
-    /// `is_spec_verdict_event` never classifies it as a spec verdict
+    /// `is_planner_verdict_event` never classifies it as a planner verdict
     /// (design §6.5).
     ///
     /// `task_id` and `idempotency_key` both carry the task id
@@ -2457,7 +2457,7 @@ mod scope_tests {
                 path: "/commits/0/oid".into(),
             },
         );
-        let spec = ForgeEventSpec {
+        let planner = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
@@ -2466,7 +2466,7 @@ mod scope_tests {
             "commits": [{ "oid": "merge-sha" }],
         });
 
-        let payload = spec.extract_payload(0, Some(&stdout)).unwrap();
+        let payload = planner.extract_payload(0, Some(&stdout)).unwrap();
         assert_eq!(
             payload.get("head_sha"),
             Some(&serde_json::json!("head-sha"))
@@ -2486,12 +2486,12 @@ mod scope_tests {
                 path: "/missing".into(),
             },
         );
-        let spec = ForgeEventSpec {
+        let planner = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let err = spec
+        let err = planner
             .extract_payload(0, Some(&serde_json::json!({})))
             .unwrap_err();
         assert_eq!(
@@ -2512,12 +2512,12 @@ mod scope_tests {
                 path: "/oid".into(),
             },
         );
-        let spec = ForgeEventSpec {
+        let planner = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let err = spec.extract_payload(0, None).unwrap_err();
+        let err = planner.extract_payload(0, None).unwrap_err();
         assert_eq!(err, ForgeExtractError::MissingJsonStdout);
     }
 
@@ -2525,30 +2525,30 @@ mod scope_tests {
     fn forge_event_spec_exit_code_yields_json_number() {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("exit_code".into(), FieldSource::ExitCode);
-        let spec = ForgeEventSpec {
+        let planner = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields,
         };
 
-        let payload = spec.extract_payload(37, None).unwrap();
+        let payload = planner.extract_payload(37, None).unwrap();
         assert_eq!(payload.get("exit_code"), Some(&serde_json::json!(37)));
     }
 
     #[test]
     fn forge_event_spec_empty_fields_yields_empty_object() {
-        let spec = ForgeEventSpec {
+        let planner = ForgeEventSpec {
             event_kind: "forge.pr.merged".into(),
             fields: std::collections::BTreeMap::new(),
         };
 
-        let payload = spec.extract_payload(0, None).unwrap();
+        let payload = planner.extract_payload(0, None).unwrap();
         assert!(payload.is_empty());
     }
 
     // ----- PR2 of #247: EditAuthor + TrackReportEdited -------------------
     //
     // Pin the wire shape of the structured edit-log variant + its
-    // sub-enum. PR4 (web UI) and PR5 (spec agent) both depend on this
+    // sub-enum. PR4 (web UI) and PR5 (planner agent) both depend on this
     // shape; the persisted history rows depend on it forever.
 
     #[test]
@@ -2558,8 +2558,8 @@ mod scope_tests {
         // arm so a future serde attribute change can't silently break
         // the persisted history row format.
         assert_eq!(
-            serde_json::to_string(&EditAuthor::Spec).unwrap(),
-            r#""spec""#
+            serde_json::to_string(&EditAuthor::Planner).unwrap(),
+            r#""planner""#
         );
         assert_eq!(
             serde_json::to_string(&EditAuthor::User).unwrap(),
@@ -2576,7 +2576,7 @@ mod scope_tests {
 
         // Round-trip back through Deserialize.
         for variant in [
-            EditAuthor::Spec,
+            EditAuthor::Planner,
             EditAuthor::User,
             EditAuthor::Kernel,
             EditAuthor::Plugin,
@@ -2604,7 +2604,7 @@ mod scope_tests {
         assert_eq!(json["ev"], "track.report_edited");
         assert_eq!(json["data"]["track_id"], "w-1");
         assert_eq!(json["data"]["card_id"], "card-1");
-        assert_eq!(json["data"]["author"], "spec");
+        assert_eq!(json["data"]["author"], "planner");
         assert_eq!(json["data"]["edit_id"], "edit-uuid-1");
         assert_eq!(json["data"]["summary_before"], "old summary");
         assert_eq!(json["data"]["summary_after"], "new summary");
@@ -2628,7 +2628,7 @@ mod scope_tests {
             } => {
                 assert_eq!(track_id.as_str(), "w-1");
                 assert_eq!(card_id.as_str(), "card-1");
-                assert_eq!(author, EditAuthor::Spec);
+                assert_eq!(author, EditAuthor::Planner);
                 assert_eq!(edit_id, "edit-uuid-1");
                 assert_eq!(summary_before, "old summary");
                 assert_eq!(summary_after, "new summary");
@@ -2645,7 +2645,7 @@ mod scope_tests {
         // the variant the same way the sync-engine replay does for
         // every other variant. Cover every `EditAuthor` arm so a
         // future serde tweak that breaks one of them surfaces here.
-        for author_str in ["spec", "user", "kernel", "plugin"] {
+        for author_str in ["planner", "user", "kernel", "plugin"] {
             let payload = serde_json::json!({
                 "track_id": "w-1",
                 "card_id": "card-1",
@@ -2661,7 +2661,7 @@ mod scope_tests {
             assert_eq!(ev.kind_tag(), "track.report_edited");
             match ev {
                 Event::TrackReportEdited { author, .. } => match (author_str, author) {
-                    ("spec", EditAuthor::Spec)
+                    ("planner", EditAuthor::Planner)
                     | ("user", EditAuthor::User)
                     | ("kernel", EditAuthor::Kernel)
                     | ("plugin", EditAuthor::Plugin) => {}
@@ -2744,7 +2744,7 @@ mod scope_tests {
         Event::TrackReportEdited {
             track_id: TrackId::from("w-1"),
             card_id: CardId::from("card-1"),
-            author: EditAuthor::Spec,
+            author: EditAuthor::Planner,
             author_plugin_id: None,
             edit_id: "edit-uuid-1".into(),
             summary_before: "old summary".into(),

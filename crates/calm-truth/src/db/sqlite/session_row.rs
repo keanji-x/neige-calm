@@ -152,7 +152,9 @@ pub(crate) fn derive_session_identity(
 ) -> (WorkerProviderKind, SessionMode, WorkerContract) {
     let provider = match kind {
         WorkerSessionKind::Terminal => WorkerProviderKind::Terminal,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec => WorkerProviderKind::Codex,
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner => {
+            WorkerProviderKind::Codex
+        }
         WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
     let mode = match provider {
@@ -160,7 +162,7 @@ pub(crate) fn derive_session_identity(
         WorkerProviderKind::Claude | WorkerProviderKind::Terminal => SessionMode::Ephemeral,
     };
     let contract = match kind {
-        WorkerSessionKind::SharedSpec => WorkerContract::Planner,
+        WorkerSessionKind::SharedPlanner => WorkerContract::Planner,
         _ => WorkerContract::Executor,
     };
     (provider, mode, contract)

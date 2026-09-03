@@ -206,7 +206,7 @@ golden_test!(
             },
             ..track_min()
         },
-        Some("spec says hi".into()),
+        Some("planner says hi".into()),
     ))
 );
 
@@ -464,7 +464,7 @@ golden_test!(
     Event::TrackReportEdited {
         track_id: TrackId::from("track-01"),
         card_id: CardId::from("card-01"),
-        author: EditAuthor::Spec,
+        author: EditAuthor::Planner,
         author_plugin_id: None,
         edit_id: "edit-0001".into(),
         summary_before: "old summary".into(),

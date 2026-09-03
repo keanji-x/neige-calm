@@ -8,7 +8,7 @@
 //!     touches the actor header path or the Worker scope semantics
 //!     end-to-end.
 //!   * `track_as_actor_smoke.rs` boots real axum + SqlxRepo + role cache
-//!     and runs the happy path (Spec card emits CodexWorkerRequested → worker
+//!     and runs the happy path (Planner card emits CodexWorkerRequested → worker
 //!     mint), but the *deny* paths are unexercised.
 //!
 //! This file fills the gap with focused assertions on the cross-layer
@@ -501,7 +501,7 @@ async fn worker_with_mismatched_area_in_card_scope_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6 — positive control: Spec card emits Track-scoped event
+// Test 6 — positive control: Planner card emits Track-scoped event
 // ---------------------------------------------------------------------------
 //
 // Mirrors the rejection test above to confirm we haven't broken the
@@ -511,7 +511,7 @@ async fn worker_with_mismatched_area_in_card_scope_is_rejected() {
 // (vs the dispatcher harness) fails here too.
 
 #[tokio::test]
-async fn spec_emitting_track_scope_is_accepted() {
+async fn planner_emitting_track_scope_is_accepted() {
     let (repo, bus, cache, wcc) = boot_repo().await;
     let area = repo
         .area_create(NewArea {
@@ -535,24 +535,24 @@ async fn spec_emitting_track_scope_is_accepted() {
         })
         .await
         .unwrap();
-    let spec = repo
+    let planner = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: json!({}),
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-        .bind(spec.id.as_str())
+    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+        .bind(planner.id.as_str())
         .execute(repo.pool())
         .await
         .unwrap();
     cache.insert(
-        spec.id.clone(),
-        CardRole::Spec,
+        planner.id.clone(),
+        CardRole::Planner,
         TrackId::from(track.id.as_str()),
     );
 
@@ -562,14 +562,14 @@ async fn spec_emitting_track_scope_is_accepted() {
     };
     let res = repo
         .log_pure_event(
-            ActorId::AiSpec(CardId::from(spec.id.as_str())),
+            ActorId::AiPlanner(CardId::from(planner.id.as_str())),
             scope,
             None,
             &bus,
             &cache,
             &wcc,
             Event::CodexWorkerRequested {
-                idempotency_key: "spec-pos-1".into(),
+                idempotency_key: "planner-pos-1".into(),
                 goal: "go".into(),
                 context: Value::Null,
                 acceptance_criteria: None,
@@ -579,6 +579,6 @@ async fn spec_emitting_track_scope_is_accepted() {
         .await;
     assert!(
         res.is_ok(),
-        "Spec card emitting Track-scoped CodexWorkerRequested must be accepted: {res:?}",
+        "Planner card emitting Track-scoped CodexWorkerRequested must be accepted: {res:?}",
     );
 }

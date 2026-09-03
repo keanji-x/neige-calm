@@ -299,7 +299,7 @@ mod tests {
                     body: body.clone(),
                     if_doc_rev: 0,
                 },
-                EditAuthor::Spec,
+                EditAuthor::Planner,
             )
             .unwrap_err();
             assert!(
@@ -325,7 +325,7 @@ mod tests {
                 body: format!("# A\n\nalpha rewritten\n{fence_text}# B\n\nnew section\n"),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap();
         let blocks = doc.blocks_snapshot().unwrap();
@@ -353,7 +353,7 @@ mod tests {
                 if_doc_rev: 0,
             },
         ] {
-            let err = apply_report_op(&mut doc, &op, EditAuthor::Spec).unwrap_err();
+            let err = apply_report_op(&mut doc, &op, EditAuthor::Planner).unwrap_err();
             assert!(
                 matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
                 "{err:?}"
@@ -369,7 +369,7 @@ mod tests {
                 body: bad_schema.into(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap_err();
         assert!(
@@ -386,7 +386,7 @@ mod tests {
                 body: unknown.into(),
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap_err();
         assert!(
@@ -453,7 +453,7 @@ mod tests {
                     if_doc_rev: Some(0),
                     position: None,
                 },
-                EditAuthor::Spec,
+                EditAuthor::Planner,
             ) {
                 Ok(landed) => panic!("{label}: create arm must refuse the fence, got {landed:?}"),
                 Err(err) => err,
@@ -481,7 +481,7 @@ mod tests {
                     if_doc_rev: None,
                     position: None,
                 },
-                EditAuthor::Spec,
+                EditAuthor::Planner,
             ) {
                 Ok(landed) => panic!("{label}: replace arm must refuse the fence, got {landed:?}"),
                 Err(err) => err,
@@ -527,7 +527,7 @@ mod tests {
                 if_doc_rev: Some(0),
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("fence-free prose must be accepted on the create arm");
         assert!(
@@ -549,7 +549,7 @@ mod tests {
                 if_doc_rev: None,
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("fence-free prose must be accepted on the replace arm");
         assert!(
@@ -593,7 +593,7 @@ mod tests {
                 if_doc_rev: Some(0),
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         ) {
             Ok(landed) => panic!("create arm must refuse the payload, got {landed:?}"),
             Err(err) => err,
@@ -620,7 +620,7 @@ mod tests {
                 if_doc_rev: None,
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         ) {
             Ok(landed) => panic!("replace arm must refuse the payload, got {landed:?}"),
             Err(err) => err,
@@ -655,7 +655,7 @@ mod tests {
                 if_doc_rev: Some(0),
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("a schema-valid app block must be accepted on the create arm");
         let created = outcome.expect("upsert reports the block").id;
@@ -680,7 +680,7 @@ mod tests {
                 if_doc_rev: None,
                 position: None,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("a schema-valid app block must be accepted on the replace arm");
         let block = doc
@@ -807,7 +807,7 @@ mod tests {
     /// 4. The case that matters — a `task` declaration, the thing
     ///    attribution is enforced on — **is** caught there: the second
     ///    half asserts the `Replace` is refused because the assembled
-    ///    task claims `declared_by: "user"` while the writer is `Spec`.
+    ///    task claims `declared_by: "user"` while the writer is `Planner`.
     ///
     /// Closing the assembly itself would mean checking prose against the
     /// projection rather than against one block, which is a different
@@ -843,7 +843,7 @@ mod tests {
                     if_doc_rev: None,
                     position: None,
                 },
-                EditAuthor::Spec,
+                EditAuthor::Planner,
             )
             .expect("fragment A lands on the replace arm");
             apply_report_op(
@@ -856,7 +856,7 @@ mod tests {
                     if_doc_rev: Some(0),
                     position: None,
                 },
-                EditAuthor::Spec,
+                EditAuthor::Planner,
             )
             .expect("fragment B lands on the create arm");
 
@@ -901,7 +901,7 @@ mod tests {
                 body,
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .expect("the wholesale write materialises the assembled app block");
         assert!(
@@ -935,9 +935,9 @@ mod tests {
                 body,
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
-        .expect_err("a Spec write may not materialise a task attributed to the user");
+        .expect_err("a Planner write may not materialise a task attributed to the user");
         let CalmError::BadRequest(message) = err else {
             panic!("expected BadRequest, got {err:?}");
         };
@@ -972,7 +972,7 @@ mod tests {
                 body,
                 if_doc_rev: 0,
             },
-            EditAuthor::Spec,
+            EditAuthor::Planner,
         )
         .unwrap();
         let blocks = doc.blocks_snapshot().unwrap();

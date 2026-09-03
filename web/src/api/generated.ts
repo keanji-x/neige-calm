@@ -136,7 +136,7 @@ export interface paths {
          *     # Same key, different `text`
          *
          *     The first message's SHA-256 travels in the operation payload
-         *     (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part
+         *     (`PlannerHarnessStartOperationPayload::first_message_sha256`), so it is part
          *     of `stable_payload_hash` and therefore part of what
          *     `OperationRuntime::submit` compares before it does anything else. Reusing a
          *     key with a different body is consequently a real 409 `conflict` — no card,
@@ -300,7 +300,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cards/{id}/ratify": {
+    "/api/cards/{id}/planner/input": {
         parameters: {
             query?: never;
             header?: never;
@@ -309,30 +309,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["ratify_card"];
+        post: operations["send_planner_input"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cards/{id}/spec/input": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["send_spec_input"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cards/{id}/spec/interrupt": {
+    "/api/cards/{id}/planner/interrupt": {
         parameters: {
             query?: never;
             header?: never;
@@ -342,12 +326,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Issue #668 — stop the running spec turn.
-         * @description Guard chain mirrors `/spec/input` (card → role → kind), but deliberately
+         * Issue #668 — stop the running planner turn.
+         * @description Guard chain mirrors `/planner/input` (card → role → kind), but deliberately
          *     WITHOUT the lazy-recovery path and its per-card lock: a harness that
          *     needs recovering has, by construction, no running turn to stop, so a
          *     registry miss (or no active runtime row) is the same typed 409
-         *     `spec_harness_dormant` the input route uses — the client steers the user
+         *     `planner_harness_dormant` the input route uses — the client steers the user
          *     to Reset.
          *
          *     Idle is a graceful no-op, not an error: the harness's own
@@ -370,14 +354,14 @@ export interface paths {
          *     Non-goal: teaching the run loop to remember a pending interrupt across
          *     the Issuing window and fire it on `turn/start` completion.
          */
-        post: operations["interrupt_spec_card"];
+        post: operations["interrupt_planner_card"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cards/{id}/spec/reset": {
+    "/api/cards/{id}/planner/reset": {
         parameters: {
             query?: never;
             header?: never;
@@ -386,14 +370,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["reset_spec_card"];
+        post: operations["reset_planner_card"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cards/{id}/spec/run": {
+    "/api/cards/{id}/planner/run": {
         parameters: {
             query?: never;
             header?: never;
@@ -401,15 +385,31 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Issue #668 fix — read the current spec-harness phase for a card.
-         * @description Guard chain mirrors `/spec/interrupt` (card → role → kind), but unlike
+         * Issue #668 fix — read the current planner-harness phase for a card.
+         * @description Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike
          *     the write routes a dormant harness is a normal answer for a read: no
          *     active runtime row, or an active row with no registered harness, is
          *     `200 {runtime_id: null, phase: null}` rather than a 409.
          */
-        get: operations["get_spec_run"];
+        get: operations["get_planner_run"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cards/{id}/ratify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ratify_card"];
         delete?: never;
         options?: never;
         head?: never;
@@ -899,7 +899,7 @@ export interface paths {
         /**
          * #1253 §5.1 — the read-only resolve the Today page load uses.
          * @description **This handler must never reach the harness.** `ensure_today_launchpad`
-         *     materializes a workspace and then submits `spec-harness-start` and
+         *     materializes a workspace and then submits `planner-harness-start` and
          *     `.wait()`s on it; putting that on the page-load path would make the whole
          *     Today route fail hard whenever codex is unavailable, which is strictly
          *     worse than the Today page this replaces (it needed nothing to render). So
@@ -978,6 +978,38 @@ export interface paths {
          */
         post: operations["write_today_summary"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/track-recipes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_recipes"];
+        put?: never;
+        post: operations["create_recipe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/track-recipes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_recipe"];
+        put: operations["update_recipe"];
+        post?: never;
+        delete: operations["delete_recipe"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1098,7 +1130,7 @@ export interface paths {
         put?: never;
         /**
          * `POST /api/tracks/:id/report` — user-driven track-report edit. The
-         *     REST-side counterpart of the spec-MCP `calm.report.write` tool;
+         *     REST-side counterpart of the planner-MCP `calm.report.write` tool;
          *     both paths funnel through the `track_report::write` module — this
          *     one via `rest_user_replace`, the tool via `agent_report_op` — so the
          *     dual-event invariant (`CardUpdated` + `TrackReportEdited`) and the
@@ -1109,9 +1141,9 @@ export interface paths {
          *         short-circuits before this handler runs).
          *       * Authenticated session BUT non-user actor declared via
          *         `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only
-         *         [`ActorId::User`] is allowed. This closes the "spec card's
+         *         [`ActorId::User`] is allowed. This closes the "planner card's
          *         own session cookie forwards a User edit" hole — a future
-         *         surface that lets the spec card hold a session must not be
+         *         surface that lets the planner card hold a session must not be
          *         able to bypass the User-only contract by claiming `ai:codex`.
          *       * Track doesn't exist → 404.
          *       * Track exists but the track-report card is missing → 500
@@ -1246,7 +1278,7 @@ export interface paths {
          *
          *     * the first-message claim asks "has this CARD ever had a user message
          *       enqueued?", not "has THIS request's message landed?", so a foreign
-         *       `POST /api/cards/{id}/spec/input` between a failed send and its retry
+         *       `POST /api/cards/{id}/planner/input` between a failed send and its retry
          *       satisfies the claim;
          *     * the evidence is written non-transactionally, so a send whose audit write
          *       fails is re-sent on retry.
@@ -1421,7 +1453,7 @@ export interface components {
              * @description Issue #229 PR A — system-card guard. `true` for user-facing cards
              *     (the default; all pre-#229 rows backfill via the column DEFAULT in
              *     migration 0013). `false` for kernel-owned cards that the user
-             *     cannot remove via REST / plugin callbacks — currently spec cards
+             *     cannot remove via REST / plugin callbacks — currently planner cards
              *     (retroactively undeletable via the same migration's UPDATE) and
              *     PR B's track-report cards.
              *
@@ -1475,7 +1507,7 @@ export interface components {
          * @description Authorization role persisted on each card and enforced by `role_gate`.
          * @enum {string}
          */
-        CardRole: "worker" | "spec" | "reportcard" | "assistant";
+        CardRole: "worker" | "planner" | "reportcard" | "assistant";
         /**
          * @description Live runtime projection read from `worker_sessions` when a card is fetched
          *     or serialized.
@@ -1524,6 +1556,10 @@ export interface components {
             title?: string | null;
             via_tool_call?: null | components["schemas"]["ViaToolCall"];
         };
+        CreateRecipeBody: {
+            body: string;
+            title: string;
+        };
         CreateReportBlockBody: {
             /** Format: int64 */
             ifDocRev: number;
@@ -1536,7 +1572,7 @@ export interface components {
             area_id: string;
             /**
              * @description When true, upsert the kernel view/template overlay in the same create
-             *     transaction as the layout overlay and do not start the spec harness.
+             *     transaction as the layout overlay and do not start the planner harness.
              */
             as_template?: boolean;
             attach_folder?: boolean;
@@ -1563,7 +1599,7 @@ export interface components {
              *     the track's intent, so the client may omit it entirely. Omitting it
              *     stores the **empty string** — there is no server-side default; the
              *     `Untitled track` a user sees in a list is the frontend's display
-             *     fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The spec
+             *     fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner
              *     agent then names the track via `calm.track.rename`, which only succeeds
              *     while the stored title is still blank. The type
              *     stays `String`: the empty string has always been a legal title and the
@@ -1608,7 +1644,7 @@ export interface components {
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
              *     `plugin_manifest_unloaded`, `plugin_config_corrupt`,
-             *     `spec_harness_dormant`, `today_summary_no_activity`,
+             *     `planner_harness_dormant`, `today_summary_no_activity`,
              *     `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
              *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
@@ -1638,7 +1674,7 @@ export interface components {
          */
         FolderConflictKind: "equal" | "ancestor" | "descendant";
         /**
-         * @description Issue #668 fix — current spec-harness run snapshot for a card.
+         * @description Issue #668 fix — current planner-harness run snapshot for a card.
          *
          *     `harness.phase.changed` is the only live phase signal, so a page opened
          *     mid-turn would otherwise sit on `phase: null` until the next transition.
@@ -1646,12 +1682,12 @@ export interface components {
          *     active runtime row, or no registered harness) is NOT an error here —
          *     it's the `{runtime_id: null, phase: null}` answer.
          */
-        GetSpecRunResponse: {
+        GetPlannerRunResponse: {
             card_id: string;
             phase?: null | components["schemas"]["HarnessPhaseTag"];
             /** @description Active runtime id, or null when the harness is dormant. */
             runtime_id?: string | null;
-            token_usage?: null | components["schemas"]["SpecRunTokenUsage"];
+            token_usage?: null | components["schemas"]["PlannerRunTokenUsage"];
         };
         GitChangedFile: {
             /** @description Previous path for renamed files, relative to the repository root. */
@@ -1718,7 +1754,7 @@ export interface components {
             /** @enum {string} */
             kind: "other";
         };
-        InterruptSpecCardResponse: {
+        InterruptPlannerCardResponse: {
             card_id: string;
             runtime_id: string;
             /**
@@ -1760,7 +1796,7 @@ export interface components {
         /** @description Body of `POST /api/areas/{area_id}/conversations`: the first message. */
         NewAreaConversationBody: {
             /**
-             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
              *     (non-blank after trim, at most 32768 chars) and validated *before*
              *     anything is minted, so a rejected message leaves no card behind.
              */
@@ -1927,9 +1963,9 @@ export interface components {
              */
             attach_folder?: boolean;
             /**
-             * @description Issue #250 PR 2 — absolute filesystem path the spec daemon will
+             * @description Issue #250 PR 2 — absolute filesystem path the planner daemon will
              *     spawn under. Required (no `Option`): every track-creating path
-             *     must declare a cwd or the spec daemon has no defensible
+             *     must declare a cwd or the planner daemon has no defensible
              *     working directory. The `POST /api/tracks` route enforces
              *     absolute-path shape and the area-folder claim check; the
              *     inner `track_create_tx` writes whatever the route lands here
@@ -1952,23 +1988,23 @@ export interface components {
              *     binds to and whose Manifest declares an `input_schema`; the `POST /api/tracks`
              *     route validates the value against that schema before any DB write. The
              *     kernel never interprets the blob — it is persisted verbatim and injected
-             *     into the spec harness developer instructions at thread-mint time.
+             *     into the planner harness developer instructions at thread-mint time.
              *     `#[serde(default)]` keeps the field purely additive under
              *     `deny_unknown_fields`.
              */
             template_input?: Record<string, never> | null;
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end so
-             *     the auto-minted spec card's terminal renderer answers codex's
+             *     the auto-minted planner card's terminal renderer answers codex's
              *     OSC 10/11 startup probe with matching colors. A body
              *     missing this field is rejected at the deserialize layer (422):
-             *     the spec card is invisible to the user and a silent fallback
+             *     the planner card is invisible to the user and a silent fallback
              *     would mean every track-from-the-UI spawned with a mis-tinted
              *     composer (the bug that motivated this refactor).
              *
              *     Direct repo callers (`db::sqlite::track_create_tx`, used by tests
              *     and a couple of non-route helpers) still pass a value here even
-             *     though the txn-level helper does not consume it — spec-card
+             *     though the txn-level helper does not consume it — planner-card
              *     spawning is owned by `routes::tracks::create_track`. Tests can
              *     use `RequestTheme::default_dark()` as a no-op sentinel.
              */
@@ -1978,7 +2014,7 @@ export interface components {
         /** @description Body of `POST /api/tracks/{track_id}/conversations`: the first message. */
         NewTrackConversationBody: {
             /**
-             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/planner/input`
              *     (non-blank after trim, at most 32768 chars) and validated *before*
              *     anything is minted, so a rejected message leaves no card behind.
              */
@@ -2014,6 +2050,62 @@ export interface components {
              */
             entity_id?: string | null;
             entity_kind: string;
+        };
+        /**
+         * @description #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
+         *
+         *     A wire type distinct from the stored [`TokenUsage`], and the differences
+         *     are the point rather than an accident of layering:
+         *
+         *     - **`percent` is computed here, on the server.** One baseline adjustment,
+         *       one over-window rule, one place they can be got wrong. Shipping a
+         *       numerator and a denominator instead would invite the client to divide
+         *       them its own way, and the correct division is not the obvious one.
+         *     - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
+         *       honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
+         *       every response in the thread — unbounded, and measured at 253.8x the
+         *       window in the captured frame this slice's tests run on — and the single
+         *       most likely bug in any future UI is a meter
+         *       drawn from it. Handing the frontend both numbers and trusting it to pick
+         *       the right one is how that bug gets written. It cannot pick wrong if only
+         *       one number crosses the wire.
+         */
+        PlannerRunTokenUsage: {
+            /**
+             * Format: int64
+             * @description Wall-clock ms of the codex frame this reading came from.
+             *
+             *     Shipped because the reading survives a reboot: it rides the runtime
+             *     snapshot, so a harness respawned by boot recovery or by lazy recovery
+             *     serves whatever number was last observed — possibly months ago — and
+             *     without this field a rehydrated reading is indistinguishable on the
+             *     wire from a live one. A UI that draws a meter needs to be able to say
+             *     "as of then", or to stop drawing it. The kernel does not pick a
+             *     staleness threshold; it ships the timestamp so a reader can.
+             */
+            at_ms: number;
+            /**
+             * Format: int64
+             * @description The model's context window, or null when codex has never reported one.
+             */
+            context_window?: number | null;
+            /**
+             * Format: double
+             * @description Context occupancy as a whole percentage, `0.0..=100.0`.
+             *
+             *     Null means "no percentage can honestly be stated": no known window, a
+             *     window at or below the 12000-token baseline, or `used_tokens` above
+             *     the window. That last case is deliberately NOT clamped to 100 — see
+             *     `TokenUsage::percent`. Render the raw count with no meter.
+             */
+            percent?: number | null;
+            /**
+             * Format: int64
+             * @description Tokens in the model's context as of the most recent response
+             *     (`tokenUsage.last.totalTokens` upstream). Always present — this is the
+             *     raw evidence, and it ships even when `percent` does not.
+             */
+            used_tokens: number;
         };
         Plugin: {
             enabled: boolean;
@@ -2206,7 +2298,7 @@ export interface components {
                 number
             ];
         };
-        ResetSpecCardResponse: {
+        ResetPlannerCardResponse: {
             card_id: string;
             new_thread_id: string;
             terminal_id: string;
@@ -2221,10 +2313,10 @@ export interface components {
              */
             path: string;
         };
-        SendSpecInputRequest: {
+        SendPlannerInputRequest: {
             text: string;
         };
-        SendSpecInputResponse: {
+        SendPlannerInputResponse: {
             card_id: string;
             runtime_id: string;
         };
@@ -2247,62 +2339,6 @@ export interface components {
             settings?: {
                 [key: string]: string | null;
             };
-        };
-        /**
-         * @description #1255 S3 — the context-usage half of [`GetSpecRunResponse`].
-         *
-         *     A wire type distinct from the stored [`TokenUsage`], and the differences
-         *     are the point rather than an accident of layering:
-         *
-         *     - **`percent` is computed here, on the server.** One baseline adjustment,
-         *       one over-window rule, one place they can be got wrong. Shipping a
-         *       numerator and a denominator instead would invite the client to divide
-         *       them its own way, and the correct division is not the obvious one.
-         *     - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
-         *       honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
-         *       every response in the thread — unbounded, and measured at 253.8x the
-         *       window in the captured frame this slice's tests run on — and the single
-         *       most likely bug in any future UI is a meter
-         *       drawn from it. Handing the frontend both numbers and trusting it to pick
-         *       the right one is how that bug gets written. It cannot pick wrong if only
-         *       one number crosses the wire.
-         */
-        SpecRunTokenUsage: {
-            /**
-             * Format: int64
-             * @description Wall-clock ms of the codex frame this reading came from.
-             *
-             *     Shipped because the reading survives a reboot: it rides the runtime
-             *     snapshot, so a harness respawned by boot recovery or by lazy recovery
-             *     serves whatever number was last observed — possibly months ago — and
-             *     without this field a rehydrated reading is indistinguishable on the
-             *     wire from a live one. A UI that draws a meter needs to be able to say
-             *     "as of then", or to stop drawing it. The kernel does not pick a
-             *     staleness threshold; it ships the timestamp so a reader can.
-             */
-            at_ms: number;
-            /**
-             * Format: int64
-             * @description The model's context window, or null when codex has never reported one.
-             */
-            context_window?: number | null;
-            /**
-             * Format: double
-             * @description Context occupancy as a whole percentage, `0.0..=100.0`.
-             *
-             *     Null means "no percentage can honestly be stated": no known window, a
-             *     window at or below the 12000-token baseline, or `used_tokens` above
-             *     the window. That last case is deliberately NOT clamped to 100 — see
-             *     `TokenUsage::percent`. Render the raw count with no meter.
-             */
-            percent?: number | null;
-            /**
-             * Format: int64
-             * @description Tokens in the model's context as of the most recent response
-             *     (`tokenUsage.last.totalTokens` upstream). Always present — this is the
-             *     raw evidence, and it ships even when `percent` does not.
-             */
-            used_tokens: number;
         };
         Terminal: {
             card_id: string;
@@ -2367,7 +2403,7 @@ export interface components {
             track_id?: string | null;
         };
         TodayLaunchpad: {
-            spec_card_id: string;
+            planner_card_id: string;
             terminal_card_id: string;
             terminal_id: string;
             track_id: string;
@@ -2547,7 +2583,7 @@ export interface components {
         TrackConversationSummary: {
             /**
              * @description The assistant card's id. This is the conversation's identity everywhere,
-             *     and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+             *     and it is also the card the CARDS panel and `/api/cards/{id}/planner/*`
              *     address.
              */
             id: string;
@@ -2679,7 +2715,7 @@ export interface components {
          * @description Issue #145 — Track lifecycle state machine.
          *
          *     One explicit state per track, advanced through a typed state machine
-         *     (see `crate::track_lifecycle`). The Spec Agent drives the happy path
+         *     (see `crate::track_lifecycle`). The Planner Agent drives the happy path
          *     (`draft → planning → dispatching → working → reviewing → done`);
          *     the user can cancel any non-terminal state and reopen terminals;
          *     worker cards have no authority to touch this field at all.
@@ -2723,6 +2759,12 @@ export interface components {
              */
             pinned_at?: number | null;
             /**
+             * Format: int64
+             * @description Issue #985 — maximum admitted planner-declared task inventory. A
+             *     present null resets to the kernel default.
+             */
+            planner_task_ceiling?: number | null;
+            /**
              * @description Issue #644 — track-level gate policy (`tracks.require_task_gates`,
              *     migration 0041). `Some(v)` sets the flag, omit to leave alone.
              *     Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
@@ -2730,12 +2772,6 @@ export interface components {
             require_task_gates?: boolean | null;
             /** Format: double */
             sort?: number | null;
-            /**
-             * Format: int64
-             * @description Issue #985 — maximum admitted spec-declared task inventory. A
-             *     present null resets to the kernel default.
-             */
-            spec_task_ceiling?: number | null;
             /**
              * Format: int64
              * @description Issue #644 — per-track scheduler budget (`tracks.task_budget`,
@@ -2747,13 +2783,59 @@ export interface components {
             title?: string | null;
             /**
              * Format: int64
-             * @description Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
+             * @description Issue #985 slice 6 PR-B — budget for the non-terminal planner inventory of
              *     the WHOLE track tree. Root-only: `track_update_tx` refuses the patch on a
              *     track with a parent, since a per-child budget would make the tree bound
              *     vacuous. A present null resets to the kernel default (32).
              */
             tree_task_budget?: number | null;
             workspace?: null | components["schemas"]["TrackWorkspacePatch"];
+        };
+        /**
+         * @description A user-defined starting point for a new track.
+         *
+         *     A recipe is a saved report: `title` doubles as the report summary, and
+         *     `body`'s `neige-block` fences **are** its tasks. It is deliberately not a
+         *     track — #1300 removed "template = a hidden track" because storing recipes
+         *     that way cost seven "this track is special" exceptions across unrelated
+         *     subsystems plus a kernel report write that impersonated the user. A
+         *     recipe row has neither problem: nothing schedules it, nothing lists it
+         *     among tracks, and every byte in one was written by a human.
+         *
+         *     The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
+         *     constants and are **not** rows here. Both feed the same instantiation
+         *     seam, so "built-in" and "mine" differ only in where the payload came
+         *     from — see `routes::track_recipes`.
+         */
+        TrackRecipe: {
+            /** @description Report body. Its `neige-block` fences are the tasks. */
+            body: string;
+            /** Format: int64 */
+            created_at: number;
+            id: string;
+            /**
+             * Format: int64
+             * @description Optimistic-lock anchor. Writers pass the revision they read and the
+             *     UPDATE validates + bumps in one statement.
+             *
+             *     Deliberately not `updated_at`: a wall clock is not a version. Two
+             *     writes inside the same millisecond are indistinguishable by
+             *     timestamp, and a clock that steps backwards makes a stale write look
+             *     current.
+             */
+            revision: number;
+            /**
+             * @description Picker label *and* the instantiated report's summary. One field, not
+             *     two: the three built-in templates already write the same string in
+             *     both places, so a second column would not preserve an existing
+             *     distinction — it would mint a new way for them to disagree.
+             */
+            title: string;
+            /**
+             * Format: int64
+             * @description Display only — never a lock anchor. See `revision`.
+             */
+            updated_at: number;
         };
         /**
          * @description The payload persisted in a track-report card's `payload` JSON column.
@@ -2808,7 +2890,7 @@ export interface components {
             schemaVersion: number;
             /**
              * @description One-line summary used by sidebars / track-list previews. Empty
-             *     string is valid (means "spec agent has not produced a summary
+             *     string is valid (means "planner agent has not produced a summary
              *     yet"); the field stays a required `String` per the
              *     [[required-over-option]] rule.
              */
@@ -2967,6 +3049,16 @@ export interface components {
              */
             until?: number | null;
         };
+        UpdateRecipeBody: {
+            body: string;
+            /**
+             * Format: int64
+             * @description The `revision` the caller read. A mismatch is 409 — never a silent
+             *     overwrite.
+             */
+            if_revision: number;
+            title: string;
+        };
         UpdateReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -2985,7 +3077,7 @@ export interface components {
          *     **No `author` field.** Author is derived server-side from the
          *     authenticated session and pinned to [`EditAuthor::User`] for this
          *     endpoint — accepting one on the wire would let a User forge
-         *     `EditAuthor::Spec` and make a hand-typed edit look like the AI
+         *     `EditAuthor::Planner` and make a hand-typed edit look like the AI
          *     did it. Even if a client serializes an `author` key the handler
          *     ignores it (serde `deny_unknown_fields` would 400 it; this is the
          *     stricter contract that closes the spoofing risk by construction).
@@ -3871,14 +3963,14 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Spec card id */
+                /** @description Planner card id */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Persisted spec harness items */
+            /** @description Persisted planner harness items */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3887,7 +3979,247 @@ export interface operations {
                     "application/json": components["schemas"]["HarnessItem"][];
                 };
             };
-            /** @description Card is not a spec codex card */
+            /** @description Card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    send_planner_input: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendPlannerInputRequest"];
+            };
+        };
+        responses: {
+            /** @description User text queued for next harness turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendPlannerInputResponse"];
+                };
+            };
+            /** @description Empty text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card or track not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    interrupt_planner_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterruptPlannerCardResponse"];
+                };
+            };
+            /** @description Card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reset_planner_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Planner session reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPlannerCardResponse"];
+                };
+            };
+            /** @description Card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_planner_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetPlannerRunResponse"];
+                };
+            };
+            /** @description Card is not a planner codex card */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3921,7 +4253,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Spec card id */
+                /** @description Planner card id */
                 id: string;
             };
             cookie?: never;
@@ -3950,7 +4282,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Card is not a spec codex card, or actor is not the authenticated user */
+            /** @description Card is not a planner codex card, or actor is not the authenticated user */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3970,246 +4302,6 @@ export interface operations {
             };
             /** @description Track is not awaiting ratification */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    send_spec_input: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Spec card id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SendSpecInputRequest"];
-            };
-        };
-        responses: {
-            /** @description User text queued for next harness turn */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SendSpecInputResponse"];
-                };
-            };
-            /** @description Empty text */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card is not a spec codex card */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card or track not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Runtime is shutting down (code `conflict`), or the spec harness session is dormant and not recoverable — reset to start a session (code `spec_harness_dormant`) */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Observation queue saturated, shared codex app-server not running, or a spec-harness start is still in flight — retry shortly */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    interrupt_spec_card: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Spec card id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InterruptSpecCardResponse"];
-                };
-            };
-            /** @description Card is not a spec codex card */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description No live spec harness session for this card — reset to start a session (code `spec_harness_dormant`) */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    reset_spec_card: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Spec card id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Spec session reset */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResetSpecCardResponse"];
-                };
-            };
-            /** @description Card is not a spec codex card */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    get_spec_run: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Spec card id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GetSpecRunResponse"];
-                };
-            };
-            /** @description Card is not a spec codex card */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5483,7 +5575,7 @@ export interface operations {
             /**
              * @description Distinguished by the body's `code`:
              *     * `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).
-             *     * `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.
+             *     * `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a dormant harness is retried once automatically before it can reach here.
              */
             409: {
                 headers: {
@@ -5504,6 +5596,208 @@ export interface operations {
             };
             /** @description Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_recipes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every user-defined recipe */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackRecipe"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRecipeBody"];
+            };
+        };
+        responses: {
+            /** @description Recipe created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackRecipe"];
+                };
+            };
+            /** @description Malformed body or empty title */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One recipe */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackRecipe"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRecipeBody"];
+            };
+        };
+        responses: {
+            /** @description Recipe replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackRecipe"];
+                };
+            };
+            /** @description Malformed body or empty title */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `if_revision` is stale */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_recipe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recipe deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Only `X-Calm-Actor: user` may write recipes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6050,7 +6344,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Non-user actor (worker / plugin / spec) rejected */
+            /** @description Non-user actor (worker / plugin / planner) rejected */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6618,7 +6912,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Assistant conversations on this track, newest activity first. The track's spec card, report card and dispatched worker cards are never listed here. */
+            /** @description Assistant conversations on this track, newest activity first. The track's planner card, report card and dispatched worker cards are never listed here. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6679,7 +6973,7 @@ export interface operations {
                     "application/json": components["schemas"]["TrackConversationSummary"];
                 };
             };
-            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
+            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
             400: {
                 headers: {
                     [name: string]: unknown;

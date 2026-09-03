@@ -113,7 +113,7 @@ mod tests {
     ///
     /// Two accepted shapes are pinned: the **absent** key — the
     /// canonical post-normalization shape, since `prepare_fork_report` removes
-    /// it and a natively spec-declared block never grows it — and an **explicit
+    /// it and a natively planner-declared block never grows it — and an **explicit
     /// `false`**, which the belt also lets through on purpose. The belt exists
     /// to catch a normalization regression, not to legislate the encoding of
     /// "not released"; if normalization ever switched to writing an explicit

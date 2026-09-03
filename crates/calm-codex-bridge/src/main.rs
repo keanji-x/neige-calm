@@ -13,7 +13,7 @@
 //!
 //! #293 cutover: the Stop hook used to long-poll
 //! `/internal/codex/pending_events` and emit `{decision:"block",...}` to
-//! re-prompt the spec agent (the pull model). Pull is gone — spec agents are
+//! re-prompt the planner agent (the pull model). Pull is gone — planner agents are
 //! now driven by observations pushed onto their codex thread by the kernel —
 //! so Stop is no longer special-cased here.
 //!

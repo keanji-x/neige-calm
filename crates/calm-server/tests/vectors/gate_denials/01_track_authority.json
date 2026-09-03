@@ -29,8 +29,8 @@
     "expected": { "decision": "allow" }
   },
   {
-    "description": "AiSpec actor bound to a Spec-roled card may emit track.updated",
-    "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
+    "description": "AiPlanner actor bound to a Planner-roled card may emit track.updated",
+    "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
     "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
@@ -50,22 +50,22 @@
     "expected": { "decision": "deny", "error_contains": "may emit track.updated" }
   },
   {
-    "description": "AiCodex actor bound to a Spec-roled card is still refused track.updated (actor variant is the wire claim; hook carveout must not regress this)",
-    "actor": { "kind": "AiCodex", "id": "$SPEC_CARD" },
+    "description": "AiCodex actor bound to a Planner-roled card is still refused track.updated (actor variant is the wire claim; hook carveout must not regress this)",
+    "actor": { "kind": "AiCodex", "id": "$PLANNER_CARD" },
     "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "may emit track.updated" }
   },
   {
-    "description": "AiSpec wire claim over a Worker-roled card is refused track.updated (claimed identity vs cached truth mismatch)",
-    "actor": { "kind": "AiSpec", "id": "$WORKER_CARD" },
+    "description": "AiPlanner wire claim over a Worker-roled card is refused track.updated (claimed identity vs cached truth mismatch)",
+    "actor": { "kind": "AiPlanner", "id": "$WORKER_CARD" },
     "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "may emit track.updated" }
   },
   {
-    "description": "AiSpec wire claim over an unknown (never-minted) card is refused track.updated",
-    "actor": { "kind": "AiSpec", "id": "$UNKNOWN_CARD" },
+    "description": "AiPlanner wire claim over an unknown (never-minted) card is refused track.updated",
+    "actor": { "kind": "AiPlanner", "id": "$UNKNOWN_CARD" },
     "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "may emit track.updated" }

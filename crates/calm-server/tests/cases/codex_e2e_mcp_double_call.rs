@@ -4,7 +4,7 @@
 //!
 //! Boots a real `SharedCodexAppServer` (codex 0.13x daemon) + a real
 //! `McpServer` (kernel-as-MCP-server) + the real `neige-mcp-stdio-shim`
-//! binary. Starts a Spec card thread, sends ONE turn with an explicit
+//! binary. Starts a Planner card thread, sends ONE turn with an explicit
 //! prompt forcing two `calm.task.verdict` calls. Counts
 //! `mcpToolCall` `item/started` vs `item/completed` notifications for
 //! 90 s. Asserts both calls complete.
@@ -121,7 +121,7 @@ fn seed_auth_only(home: &SharedCodexHome) {
     std::fs::copy(&src, &dst).expect("copy host codex auth.json into test CODEX_HOME");
 }
 
-async fn seed_spec_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (String, String) {
+async fn seed_planner_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (String, String) {
     let area = repo
         .area_create(NewArea {
             name: "codex-mcp-double-call".into(),
@@ -158,10 +158,10 @@ async fn seed_spec_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (St
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "spec_harness": true
+                "planner_harness": true
             }),
         },
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         card_role_cache,
     )
@@ -172,14 +172,14 @@ async fn seed_spec_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (St
     (card_id, track.id.to_string())
 }
 
-async fn seed_shared_spec_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
+async fn seed_shared_planner_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
             id: new_id(),
             card_id: card_id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -254,9 +254,9 @@ async fn codex_mcp_double_call_both_complete() {
     let card_role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     let events = EventBus::new();
-    let (card_id, track_id) = seed_spec_card(&repo, &card_role_cache).await;
+    let (card_id, track_id) = seed_planner_card(&repo, &card_role_cache).await;
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    eprintln!("[double-call] seeded track={track_id} spec_card={card_id}");
+    eprintln!("[double-call] seeded track={track_id} planner_card={card_id}");
 
     let daemon_token = auth::CardMcpToken::generate().into_inner();
     let daemon_token_hash = auth::hash_token(&daemon_token);
@@ -346,7 +346,7 @@ async fn codex_mcp_double_call_both_complete() {
         .thread_id()
         .expect("thread/start returned no thread.id")
         .to_string();
-    seed_shared_spec_runtime(&repo, &card_id, &thread_id).await;
+    seed_shared_planner_runtime(&repo, &card_id, &thread_id).await;
     eprintln!("[double-call] thread_id={thread_id} runtime_attribution=seeded");
 
     let mut rx = daemon.subscribe_notifications();

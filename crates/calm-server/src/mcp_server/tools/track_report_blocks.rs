@@ -27,7 +27,7 @@
 //!
 //! ## Authorization
 //!
-//! `require_role_any([Spec, Assistant])` at the entry (#1189 §3.2b),
+//! `require_role_any([Planner, Assistant])` at the entry (#1189 §3.2b),
 //! track binding via the caller's own card
 //! (`track_report::resolve_report_for_caller`), and the write funnels
 //! through `CardDecisionSink::commit_report_op` so recorder-shadow
@@ -36,7 +36,7 @@
 //! The block channel — not `calm.report.write`/`.edit` — is where the
 //! assistant role lives, because a `ReportDocOp` cannot carry a
 //! `lifecycle` field at all (§3.2). What the channel being open does
-//! *not* mean is that an assistant may write anything a spec may: the
+//! *not* mean is that an assistant may write anything a planner may: the
 //! sink attributes its ops as `EditAuthor::Assistant` and suppresses
 //! auto-promote, and `track_report_edit_guard` refuses any op of its
 //! that would touch a task declaration block. A Worker token is still
@@ -98,7 +98,7 @@ async fn blocks_kinds(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     Ok(kinds_table())
 }
 
@@ -111,7 +111,7 @@ async fn blocks_upsert(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_UPSERT;
     let obj = require_object(&args, tool)?;
     let id = optional_string(obj, "id", tool)?;
@@ -242,7 +242,7 @@ async fn blocks_move(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_MOVE;
     let obj = require_object(&args, tool)?;
     let id = required_string(obj, "id", tool)?;
@@ -283,7 +283,7 @@ async fn blocks_move(
 /// it cannot create a task block in the first place (`author_name`
 /// gives `EditAuthor::Assistant` no attribution name), so "delete the
 /// ones I declared" is the empty set, and everything it *could* reach is
-/// a declaration some spec or user made. The refusal is enforced one
+/// a declaration some planner or user made. The refusal is enforced one
 /// layer down, in `track_report_edit_guard::guard_task_declarations`, so
 /// it covers the whole-document shapes too — this entry point stays open
 /// so the prose case works.
@@ -292,7 +292,7 @@ async fn blocks_delete(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_DELETE;
     let obj = require_object(&args, tool)?;
     let id = required_string(obj, "id", tool)?;
@@ -323,7 +323,7 @@ async fn write_markdown(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_WRITE_MARKDOWN;
     let obj = require_object(&args, tool)?;
     let body = required_string(obj, "body", tool)?;

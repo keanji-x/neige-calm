@@ -3,9 +3,9 @@
 //! The predicate design §更换与冻结 settles on is deliberately **not** an
 //! enumeration of "who might have written here". It asks the filesystem one
 //! question — *is there anything on disk?* — through three git commands that
-//! together cover every writer the earlier drafts kept forgetting: the spec
+//! together cover every writer the earlier drafts kept forgetting: the planner
 //! harness runs `workspace-write` from its first message
-//! (`spec_harness_start_adapter.rs`), MCP forge actions run git directly in the
+//! (`planner_harness_start_adapter.rs`), MCP forge actions run git directly in the
 //! workspace, and worker leases add worktrees. None of them has to register
 //! anywhere; their output shows up here.
 //!

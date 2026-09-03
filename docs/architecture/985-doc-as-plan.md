@@ -156,7 +156,7 @@ Hash 只是变化检测载体，不是权威。真正的判定必须保留可解
 
 两种限制解决不同问题：
 
-- `spec_task_ceiling`：限制一个 track 中 Agent 声明占用的任务数量；
+- `planner_task_ceiling`：限制一个 track 中 Agent 声明占用的任务数量；
 - tree task budget：限制父/子 track 整棵树的总容量和并发份额。
 
 当前树深和总预算都有硬上限。创建 child、修改预算和重投影必须在事务内验证整树，不能让两个 sibling 各自认为还有同一份额度。
@@ -175,7 +175,7 @@ Workflow template 是普通 template track 的 report。创建 track 时复制�
 - workspace 不从模板继承；
 - 模板变化不追写正在运行的 track。
 
-模板被选中是一项用户产品决定；Spec 可以建议，但不能静默替用户换模板。
+模板被选中是一项用户产品决定；Planner 可以建议，但不能静默替用户换模板。
 
 ## Scheduler 边界
 

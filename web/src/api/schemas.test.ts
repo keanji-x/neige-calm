@@ -226,13 +226,13 @@ describe('zod ↔ ts-rs conformance', () => {
   });
 });
 
-describe('spec harness transcript lifecycle events', () => {
+describe('planner harness transcript lifecycle events', () => {
   it('parses harness.transcript.cleared', () => {
     const parsed = wireEventSchema.parse({
       ev: 'harness.transcript.cleared',
       data: {
         runtime_id: 'runtime_2',
-        card_id: 'card_spec_1',
+        card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: 12,
         cleared_params_bytes: 3400,
@@ -242,7 +242,7 @@ describe('spec harness transcript lifecycle events', () => {
     expect(parsed.ev).toBe('harness.transcript.cleared');
     if (parsed.ev === 'harness.transcript.cleared') {
       expect(parsed.data.runtime_id).toBe('runtime_2');
-      expect(parsed.data.card_id).toBe('card_spec_1');
+      expect(parsed.data.card_id).toBe('card_planner_1');
       expect(parsed.data.track_id).toBe('track_1');
       expect(parsed.data.cleared_item_count).toBe(12);
       expect(parsed.data.cleared_params_bytes).toBe(3400);
@@ -254,7 +254,7 @@ describe('spec harness transcript lifecycle events', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
-        card_id: 'card_spec_1',
+        card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: 12,
         cleared_params_bytes: 3400,
@@ -273,7 +273,7 @@ describe('spec harness transcript lifecycle events', () => {
       ev: 'harness.transcript.cleared',
       data: {
         runtime_id: 'runtime_2',
-        card_id: 'card_spec_1',
+        card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: null,
         cleared_params_bytes: null,
@@ -293,7 +293,7 @@ describe('spec harness transcript lifecycle events', () => {
       ev: 'harness.transcript.cleared',
       data: {
         runtime_id: 'runtime_2',
-        card_id: 'card_spec_1',
+        card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: '12',
         cleared_params_bytes: 3400,
@@ -308,7 +308,7 @@ describe('spec harness transcript lifecycle events', () => {
       ev: 'harness.user_message.enqueued',
       data: {
         runtime_id: 'runtime_2',
-        card_id: 'card_spec_1',
+        card_id: 'card_planner_1',
         track_id: 'track_1',
         char_count: 9,
       },
@@ -316,7 +316,7 @@ describe('spec harness transcript lifecycle events', () => {
     expect(parsed.ev).toBe('harness.user_message.enqueued');
     if (parsed.ev === 'harness.user_message.enqueued') {
       expect(parsed.data.runtime_id).toBe('runtime_2');
-      expect(parsed.data.card_id).toBe('card_spec_1');
+      expect(parsed.data.card_id).toBe('card_planner_1');
       expect(parsed.data.track_id).toBe('track_1');
       expect(parsed.data.char_count).toBe(9);
       expect('text' in parsed.data).toBe(false);
@@ -563,17 +563,17 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
 // ---- PR2 of #247: track.report_edited ----------------------------------
 //
 // Structured edit-log companion to `card.updated`. Card-scoped. PR4
-// (web UI) and PR5 (spec agent) both subscribe to it; the parser must
+// (web UI) and PR5 (planner agent) both subscribe to it; the parser must
 // accept the three `author` discriminator values + reject missing
 // required fields without falling back to a permissive shape.
 describe('PR2 of #247: track.report_edited', () => {
-  it('parses a valid track.report_edited with author=spec', () => {
+  it('parses a valid track.report_edited with author=planner', () => {
     const parsed = wireEventSchema.parse({
       ev: 'track.report_edited',
       data: {
         track_id: 'w-1',
         card_id: 'card-1',
-        author: 'spec',
+        author: 'planner',
         edit_id: '00000000-0000-4000-8000-000000000000',
         summary_before: 'old summary',
         summary_after: 'new summary',
@@ -584,7 +584,7 @@ describe('PR2 of #247: track.report_edited', () => {
     });
     expect(parsed.ev).toBe('track.report_edited');
     if (parsed.ev === 'track.report_edited') {
-      expect(parsed.data.author).toBe('spec');
+      expect(parsed.data.author).toBe('planner');
       expect(parsed.data.track_id).toBe('w-1');
       expect(parsed.data.card_id).toBe('card-1');
       expect(parsed.data.body_after).toBe('new body');
@@ -592,9 +592,9 @@ describe('PR2 of #247: track.report_edited', () => {
     }
   });
 
-  it('accepts every author discriminator (spec | user | kernel | plugin)', () => {
+  it('accepts every author discriminator (planner | user | kernel | plugin)', () => {
     for (const author of [
-      'spec',
+      'planner',
       'user',
       'assistant',
       'kernel',
@@ -663,7 +663,7 @@ describe('PR2 of #247: track.report_edited', () => {
       data: {
         track_id: 'w',
         card_id: 'c',
-        author: 'spec',
+        author: 'planner',
         summary_before: '',
         summary_after: '',
         body_before: '',
@@ -679,7 +679,7 @@ describe('PR2 of #247: track.report_edited', () => {
       data: {
         track_id: 'w',
         card_id: 'c',
-        author: 'spec',
+        author: 'planner',
         edit_id: 'edit-1',
         summary_before: '',
         summary_after: '',

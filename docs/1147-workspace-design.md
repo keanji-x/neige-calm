@@ -159,9 +159,9 @@ SQLite 事务不能隔离文件系统写入，因此“事务内检查一次”�
 
 这两条都来自 S2 实测，都是「换路径」这个动作本身的正确性前提，与更换的判据无关。
 
-**幂等键必须包含路径摘要。** `spec-harness-start` 的载荷带 cwd，而操作运行时拒绝「同一幂等键、不同载荷哈希」。Today/launchpad 的键若只按 `<card>:<mode>` 构造，pre-S2 库里已有按旧路径算哈希的记录；升级重指向之后每次 ensure 都用同一个键提交新 cwd，从**第二次起永久 409**，而系统从不删除操作记录，因此不会自愈。任何 `CALM_WORKSPACE_ROOT` 变更同理。把路径摘要并进键即可：重指向会铸造新键，而同一工作区内的幂等性不受影响。
+**幂等键必须包含路径摘要。** `planner-harness-start` 的载荷带 cwd，而操作运行时拒绝「同一幂等键、不同载荷哈希」。Today/launchpad 的键若只按 `<card>:<mode>` 构造，pre-S2 库里已有按旧路径算哈希的记录；升级重指向之后每次 ensure 都用同一个键提交新 cwd，从**第二次起永久 409**，而系统从不删除操作记录，因此不会自愈。任何 `CALM_WORKSPACE_ROOT` 变更同理。把路径摘要并进键即可：重指向会铸造新键，而同一工作区内的幂等性不受影响。
 
-**重指向意图必须可持久推断，不能靠一次内存比较。** 「存储路径 ≠ 期望路径」只在移动路径的那一个事务里为真，而物化在事务提交之后执行：若物化失败，或进程在提交与记录操作之间被杀，意图就丢了。下一次 ensure 看到「已是期望值」判为稳态、不强制新建 thread，于是 spec harness 的 thread 永远停在旧 cwd 而所有 worker 用新 cwd。正确的问法是一个持久事实：**这个路径上有没有成功启动过 harness**——路径摘要已在幂等键里，操作表可以直接回答，且该答案只在启动真正成功后才被写下，因而跨越所有崩溃窗口。
+**重指向意图必须可持久推断，不能靠一次内存比较。** 「存储路径 ≠ 期望路径」只在移动路径的那一个事务里为真，而物化在事务提交之后执行：若物化失败，或进程在提交与记录操作之间被杀，意图就丢了。下一次 ensure 看到「已是期望值」判为稳态、不强制新建 thread，于是 planner harness 的 thread 永远停在旧 cwd 而所有 worker 用新 cwd。正确的问法是一个持久事实：**这个路径上有没有成功启动过 harness**——路径摘要已在幂等键里，操作表可以直接回答，且该答案只在启动真正成功后才被写下，因而跨越所有崩溃窗口。
 
 ### 更换（S3）
 
@@ -217,22 +217,22 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
 `ScanOnly`：`a_write_between_the_fence_and_the_move_is_refused` 断言拒绝后 `area_folders` 为空）。
 
 **三步执行，缺一不可。** SQLite 事务对文件系统零隔离，「事务内查一次」关不掉检查与
-移动之间的窗口：spec harness 从第一条消息起就是 `workspace-write` 且此刻**刻意
+移动之间的窗口：planner harness 从第一条消息起就是 `workspace-write` 且此刻**刻意
 没有冻结**，dispatcher 还会主动推 observation 开启新 turn。
 
 1. **真栅栏，与判据同一个 `BEGIN IMMEDIATE`。** 把该 track 全部
    `state IN ('starting','running','idle','turn_pending')` 的 `worker_sessions` 行标成
-   `superseded`——这正是 `dispatcher::harness_runtime_id_for_spec_card` 读的那条状态
+   `superseded`——这正是 `dispatcher::harness_runtime_id_for_planner_card` 读的那条状态
    （经 `session_projection_active_for_card`），提交之后 push 无处可落。
    **interrupt 不算栅栏**：它是异步的，而且对「下一个 turn」什么也没说。
    紧接着做内存那一半（`HarnessRegistry::remove` + `shutdown()`），因为
    `maybe_issue_turn` 不读任何持久状态，否则一条提交前就入队的 observation 照样会变成 turn。
-   口径是「该 track 的全部活跃 runtime」而不是「spec harness」：worker runtime 已被判据蕴含
+   口径是「该 track 的全部活跃 runtime」而不是「planner harness」：worker runtime 已被判据蕴含
    （取租约会加 worktree，被 `worktree list` 那条挡下），而 terminal runtime 在 S3 当时**不**被
    蕴含（N17）。S6 之后有 terminal 的 track 根本走不到这一步（建 terminal 行即冻结），
    但宽口径不因此收窄——它值钱恰恰在于不依赖任何一条「今天恰好如此」的推理。
 2. **在任何不可逆动作之前重跑判据。** 栅栏与此之间的任何写入都让整次 PATCH 变成 409，
-   且**什么都没动**：盘上没动、列没改。唯一残留是 spec harness 被拆了，所以这条路径会在
+   且**什么都没动**：盘上没动、列没改。唯一残留是 planner harness 被拆了，所以这条路径会在
    **旧路径上**把它重开再返回 409——和 `POST /api/cards/{id}/reset` 每天做的是同一个操作，
    harness item 按 card 持久化，用户的历史不受影响。
 3. **移动走 S5 的唯一受控入口** `workspace_recycle::recycle_track_workspace`，
@@ -253,10 +253,10 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
 仍然能命名它——所以将来一次扫描就能收掉，不需要新的记账。
 
 **重开线程必须 `force_new_thread: true`。** 这是唯一会重新读 `cwd` 的机制
-（`spec_harness_start_adapter.rs`：resume 分支复用 `runtime.thread_id` 且根本不再发 cwd）。
+（`planner_harness_start_adapter.rs`：resume 分支复用 `runtime.thread_id` 且根本不再发 cwd）。
 `reset_harness_items: false`：harness item 按 **card** 持久化，重开线程丢的是 agent 的
 thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所有非 launchpad 的
-`spec-harness-start` 一致；带路径摘要的键只有 launchpad 与 child bootstrap 需要，因为只有它们会被同键重驱。
+`planner-harness-start` 一致；带路径摘要的键只有 launchpad 与 child bootstrap 需要，因为只有它们会被同键重驱。
 
 ### 冻结（S3）
 
@@ -269,7 +269,7 @@ thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所
 | 1 | 首次 workspace lease | `operation/workspace_lease/mod.rs::acquire_workspace_lease_at_path_tx` | 租约行存绝对路径，而 worktree 与仓库靠 `<wt>/.git` 与 `<repo>/.git/worktrees/<n>/gitdir` 两个绝对指针互指，rename 之后双向悬空且无人重锚 |
 | 2 | terminal 持久化 | `calm-truth/db/sqlite/card.rs::terminal_create_tx`（S6） | `terminals.cwd` 存的是一个字符串，spawn 路径读的是这一行而不是 track，没有任何东西重锚它；S6 让这个字符串默认等于工作区路径之后，重指工作区就等于把某个 terminal 的目录 rename 进 `.trash` |
 | 3 | track 离开 Draft | `calm-truth/db/sqlite/track.rs::track_update_tx` | 判据是 `w.lifecycle != Draft` 而不是「本次 patch 发生了转换」：只在转换上触发会漏掉所有转换发生在本片之前的行 |
-| 4 | child track 创建 | S4 已做（`ManagedFrozenUnder` / `InheritAttachedFrozen`） | 机器在 spec 运行中建的，harness 立刻 bootstrap，没有可安全重指的窗口 |
+| 4 | child track 创建 | S4 已做（`ManagedFrozenUnder` / `InheritAttachedFrozen`） | 机器在 planner 运行中建的，harness 立刻 bootstrap，没有可安全重指的窗口 |
 
 **N17 由 S6 关闭，并且订正了 N17 记的死锁诊断。**
 
@@ -326,7 +326,7 @@ N17 那条「同时钉住无害前提」的测试
 
 由此，「没有两行 track 共享同一路径」这条不变量**只约束 managed 路径**。不收窄的话它会把上面那个既有状态判成违规。
 
-两种情况都在创建时冻结：子 track 是 spec 运行中机器创建的，harness 立刻在这个路径上 bootstrap，没有可以安全重指的窗口。
+两种情况都在创建时冻结：子 track 是 planner 运行中机器创建的，harness 立刻在这个路径上 bootstrap，没有可以安全重指的窗口。
 
 ## 生命周期
 

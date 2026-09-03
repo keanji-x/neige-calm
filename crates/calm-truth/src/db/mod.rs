@@ -130,7 +130,7 @@ pub type WriteWithEventFn<'a> = Box<
 /// persist multiple events, each tagged with its own scope. Used by
 /// `routes::tracks::create_track` to atomically emit both
 /// `Event::TrackUpdated` (scope = Track) and `Event::CardAdded`
-/// (scope = Card) for the auto-minted spec card.
+/// (scope = Card) for the auto-minted planner card.
 ///
 /// Invariants:
 ///   * The closure must return a non-empty vec — an empty vec is a
@@ -153,7 +153,7 @@ pub type WriteWithEventsFn<'a> = Box<
 
 /// #597 internal helper shape: like [`WriteWithEventsFn`], but each event
 /// carries its own actor. Used when a kernel-auto lifecycle event must commit
-/// atomically with the spec/worker write that triggered it.
+/// atomically with the planner/worker write that triggered it.
 pub type WriteWithActorEventsFn<'a> = Box<
     dyn for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
@@ -190,7 +190,7 @@ pub type WriteWithActorEventsFn<'a> = Box<
 ///
 /// The dispatcher's `TaskFailed` emission only fires on a returned
 /// error from a live spawn, not on a process death mid-spawn, so the
-/// requesting spec harness never receives a task failure observation.
+/// requesting planner harness never receives a task failure observation.
 /// Net effect: an undead card that nothing knows about.
 ///
 /// This is accepted scope for the current fix (the alternative —
@@ -336,7 +336,7 @@ pub trait RepoRead: Send + Sync + 'static {
     ///
     /// Returns every track whose lifespan overlaps the half-open
     /// `[since, until]` millisecond range (both endpoints inclusive
-    /// per the issue spec): `created_at <= until AND (terminal_at IS
+    /// per the issue planner): `created_at <= until AND (terminal_at IS
     /// NULL OR terminal_at >= since)`. `area_id`, when `Some(_)`,
     /// further restricts the result to a single area.
     ///
@@ -493,11 +493,11 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Used by boot-time supervisor reconciliation after #388 Phase 3b.
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
 
-    /// Shared-daemon empty-goal spec cards that still need the TUI to
+    /// Shared-daemon empty-goal planner cards that still need the TUI to
     /// fresh-start their first thread. These are excluded from the legacy
     /// initial-prompt bootstrap path and must be re-registered with
     /// `PendingThreadStartRegistry` on boot.
-    async fn shared_spec_cards_for_initial_prompt_takeover(
+    async fn shared_planner_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>>;
     // ---- plugins (read-only)
@@ -585,7 +585,7 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
 
     /// Return whether a card owns a per-card MCP token row. Used by the
-    /// spec-harness reusable-thread invariant: only threads minted under
+    /// planner-harness reusable-thread invariant: only threads minted under
     /// PR #567 should be reused without reminting.
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
 
@@ -665,7 +665,7 @@ pub trait RepoEventWrite: RepoRead {
     ///
     /// All events in the batch share the supplied `actor` — the
     /// "request initiator" is one per transaction. Per-event scopes
-    /// let a single mutation (e.g. track create with auto-minted spec
+    /// let a single mutation (e.g. track create with auto-minted planner
     /// card) emit both a track-scoped and a card-scoped envelope so
     /// subscribers filtered by either scope pick up the relevant
     /// frame without re-routing through ancestors.
@@ -700,7 +700,7 @@ pub trait RepoEventWrite: RepoRead {
     /// #597 — plural eventized write where each event carries its own actor.
     ///
     /// This is reserved for atomic kernel-auto lifecycle hooks: the triggering
-    /// write remains attributed to the spec/worker actor, while the automatic
+    /// write remains attributed to the planner/worker actor, while the automatic
     /// `track.updated` transition is attributed to `Kernel` or
     /// `KernelDispatcher`. Role enforcement still runs independently for each
     /// `(actor, scope, event)` tuple and any refusal rolls back the full tx.
@@ -922,6 +922,25 @@ pub trait RepoSyncDomainRaw: RepoRead {
 /// PID-persist sidecar).
 #[async_trait]
 pub trait RepoOutOfDomain: RepoRead {
+    // ---- track recipes (#1292) --------------------------------------
+    //
+    // Out-of-domain rather than event-writing: a recipe is a user's private
+    // authoring artifact, not part of the event-sourced track domain, and it
+    // emits no `Event`. Cross-window staleness is handled by the `revision`
+    // CAS (the loser gets 409) rather than by live invalidation — see the
+    // #1292 design §3.1b for why that trade was taken rather than minting a
+    // new `Event` variant and its frontend invalidation policy.
+    async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe>;
+    async fn track_recipe_update(
+        &self,
+        id: &str,
+        p: NewTrackRecipe,
+        if_revision: i64,
+    ) -> Result<TrackRecipe>;
+    async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>>;
+    async fn track_recipe_delete(&self, id: &str) -> Result<()>;
+    async fn track_recipe_list(&self) -> Result<Vec<TrackRecipe>>;
+
     // ---- terminals (writes)
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal>;
     /// Persist the child PID captured by the renderer/supervisor path. The
@@ -951,7 +970,7 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
 
-    // ---- spec harness item stream (#510 PR-ui C1)
+    // ---- planner harness item stream (#510 PR-ui C1)
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(
         &self,
@@ -1262,7 +1281,7 @@ where
 ///
 /// Use this when a single mutation must emit multiple events tagged
 /// with different scopes — e.g. `routes::tracks::create_track`'s
-/// atomic spec-card binding emits a track-scoped `TrackUpdated` plus a
+/// atomic planner-card binding emits a track-scoped `TrackUpdated` plus a
 /// card-scoped `CardAdded` from the same tx so per-track and per-card
 /// subscribers each see the relevant frame at first hand. For the
 /// usual single-event case stay on [`write_with_event_typed`].

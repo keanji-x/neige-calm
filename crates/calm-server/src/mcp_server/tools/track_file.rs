@@ -37,7 +37,7 @@ where
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),
-        description: "Spec/Worker: list file-like read views for the current MCP-bound track. \
+        description: "Planner/Worker: list file-like read views for the current MCP-bound track. \
              Accepts optional `{ path }`; `/` lists `index.md`, `track.json`, \
              `report.md`, `cards/`, and `runs/`; `cards/<card_id>` lists \
              `.meta.json`, `.payload.json`, `runtime.json`, `events.json`, and \
@@ -59,14 +59,14 @@ fn ls_descriptor() -> ToolDescriptor {
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_CAT.into(),
-        description: "Spec/Worker: read one file-like view from the current MCP-bound track. \
+        description: "Planner/Worker: read one file-like view from the current MCP-bound track. \
              Supports `index.md`, `track.json`, `report.md`, `cards/index.json`, \
              `cards/<card_id>/.meta.json`, `cards/<card_id>/.payload.json`, \
              `cards/<card_id>/runtime.json`, \
              `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
              `runs/index.json`, `runs/<idempotency_key>.md`, \
              `runs/<idempotency_key>.json`, and `plan/<key>/gate.log` \
-             (spec-only: the latest verification-gate attempt's full log)."
+             (planner-only: the latest verification-gate attempt's full log)."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -85,7 +85,7 @@ async fn track_ls(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, false)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write);
@@ -102,11 +102,11 @@ async fn track_cat(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     // Issue #644 PR-C — `plan/<key>/gate.log` is enabled only here (MCP
-    // carries a card identity); the view enforces the spec-only role
+    // carries a card identity); the view enforces the planner-only role
     // gate at read time (§6.5/§6.7). The gate-logs dir is the
     // CONFIGURED one threaded through `AppContext` (PR #685 F3), never
     // recomputed from env.
@@ -181,23 +181,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptors_document_spec_worker_access() {
+    fn descriptors_document_planner_worker_access() {
         let ls = ls_descriptor();
         let cat = cat_descriptor();
 
         assert!(
-            ls.description.starts_with("Spec/Worker:"),
-            "ls descriptor should advertise Spec/Worker access: {}",
+            ls.description.starts_with("Planner/Worker:"),
+            "ls descriptor should advertise Planner/Worker access: {}",
             ls.description
         );
         assert!(
-            cat.description.starts_with("Spec/Worker:"),
-            "cat descriptor should advertise Spec/Worker access: {}",
+            cat.description.starts_with("Planner/Worker:"),
+            "cat descriptor should advertise Planner/Worker access: {}",
             cat.description
         );
         assert!(
-            !ls.description.contains("Spec-only") && !cat.description.contains("Spec-only"),
-            "track file descriptors must not claim spec-only access"
+            !ls.description.contains("Planner-only") && !cat.description.contains("Planner-only"),
+            "track file descriptors must not claim planner-only access"
         );
     }
 }

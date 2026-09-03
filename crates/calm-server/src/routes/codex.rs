@@ -52,7 +52,7 @@ pub fn router() -> Router<AppState> {
         // because the frontend never calls it directly.
         //
         // #293 cutover removed `/internal/codex/pending_events` — the old
-        // Stop-hook long-poll fallback. Spec agents are now driven by pushed
+        // Stop-hook long-poll fallback. Planner agents are now driven by pushed
         // turn inputs, so there's no pull endpoint to back.
         .route("/internal/codex/hook", post(ingest_hook))
 }

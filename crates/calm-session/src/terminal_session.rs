@@ -501,7 +501,7 @@ impl TerminalSessionState {
                 }
             }
             // A second `ClientHello` on the same connection is a protocol
-            // violation; the spec is "one hello per connection".
+            // violation; the planner is "one hello per connection".
             ClientMsg::ClientHello { .. } => {
                 vec![
                     Effect::SendProtocolError {

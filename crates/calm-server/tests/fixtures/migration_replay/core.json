@@ -8,9 +8,9 @@
     "  - cards.role='plain' is trigger-rejected from 0037 on (max 36)",
     "  - legacy 'codex.job_requested' events are rewritten by 0038 (max 37)",
     "  - runtimes (0028+), operations (0029+), 'parked' phase (0042+)",
-    "  - card_codex_threads exists 0025..0033, spec_push_queue 0022..0032",
+    "  - card_codex_threads exists 0025..0033, planner_push_queue 0022..0032",
     "Boundary values on purpose: NULLs, alias event kinds, every track",
-    "lifecycle state, exited/signal-killed terminals, spec runtime with",
+    "lifecycle state, exited/signal-killed terminals, planner runtime with",
     "and without an mcp token (0035/0036 transform the token-less one)."
   ],
   "tables": [
@@ -271,13 +271,13 @@
       "rows": [
         {
           "columns": {
-            "id": "card-spec",
+            "id": "card-planner",
             "track_id": "track-working",
             "kind": "codex",
             "sort": 0,
             "payload": {
               "codex_source": "shared",
-              "codex_thread_id": "thread-spec-1"
+              "codex_thread_id": "thread-planner-1"
             },
             "role": "spec",
             "deletable": 0,
@@ -285,11 +285,31 @@
             "created_at": 1300,
             "updated_at": 1300,
             "wave_id": "track-working"
-          }
+          },
+          "max_version": 82
         },
         {
           "columns": {
-            "id": "card-spec-no-token",
+            "id": "card-planner",
+            "track_id": "track-working",
+            "kind": "codex",
+            "sort": 0,
+            "payload": {
+              "codex_source": "shared",
+              "codex_thread_id": "thread-planner-1"
+            },
+            "role": "planner",
+            "deletable": 0,
+            "body_crdt": null,
+            "created_at": 1300,
+            "updated_at": 1300,
+            "wave_id": "track-working"
+          },
+          "min_version": 83
+        },
+        {
+          "columns": {
+            "id": "card-planner-no-token",
             "track_id": "track-done",
             "kind": "codex",
             "sort": 0,
@@ -302,7 +322,26 @@
             "created_at": 1300,
             "updated_at": 1300,
             "wave_id": "track-done"
-          }
+          },
+          "max_version": 82
+        },
+        {
+          "columns": {
+            "id": "card-planner-no-token",
+            "track_id": "track-done",
+            "kind": "codex",
+            "sort": 0,
+            "payload": {
+              "codex_source": "shared"
+            },
+            "role": "planner",
+            "deletable": 0,
+            "body_crdt": null,
+            "created_at": 1300,
+            "updated_at": 1300,
+            "wave_id": "track-done"
+          },
+          "min_version": 83
         },
         {
           "columns": {
@@ -453,7 +492,7 @@
       "rows": [
         {
           "columns": {
-            "card_id": "card-spec",
+            "card_id": "card-planner",
             "hashed_token": "a3f1c2d4e5f60718293a4b5c6d7e8f90a3f1c2d4e5f60718293a4b5c6d7e8f90",
             "created_at": 1400
           }
@@ -486,14 +525,14 @@
       ]
     },
     {
-      "table": "spec_push_queue",
+      "table": "planner_push_queue",
       "rows": [
         {
           "min_version": 22,
           "max_version": 32,
           "columns": {
             "id": 1,
-            "card_id": "card-spec",
+            "card_id": "card-planner",
             "envelope_id": 2,
             "text": "queued observation"
           }
@@ -530,7 +569,7 @@
             "payload": {
               "track_id": "track-working"
             },
-            "actor": "ai:spec",
+            "actor": "ai:planner",
             "at": 1610,
             "correlation": "corr-1",
             "event_version": 1,
@@ -550,7 +589,7 @@
             "payload": {
               "track_id": "track-working"
             },
-            "actor": "ai:spec",
+            "actor": "ai:planner",
             "at": 1620,
             "correlation": null,
             "event_version": 2,
@@ -609,17 +648,17 @@
         {
           "min_version": 28,
           "columns": {
-            "id": "rt-spec",
-            "card_id": "card-spec",
+            "id": "rt-planner",
+            "card_id": "card-planner",
             "kind": "shared-spec",
             "agent_provider": "codex",
             "status": "idle",
             "terminal_run_id": null,
-            "thread_id": "thread-spec-1",
+            "thread_id": "thread-planner-1",
             "session_id": null,
             "active_turn_id": null,
             "handle_state_json": {
-              "last_thread_id": "thread-spec-1"
+              "last_thread_id": "thread-planner-1"
             },
             "lease_owner": "kernel-1",
             "lease_until_ms": 99999999999,
@@ -631,17 +670,17 @@
         {
           "min_version": 28,
           "columns": {
-            "id": "rt-spec-no-token",
-            "card_id": "card-spec-no-token",
+            "id": "rt-planner-no-token",
+            "card_id": "card-planner-no-token",
             "kind": "shared-spec",
             "agent_provider": "codex",
             "status": "idle",
             "terminal_run_id": null,
-            "thread_id": "thread-spec-2",
+            "thread_id": "thread-planner-2",
             "session_id": null,
             "active_turn_id": null,
             "handle_state_json": {
-              "last_thread_id": "thread-spec-2"
+              "last_thread_id": "thread-planner-2"
             },
             "lease_owner": null,
             "lease_until_ms": null,

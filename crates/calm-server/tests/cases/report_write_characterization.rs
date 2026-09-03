@@ -103,7 +103,7 @@
 //! What *is* asserted, deterministically and from the production boundary:
 //!
 //! * the MCP path consults the gate **on its `ReportWrite` leg, for the
-//!   `CardRole::Spec` writes these two tests drive** (the role qualifier is
+//!   `CardRole::Planner` writes these two tests drive** (the role qualifier is
 //!   load-bearing — see gap 3), and a denial takes the whole transaction
 //!   down with it — no
 //!   `track.report_edited`, no `card.updated`, `doc_rev` still 0. Two tests,
@@ -130,7 +130,7 @@
 //!   `RecorderShadowDecisionKind::ReportWrite`. And under the
 //!   probe-removal mutation that test goes red on exactly that assertion,
 //!   while the sole-objection test's write starts *succeeding* — so at
-//!   least one `ReportWrite` consultation is pinned too, for a Spec write.
+//!   least one `ReportWrite` consultation is pinned too, for a Planner write.
 //!   The exact number is not (gap 2), and neither is any other role's
 //!   (gap 3);
 //! * neither REST path is refused by the gate that refuses the MCP side —
@@ -221,7 +221,7 @@
 //! not count, not decision kind, but *which callers are still gated*.
 //! Confirmed by running it — making `CardDecisionSink::commit_report_op`
 //! drop the probe when `identity.role` is `CardRole::Assistant`, while keeping
-//! it for `Spec`, leaves all eight tests here green and the whole
+//! it for `Planner`, leaves all eight tests here green and the whole
 //! `calm-server` package green under `--features calm-server/codex-e2e`. That
 //! run predates #1318 §1, when the funnel passed `recorder_shadow: None`
 //! directly; `write::agent_report_op` now takes a non-optional probe, so the
@@ -229,7 +229,7 @@
 //! `record` always returns `Ok`, or route the assistant leg through
 //! `write::rest_user_block_op`, which carries no probe at all. The gap is the
 //! same; only the spelling moved. The reason it hides: both refusal
-//! tests act as a Spec, and the two assistant writes (Codex and Claude)
+//! tests act as a Planner, and the two assistant writes (Codex and Claude)
 //! only read persisted results back, which look the same whether or not an
 //! allowing gate was consulted. Register it loudly because it is the shape
 //! S1 step 2 is most likely to introduce by accident: threading a
@@ -240,8 +240,8 @@
 //! **Gap 4 — the funnel's role table is invisible from this boundary.**
 //! `decision_sink::report_op_attribution` maps `CardRole` to
 //! `(EditAuthor, auto_promote)` and refuses `Worker` / `ReportCard`
-//! outright; every call in this file arrives as `Spec` or `Assistant`, so
-//! replacing that refusal arm with `(EditAuthor::Spec, true)` leaves all
+//! outright; every call in this file arrives as `Planner` or `Assistant`, so
+//! replacing that refusal arm with `(EditAuthor::Planner, true)` leaves all
 //! eight tests here green — confirmed by running it, and by watching which
 //! test does go red under it. S1 step 2 replaces exactly that function, and
 //! the assertion that actually pins the refusal lives in another file and
@@ -278,7 +278,8 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 
 use crate::mcp_track_report::{
-    Boot, assistant_identity, boot, call_tool, seed_non_root_session_with_provider, spec_identity,
+    Boot, assistant_identity, boot, call_tool, planner_identity,
+    seed_non_root_session_with_provider,
 };
 use crate::support::mcp::set_persisted_card_role;
 use calm_server::mcp_server::ToolCallIdentity;
@@ -290,7 +291,7 @@ use calm_types::worker::WorkerProviderKind;
 // Observation helpers — the actor and attribution expectations in this file
 // are read back out of the persisted `events` table, not out of a handler's
 // return value. The persisted row is what the audit log, the goldens, and
-// the spec-wake decision all read.
+// the planner-wake decision all read.
 // ---------------------------------------------------------------------------
 
 /// `(actor, payload)` of every persisted event of `kind`, oldest first, both
@@ -386,10 +387,10 @@ async fn mcp_doc_rev(boot: &Boot) -> u64 {
     .doc_rev
 }
 
-/// A spec agent writing the whole document over MCP: attributed to the spec,
-/// actored to the spec's *session*, and it promotes a Draft track.
+/// A planner agent writing the whole document over MCP: attributed to the planner,
+/// actored to the planner's *session*, and it promotes a Draft track.
 #[tokio::test]
-async fn mcp_spec_document_write_is_spec_attributed_and_promotes_a_draft() {
+async fn mcp_planner_document_write_is_planner_attributed_and_promotes_a_draft() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Draft).await;
     let pool = mcp_pool(&boot);
@@ -397,27 +398,27 @@ async fn mcp_spec_document_write_is_spec_attributed_and_promotes_a_draft() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
-            "body": "# Spec wrote this\n",
-            "summary": "spec summary",
+            "body": "# Planner wrote this\n",
+            "summary": "planner summary",
             "message": "characterization write",
             "if_doc_rev": 0
         }),
     )
     .await
-    .expect("the spec may write its own track's report");
+    .expect("the planner may write its own track's report");
 
     let (actor, payload) = only_report_edit(&pool).await;
-    // Observed on this suite's run: the persisted actor is the spec
-    // *session*, not the spec card and not a bare `ai:spec`.
-    // `SPEC_SESSION_ID` in the shared fixture is the literal
-    // `"spec-session"`.
+    // Observed on this suite's run: the persisted actor is the planner
+    // *session*, not the planner card and not a bare `ai:planner`.
+    // `PLANNER_SESSION_ID` in the shared fixture is the literal
+    // `"planner-session"`.
     assert_eq!(
         actor,
-        json!({"kind": "AiSpecSession", "id": "spec-session"})
+        json!({"kind": "AiPlannerSession", "id": "planner-session"})
     );
-    assert_attribution(&payload, "spec");
+    assert_attribution(&payload, "planner");
 
     // The consequence of auto-promotion, not the argument: the Draft track is
     // now Planning, and the transition is logged as the kernel's, with the
@@ -435,7 +436,7 @@ async fn mcp_spec_document_write_is_spec_attributed_and_promotes_a_draft() {
     assert_eq!(promotion.get("to"), Some(&json!("planning")));
     assert_eq!(
         promotion.get("agent_message"),
-        Some(&json!("[auto] first spec write"))
+        Some(&json!("[auto] first planner write"))
     );
 }
 
@@ -463,7 +464,7 @@ async fn mcp_assistant_block_write_is_assistant_attributed_and_leaves_a_draft_in
 
     let (actor, payload) = only_report_edit(&pool).await;
     // Observed: an assistant is actored by its *provider* session
-    // (`AgentProvider::Codex` in this fixture), not by the spec-session
+    // (`AgentProvider::Codex` in this fixture), not by the planner-session
     // variant. `ASSISTANT_SESSION_ID` is the literal `"assistant-session"`.
     // The other provider arm is
     // `mcp_claude_assistant_block_write_is_actored_to_the_claude_session`.
@@ -489,7 +490,7 @@ async fn mcp_assistant_block_write_is_assistant_attributed_and_leaves_a_draft_in
 /// A retired session's write is refused, and nothing it would have written
 /// survives.
 ///
-/// Flipping the spec session to `exited` — the state production writes when
+/// Flipping the planner session to `exited` — the state production writes when
 /// a session's runtime completes (`worker_flow`, the boot reconcile in
 /// `lib.rs`) — turns the same call that succeeds above into a refusal.
 ///
@@ -516,15 +517,15 @@ async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
     let boot = boot().await;
     let pool = mcp_pool(&boot);
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
-        .bind("spec-session")
+        .bind("planner-session")
         .execute(&pool)
         .await
-        .expect("retire the spec session");
+        .expect("retire the planner session");
 
     let error = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# Denied\n",
             "summary": "denied",
@@ -617,18 +618,18 @@ async fn seed_foreign_track_session(boot: &Boot, session_id: &str, role: CardRol
 }
 
 /// [`seed_foreign_track_session`] for the planner role — the one
-/// `spec_identity` acts under, and the one the three recorder tests below
+/// `planner_identity` acts under, and the one the three recorder tests below
 /// need on the far track.
 async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) -> TrackId {
-    seed_foreign_track_session(boot, session_id, CardRole::Spec).await
+    seed_foreign_track_session(boot, session_id, CardRole::Planner).await
 }
 
 /// The recorder probe as the **sole** reason a write is refused.
 ///
 /// The session acting here is live, in an active-authority state, and bound
-/// to a `CardRole::Spec` card, so
+/// to a `CardRole::Planner` card, so
 /// `decision_gate::enforce_role_resolving_session` resolves it to
-/// `ActorId::AiSpec(that card)` and `role_gate::enforce_role` passes the two
+/// `ActorId::AiPlanner(that card)` and `role_gate::enforce_role` passes the two
 /// card-scoped events this write emits (`card.updated`,
 /// `track.report_edited`). What objects is `decide_recorder`'s
 /// `card.track_id == track` clause: the session's card is on the *foreign*
@@ -650,10 +651,10 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) -> Tr
 /// **Read "sole" as scoped to a planner-role caller, and do not widen it to
 /// "the MCP boundary".** What makes the probe the only objector here is the
 /// acting card's role, not the tool: `enforce_role_resolving_session`
-/// resolves a planner session to `ActorId::AiSpec(card)`, and section (3) of
+/// resolves a planner session to `ActorId::AiPlanner(card)`, and section (3) of
 /// `role_gate::enforce_role` — the only place an ordinary card-scoped event
 /// gets its scope cross-checked — matches on `AiCodex | AiClaude` and never
-/// on `AiSpec`, so nothing re-checks the acting card's home track. An
+/// on `AiPlanner`, so nothing re-checks the acting card's home track. An
 /// `Assistant` caller resolves to `AiCodex` / `AiClaude` instead and lands
 /// in `enforce_assistant_scope`, which *does* consult the acting card's home
 /// track — it admits that card and its home track's report card, and cross-
@@ -670,10 +671,10 @@ async fn seed_foreign_track_planner_session(boot: &Boot, session_id: &str) -> Tr
 ///
 /// The role split lines up with the tool split today, which is why "the
 /// `calm.report.write` arm" is a true but weaker way to say it:
-/// `calm.report.write` is `visible_to_roles: &[CardRole::Spec]` and calls
-/// `require_role(&identity, CardRole::Spec)`, so an Assistant cannot reach
-/// it. The block tools take `require_role_any(&[Spec, Assistant])`, so a
-/// *Spec* caller on `calm.report.blocks.upsert` is in the sole-objector case
+/// `calm.report.write` is `visible_to_roles: &[CardRole::Planner]` and calls
+/// `require_role(&identity, CardRole::Planner)`, so an Assistant cannot reach
+/// it. The block tools take `require_role_any(&[Planner, Assistant])`, so a
+/// *Planner* caller on `calm.report.blocks.upsert` is in the sole-objector case
 /// too. Role is the criterion; the tool is a consequence.
 #[tokio::test]
 async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection() {
@@ -683,15 +684,15 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
     seed_foreign_track_planner_session(&boot, FOREIGN_SESSION_ID).await;
 
     let identity = ToolCallIdentity {
-        // This track's spec card — so the tool resolves this track's report.
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        // This track's planner card — so the tool resolves this track's report.
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
         // …but the acting session is the foreign track's.
         session_id: FOREIGN_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "foreign-spec-thread".to_string(),
+        thread_id: "foreign-planner-thread".to_string(),
     };
 
     call_tool(
@@ -827,7 +828,7 @@ async fn mcp_report_write_with_a_lifecycle_is_gated_on_the_track_lifecycle_leg_f
     let identity = ToolCallIdentity {
         session_id: FOREIGN_SESSION_ID.to_string(),
         thread_id: "foreign-planner-lifecycle-thread".to_string(),
-        ..spec_identity(&boot)
+        ..planner_identity(&boot)
     };
 
     let error = call_tool(
@@ -913,7 +914,7 @@ async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_
         session_id: FOREIGN_SESSION_ID.to_string(),
         track_id: Some(foreign_track_id.as_str().to_string()),
         thread_id: "foreign-planner-claimed-track-thread".to_string(),
-        ..spec_identity(&boot)
+        ..planner_identity(&boot)
     };
 
     call_tool(
@@ -950,7 +951,7 @@ async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_
 /// The same funnel with a **Claude**-provider assistant: the persisted actor
 /// is `AiClaudeSession`, not `AiCodexSession`.
 ///
-/// `ToolCallIdentity::to_actor_id` sends every non-Spec role through
+/// `ToolCallIdentity::to_actor_id` sends every non-Planner role through
 /// `registry::provider_session_actor`, which is where the provider picks the
 /// actor variant. Every other identity in this file and in the shared
 /// `mcp_track_report` fixture is `AgentProvider::Codex`, so without this case
@@ -960,7 +961,7 @@ async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_
 ///
 /// The card is minted with `kind: "codex"` on purpose: production mints an
 /// assistant conversation card that way for both providers
-/// (`crates/calm-server/src/operation/spec_harness_start_adapter.rs:607`),
+/// (`crates/calm-server/src/operation/planner_harness_start_adapter.rs:607`),
 /// so the card's `kind` is not where the provider is recorded. What selects
 /// the actor variant is `ToolCallIdentity::provider`, and *this test sets
 /// that field by hand*; the `worker_sessions` row is seeded as Claude to

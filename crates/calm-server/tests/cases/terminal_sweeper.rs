@@ -1,4 +1,4 @@
-//! Scope C orphan-terminal sweeper tests. Spec: design doc §10.
+//! Scope C orphan-terminal sweeper tests. Planner: design doc §10.
 //!
 //! Coverage:
 //!
@@ -148,10 +148,10 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
     (card.id.to_string(), term.id)
 }
 
-/// Seed a spec codex card + terminal whose active runtime is a shared-spec
+/// Seed a planner codex card + terminal whose active runtime is a shared-spec
 /// row with `thread_id` bound and `terminal_run_id = NULL`, matching the
 /// post-migration shape for bound shared-spec threads.
-async fn seed_shared_spec_pair(
+async fn seed_shared_planner_pair(
     state: &AppState,
     concrete: &SqlxRepo,
     thread_id: &str,
@@ -195,7 +195,7 @@ async fn seed_shared_spec_pair(
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         concrete.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -210,7 +210,7 @@ async fn seed_shared_spec_pair(
         WorkerSessionInit {
             id: new_id(),
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
@@ -228,7 +228,10 @@ async fn seed_shared_spec_pair(
     (card.id.to_string(), term.id)
 }
 
-async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
+async fn seed_migrated_shared_planner_pair(
+    state: &AppState,
+    concrete: &SqlxRepo,
+) -> (String, String) {
     let area = state
         .raw_repo()
         .area_create(NewArea {
@@ -268,7 +271,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         concrete.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
@@ -281,7 +284,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
     let init = WorkerSessionInit {
         id: new_id(),
         card_id: card.id.to_string(),
-        kind: WorkerSessionKind::SharedSpec,
+        kind: WorkerSessionKind::SharedPlanner,
         agent_provider: Some(AgentProvider::Codex),
         status: WorkerSessionState::Running,
         terminal_run_id: None,
@@ -380,9 +383,9 @@ async fn orphan_detection_skips_runtime_owned_terminal_without_payload_link() {
 }
 
 #[tokio::test]
-async fn orphan_sweep_protects_shared_spec_terminal_with_null_terminal_run_id() {
+async fn orphan_sweep_protects_shared_planner_terminal_with_null_terminal_run_id() {
     let (state, concrete) = fresh_state().await;
-    let (_card_id, terminal_id) = seed_shared_spec_pair(&state, &concrete, "t1").await;
+    let (_card_id, terminal_id) = seed_shared_planner_pair(&state, &concrete, "t1").await;
     age_all_terminals_past_grace(&concrete).await;
 
     terminal_sweeper::sweep(&state).await.unwrap();
@@ -401,7 +404,7 @@ async fn orphan_sweep_protects_shared_spec_terminal_with_null_terminal_run_id() 
 #[tokio::test]
 async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
     let (state, concrete) = fresh_state().await;
-    let (card_id, terminal_id) = seed_shared_spec_pair(&state, &concrete, "t1").await;
+    let (card_id, terminal_id) = seed_shared_planner_pair(&state, &concrete, "t1").await;
 
     state
         .repo
@@ -424,9 +427,9 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
 }
 
 #[tokio::test]
-async fn migrated_shared_spec_terminal_survives_sweep() {
+async fn migrated_shared_planner_terminal_survives_sweep() {
     let (state, concrete) = fresh_state().await;
-    let (_card_id, terminal_id) = seed_migrated_shared_spec_pair(&state, &concrete).await;
+    let (_card_id, terminal_id) = seed_migrated_shared_planner_pair(&state, &concrete).await;
     age_all_terminals_past_grace(&concrete).await;
 
     terminal_sweeper::sweep(&state).await.unwrap();

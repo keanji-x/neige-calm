@@ -130,7 +130,7 @@ export type TodaySummaryFailure = Readonly<{
  *
  * The `code` is matched, not the status and not the message text. All three
  * kinds of 409 this endpoint can answer share a status — `conflict` from the
- * underlying create, `spec_harness_dormant` from a send that could not be
+ * underlying create, `planner_harness_dormant` from a send that could not be
  * recovered, and this one — and only the code tells them apart. Matching the
  * sentence instead would be mirror code for a string the server owns.
  */

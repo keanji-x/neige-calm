@@ -188,12 +188,12 @@ mod tests {
         let c = CardRoleCache::new();
         assert!(c.is_empty());
         c.insert(cid("a"), CardRole::Worker, wid("w1"));
-        c.insert(cid("b"), CardRole::Spec, wid("w1"));
+        c.insert(cid("b"), CardRole::Planner, wid("w1"));
         c.insert(cid("c"), CardRole::Worker, wid("w2"));
         assert_eq!(c.len(), 3);
 
         assert_eq!(c.get(&cid("a")), Some(CardRole::Worker));
-        assert_eq!(c.get(&cid("b")), Some(CardRole::Spec));
+        assert_eq!(c.get(&cid("b")), Some(CardRole::Planner));
         assert_eq!(c.get(&cid("c")), Some(CardRole::Worker));
         assert_eq!(c.get(&cid("missing")), None);
 
@@ -215,8 +215,8 @@ mod tests {
     fn insert_overwrites_existing() {
         let c = CardRoleCache::new();
         c.insert(cid("a"), CardRole::Worker, wid("w1"));
-        c.insert(cid("a"), CardRole::Spec, wid("w2"));
-        assert_eq!(c.get(&cid("a")), Some(CardRole::Spec));
+        c.insert(cid("a"), CardRole::Planner, wid("w2"));
+        assert_eq!(c.get(&cid("a")), Some(CardRole::Planner));
         assert_eq!(c.track_of(&cid("a")), Some(wid("w2")));
         assert_eq!(c.len(), 1);
     }
@@ -253,7 +253,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO cards (id, track_id, role) VALUES \
                 ('a', 'w1', 'worker'), \
-                ('b', 'w1', 'spec'), \
+                ('b', 'w1', 'planner'), \
                 ('c', 'w2', 'worker')",
         )
         .execute(&pool)
@@ -264,7 +264,7 @@ mod tests {
         cache.seed_from_db(&pool).await.unwrap();
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.get(&cid("a")), Some(CardRole::Worker));
-        assert_eq!(cache.get(&cid("b")), Some(CardRole::Spec));
+        assert_eq!(cache.get(&cid("b")), Some(CardRole::Planner));
         assert_eq!(cache.get(&cid("c")), Some(CardRole::Worker));
         assert_eq!(cache.track_of(&cid("a")), Some(wid("w1")));
         assert_eq!(cache.track_of(&cid("b")), Some(wid("w1")));
@@ -282,7 +282,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO cards (id, track_id, role) VALUES ('only', 'w-only', 'spec')")
+        sqlx::query("INSERT INTO cards (id, track_id, role) VALUES ('only', 'w-only', 'planner')")
             .execute(&pool)
             .await
             .unwrap();
@@ -291,7 +291,7 @@ mod tests {
         cache.insert(cid("stale"), CardRole::Worker, wid("w-stale"));
         cache.seed_from_db(&pool).await.unwrap();
         assert_eq!(cache.get(&cid("stale")), None);
-        assert_eq!(cache.get(&cid("only")), Some(CardRole::Spec));
+        assert_eq!(cache.get(&cid("only")), Some(CardRole::Planner));
         assert_eq!(cache.track_of(&cid("only")), Some(wid("w-only")));
         assert_eq!(cache.len(), 1);
     }

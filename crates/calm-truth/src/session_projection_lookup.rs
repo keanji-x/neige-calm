@@ -169,7 +169,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
     let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
-    let source = (runtime.kind == WorkerSessionKind::SharedSpec).then(|| "shared".to_string());
+    let source = (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string());
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
     card.runtime = Some(CardRuntimeView {
@@ -200,7 +200,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
 
     if matches!(
         runtime.kind,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner
     ) && let Some(thread_id) = thread_id
     {
         map.insert("codex_thread_id".into(), Value::String(thread_id));
@@ -224,7 +224,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
         thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),
         session_id: non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned),
-        source: (runtime.kind == WorkerSessionKind::SharedSpec).then(|| "shared".to_string()),
+        source: (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string()),
         thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
     }
 }
@@ -232,7 +232,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
 fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
     if !matches!(
         runtime.kind,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedSpec
+        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner
     ) {
         return None;
     }
@@ -255,8 +255,8 @@ fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static
 /// available, falls back to the legacy payload stamp.
 ///
 /// Returns true for any active codex card with a thread id; post-PR2a all codex
-/// traffic routes through the shared daemon, not only spec-card launches.
-pub fn card_is_shared_spec(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
+/// traffic routes through the shared daemon, not only planner-card launches.
+pub fn card_is_shared_planner(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
     if let Some(runtime) = runtime {
         return runtime_marks_shared(runtime);
     }
@@ -277,7 +277,7 @@ pub fn card_is_shared_spec(card: &Card, runtime: Option<&WorkerSessionProjection
 }
 
 fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
-    matches!(runtime.kind, WorkerSessionKind::SharedSpec)
+    matches!(runtime.kind, WorkerSessionKind::SharedPlanner)
         || (matches!(runtime.kind, WorkerSessionKind::CodexCard)
             && runtime.agent_provider == Some(AgentProvider::Codex)
             && runtime

@@ -50,7 +50,7 @@
 **通用词停用表 `GENERIC_ANCHOR_WORDS`**（源码内，逐组带注释说明为什么不配当判据）：React/DOM 词汇、
 CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作用于上面两类新候选，不影响原有形状。
 `change` / `changes` 是实测加进去的：`INV-CHATITEM-008` 的 statement 引的是 UI 兜底文案 `"change"`，
-落点却是 `specChatItems.ts` 里的形参名 —— 正是这张表要拦的碰巧命中（加表后该条回到原有 baseline 状态）。
+落点却是 `plannerChatItems.ts` 里的形参名 —— 正是这张表要拦的碰巧命中（加表后该条回到原有 baseline 状态）。
 
 **单调性**：新 anchor 只让 `present` 变大，`anchored` 是 `some`，所以绿条目不会因此变红。
 实际跑数验证（不是推理）：1088 条里 `ok → 非 ok` 的转移数 **0**。
@@ -87,14 +87,14 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 | `INV-A11Y-010` | `waiting on you` | 锚点漂移：`Sidebar.tsx:58-66` 指的是 `writeExpandedAreas`，与 statement 毫无关系 | source → `Sidebar.tsx:271-290`（`aria-label="Waiting on you"` 分区 + `title={area ? …}` 那行） |
 | `INV-APP-047` | `/api/auth/whoami` | 锚点漂移：只引了 close handler，漏掉真正发探测的 `probeUnauthorized` | source → `events.ts:313-359,558-566` |
 | `E2E-INV-INFRA-017` | `/dev/reset` | 锚点漂移：`reset.ts:16-17` 全是注释（注释被扫描器剥离） | source → `reset.ts:31-33`（用 `REPLAY_PORT` 拼 `/dev/reset` 的那行） |
-| `E2E-CAP-SHELL-006` | `/calm`、`/calm/` | statement 把 `basepath: '/calm'` 整体塞进反引号，抽不出可匹配片段；且真正定义 basepath 的是 router 不是 spec | statement 改写成 `` `basepath` set to `/calm` ``；source 加 `web/src/app/router.tsx:153-161` |
-| `E2E-CAP-SHELL-010` | `Open user menu` | `/calm/settings` 在 spec 里写成转义正则 `/\/calm\/settings…/`，字面不存在；真正可锚的是 accessible name | statement 把 `` `Open user menu` `` 改成 `"Open user menu"`（展示文案），命中 `a11y-keyboard.spec.ts:855` |
+| `E2E-CAP-SHELL-006` | `/calm`、`/calm/` | statement 把 `basepath: '/calm'` 整体塞进反引号，抽不出可匹配片段；且真正定义 basepath 的是 router 不是 planner | statement 改写成 `` `basepath` set to `/calm` ``；source 加 `web/src/app/router.tsx:153-161` |
+| `E2E-CAP-SHELL-010` | `Open user menu` | `/calm/settings` 在 planner 里写成转义正则 `/\/calm\/settings…/`，字面不存在；真正可锚的是 accessible name | statement 把 `` `Open user menu` `` 改成 `"Open user menu"`（展示文案），命中 `a11y-keyboard.spec.ts:855` |
 | `E2E-INV-CWD-004` | `siblingPrefix`、`claim` | statement 与实现不符：`/work/repository` / `/work/repo` 是示意写法，代码用的是 `/work-${ts}/…` | statement 改成引用真实变量名 `siblingPrefix` / `claim`，示意路径去掉反引号 |
-| `E2E-CAP-TERMINAL-006` | `signal_killed` | statement 与实现不符：`signal` 在被引 spec 里只出现在注释；承载 signal 语义的是 `XtermView` 的 `signal_killed` 字段 | statement `` `signal` `` → `` `signal_killed` ``；source → `XtermView.tsx:60-90 terminal-clean-exit.spec.ts:120-127` |
+| `E2E-CAP-TERMINAL-006` | `signal_killed` | statement 与实现不符：`signal` 在被引 planner 里只出现在注释；承载 signal 语义的是 `XtermView` 的 `signal_killed` 字段 | statement `` `signal` `` → `` `signal_killed` ``；source → `XtermView.tsx:60-90 terminal-clean-exit.spec.ts:120-127` |
 | `E2E-INV-ENV-002` | `echo`（`/etc/services` 天然锚不住） | 锚点漂移：`92-96` 全是注释，真正的 POSIX echo 循环在 99 行 | source → `wheel-track-switch.spec.ts:92-100`。这条的否定半句（「没有 `/etc/services`」）原理上锚不住，但肯定半句锚住了，无需 pending |
 | `CAP-REPORT-SHELL-014` | `Multiple report cards found. Showing the earliest.` | 锚点漂移：没引渲染横幅的 `DuplicateReportBanner` | source 增补 `TrackReportPage.tsx:197-202` |
 | `INV-REPORT-BACKLINK-010` | `cites block` | 锚点漂移：没引渲染 `· cites block {id}` 的那段 JSX | source 增补 `TrackReportPage.tsx:704-708` |
-| `CAP-SPECCONVO-021` | `No messages yet` / `ask the Spec Agent below.` | 源码把破折号写成 `&mdash;`，整串永远匹配不上 | 由「非 ASCII 段切分 + 每段各自成 anchor」规则解决，条目本身不改，命中 `SpecConversation.tsx:598` |
+| `CAP-SPECCONVO-021` | `No messages yet` / `ask the Planner Agent below.` | 源码把破折号写成 `&mdash;`，整串永远匹配不上 | 由「非 ASCII 段切分 + 每段各自成 anchor」规则解决，条目本身不改，命中 `PlannerConversation.tsx:598` |
 | `CAP-AREA-NEWTRACK-017` | `PR autoflow` | 同上：`issue → PR autoflow` 里的 `→` 不可匹配，且文案被拆成两个 span | 同上，命中 `Area.tsx:545` |
 | `INV-NEWTASK-ISSUEDEV-020` | `derivedWorkflowInput` | 原理上锚不住：`notes` 是「刻意不存在」的东西，只在注释里出现 | 采用简报的 (a) 路线的等价做法：statement 改成指名**存在**的载体 `` `derivedWorkflowInput` 刻意不带 `notes` 字段 ``，source 从 `369-373` 扩到 `369-374`（`derivedWorkflowInput` 的定义行）。这样同一条不变量由一个正向 anchor 支撑，不需要进 pending |
 
@@ -196,8 +196,8 @@ subagent 实跑证明：放宽大小写、`DISPLAY_COPY_MINIMUM` 6→3、`BACKTI
 
 - 「13 条新暴露」已更正为「11 条新暴露 + 2 条原本无判据、被新规则救回的条目」，见上文脚注（实跑复核，不是转述）。
 - 当前最弱的两个锚，本轮**不改**，只记账：
-  - `E2E-INV-SPECCHAT-008`：anchor `working` 命中的是 `a11y-spec-chat-interrupt.spec.ts:61` 的可访问名
-    字符串 `'Spec Agent is working'`，而 statement 指的是 FSM 门控变量；点明这层关系的注释（:58）反而被
+  - `E2E-INV-SPECCHAT-008`：anchor `working` 命中的是 `a11y-planner-chat-interrupt.spec.ts:61` 的可访问名
+    字符串 `'Planner Agent is working'`，而 statement 指的是 FSM 门控变量；点明这层关系的注释（:58）反而被
     trivia 剥离。锚是真的，但它锚住的不是 statement 说的那个东西。
   - `E2E-CAP-TRACKCREATE-015`：statement 里的 `role="option"` 让 `option` 走**展示文案**通道成为
     anchor（6 字符恰好过下限、不在停用表），于是任何用 `getByRole('option')` 的区间都会绿。

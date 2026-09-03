@@ -4,18 +4,18 @@
 //! `write_with_event_typed` ergonomic wrapper). See `routes/areas.rs` for
 //! the migration pattern; this file follows the same shape.
 //!
-//! ## PR6 (#136) — atomic spec-card binding
+//! ## PR6 (#136) — atomic planner-card binding
 //!
-//! `create_track` now mints a track **and** a `CardRole::Spec` codex card
+//! `create_track` now mints a track **and** a `CardRole::Planner` codex card
 //! in a single transaction via [`crate::db::write_with_events_typed`].
 //! Two events leave the tx: [`Event::TrackUpdated`] (scope = Track) and
 //! [`Event::CardAdded`] (scope = Card).
 //!
-//! ## Spec harness start
+//! ## Planner harness start
 //!
-//! Track creation now mints the kernel-owned spec card and report card, then
-//! submits the `spec-harness-start` operation. Start failures are non-fatal:
-//! the committed track remains and the spec card can recover through the
+//! Track creation now mints the kernel-owned planner card and report card, then
+//! submits the `planner-harness-start` operation. Start failures are non-fatal:
+//! the committed track remains and the planner card can recover through the
 //! harness runtime.
 //!
 //! ## Track-delete teardown (issue #197)
@@ -47,7 +47,7 @@ use crate::model::{
     NewTrack, RequestTheme, Track, TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind,
     TrackWorkspacePatch, new_id,
 };
-use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
     release_workspace_leases_for_track_tx, sweep_workspace_worktrees_for_tracks_repo,
     track_has_active_forge_action,
@@ -198,7 +198,7 @@ pub struct CreateTrackRequest {
     /// the track's intent, so the client may omit it entirely. Omitting it
     /// stores the **empty string** — there is no server-side default; the
     /// `Untitled track` a user sees in a list is the frontend's display
-    /// fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The spec
+    /// fallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner
     /// agent then names the track via `calm.track.rename`, which only succeeds
     /// while the stored title is still blank. The type
     /// stays `String`: the empty string has always been a legal title and the
@@ -227,7 +227,7 @@ pub struct CreateTrackRequest {
     #[serde(default)]
     pub fork_report_from: Option<String>,
     /// When true, upsert the kernel view/template overlay in the same create
-    /// transaction as the layout overlay and do not start the spec harness.
+    /// transaction as the layout overlay and do not start the planner harness.
     #[serde(default)]
     pub as_template: bool,
 }
@@ -271,7 +271,7 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_track),
         )
         // Issue #247 PR3 — user-facing track-report edit endpoint. Session-
-        // authenticated; only `ActorId::User` is accepted (worker / spec /
+        // authenticated; only `ActorId::User` is accepted (worker / planner /
         // plugin actors are rejected 403 even when carrying a valid
         // session cookie). The MCP `calm.report.{write,edit}` path is
         // unchanged; both paths funnel through the `track_report::write`
@@ -471,7 +471,7 @@ async fn template_track_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
 /// So this is not a report *edit* with a better-chosen author; it is the same
 /// structural initialization the fork path performs, on the same in-transaction
 /// writer, with no author to name because no one is editing anything. That is
-/// also why the constants can now declare `spec` directly
+/// also why the constants can now declare `planner` directly
 /// (`templates::report_from_tasks`) instead of writing `user` and having the
 /// fork rewrite it one step later.
 ///
@@ -649,7 +649,7 @@ pub(crate) async fn create_track(
     Json(request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
     let (mut p, fork_report_from, cwd_omitted, as_template) = request.into_parts();
-    // PR6 (#136) — track create now atomically mints a `CardRole::Spec`
+    // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
     // codex card alongside the track row. Both rows commit in one tx
     // and both `Event::TrackUpdated` + `Event::CardAdded` envelopes
     // emit from the same commit, each tagged with its own scope so
@@ -658,7 +658,7 @@ pub(crate) async fn create_track(
     //
     // Issue #250 PR 2 — the body may carry `cwd` (the track's working
     // directory) and `attach_folder`. When `cwd` is present, it is the
-    // source of truth for the spec daemon's working directory and must
+    // source of truth for the planner daemon's working directory and must
     // either resolve to the body's `area_id` via the existing folder
     // claims, or — when `attach_folder = true` — get atomically claimed
     // as a new folder under that area inside the same tx that mints the
@@ -768,7 +768,7 @@ pub(crate) async fn create_track(
     // every real area's descendant check. Look up the kind once here;
     // if System, skip both the pre-tx folder validation and the
     // in-tx attach. The cwd is still recorded on the track row (the
-    // spec daemon chdirs into it) but no `area_folders` row is minted.
+    // planner daemon chdirs into it) but no `area_folders` row is minted.
     let area = s
         .repo
         .area_get(p.area_id.as_str())
@@ -827,7 +827,7 @@ pub(crate) async fn create_track(
     };
 
     let workspace_root = s.workspace_root.clone();
-    let created = create_track_with_spec_harness(
+    let created = create_track_with_planner_harness(
         s,
         actor,
         p,
@@ -910,7 +910,7 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
 
 /// Resolve `template_id` to the owning plugin Manifest iff a running
 /// **trusted** plugin registers it — same filter as
-/// `bound_template_descriptor` on the spec harness side. `None` covers
+/// `bound_template_descriptor` on the planner harness side. `None` covers
 /// unknown, stopped, and untrusted templates alike (the route
 /// deliberately does not distinguish them in the 400).
 pub(crate) async fn resolve_template_binding(
@@ -1175,17 +1175,17 @@ struct CreateTrackOptions {
 }
 
 #[allow(deprecated)]
-async fn create_track_with_spec_harness(
+async fn create_track_with_planner_harness(
     s: RouteState,
     actor: Actor,
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
     let as_template = options.as_template;
-    let (track, _, spec_card_id, report_card_id) =
+    let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options, None).await?;
     if !as_template {
-        start_spec_harness(&s, &actor, &track, spec_card_id, report_card_id).await?;
+        start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     }
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
@@ -1365,17 +1365,17 @@ async fn create_track_structure(
     // #1147 — captured before `s` is moved into the write closure. Only the
     // managed branch uses it; `materialize_workspace` ignores it for attached.
     let workspace_root_for_materialize = s.workspace_root.clone();
-    let spec_card_id = new_id();
+    let planner_card_id = new_id();
     let report_card_id = new_id();
     let actor_id = actor.to_actor_id();
     let actor_id_for_tx = actor_id.clone();
     let write_for_tx = s.write.clone();
-    let spec_card_id_for_tx = spec_card_id.clone();
+    let planner_card_id_for_tx = planner_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
     let area_id_for_attach = body_area_id;
     let normalized_cwd_for_tx = normalized_cwd;
     // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
-    // (`User` when no `X-Calm-Actor` header was present, `Spec` otherwise) and
+    // (`User` when no `X-Calm-Actor` header was present, `Planner` otherwise) and
     // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
     // no-op for the browser fork — the single most common fork there is. The
     // fork's normalization and its belt are both author-independent now, so
@@ -1449,9 +1449,9 @@ async fn create_track_structure(
                     }
                 };
 
-                let spec_card = card_create_with_id_tx(
+                let planner_card = card_create_with_id_tx(
                     tx,
-                    spec_card_id_for_tx.clone(),
+                    planner_card_id_for_tx.clone(),
                     NewCard {
                         title: None,
                         track_id: track_id.clone(),
@@ -1461,13 +1461,13 @@ async fn create_track_structure(
                         // title is no longer the track's intent, so create
                         // seeds no `prompt` here. The parameter stays because
                         // child tracks still pass the task goal their parent
-                        // spec declared (`operation/child_track_adapter.rs`) —
+                        // planner declared (`operation/child_track_adapter.rs`) —
                         // that is machine-written intent, not a title a human
                         // typed, and it is what seeds the child's harness when
                         // the child track starts.
-                        payload: spec_harness_card_payload(None),
+                        payload: planner_harness_card_payload(None),
                     },
-                    CardRole::Spec,
+                    CardRole::Planner,
                     false,
                     write_for_tx.role_cache(),
                 )
@@ -1521,8 +1521,8 @@ async fn create_track_structure(
                     track: track_id.clone(),
                     area: area_id.clone(),
                 };
-                let spec_card_scope = EventScope::Card {
-                    card: spec_card.id.clone(),
+                let planner_card_scope = EventScope::Card {
+                    card: planner_card.id.clone(),
                     track: track_id.clone(),
                     area: area_id.clone(),
                 };
@@ -1538,8 +1538,8 @@ async fn create_track_structure(
                         entity_kind: "view".into(),
                         entity_id: track_id.as_str().to_string(),
                         kind: "layout".into(),
-                        payload: spec_harness_layout_payload(
-                            spec_card.id.as_str(),
+                        payload: planner_harness_layout_payload(
+                            planner_card.id.as_str(),
                             report_card.id.as_str(),
                         ),
                     },
@@ -1611,8 +1611,8 @@ async fn create_track_structure(
                     ),
                     (
                         actor_id_for_tx.clone(),
-                        spec_card_scope,
-                        Event::CardAdded(spec_card),
+                        planner_card_scope,
+                        Event::CardAdded(planner_card),
                     ),
                     (
                         actor_id_for_tx.clone(),
@@ -1659,11 +1659,11 @@ async fn create_track_structure(
     .await?;
 
     // #1147 S2 (design D3/D5) — materialize outside the transaction and
-    // before the spec harness starts. `Attached` is a no-op: the directory is
+    // before the planner harness starts. `Attached` is a no-op: the directory is
     // the user's and the server never creates or `git init`s it.
     //
     // A failure here MUST surface as a non-2xx. The tempting shape is
-    // `tracing::warn!` + `Ok(())` (as `start_spec_harness` below does for a
+    // `tracing::warn!` + `Ok(())` (as `start_planner_harness` below does for a
     // different, recoverable failure) — but that returns 201 for a track whose
     // first codex worker will then die with `spawn-failed`, which is #1147
     // itself replayed one layer down.
@@ -1682,27 +1682,27 @@ async fn create_track_structure(
         error
     })?;
 
-    Ok((track, created, spec_card_id, report_card_id))
+    Ok((track, created, planner_card_id, report_card_id))
 }
 
-async fn start_spec_harness(
+async fn start_planner_harness(
     s: &RouteState,
     actor: &Actor,
     track: &Track,
-    spec_card_id: String,
+    planner_card_id: String,
     report_card_id: String,
 ) -> Result<()> {
     // #1211 S1: no goal is seeded on this user-driven create path. An omitted
     // title is stored as the empty string (`Untitled track` is only what the
-    // frontend shows for a blank one) and the spec agent names the track once
+    // frontend shows for a blank one) and the planner agent names the track once
     // it knows what the work is, so there is nothing here that could stand in
     // for the user's intent. Child tracks do NOT come through here — they start their
-    // harness with the parent spec's declared task goal
+    // harness with the parent planner's declared task goal
     // (`scheduler/mod.rs`, `operation/child_track_adapter.rs`).
-    let request = SpecHarnessStartOperationPayload {
+    let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
-        spec_card_id: CardId::from(spec_card_id.clone()),
+        planner_card_id: CardId::from(planner_card_id.clone()),
         report_card_id: Some(report_card_id),
         sort: None,
         cwd: track.workspace.path.clone(),
@@ -1721,7 +1721,7 @@ async fn start_spec_harness(
     match s
         .operation_runtime
         .submit(
-            "spec-harness-start",
+            "planner-harness-start",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
@@ -1741,35 +1741,35 @@ async fn start_spec_harness(
                     ..
                 } => {
                     tracing::warn!(
-                        spec_card_id,
+                        planner_card_id,
                         track_id = %track.id,
                         ?from_phase,
                         error = %last_error,
-                        "spec harness start operation failed; track created but spec agent is inert"
+                        "planner harness start operation failed; track created but planner agent is inert"
                     );
                 }
                 OperationOutcome::Stuck { reason, from_phase } => {
                     tracing::warn!(
-                        spec_card_id,
+                        planner_card_id,
                         track_id = %track.id,
                         ?from_phase,
                         reason,
-                        "spec harness start operation stuck; track created but spec agent is inert"
+                        "planner harness start operation stuck; track created but planner agent is inert"
                     );
                 }
             },
             Err(e) => tracing::warn!(
-                spec_card_id,
+                planner_card_id,
                 track_id = %track.id,
                 error = %e,
-                "spec harness start wait failed; track created but spec agent may be inert"
+                "planner harness start wait failed; track created but planner agent may be inert"
             ),
         },
         Err(e) => tracing::warn!(
-            spec_card_id,
+            planner_card_id,
             track_id = %track.id,
             error = %e,
-            "spec harness start submission failed; track created but spec agent is inert"
+            "planner harness start submission failed; track created but planner agent is inert"
         ),
     }
 
@@ -1932,76 +1932,14 @@ fn prepare_fork_report(
                     }
                 }
             }
-            let tombstone = payload
-                .get("tombstone")
-                .is_some_and(|value| !value.is_null());
-            payload.insert(
-                "declared_by".into(),
-                serde_json::Value::String("spec".into()),
-            );
-            if tombstone {
-                // #1111 — `tombstoned_by` is the second *attribution* field on
-                // a task block: `track_report_edit_guard::guard_task_declarations`
-                // treats `declared_by == "user" || tombstoned_by == "user"` as
-                // user-owned, and `tombstoned_by` is immutable once a block is
-                // a tombstone. Copying a template's `tombstoned_by: "user"`
-                // would hand every forked track a block no spec author can ever
-                // edit or delete — the same template-as-backdoor hole §7.2
-                // closed for `declared_by`. Normalize both together.
-                //
-                // Non-tombstone blocks are deliberately left alone: a residual
-                // `tombstoned_by` there is rejected by `validate_payload`
-                // ("must be absent from a non-tombstone task") a few lines
-                // below, so a corrupt source fails the fork closed instead of
-                // being silently repaired into a shape it never validly had.
-                //
-                // `released_by_user` is the third privilege field; it is
-                // normalized in the `else` arm below, because the tombstone
-                // schema (`report_blocks/kinds.rs:158-166`) forbids the field
-                // outright — see that arm's comment.
-                payload.insert(
-                    "tombstoned_by".into(),
-                    serde_json::Value::String("spec".into()),
-                );
-                payload.remove("ready");
-            } else {
-                payload.insert("ready".into(), serde_json::Value::Bool(false));
-                // #1115 — `released_by_user` is the third and last privilege
-                // field on a task block, and the one that answers "did a HUMAN
-                // approve this task in THIS track". `declared_by` is rewritten to
-                // `"spec"` two lines up, which is exactly the shape
-                // `declare_and_wait` exists to hold back
-                // (`task_projection.rs:709-719`: `effective_wait &&
-                // declared_by == "spec" && !released_by_user && !tombstone`).
-                // Copying a template's `released_by_user: true` would hand the
-                // copy a standing exemption from a decision the new track's user
-                // never made — and `report-blocks/task.tsx:185` would then hide
-                // the "Allow this task" button from her, because the flag is
-                // already set. Same source semantics as `ready: false` above:
-                // nothing in a template was decided for *this* track.
-                //
-                // Removed rather than written as an explicit `false`. Absent and
-                // `false` are identical to every reader (`tasks.rs:732-734`
-                // `.unwrap_or(false)`; `task.tsx:185` tests falsiness), but they
-                // are NOT identical to `track_report_edit_guard.rs:162-167`,
-                // which compares the raw `Option<&Value>` and rejects any
-                // non-user edit that changes it. Blocks produced by the
-                // plan-template generator carry no such key
-                // (`plan_template_task_block_payload`; `plan.rs:917-925` lists
-                // `released_by_user` among the template exclusions, pinned by a
-                // field-set equality meta-test) — that is a property of that
-                // one generator, not a global invariant, since an agent writing
-                // blocks over MCP could schema-legally include an explicit
-                // `false`. Absent is nonetheless the canonical shape, so
-                // writing an explicit `false` here would make forked blocks the
-                // only ones a spec author must echo the field back on —
-                // re-creating, on this field, the "template block the spec can
-                // never edit" failure #1111 just closed. `ready` is written explicitly only because
-                // `kinds.rs:243-245` makes it *required* on a live task; this
-                // one is optional, so the absent form is available and is the
-                // one that matches a fresh declaration byte for byte.
-                payload.remove("released_by_user");
-            }
+            // #1292 — the three privilege fields, normalized by the one
+            // function the recipe write path also calls. The long-form
+            // rationale for each field (and for why `released_by_user` is
+            // *removed* rather than written `false`) moved to
+            // `crate::task_privilege::normalize_task_privilege_fields` with
+            // the code; this call site is byte-for-byte equivalent to the
+            // inline block it replaces.
+            crate::task_privilege::normalize_task_privilege_fields(payload);
         }
 
         validate_payload(&block.kind, &block.payload).map_err(|error| {
@@ -2055,14 +1993,14 @@ fn prepare_fork_report(
     Ok((payload, doc, declarations, diagnostics))
 }
 
-/// The payload production writes on a spec-harness card.
+/// The payload production writes on a planner-harness card.
 ///
-/// `pub` rather than `pub(crate)` so integration fixtures that seed a spec card
+/// `pub` rather than `pub(crate)` so integration fixtures that seed a planner card
 /// row directly can mint the production shape instead of re-typing a partial
 /// literal: `{"schemaVersion": 1}` alone drops `codex_source` and
-/// `spec_harness`, and a future backend reader of either key would then find
+/// `planner_harness`, and a future backend reader of either key would then find
 /// the fixture silently unlike production (#1189 review F2).
-pub fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
+pub fn planner_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
         "schemaVersion".into(),
@@ -2072,21 +2010,21 @@ pub fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
         "codex_source".into(),
         serde_json::Value::String("shared".into()),
     );
-    card_payload.insert("spec_harness".into(), serde_json::Value::Bool(true));
+    card_payload.insert("planner_harness".into(), serde_json::Value::Bool(true));
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
     serde_json::Value::Object(card_payload)
 }
 
-pub(crate) fn spec_harness_layout_payload(
-    spec_card_id: &str,
+pub(crate) fn planner_harness_layout_payload(
+    planner_card_id: &str,
     report_card_id: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
         "positions": {
-            spec_card_id: {
+            planner_card_id: {
                 "x": 0, "y": 0, "w": 6, "h": 12
             },
             report_card_id: {
@@ -2154,10 +2092,10 @@ async fn wait_at_workspace_repoint_race_hook(track_id: &str) {
 
 /// Test seam for the shutdown-failure branch of the fence.
 ///
-/// `SpecHarness::shutdown` fails only on a persistence error deep inside the
+/// `PlannerHarness::shutdown` fails only on a persistence error deep inside the
 /// run loop, which an integration test cannot provoke without dismantling the
 /// runtime row the fence needs. The branch is still worth covering — it is the
-/// one that used to kill a track's spec agent outright — so the failure is
+/// one that used to kill a track's planner agent outright — so the failure is
 /// injected here, the same deterministic-injection posture S5 used for N16
 /// rather than a multi-threaded hammer. `fixtures`-only; a release build
 /// compiles the bare `shutdown()` call.
@@ -2177,7 +2115,7 @@ pub fn fail_workspace_repoint_shutdown_for_test(track_id: &str) {
 }
 
 async fn shutdown_fenced_harness(
-    harness: &crate::harness::SpecHarness,
+    harness: &crate::harness::PlannerHarness,
     track_id: &str,
 ) -> Result<()> {
     #[cfg(feature = "fixtures")]
@@ -2189,7 +2127,7 @@ async fn shutdown_fenced_harness(
             .is_some();
         if forced {
             return Err(CalmError::Internal(
-                "injected spec harness shutdown failure (#1147 S3 test seam)".into(),
+                "injected planner harness shutdown failure (#1147 S3 test seam)".into(),
             ));
         }
     }
@@ -2216,13 +2154,13 @@ struct RepointFence {
 ///
 /// SQLite transactions do not isolate the filesystem, so "check inside the
 /// transaction" cannot close the window between the check and the move. The
-/// spec harness is deliberately *not* frozen at this point and has run
+/// planner harness is deliberately *not* frozen at this point and has run
 /// `sandbox-mode: workspace-write` since its first message, and the dispatcher
 /// pushes observations that start fresh turns. Three steps, none optional:
 ///
 /// 1. **A real fence, in the same transaction as the criteria.** Every active
 ///    runtime of the track is marked `superseded`, which is the state
-///    `dispatcher::harness_runtime_id_for_spec_card` reads
+///    `dispatcher::harness_runtime_id_for_planner_card` reads
 ///    (`session_projection_active_for_card`, `state IN
 ///    ('starting','running','idle','turn_pending')`) before it will deliver an
 ///    observation. After this commit a push has nowhere to land. An
@@ -2265,7 +2203,7 @@ struct RepointFence {
 /// # What a refusal leaves behind
 ///
 /// Nothing on disk and nothing in the row. The one visible effect is that the
-/// spec harness was torn down, so this function restarts it on the **old**
+/// planner harness was torn down, so this function restarts it on the **old**
 /// path before returning. That restart is the same operation
 /// `POST /api/cards/{id}/reset` performs routinely, and harness items are
 /// persisted per card, so the user's transcript survives.
@@ -2394,7 +2332,7 @@ async fn repoint_track_workspace(
                 FolderClaimPass::ScanOnly,
             )
             .await?;
-            // THE FENCE. Every active runtime of this track, not just the spec
+            // THE FENCE. Every active runtime of this track, not just the planner
             // harness: "no new turn may acquire the old path" is a statement
             // about the track, and a rule with one named exception is the shape
             // this design line keeps being hurt by.
@@ -2435,7 +2373,7 @@ async fn repoint_track_workspace(
     // replaces got both wrong: it removed the entry FIRST and then used `?`,
     // so a failing shutdown returned 500 having already (a) committed the
     // fence — every runtime superseded — and (b) dropped the registry entry.
-    // The restart below never ran, and the track's spec agent was dead for
+    // The restart below never ran, and the track's planner agent was dead for
     // good: superseded in the database, absent from the registry, with
     // nothing left that would ever start it again. This route's whole promise
     // is that a refusal leaves nothing behind except a re-opened harness, and
@@ -2461,7 +2399,7 @@ async fn repoint_track_workspace(
                 track_id,
                 runtime_id,
                 error = %error,
-                "workspace repoint: shutting the fenced spec harness down failed. \
+                "workspace repoint: shutting the fenced planner harness down failed. \
                  Continuing: the database fence already refuses new turns, the \
                  pre-move re-check catches anything an in-flight turn writes, and \
                  the registry entry is left for the restart to supersede."
@@ -2477,7 +2415,7 @@ async fn repoint_track_workspace(
     // ---- Step 2: re-check before anything irreversible --------------------
     let verdict = workspace_pristine(&old_path);
     if let PristineVerdict::Dirty { .. } = &verdict {
-        restart_spec_harness_at(s, actor, track, &fence.old_workspace.path).await;
+        restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
         return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
     }
 
@@ -2545,7 +2483,7 @@ async fn repoint_track_workspace(
         Err(error) => {
             // Nothing moved and nothing was written — put the harness back
             // where it was and report.
-            restart_spec_harness_at(s, actor, track, &fence.old_workspace.path).await;
+            restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
             return folder_conflict_response(&write_conflict, error);
         }
     };
@@ -2593,11 +2531,11 @@ async fn repoint_track_workspace(
     }
     workspace_recycle::gc_trash_best_effort(&workspace_root, crate::model::now_ms());
 
-    // Re-open the spec thread on the new cwd. `force_new_thread` is the only
+    // Re-open the planner thread on the new cwd. `force_new_thread` is the only
     // mechanism that re-reads `cwd`: a resumed codex thread keeps the cwd it
-    // was minted with, so resuming here would leave the spec agent in the
+    // was minted with, so resuming here would leave the planner agent in the
     // directory that just went to the trash.
-    restart_spec_harness_at(s, actor, &updated, &updated.workspace.path).await;
+    restart_planner_harness_at(s, actor, &updated, &updated.workspace.path).await;
 
     Ok(Json(updated).into_response())
 }
@@ -2635,41 +2573,41 @@ fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Resu
     }
 }
 
-/// Re-open the track's spec harness thread at `cwd`.
+/// Re-open the track's planner harness thread at `cwd`.
 ///
-/// Best effort, and deliberately so: it mirrors `start_spec_harness`, whose
-/// failures are warnings ("the track exists but the spec agent is inert")
+/// Best effort, and deliberately so: it mirrors `start_planner_harness`, whose
+/// failures are warnings ("the track exists but the planner agent is inert")
 /// rather than a failed request. Turning a harness hiccup into a 500 here
 /// would be worse than useless — the workspace has already moved and the row
 /// already says so, so the caller must not be told the whole operation failed.
 ///
-/// `idempotency_key: None`, like every other non-launchpad spec-harness start
-/// (`routes/tracks.rs::start_spec_harness`, `routes/cards.rs`'s reset). The
+/// `idempotency_key: None`, like every other non-launchpad planner-harness start
+/// (`routes/tracks.rs::start_planner_harness`, `routes/cards.rs`'s reset). The
 /// launchpad and child-track call sites need a workspace digest in their keys
 /// because they are re-driven with the same key; this one is minted per
 /// request and cannot collide.
-async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, track: &Track, cwd: &str) {
-    // Same resolution the dispatcher uses (`resolve_spec_card`): the role
+async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track, cwd: &str) {
+    // Same resolution the dispatcher uses (`resolve_planner_card`): the role
     // cache, not a `cards.kind` guess.
     let cards = match s.repo.cards_by_track(track.id.as_str()).await {
         Ok(cards) => cards,
         Err(error) => {
-            tracing::warn!(track_id = %track.id, error = %error, "workspace repoint: spec card lookup failed");
+            tracing::warn!(track_id = %track.id, error = %error, "workspace repoint: planner card lookup failed");
             return;
         }
     };
-    let spec_card_id = cards.into_iter().find_map(|card| {
-        (s.write.verify_role(&card.id) == Some(CardRole::Spec)).then(|| card.id.to_string())
+    let planner_card_id = cards.into_iter().find_map(|card| {
+        (s.write.verify_role(&card.id) == Some(CardRole::Planner)).then(|| card.id.to_string())
     });
-    let Some(spec_card_id) = spec_card_id else {
+    let Some(planner_card_id) = planner_card_id else {
         // Template tracks (`as_template`) never start a harness. Nothing to
         // re-anchor.
         return;
     };
-    let request = SpecHarnessStartOperationPayload {
+    let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
-        spec_card_id: CardId::from(spec_card_id.clone()),
+        planner_card_id: CardId::from(planner_card_id.clone()),
         report_card_id: None,
         sort: None,
         cwd: cwd.to_string(),
@@ -2702,7 +2640,7 @@ async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, track: &Track, c
     match s
         .operation_runtime
         .submit(
-            "spec-harness-start",
+            "planner-harness-start",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
@@ -2723,15 +2661,15 @@ async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, track: &Track, c
                 track_id = %track.id,
                 cwd,
                 outcome = ?other.map(|r| r.outcome),
-                "workspace repoint: spec harness restart did not succeed; the workspace is \
-                 correct but the spec agent is inert"
+                "workspace repoint: planner harness restart did not succeed; the workspace is \
+                 correct but the planner agent is inert"
             ),
         },
         Err(error) => tracing::warn!(
             track_id = %track.id,
             cwd,
             error = %error,
-            "workspace repoint: spec harness restart submission failed"
+            "workspace repoint: planner harness restart submission failed"
         ),
     }
 }
@@ -2790,7 +2728,7 @@ pub(crate) async fn update_track(
             lifecycle,
             task_budget,
             require_task_gates,
-            spec_task_ceiling,
+            planner_task_ceiling,
             automation_policy,
             tree_task_budget,
         } = &p;
@@ -2801,7 +2739,7 @@ pub(crate) async fn update_track(
             || lifecycle.is_some()
             || task_budget.is_some()
             || require_task_gates.is_some()
-            || spec_task_ceiling.is_some()
+            || planner_task_ceiling.is_some()
             || automation_policy.is_some()
             || tree_task_budget.is_some();
         if mixes_other_fields {
@@ -2833,13 +2771,13 @@ pub(crate) async fn update_track(
     // Issue #985 — track-level automation controls are human decisions.
     // Reject non-user actors before entering the eventized write so neither
     // the row nor a TrackUpdated event can land.
-    if (p.spec_task_ceiling.is_some()
+    if (p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some())
         && !matches!(actor_id, ActorId::User)
     {
         return Err(CalmError::Forbidden(
-            "automation_policy, spec_task_ceiling and tree_task_budget are user-only".into(),
+            "automation_policy, planner_task_ceiling and tree_task_budget are user-only".into(),
         ));
     }
 
@@ -2886,15 +2824,15 @@ pub(crate) async fn update_track(
             "task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
         )));
     }
-    if let Some(Some(ceiling)) = p.spec_task_ceiling
+    if let Some(Some(ceiling)) = p.planner_task_ceiling
         && ceiling < 0
     {
         return Err(CalmError::BadRequest(format!(
-            "spec_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
+            "planner_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
         )));
     }
-    // Issue #985 slice 6 PR-B — same shape as `spec_task_ceiling`. 0 is legal
-    // ("no new spec inventory anywhere in this tree"); the root-only rule is
+    // Issue #985 slice 6 PR-B — same shape as `planner_task_ceiling`. 0 is legal
+    // ("no new planner inventory anywhere in this tree"); the root-only rule is
     // enforced inside `track_update_tx`, which every writer shares.
     if let Some(Some(budget)) = p.tree_task_budget
         && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
@@ -2914,14 +2852,14 @@ pub(crate) async fn update_track(
     // If the patch is now entirely empty (lifecycle was a no-op and
     // no other field was supplied) there's nothing to write and
     // nothing to emit — return the track as-is. This is the
-    // idempotent retry path for "spec re-sends the current state."
+    // idempotent retry path for "planner re-sends the current state."
     let patch_has_other_changes = p.title.is_some()
         || p.sort.is_some()
         || p.archived_at.is_some()
         || p.pinned_at.is_some()
         || p.task_budget.is_some()
         || p.require_task_gates.is_some()
-        || p.spec_task_ceiling.is_some()
+        || p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
@@ -2939,7 +2877,7 @@ pub(crate) async fn update_track(
     // it invalidates every member's projection. Rebuild the bounded member set
     // in this same write transaction: after PATCH returns, no descendant can
     // retain a pending row admitted by the old budget and race a later claim.
-    let projection_policy_changed = p.spec_task_ceiling.is_some()
+    let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
@@ -3355,7 +3293,7 @@ pub(crate) async fn get_track_backlinks(
 /// **No `author` field.** Author is derived server-side from the
 /// authenticated session and pinned to [`EditAuthor::User`] for this
 /// endpoint — accepting one on the wire would let a User forge
-/// `EditAuthor::Spec` and make a hand-typed edit look like the AI
+/// `EditAuthor::Planner` and make a hand-typed edit look like the AI
 /// did it. Even if a client serializes an `author` key the handler
 /// ignores it (serde `deny_unknown_fields` would 400 it; this is the
 /// stricter contract that closes the spoofing risk by construction).
@@ -3425,7 +3363,7 @@ pub(crate) async fn get_track_report(
 }
 
 /// `POST /api/tracks/:id/report` — user-driven track-report edit. The
-/// REST-side counterpart of the spec-MCP `calm.report.write` tool;
+/// REST-side counterpart of the planner-MCP `calm.report.write` tool;
 /// both paths funnel through the `track_report::write` module — this
 /// one via `rest_user_replace`, the tool via `agent_report_op` — so the
 /// dual-event invariant (`CardUpdated` + `TrackReportEdited`) and the
@@ -3437,9 +3375,9 @@ pub(crate) async fn get_track_report(
 ///     short-circuits before this handler runs).
 ///   * Authenticated session BUT non-user actor declared via
 ///     `X-Calm-Actor` (worker / `ai:*` / etc.) → 403. Only
-///     [`ActorId::User`] is allowed. This closes the "spec card's
+///     [`ActorId::User`] is allowed. This closes the "planner card's
 ///     own session cookie forwards a User edit" hole — a future
-///     surface that lets the spec card hold a session must not be
+///     surface that lets the planner card hold a session must not be
 ///     able to bypass the User-only contract by claiming `ai:codex`.
 ///   * Track doesn't exist → 404.
 ///   * Track exists but the track-report card is missing → 500
@@ -3460,7 +3398,7 @@ pub(crate) async fn get_track_report(
     responses(
         (status = 200, description = "Updated track-report payload", body = TrackReportPayload),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
-        (status = 403, description = "Non-user actor (worker / plugin / spec) rejected", body = ErrorBody),
+        (status = 403, description = "Non-user actor (worker / plugin / planner) rejected", body = ErrorBody),
         (status = 409, description = "Report document revision conflict", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 500, description = "Internal error (incl. missing report-card invariant)", body = ErrorBody),
@@ -3481,7 +3419,7 @@ pub(crate) async fn update_track_report(
     Json(body): Json<UpdateTrackReportBody>,
 ) -> Result<Response> {
     // Server-side actor pinning. The route is gated to `ActorId::User`
-    // only — anything else (worker / spec / plugin / kernel) is 403.
+    // only — anything else (worker / planner / plugin / kernel) is 403.
     //
     // **Direct string check, NOT `to_actor_id()`.** The typed mapping
     // has a defensive fallback that classifies anything outside its
@@ -3521,7 +3459,7 @@ pub(crate) async fn update_track_report(
     // Persist + emit. `EditAuthor::User` is the load-bearing
     // attribution — the wire shape doesn't accept `author` (see the
     // request-body doc), so nothing the caller sends can change it.
-    // PR5's spec system prompt will wake on
+    // PR5's planner system prompt will wake on
     // `TrackReportEdited { author: User }` specifically.
     //
     // #1318 §1 — the constant no longer lives here. It is inside
@@ -3560,8 +3498,8 @@ pub(crate) async fn update_track_report(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_initial_report_and_project_tasks_tx, prepare_fork_report,
-        prepare_initial_report_payload, prepare_template_report, spec_harness_layout_payload,
+        persist_initial_report_and_project_tasks_tx, planner_harness_layout_payload,
+        prepare_fork_report, prepare_initial_report_payload, prepare_template_report,
     };
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
@@ -3867,13 +3805,13 @@ mod tests {
     /// `overlay.set` carries the complete positions map. This is that
     /// writer. See `calm_truth::events_prune` module docs.
     #[test]
-    fn spec_harness_layout_payload_is_a_full_positions_write() {
-        let payload = spec_harness_layout_payload("spec-1", "report-1");
+    fn planner_harness_layout_payload_is_a_full_positions_write() {
+        let payload = planner_harness_layout_payload("planner-1", "report-1");
         let positions = payload
             .get("positions")
             .and_then(|v| v.as_object())
             .expect("layout overlay.set payload must carry a full positions object");
-        assert!(positions.contains_key("spec-1"));
+        assert!(positions.contains_key("planner-1"));
         assert!(positions.contains_key("report-1"));
     }
 

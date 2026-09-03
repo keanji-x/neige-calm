@@ -149,12 +149,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1300 S1: 17 -> 18 so a cached bundle still rendering the deleted
     // Settings > Templates editor gets the refresh curtain instead of a 404 on
     // Save.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 20);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 21);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 20);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 21);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

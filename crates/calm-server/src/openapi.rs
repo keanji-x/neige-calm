@@ -3,7 +3,7 @@
 //! here so `GET /api/openapi.json` returns a single self-contained spec
 //! the frontend consumes to generate TypeScript types.
 //!
-//! The spec is the source-of-truth contract between `calm-server` and
+//! The planner is the source-of-truth contract between `calm-server` and
 //! `web-calm` — adding a new public model or route means adding a path
 //! entry below alongside the handler annotation. The aggregator does not
 //! pull in WebSocket endpoints (those don't roundtrip JSON request/response
@@ -21,9 +21,9 @@ use crate::model::{
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
 use crate::routes::cards::{
-    CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
-    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, SpecRunTokenUsage,
-    ViaToolCall,
+    CreateCardBody, GetPlannerRunResponse, HarnessItemsQuery, InterruptPlannerCardResponse,
+    PlannerRunTokenUsage, ResetPlannerCardResponse, SendPlannerInputRequest,
+    SendPlannerInputResponse, ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -80,6 +80,11 @@ use utoipa::OpenApi;
         crate::routes::area_folders::resolve_path,
         // ---- tracks ----
         crate::routes::track_templates::list_track_templates,
+        crate::routes::track_recipes::list_recipes,
+        crate::routes::track_recipes::get_recipe,
+        crate::routes::track_recipes::create_recipe,
+        crate::routes::track_recipes::update_recipe,
+        crate::routes::track_recipes::delete_recipe,
         // ---- track conversations (#1189) ----
         crate::routes::track_conversations::list_track_conversations,
         crate::routes::track_conversations::create_track_conversation,
@@ -108,11 +113,11 @@ use utoipa::OpenApi;
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
-        crate::routes::cards::send_spec_input,
+        crate::routes::cards::send_planner_input,
         crate::routes::cards::ratify_card,
-        crate::routes::cards::interrupt_spec_card,
-        crate::routes::cards::get_spec_run,
-        crate::routes::cards::reset_spec_card,
+        crate::routes::cards::interrupt_planner_card,
+        crate::routes::cards::get_planner_run,
+        crate::routes::cards::reset_planner_card,
         crate::routes::cards::delete_card,
         // ---- overlays ----
         crate::routes::overlays::list_overlays,
@@ -182,6 +187,9 @@ use utoipa::OpenApi;
         BacklinkQuote,
         TrackBacklinksResponse,
         crate::routes::track_templates::TrackTemplate,
+        calm_types::model::TrackRecipe,
+        crate::routes::track_recipes::CreateRecipeBody,
+        crate::routes::track_recipes::UpdateRecipeBody,
         crate::routes::track_templates::TrackTemplateTask,
         TrackFsCardMeta,
         TrackFsRunStatus,
@@ -206,17 +214,17 @@ use utoipa::OpenApi;
         CardPatch,
         HarnessItem,
         HarnessItemsQuery,
-        SendSpecInputRequest,
-        SendSpecInputResponse,
+        SendPlannerInputRequest,
+        SendPlannerInputResponse,
         AreaConversationSummary,
         crate::routes::area_conversations::NewAreaConversationBody,
         TrackConversationSummary,
         crate::routes::track_conversations::NewTrackConversationBody,
-        InterruptSpecCardResponse,
-        GetSpecRunResponse,
-        SpecRunTokenUsage,
+        InterruptPlannerCardResponse,
+        GetPlannerRunResponse,
+        PlannerRunTokenUsage,
         HarnessPhaseTag,
-        ResetSpecCardResponse,
+        ResetPlannerCardResponse,
         // Issue #229 PR B — track-report card payload shape (kernel-owned;
         // surfaced in the OpenAPI doc so frontend codegen + external
         // consumers see the v1 contract).

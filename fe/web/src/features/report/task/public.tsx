@@ -2,8 +2,13 @@ import type { TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
 
+// The KEY stays `spec` while the LABEL says Planner, and that asymmetry is the
+// point: `declared_by` / `tombstoned_by` are report-block DSL values written by
+// agents into stored documents and projected back out of them, so #1316 S3
+// freezes the value (see migration 0083's header) — but the human-facing label
+// is product language and follows the rename.
 const DECLARED_BY: Readonly<Record<'spec' | 'user', string>> =
-  Object.freeze({ spec: 'Spec agent', user: 'You' });
+  Object.freeze({ spec: 'Planner agent', user: 'You' });
 
 type WithdrawnTask = Extract<TaskBlockPayload, { tombstoned_by: unknown }>;
 type LiveTask = Exclude<TaskBlockPayload, WithdrawnTask>;

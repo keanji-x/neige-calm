@@ -159,7 +159,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
    * #1211 — a track starts unnamed, and this form asks for exactly one thing.
    *
    * The title is no longer the intent: the kernel takes `#[serde(default)]` for
-   * it and the spec agent names the track once it knows what it is for. What is
+   * it and the planner agent names the track once it knows what it is for. What is
    * collected instead is the sentence, and Create is gated on **it** and on
    * nothing else — so this pair is the whole gate, in both directions.
    *
@@ -268,7 +268,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
    *
    * It was `<input type="text">` because its value was the track's `title`, and
    * every surface that shows a title renders one truncated line. The value is
-   * now the track's *intent*, delivered as the first message to the spec card,
+   * now the track's *intent*, delivered as the first message to the planner card,
    * and an intent is a sentence: the field is astryx's `contenteditable`, it
    * wraps, and Shift+Enter adds a line.
    *

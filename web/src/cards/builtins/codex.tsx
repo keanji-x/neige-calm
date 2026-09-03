@@ -551,7 +551,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
   },
   fromKernel: (k) => {
     if (k.kind !== 'codex') return null;
-    if ((k.payload as Record<string, unknown> | undefined)?.spec_harness === true) {
+    if ((k.payload as Record<string, unknown> | undefined)?.planner_harness === true) {
       return null;
     }
     const candidate = k.payload ?? {};

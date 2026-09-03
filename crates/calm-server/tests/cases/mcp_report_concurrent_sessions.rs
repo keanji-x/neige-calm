@@ -62,7 +62,7 @@
 #![cfg(unix)]
 
 use crate::mcp_track_report::{
-    Boot, assistant_b_identity, assistant_identity, boot, call_tool, spec_identity,
+    Boot, assistant_b_identity, assistant_identity, boot, call_tool, planner_identity,
 };
 use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_WRITE;
@@ -139,14 +139,14 @@ fn assert_untouched(after_a: &Persisted, after_b: &Persisted, mouth: &str) {
     );
 }
 
-/// Two H1 sections, written by the spec so both assistants start from a
+/// Two H1 sections, written by the planner so both assistants start from a
 /// plain prose document (no task fences, so the P2 guard never enters the
 /// picture and a conflict is the only thing under test).
 async fn seed(boot: &Boot) {
     call_tool(
         boot,
         TOOL_REPORT_WRITE,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "body": "# A\n\nalpha\n\n# B\n\nbeta\n",
             "summary": "seeded",
@@ -155,7 +155,7 @@ async fn seed(boot: &Boot) {
         }),
     )
     .await
-    .expect("spec seeds the report");
+    .expect("planner seeds the report");
 }
 
 fn blocks(read: &Value) -> &Vec<Value> {

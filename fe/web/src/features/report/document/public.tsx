@@ -48,7 +48,7 @@ export type ReportDocumentProps = Readonly<{
   empty: ReactNode;
   /** The outline rail (§6.16), which hangs in the document's leading gutter. */
   rail?: ReactNode;
-  /** The byline row (`Spec Agent · 2h`), composed by `app/router`. */
+  /** The byline row (`Planner Agent · 2h`), composed by `app/router`. */
   byline?: ReactNode;
   /** How many backlinks land on each block, for the sidenote markers. */
   backlinkCounts?: ReadonlyMap<string, number>;

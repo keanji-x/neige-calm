@@ -85,7 +85,7 @@ const SOCKET_MODE: u32 = 0o600;
 /// stalls a connect attempt. A timeout falls through to the stale-file
 /// reclaim path, same as `ECONNREFUSED`.
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Spec, CardRole::Worker];
+const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Worker];
 
 /// Configuration the codex daemon needs to know about the kernel's MCP
 /// server, including the shim binary and Unix socket path.
@@ -101,7 +101,7 @@ pub struct McpShimConfig {
 
 /// Handle held on [`crate::state::AppState`]. Owns the listener task's
 /// `JoinHandle` (held via `Mutex<Option<…>>` so a future shutdown path
-/// can `take()` and `abort()` it), plus the shim config the spec_card
+/// can `take()` and `abort()` it), plus the shim config the planner_card
 /// helper reads to build per-card config.toml blocks.
 pub struct McpServer {
     pub shim_config: McpShimConfig,
@@ -971,12 +971,12 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
     if payload.idem_key.trim().is_empty() {
         return Err(malformed_forge_payload());
     }
-    if let Some(spec) = payload.event_spec.as_ref()
-        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&spec.event_kind.as_str())
+    if let Some(planner) = payload.event_spec.as_ref()
+        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&planner.event_kind.as_str())
     {
         return Err(RpcError::invalid_params(format!(
             "forge-action event_kind `{}` is not supported",
-            spec.event_kind
+            planner.event_kind
         )));
     }
     Ok(())
@@ -1005,7 +1005,7 @@ async fn resolve_forge_cwd(
         ));
     }
     match identity.role {
-        CardRole::Spec => Ok(track_cwd),
+        CardRole::Planner => Ok(track_cwd),
         CardRole::Worker => {
             let lease = ctx
                 .repo
@@ -1044,7 +1044,7 @@ async fn resolve_forge_cwd(
             }
         }
         _ => Err(RpcError::invalid_params(
-            "forge action requires a spec or worker caller",
+            "forge action requires a planner or worker caller",
         )),
     }
 }

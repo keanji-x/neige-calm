@@ -49,13 +49,13 @@ const TEST_BUDGET: Duration = Duration::from_secs(5);
 ///
 /// #1189 S2 retired **6** of that file's 8 cells: all six carried
 /// `recorder_gate: false`, and the role gate never reads the session for an
-/// `AiSpec` actor (`enforce_role(&actor, ..)` below takes no session at all),
+/// `AiPlanner` actor (`enforce_role(&actor, ..)` below takes no session at all),
 /// so they were byte-for-byte duplicates of `01_root.json`'s corresponding
 /// cells.
 ///
 /// The 2 `recorder_gate: true` cells are **kept**, in
-/// `02_superseded_spec_session.json`, still expecting Deny. Their old premise
-/// ("bound to this track's spec card but not the track root") was denied by the
+/// `02_superseded_planner_session.json`, still expecting Deny. Their old premise
+/// ("bound to this track's planner card but not the track root") was denied by the
 /// root criterion this slice removes; their new premise is that the session on
 /// that card is `superseded`, and the liveness check in `decide_recorder` is
 /// the only thing refusing them. That makes them the regression nails for that
@@ -138,15 +138,15 @@ async fn boot_with_registry(
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect("mint spec card");
+    .expect("mint planner card");
     tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Spec card must mint a token");
+    let raw_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
@@ -532,7 +532,7 @@ async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch(
 #[serde(deny_unknown_fields)]
 struct PrincipalDeltaVector {
     description: String,
-    principal: PrincipalSpec,
+    principal: PrincipalPlanner,
     actor: Value,
     event: Value,
     scope: Value,
@@ -542,7 +542,7 @@ struct PrincipalDeltaVector {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PrincipalSpec {
+struct PrincipalPlanner {
     session_id: String,
     track_id: String,
     area_id: String,
@@ -615,7 +615,7 @@ impl PrincipalFixture {
         let home_track = TrackId::from(track.id.as_str());
         wcc.insert(home_track.clone(), home_area.clone());
 
-        let spec = seed_role_card(&repo, &cache, &home_track, CardRole::Spec).await;
+        let planner = seed_role_card(&repo, &cache, &home_track, CardRole::Planner).await;
         let executor = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
         let validator = seed_role_card(&repo, &cache, &home_track, CardRole::Worker).await;
         let report = seed_role_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
@@ -641,7 +641,7 @@ impl PrincipalFixture {
         let away_track = TrackId::from(away_track_row.id.as_str());
         wcc.insert(away_track.clone(), home_area.clone());
         let away_assistant = seed_role_card(&repo, &cache, &away_track, CardRole::Assistant).await;
-        let away_spec = seed_role_card(&repo, &cache, &away_track, CardRole::Spec).await;
+        let away_planner = seed_role_card(&repo, &cache, &away_track, CardRole::Planner).await;
 
         // Session → card bindings are the whole point of the new criterion,
         // so they must be REAL card ids. They used to be a synthetic
@@ -655,13 +655,13 @@ impl PrincipalFixture {
             &[
                 (
                     "session-root",
-                    &spec,
+                    &planner,
                     WorkerContract::Planner,
                     &home_track,
                     WorkerSessionState::Running,
                 ),
                 // #1189 §3.6 liveness — the *superseded* predecessor of
-                // `session-root` on the very same Spec card. This is what a
+                // `session-root` on the very same Planner card. This is what a
                 // resume leaves behind: `session_supersede_active_tx` (via
                 // `session_supersede_and_start_tx`) only flips the old row to
                 // `superseded` and keeps it, same `card_id` on the same track.
@@ -675,7 +675,7 @@ impl PrincipalFixture {
                 // running row.
                 (
                     "session-planner-superseded",
-                    &spec,
+                    &planner,
                     WorkerContract::Planner,
                     &home_track,
                     WorkerSessionState::Superseded,
@@ -709,8 +709,8 @@ impl PrincipalFixture {
                     WorkerSessionState::Running,
                 ),
                 (
-                    "session-away-spec",
-                    &away_spec,
+                    "session-away-planner",
+                    &away_planner,
                     WorkerContract::Planner,
                     &away_track,
                     WorkerSessionState::Running,
@@ -729,14 +729,14 @@ impl PrincipalFixture {
                 "$AWAY_ASSISTANT_SESSION",
                 "session-away-assistant".to_string(),
             ),
-            ("$AWAY_SPEC_SESSION", "session-away-spec".to_string()),
+            ("$AWAY_PLANNER_SESSION", "session-away-planner".to_string()),
             ("$VALIDATOR_CARD", validator.as_str().to_string()),
             ("$EXECUTOR_CARD", executor.as_str().to_string()),
             ("$REPORT_CARD", report.as_str().to_string()),
-            ("$SPEC_CARD", spec.as_str().to_string()),
+            ("$PLANNER_CARD", planner.as_str().to_string()),
             ("$ASSISTANT_CARD", assistant.as_str().to_string()),
             ("$AWAY_ASSISTANT_CARD", away_assistant.as_str().to_string()),
-            ("$AWAY_SPEC_CARD", away_spec.as_str().to_string()),
+            ("$AWAY_PLANNER_CARD", away_planner.as_str().to_string()),
             ("$HOME_TRACK", home_track.as_str().to_string()),
             ("$HOME_AREA", home_area.as_str().to_string()),
             ("$AWAY_TRACK", away_track.as_str().to_string()),
@@ -798,7 +798,7 @@ async fn seed_sessions(
     session_mark_track_root_tx(
         &mut tx,
         away_track,
-        &WorkerSessionId::from("session-away-spec"),
+        &WorkerSessionId::from("session-away-planner"),
     )
     .await
     .unwrap();

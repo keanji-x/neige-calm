@@ -5,18 +5,18 @@
 //! | gate | assertion here |
 //! |---|---|
 //! | G-B2 | an assistant drives `blocks.upsert` / `.move` / `.delete` / `write_markdown` end to end; a Worker token is still refused at the entry |
-//! | §3.4 | its edits persist as `EditAuthor::Assistant`, never as the spec |
+//! | §3.4 | its edits persist as `EditAuthor::Assistant`, never as the planner |
 //! | P1   | an assistant's block write leaves a Draft track in Draft |
 //! | P2   | its writes may not create, modify, or delete a task block — including the whole-document shapes — while a prose-only rewrite that carries the task fences through unchanged succeeds |
 //!
-//! Every negative here has a Spec-token control next to it. Without one,
+//! Every negative here has a Planner-token control next to it. Without one,
 //! "the assistant could not do X" would stay green if X had simply stopped
 //! working for everybody.
 
 #![cfg(unix)]
 
 use crate::mcp_track_report::{
-    Boot, assistant_identity, boot, call_tool, spec_identity, worker_identity,
+    Boot, assistant_identity, boot, call_tool, planner_identity, worker_identity,
 };
 use calm_server::event::{EditAuthor, Event};
 use calm_server::mcp_server::registry::ToolCallIdentity;
@@ -38,13 +38,13 @@ async fn read(boot: &Boot, identity: ToolCallIdentity, args: Value) -> Value {
 }
 
 async fn doc_rev(boot: &Boot) -> u64 {
-    read(boot, spec_identity(boot), json!({})).await["docRev"]
+    read(boot, planner_identity(boot), json!({})).await["docRev"]
         .as_u64()
         .expect("docRev is numeric")
 }
 
 async fn body_text(boot: &Boot) -> String {
-    read(boot, spec_identity(boot), json!({}))
+    read(boot, planner_identity(boot), json!({}))
         .await
         .get("text")
         .and_then(Value::as_str)
@@ -77,7 +77,7 @@ async fn set_lifecycle(boot: &Boot, to: TrackLifecycle) {
 /// The `author` of every `track.report_edited` in the persisted log, oldest
 /// first. Reading the stored event (not the tool's return value) is the
 /// point: attribution is what lands in the log, goldens, and the
-/// spec-wake decision.
+/// planner-wake decision.
 async fn report_edit_authors(boot: &Boot) -> Vec<EditAuthor> {
     boot.repo
         .events_since(0, i64::MAX)
@@ -143,25 +143,25 @@ async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
 }
 
 /// Seed the report with prose plus **two** live task declarations, one
-/// signed by the spec and one by the user.
+/// signed by the planner and one by the user.
 ///
 /// Both authors are needed by §3.2a P2's positive case: `#1180` already
 /// protects the user-signed one from every non-user writer, so a fixture
 /// with only a user task would let the P2 test pass on the strength of a
-/// guard S2 did not write. The spec-signed task is the one only P2 covers.
+/// guard S2 did not write. The planner-signed task is the one only P2 covers.
 async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
-    let spec_fence = task_fence("spec", "build");
+    let planner_fence = task_fence("spec", "build");
     let user_fence = task_fence("user", "review");
 
-    let spec_body = format!("# Plan\n\nthe original prose\n\n{spec_fence}");
+    let planner_body = format!("# Plan\n\nthe original prose\n\n{planner_fence}");
     call_tool(
         boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(boot),
-        json!({ "body": spec_body, "summary": "seed", "if_doc_rev": doc_rev(boot).await }),
+        planner_identity(boot),
+        json!({ "body": planner_body, "summary": "seed", "if_doc_rev": doc_rev(boot).await }),
     )
     .await
-    .expect("spec declares its task");
+    .expect("planner declares its task");
 
     // The user's own declaration goes through the persist boundary with
     // `EditAuthor::User` — the attribution rules pin `declared_by` to the
@@ -203,11 +203,11 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
 
     let text = body_text(boot).await;
     assert!(
-        text.contains(&spec_fence) && text.contains(&user_fence),
+        text.contains(&planner_fence) && text.contains(&user_fence),
         "the fixture must really hold both declarations, else P2's positive \
          case proves nothing: {text}"
     );
-    (spec_fence, user_fence)
+    (planner_fence, user_fence)
 }
 
 /// The report as `write_markdown` wants it: every block preceded by its
@@ -284,7 +284,7 @@ async fn assistant_drives_the_whole_block_channel() {
     .await
     .expect("write_markdown serves an assistant");
 
-    let current_rev = read(&boot, spec_identity(&boot), json!({}))
+    let current_rev = read(&boot, planner_identity(&boot), json!({}))
         .await
         .get("blocks")
         .and_then(Value::as_array)
@@ -344,11 +344,11 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# Spec\n\nspec text\n", "if_doc_rev": doc_rev(&boot).await }),
+        planner_identity(&boot),
+        json!({ "kind": "prose", "markdown": "# Planner\n\nspec text\n", "if_doc_rev": doc_rev(&boot).await }),
     )
     .await
-    .expect("spec writes first");
+    .expect("planner writes first");
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
@@ -360,10 +360,10 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
 
     assert_eq!(
         report_edit_authors(&boot).await,
-        vec![EditAuthor::Spec, EditAuthor::Assistant],
-        "the sink must attribute by role: hard-coding `EditAuthor::Spec` \
-         would make the assistant's edit indistinguishable from the spec's \
-         in the log, the goldens, and the spec-wake decision"
+        vec![EditAuthor::Planner, EditAuthor::Assistant],
+        "the sink must attribute by role: hard-coding `EditAuthor::Planner` \
+         would make the assistant's edit indistinguishable from the planner's \
+         in the log, the goldens, and the planner-wake decision"
     );
 }
 
@@ -395,21 +395,21 @@ async fn an_assistant_block_write_does_not_promote_a_draft_track() {
 }
 
 /// P1's control. Auto-promote is suppressed *for the assistant*, not
-/// removed — a Draft track still leaves Draft on the spec's first block
+/// removed — a Draft track still leaves Draft on the planner's first block
 /// write, so the assertion above is about the role.
 #[tokio::test]
-async fn a_spec_block_write_still_promotes_a_draft_track() {
+async fn a_planner_block_write_still_promotes_a_draft_track() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Draft).await;
 
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# Spec\n\nnotes\n", "if_doc_rev": doc_rev(&boot).await }),
+        planner_identity(&boot),
+        json!({ "kind": "prose", "markdown": "# Planner\n\nnotes\n", "if_doc_rev": doc_rev(&boot).await }),
     )
     .await
-    .expect("spec block write succeeds");
+    .expect("planner block write succeeds");
 
     assert_eq!(lifecycle(&boot).await, TrackLifecycle::Planning);
 }
@@ -419,16 +419,16 @@ async fn a_spec_block_write_still_promotes_a_draft_track() {
 // ---------------------------------------------------------------------------
 
 /// The positive case §3.2a calls for by name: the report holds **both** a
-/// user-declared and a spec-declared task, the assistant rewrites only the
+/// user-declared and a planner-declared task, the assistant rewrites only the
 /// prose, and the write **succeeds**.
 ///
 /// This is the assertion that keeps P2 from being written as "the write
 /// must not contain task blocks" — a criterion that would reject the
 /// ordinary case of an assistant editing the text around a task list.
 #[tokio::test]
-async fn an_assistant_may_rewrite_prose_around_user_and_spec_task_blocks() {
+async fn an_assistant_may_rewrite_prose_around_user_and_planner_task_blocks() {
     let boot = boot().await;
-    let (spec_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
+    let (planner_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
 
     let marked = marked_text(&boot, assistant_identity(&boot)).await;
     let rewritten = marked.replace("the original prose", "the assistant's rewrite");
@@ -450,7 +450,7 @@ async fn an_assistant_may_rewrite_prose_around_user_and_spec_task_blocks() {
     let text = body_text(&boot).await;
     assert!(text.contains("the assistant's rewrite"), "prose changed");
     assert!(
-        text.contains(&spec_fence) && text.contains(&user_fence),
+        text.contains(&planner_fence) && text.contains(&user_fence),
         "both declarations survived byte-for-byte: {text}"
     );
     assert_eq!(
@@ -494,12 +494,12 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// Three steps, because each of the first two alone is satisfiable by an
 /// accident:
 ///
-/// 1. the **spec** declares a gate-clean task with `ready: false` — no task
+/// 1. the **planner** declares a gate-clean task with `ready: false` — no task
 ///    row, because the declaration is withdrawn, not because the environment
 ///    forbids tasks;
 /// 2. the **assistant** flips exactly that block to `ready: true` — refused,
 ///    and still no task row;
-/// 3. the **spec** makes the identical edit — a `pending` row appears.
+/// 3. the **planner** makes the identical edit — a `pending` row appears.
 ///
 /// Step 3 is what makes step 2 mean something. Without it "no task row after
 /// the assistant's write" would stay green if the track simply could not carry
@@ -513,14 +513,14 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// Because this particular edit *changes the projected key set*, the write
 /// emits `Event::PlanUpdated` (`track_report.rs`, guarded by
 /// `!task_projection.changed_keys.is_empty()`), and the in-tx *role gate*
-/// refuses that event with "only spec cards (or User/Kernel) may emit
+/// refuses that event with "only planner cards (or User/Kernel) may emit
 /// dispatch-request events (actor=AiCodex(<assistant card>))". So the row does
 /// not appear, because the whole write rolls back at that second, independent
 /// layer.
 ///
 /// Read that message precisely, and do not over-read it: `role_gate.rs`
 /// handles `PlanUpdated` in the *same match arm* as `CodexWorkerRequested` /
-/// `TerminalWorkerRequested` and reuses one `NotSpecForDispatch` string for
+/// `TerminalWorkerRequested` and reuses one `NotPlannerForDispatch` string for
 /// all three. The mutation therefore does **not** exercise the real
 /// worker-request emission path; what it shows is that the released task
 /// reached track-level plan authority, no more than that.
@@ -538,16 +538,16 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// code: with only the code asserted, the mutation would still be red, but for
 /// the wrong reason, and the fixture would silently stop pinning P2.
 #[tokio::test]
-async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
+async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     let boot = boot().await;
 
-    // 1. Spec seeds a gate-clean but withdrawn declaration.
+    // 1. Planner seeds a gate-clean but withdrawn declaration.
     let withheld = gated_task_fence("dispatchable", false);
     let released = gated_task_fence("dispatchable", true);
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": format!("# Plan\n\nthe original prose\n\n{withheld}"),
             "summary": "seed",
@@ -555,7 +555,7 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
         }),
     )
     .await
-    .expect("the spec may declare a not-yet-ready task");
+    .expect("the planner may declare a not-yet-ready task");
     assert_eq!(
         task_rows(&boot).await,
         Vec::<(String, String)>::new(),
@@ -579,11 +579,11 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
         json!({ "body": flipped.clone(), "if_doc_rev": doc_rev(&boot).await }),
     )
     .await
-    .expect_err("an assistant releasing a spec-declared task must be refused");
+    .expect_err("an assistant releasing a planner-declared task must be refused");
     // The refusal must be P2's own, by message and not just by code. Delete
     // the P2 guard and this write does not merely change error code: it runs
     // all the way into the task projection, emits `PlanUpdated`, and is
-    // stopped only by the role gate's shared dispatch-request arm ("only spec
+    // stopped only by the role gate's shared dispatch-request arm ("only planner
     // cards (or User/Kernel) may emit dispatch-request events"). That backstop
     // fires only because *this* edit changes the projected key set, so
     // asserting P2's own message is what keeps the fixture pinned on P2 rather
@@ -606,15 +606,15 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
         "and produced no dispatchable task"
     );
 
-    // 3. Control: the spec makes the identical edit and a task appears.
+    // 3. Control: the planner makes the identical edit and a task appears.
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": flipped, "if_doc_rev": doc_rev(&boot).await }),
     )
     .await
-    .expect("the spec releases its own declaration");
+    .expect("the planner releases its own declaration");
     assert_eq!(
         task_rows(&boot).await,
         vec![("dispatchable".to_string(), "pending".to_string())],
@@ -630,7 +630,7 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
 /// These three assert `before == after` on the report body rather than
 /// counting task rows, and that is sufficient — but only because of a fact
 /// worth writing down, since the assertion is otherwise strictly weaker than
-/// the one in `an_assistant_may_not_flip_a_spec_task_to_ready` above:
+/// the one in `an_assistant_may_not_flip_a_planner_task_to_ready` above:
 /// `tasks_rebuild_with_tree_term_tx` (`track_report.rs:128-151`) projects the
 /// task table from the track-report card's `payload` + `body_crdt` and nothing
 /// else. It is a pure function of the report document. All three attempts
@@ -641,7 +641,7 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
 #[tokio::test]
 async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     let boot = boot().await;
-    let (spec_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
+    let (planner_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
     let before = body_text(&boot).await;
 
     let index = read(&boot, assistant_identity(&boot), json!({})).await;
@@ -656,29 +656,29 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
             )
         })
         .collect();
-    assert_eq!(tasks.len(), 2, "fixture holds the spec and user tasks");
+    assert_eq!(tasks.len(), 2, "fixture holds the planner and user tasks");
 
-    // 1. In-place rewrite of a declaration (here: the SPEC-signed one,
+    // 1. In-place rewrite of a declaration (here: the PLANNER-signed one,
     //    which #1180's user-only rule does not cover at all).
-    let (spec_task_id, spec_task_rev) = {
+    let (planner_task_id, planner_task_rev) = {
         let marked = marked_text(&boot, assistant_identity(&boot)).await;
-        let spec_marker_owner = tasks
+        let planner_marker_owner = tasks
             .iter()
             .find(|(id, _)| {
                 let marker = marker_line(id);
                 marked
                     .split_once(&marker)
-                    .is_some_and(|(_, rest)| rest.starts_with(&spec_fence))
+                    .is_some_and(|(_, rest)| rest.starts_with(&planner_fence))
             })
-            .expect("locate the spec-declared task block");
-        spec_marker_owner.clone()
+            .expect("locate the planner-declared task block");
+        planner_marker_owner.clone()
     };
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         assistant_identity(&boot),
         json!({
-            "id": spec_task_id,
+            "id": planner_task_id,
             "kind": KIND_TASK,
             "payload": {
                 "key": "build",
@@ -687,11 +687,11 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
                 "ready": true,
                 "declared_by": "spec"
             },
-            "if_rev": spec_task_rev
+            "if_rev": planner_task_rev
         }),
     )
     .await
-    .expect_err("an assistant rewriting a spec-declared task must be refused");
+    .expect_err("an assistant rewriting a planner-declared task must be refused");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 
     // 2. Block-level delete — the one exemption the #1179 rule grants, and
@@ -700,7 +700,7 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
         assistant_identity(&boot),
-        json!({ "id": spec_task_id, "if_rev": spec_task_rev }),
+        json!({ "id": planner_task_id, "if_rev": planner_task_rev }),
     )
     .await
     .expect_err("an assistant deleting a task block must be refused");
@@ -719,17 +719,17 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
 
     let after = body_text(&boot).await;
     assert_eq!(before, after, "none of the three attempts wrote anything");
-    assert!(after.contains(&spec_fence) && after.contains(&user_fence));
+    assert!(after.contains(&planner_fence) && after.contains(&user_fence));
 }
 
-/// P2's control: the spec-declared task the assistant could not touch is
-/// still the spec's to rewrite. Without this, every assertion above would
+/// P2's control: the planner-declared task the assistant could not touch is
+/// still the planner's to rewrite. Without this, every assertion above would
 /// hold equally well if task blocks had simply become immutable.
 #[tokio::test]
-async fn the_spec_may_still_rewrite_its_own_task_block() {
+async fn the_planner_may_still_rewrite_its_own_task_block() {
     let boot = boot().await;
     seed_prose_and_two_tasks(&boot).await;
-    let blocks = read(&boot, spec_identity(&boot), json!({})).await["blocks"]
+    let blocks = read(&boot, planner_identity(&boot), json!({})).await["blocks"]
         .as_array()
         .expect("blocks index")
         .clone();
@@ -741,14 +741,14 @@ async fn the_spec_may_still_rewrite_its_own_task_block() {
         let out = call_tool(
             &boot,
             TOOL_REPORT_BLOCKS_UPSERT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({
                 "id": block["id"],
                 "kind": KIND_TASK,
                 "payload": {
                     "key": "build",
                     "kind": "codex",
-                    "goal": "spec revises its own goal",
+                    "goal": "planner revises its own goal",
                     "ready": true,
                     "declared_by": "spec"
                 },
@@ -758,15 +758,19 @@ async fn the_spec_may_still_rewrite_its_own_task_block() {
         .await;
         // The user-declared block legitimately refuses (its `key` and
         // `declared_by` are immutable, and #1180 protects it from every
-        // non-user writer); the spec-declared one must go through.
+        // non-user writer); the planner-declared one must go through.
         if out.is_ok() {
             rewritten = true;
         }
     }
     assert!(
         rewritten,
-        "the spec must still be able to rewrite its own declaration — \
+        "the planner must still be able to rewrite its own declaration — \
          otherwise the assistant refusals above are not about the role"
     );
-    assert!(body_text(&boot).await.contains("spec revises its own goal"));
+    assert!(
+        body_text(&boot)
+            .await
+            .contains("planner revises its own goal")
+    );
 }

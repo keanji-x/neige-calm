@@ -271,7 +271,7 @@ export function TrackGrid({
           }}
         >
           {cards.map((slot, i) => {
-            // Issue #229 PR A — kernel-owned cards (spec today;
+            // Issue #229 PR A — kernel-owned cards (planner today;
             // track-report in PR B) come through with `deletable: false`
             // on the kernel `Card` row, propagated onto the slot in
             // `app/router.tsx`. Omit the `onClose` handler in that

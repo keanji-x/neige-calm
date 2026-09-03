@@ -30,7 +30,7 @@
 //   * `?trace=1` enables `window.__neigeEvents__` so we can assert
 //     against the event-trace ring buffer.
 //   * Each test calls `resetReplayServer` + mints its own area so
-//     state doesn't leak across spec files.
+//     state doesn't leak across planner files.
 //   * The replay binary auto-bootstraps a hidden system area on
 //     first Today render; we ignore it and anchor on user-minted
 //     areas whose ids we capture from the REST response.
@@ -42,7 +42,7 @@ import { clearEventTrace, waitForEvent } from './helpers/trace';
 /** Wait for the WS-driven UI to mount our just-minted area in the
  *  sidebar (it travels via the `area.updated` event the REST mint
  *  fires). Mirrors the helper inside `a11y-keyboard.spec.ts` so each
- *  spec block can keep its bootstrap lockstep without importing
+ *  planner block can keep its bootstrap lockstep without importing
  *  across describe blocks. */
 async function waitForAreaInSidebar(page: Page, name: string): Promise<void> {
   // `exact: true` excludes the per-row "Delete area \"<name>\"" button
@@ -55,7 +55,7 @@ async function waitForAreaInSidebar(page: Page, name: string): Promise<void> {
 }
 
 /** Navigate by click — keyboard-only is the contract of
- *  `a11y-keyboard.spec.ts`, but this spec exercises mutation
+ *  `a11y-keyboard.spec.ts`, but this planner exercises mutation
  *  *flows*, not keyboard reachability. Clicks let us anchor on
  *  role+name without paying the `tabUntil` brittleness tax. */
 async function gotoArea(page: Page, areaName: string): Promise<void> {
@@ -253,7 +253,7 @@ test.describe('a11y · track + area ops', () => {
     // <button class="h-display-rename"> with aria-label=value and
     // aria-describedby pointing at the "Rename area name" sr-only
     // hint. Locate via role + name + description for parity with
-    // the track-rename spec above.
+    // the track-rename planner above.
     const titleBtn = page.getByRole('button', {
       name: 'OriginalArea',
       description: 'Rename area name',
@@ -319,7 +319,7 @@ test.describe('a11y · track + area ops', () => {
   //                          page's area crumb updates)
   //   * Area-list cache invalidation after nav-away/nav-back
   //
-  // Each test resets state in the spec-level beforeEach and mints its
+  // Each test resets state in the planner-level beforeEach and mints its
   // own area + track so the assertions don't share fate with prior tests.
   // -----------------------------------------------------------------------
 
@@ -951,7 +951,7 @@ test.describe('a11y · track + area ops', () => {
     // + `Math.random`) guards against the unlikely case of the same
     // claim being live across a non-hermetic re-run; in the a11y
     // project the `beforeEach` reset already provides hermeticity
-    // but the namespacing keeps the spec safe to re-read against a
+    // but the namespacing keeps the planner safe to re-read against a
     // shared server too.
     const ts = Date.now();
     const tag = Math.random().toString(36).slice(2, 8);

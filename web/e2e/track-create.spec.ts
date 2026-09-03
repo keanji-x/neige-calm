@@ -96,7 +96,7 @@ test('creates a new track from a fresh area via NewTaskForm and navigates to it'
   // `attach_folder: true`.
   //
   // #1147 S3 — the legacy `web/` NewTaskForm always puts this input's
-  // value on the wire, so this spec cannot take the omit-cwd managed
+  // value on the wire, so this planner cannot take the omit-cwd managed
   // branch: the path has to be a real Git work tree the kernel can see.
   // See `helpers/attached-workspace.ts` for why it lives under `$HOME`.
   const cwd = createGitWorkTree(attachedWorkspacePath(`neige-e2e-track-create-${Date.now()}`));
@@ -104,7 +104,7 @@ test('creates a new track from a fresh area via NewTaskForm and navigates to it'
 
   // Submit via the Create task button. (Pressing Enter on the cwd
   // input would also submit — the keyboard variant lives in the a11y
-  // spec.)
+  // planner.)
   await form.getByRole('button', { name: 'Create task', exact: true }).click();
 
   // Step 4 — URL transitions to /calm/track/<id> and the track page

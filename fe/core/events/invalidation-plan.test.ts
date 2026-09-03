@@ -196,13 +196,13 @@ describe('invalidation plan behavior', () => {
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
     expect(planned('harness.phase.changed')).toEqual([
-      ['spec-run', 'card-1'], ['area-conversations'], ['track-conversations', 'track-1'],
+      ['planner-run', 'card-1'], ['area-conversations'], ['track-conversations', 'track-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
-      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
-      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
       ['area-conversations'], ['track-conversations', 'track-1'],
     ]);
   });

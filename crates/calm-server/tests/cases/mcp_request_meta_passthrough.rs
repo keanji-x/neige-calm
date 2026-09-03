@@ -110,15 +110,15 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
         None,
         None,
         None,
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect("mint spec card");
+    .expect("mint planner card");
     tx.commit().await.unwrap();
-    let card_token = mcp_token.expect("Spec card must mint a token");
+    let card_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
     let daemon_token = "request-meta-daemon-token";
@@ -222,7 +222,7 @@ fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
                 "properties": {}
             }),
             annotations: None,
-            visible_to_roles: &[CardRole::Spec],
+            visible_to_roles: &[CardRole::Planner],
         },
         handler,
     );
@@ -315,7 +315,7 @@ async fn thread_id_flows_from_meta_to_identity() {
     assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
     let identity = recv_identity(&mut rx).await;
     assert_eq!(identity.card_id, boot.card_id);
-    assert_eq!(identity.role, CardRole::Spec);
+    assert_eq!(identity.role, CardRole::Planner);
     assert_eq!(identity.track_id.as_deref(), Some(boot.track_id.as_str()));
 
     let mut top_level_meta = tools_call_frame(3, "test.echo_identity", json!({ "x": 2 }));

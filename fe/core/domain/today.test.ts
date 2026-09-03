@@ -43,7 +43,7 @@ describe('todaySummaryFailure', () => {
    * The refusal that is not a malfunction.
    *
    * The server answers 409 for three different things — the generic `conflict`
-   * from the underlying conversation create, `spec_harness_dormant` from a send
+   * from the underlying conversation create, `planner_harness_dormant` from a send
    * that could not be recovered, and this one — so the status cannot be what
    * distinguishes them. The three cases below are one status and three answers.
    */
@@ -55,7 +55,7 @@ describe('todaySummaryFailure', () => {
 
   it('does not mistake the other 409s for an empty day', () => {
     expect(todaySummaryFailure(http(409, 'conflict', 'already exists')).kind).toBe('error');
-    expect(todaySummaryFailure(http(409, 'spec_harness_dormant', 'dormant')).kind).toBe('error');
+    expect(todaySummaryFailure(http(409, 'planner_harness_dormant', 'dormant')).kind).toBe('error');
   });
 
   /* Matching on the sentence rather than the code would be mirror code for a

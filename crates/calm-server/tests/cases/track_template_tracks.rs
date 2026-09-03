@@ -181,17 +181,17 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-async fn spec_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
+async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
     let pool = repo.sqlite_pool().expect("sqlite pool");
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM operations \
-         WHERE kind = 'spec-harness-start' \
-           AND json_extract(payload_json, '$.track_id') = ?1",
+         WHERE kind = 'planner-harness-start' \
+           AND json_extract(payload_json, '$.wave_id') = ?1",
     )
     .bind(track_id)
     .fetch_one(&pool)
     .await
-    .expect("track spec-harness-start count")
+    .expect("track planner-harness-start count")
 }
 
 fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
@@ -224,7 +224,7 @@ fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
 ///
 /// (The #1209 design predicted this had to be assembled from `Repo` trait
 /// accessors because tests "cannot write raw SQL". Not so in this file:
-/// `Repo::sqlite_pool` is public and `spec_harness_ops_for_track` above already
+/// `Repo::sqlite_pool` is public and `planner_harness_ops_for_track` above already
 /// uses it.)
 async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let pool = repo.sqlite_pool().expect("sqlite pool");
@@ -801,8 +801,8 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
     );
     let track_id = body["id"].as_str().expect("track id");
     assert!(
-        spec_harness_ops_for_track(&boot.repo, track_id).await >= 1,
-        "forked user track still starts spec harness"
+        planner_harness_ops_for_track(&boot.repo, track_id).await >= 1,
+        "forked user track still starts planner harness"
     );
 
     let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
@@ -841,7 +841,7 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
             .as_str()
             .unwrap_or("")
             .contains("author a real gate"),
-        "implement-change must tell spec to author a real gate; payload={implement}"
+        "implement-change must tell planner to author a real gate; payload={implement}"
     );
 }
 

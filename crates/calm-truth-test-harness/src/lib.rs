@@ -399,7 +399,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
                     WorkerSessionInit {
                         id: runtime_id,
                         card_id,
-                        kind: WorkerSessionKind::SharedSpec,
+                        kind: WorkerSessionKind::SharedPlanner,
                         agent_provider: Some(AgentProvider::Codex),
                         status: WorkerSessionState::Idle,
                         terminal_run_id: None,

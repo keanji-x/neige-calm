@@ -98,11 +98,11 @@ const dispatched: PanelRow = {
  *  `kind` and `workerCardId` null together for exactly these rows. */
 const withdrawn: PanelRow = {
   id: 'block-3',
-  title: 'gamma-spec',
+  title: 'gamma-planner',
   kind: null,
   badges: [{ id: 'declaration', text: 'Withdrawn', struck: true }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: 'Show gamma-spec in the report' }],
+  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: 'Show gamma-planner in the report' }],
 };
 
 /** Unreadable: an ordinary, unstruck declaration beside the withdrawn one. */
