@@ -64,8 +64,20 @@ pub fn router() -> Router<AppState> {
 
 /// Bring a body into the canonical shape a recipe is allowed to hold.
 ///
-/// Two transforms, and both are about **not carrying one track's authority
-/// into every track made from this recipe**:
+/// Every parseable `neige-block` fence is re-rendered through
+/// [`render_fence`], so the stored body holds each one in exactly the form
+/// [`render_fence`] produces. That is not cosmetic. Instantiation
+/// (`routes::tracks::prepare_initial_report_payload` → `ReportDoc` →
+/// `reassign_ids`) re-renders every fence it can parse, so any fence stored
+/// in some other spelling — a compact `app` payload, say — would come out of
+/// `create` with different bytes than the picker showed. Canonicalising here
+/// makes that re-render the identity, which turns "the recipe and the track
+/// made from it are byte-for-byte the same document" from a claim into a
+/// construction.
+///
+/// Two further transforms apply to task fences only, and both are about
+/// **not carrying one track's authority into every track made from this
+/// recipe**:
 ///
 /// 1. **Tombstones are dropped**, leaving a blank-line boundary behind. A
 ///    tombstone blocks re-declaring its key (`report_blocks::tasks`), so a
@@ -87,9 +99,9 @@ pub fn router() -> Router<AppState> {
 ///    `declared_by`/`ready`/`released_by_user` cannot smuggle in authorship
 ///    or a human approval granted somewhere else.
 ///
-/// Prose slices pass through byte-identical. Non-task fences pass through
-/// too: this function has an opinion about task authority, not about
-/// vocabulary.
+/// Prose slices pass through byte-identical, and so does anything
+/// [`parse_fence`] declines — the lenient read treats those as prose too, and
+/// rewriting text nobody could parse is not this function's job.
 ///
 /// Runs at the write boundary rather than at instantiation so the stored row
 /// is already canonical — which is what makes "what the picker shows" and
@@ -124,7 +136,12 @@ fn normalize_recipe_body(body: &str) -> String {
                     _ => slice.raw,
                 }
             }
-            _ => slice.raw,
+            // Every other parseable fence is re-rendered and nothing else:
+            // no opinion about its payload, only about its bytes.
+            Some(fence) => render_fence(&fence.kind, &fence.payload),
+            // Not a well-formed fence — the lenient read calls it prose, and
+            // prose passes through untouched.
+            None => slice.raw,
         };
         if pending_break {
             restore_paragraph_break(&mut out);

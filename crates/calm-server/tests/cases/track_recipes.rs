@@ -126,6 +126,15 @@ fn task_payloads(body: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Every parsed fence in a body, as `(kind, payload)`, in order.
+fn fences(body: &str) -> Vec<(String, Value)> {
+    calm_types::report_blocks::split_body(body)
+        .iter()
+        .filter_map(|slice| calm_types::report_blocks::parse_fence(&slice.raw))
+        .map(|fence| (fence.kind, fence.payload))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
@@ -175,6 +184,59 @@ async fn create_normalizes_every_privilege_field_and_drops_tombstones() {
         tasks[0].get("released_by_user").is_none(),
         "must be absent, not false: {:?}",
         tasks[0]
+    );
+    assert!(
+        stored.contains("intro"),
+        "prose must survive verbatim: {stored}"
+    );
+}
+
+/// A non-task fence is re-rendered into canonical form, with its payload
+/// untouched.
+///
+/// Why this matters and a semantic check would not: instantiation re-renders
+/// every fence it can parse, so a recipe holding a compact `app` payload
+/// would produce a track whose bytes differ from the ones the picker showed —
+/// same meaning, different document, and "the recipe and its instantiation
+/// are the same bytes" would be false. Canonicalising at the write boundary
+/// is what makes that re-render the identity.
+///
+/// The `Value` assertion is the other half: normalization may change how the
+/// payload is spelled and nothing else. A non-task fence carries no task
+/// authority, so nothing in it is the recipe's business to edit.
+#[tokio::test]
+async fn a_non_task_fence_is_stored_in_canonical_form_with_its_payload_intact() {
+    let boot = boot().await;
+    let payload = json!({ "src": "/apps/x", "title": "X", "height": 400 });
+    // Deliberately compact and in non-sorted key order: legal input that
+    // `parse_fence` accepts and `render_fence` would never emit.
+    let compact = "```neige-block app\n{\"title\":\"X\",\"src\":\"/apps/x\",\"height\":400}\n```\n";
+    assert_ne!(
+        compact,
+        calm_types::report_blocks::render_fence("app", &payload),
+        "the input must not already be canonical, or this test proves nothing"
+    );
+    let body = format!("# Plan\n\nintro\n\n{compact}");
+
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": body })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let stored = created["body"].as_str().expect("body");
+
+    assert_eq!(
+        fences(stored),
+        vec![("app".to_string(), payload.clone())],
+        "the payload must survive unchanged: {stored}"
+    );
+    assert!(
+        stored.contains(&calm_types::report_blocks::render_fence("app", &payload)),
+        "the fence must be stored in canonical form: {stored:?}"
     );
     assert!(
         stored.contains("intro"),
@@ -277,11 +339,14 @@ async fn dropping_a_tombstone_does_not_splice_its_prose_neighbours() {
 /// Without this, the fix above could pay for its paragraph break by growing
 /// the body a blank line on every save — the same content, re-saved from the
 /// editor a few times, would drift.
+///
+/// The body carries a **non-task** fence too, in compact spelling: the second
+/// pass is only the identity if the first pass already canonicalised it.
 #[tokio::test]
 async fn normalization_is_byte_identical_the_second_time() {
     let boot = boot().await;
     let body = format!(
-        "# Plan\n\nfoo\n{}---\n\nbar\n{}{}end\n",
+        "# Plan\n\nfoo\n{}---\n\nbar\n\n```neige-block app\n{{\"title\":\"X\",\"src\":\"/apps/x\"}}\n```\n\n{}{}end\n",
         task_fence(json!({
             "key": "retired",
             "tombstone": { "reason": null },
