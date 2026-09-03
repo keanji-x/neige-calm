@@ -576,6 +576,7 @@ async fn track_projection_state(
     track_id: &str,
     include_read_state: bool,
     reference_requests: &[ReferenceLookupRequest],
+    after_statement: impl std::future::Future<Output = ()>,
 ) -> Result<TrackProjectionState> {
     let reference_requests_json = serde_json::to_string(reference_requests)
         .map_err(|e| CalmError::Internal(format!("serialize task reference lookups: {e}")))?;
@@ -647,6 +648,10 @@ async fn track_projection_state(
     .bind(i64::from(include_read_state))
     .fetch_optional(&mut *conn)
     .await?;
+    // Keep the test seam immediately after the one statement. A future
+    // extraction of frozen/reference facts into another query must therefore
+    // cross this t0/t1 boundary and trip the concurrency regressions.
+    after_statement.await;
     let row = row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     let reference_targets =
         serde_json::from_str::<Vec<ReferenceTargetRow>>(&row.reference_targets_json)?
@@ -793,9 +798,9 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         track_id,
         include_read_state,
         &reference_requests,
+        after_snapshot,
     )
     .await?;
-    after_snapshot.await;
     let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
     // share)` where `share` is this track's deterministic slice of the root's
