@@ -24,6 +24,9 @@ use crate::wave_lifecycle::{
 use crate::wave_report::{
     BlockOpOutcome, ReportDocOp, WaveReportPayload, persist_report_with_shadow,
 };
+use crate::wave_report_origin::{
+    AgentOrigin, SITE_MCP_DECISION_SINK, WriteOrigin, verify_legacy_write_arguments,
+};
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
@@ -449,12 +452,41 @@ impl CardDecisionSink {
     ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
         let actor = identity.to_actor_id();
         let principal = identity.to_principal();
-        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
-            Arc::new(CardDecisionSinkRecorderShadowProbe {
+        let recorder_shadow: Option<Arc<dyn RecorderShadowProbe>> =
+            Some(Arc::new(CardDecisionSinkRecorderShadowProbe {
                 principal,
                 wave_id: wave.id.clone(),
-            });
+            }));
         let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
+        // #1252 S1 step 2 — the same decisions, stated a second way and
+        // compared. The origin is built from the request context this funnel
+        // already holds (`identity`, plus the wave being written), never from
+        // the quadruple above, so the two sides are independent.
+        //
+        // `wave.id` is the wave whose report this call resolved
+        // (`mcp_server::tools::wave_report::resolve_report_for_caller` reads it
+        // off the caller's own card), which is also what the probe above gates
+        // on — not `identity.wave_id`, the wave identity resolution attached to
+        // the principal. `AgentOrigin`'s docs keep those two apart.
+        //
+        // `recorder_shadow.is_some()` is read off the binding passed to
+        // `persist_report_with_shadow` below, so a future arm that drops the
+        // probe for one role fails this check instead of writing ungated.
+        let origin = WriteOrigin::Agent(AgentOrigin {
+            card_id: CardId::from(identity.card_id.clone()),
+            role: identity.role,
+            provider: identity.provider.clone(),
+            session_id: WorkerSessionId::from(identity.session_id.clone()),
+            wave_id: wave.id.clone(),
+        });
+        verify_legacy_write_arguments(
+            SITE_MCP_DECISION_SINK,
+            &origin,
+            &actor,
+            author,
+            auto_promote_draft,
+            recorder_shadow.is_some(),
+        )?;
         persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
@@ -468,7 +500,7 @@ impl CardDecisionSink {
             agent_message,
             lifecycle,
             auto_promote_draft,
-            Some(recorder_shadow),
+            recorder_shadow,
         )
         .await
     }

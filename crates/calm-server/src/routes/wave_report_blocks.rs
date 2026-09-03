@@ -5,8 +5,12 @@ use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::EditAuthor;
 use crate::ids::ActorId;
+use crate::recorder_shadow::RecorderShadowProbe;
 use crate::state::{AppState, RouteState};
 use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
+use crate::wave_report_origin::{
+    SITE_REST_REPORT_BLOCKS, WriteOrigin, verify_legacy_write_arguments,
+};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -15,6 +19,7 @@ use axum::{
 use calm_types::report_blocks;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -111,22 +116,41 @@ async fn commit(
     op: ReportDocOp,
 ) -> Result<ReportBlockWriteResponse> {
     require_rest_user_actor(actor)?;
+    // #1252 S1 step 2 — the quadruple this call site has always hand-written,
+    // now bound once so the same values are both checked and passed. A mutation
+    // to any of these four is a mutation to what `verify_legacy_write_arguments`
+    // sees.
+    let write_actor = ActorId::User;
+    let author = EditAuthor::User;
+    let auto_promote_draft = false;
+    let recorder_shadow: Option<Arc<dyn RecorderShadowProbe>> = None;
+    // The origin is the fact that this is the REST user surface —
+    // `require_rest_user_actor` above has just refused every declared actor but
+    // `user` — not a reading of the four bindings above.
+    verify_legacy_write_arguments(
+        SITE_REST_REPORT_BLOCKS,
+        &WriteOrigin::RestUser,
+        &write_actor,
+        author,
+        auto_promote_draft,
+        recorder_shadow.is_some(),
+    )?;
     let (wave, report_card, current) =
         resolve_report_for_wave(state.repo.as_ref(), wave_id).await?;
     let (card, block) = persist_report_with_shadow(
         state.repo.as_ref(),
         &state.events,
         &state.write,
-        ActorId::User,
-        EditAuthor::User,
+        write_actor,
+        author,
         wave,
         report_card,
         current,
         op,
         None,
         None,
-        false,
-        None,
+        auto_promote_draft,
+        recorder_shadow,
     )
     .await?;
     let payload: calm_types::wave_report::WaveReportPayload =

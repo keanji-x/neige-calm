@@ -20,5 +20,7 @@ mod mcp_wave_report_blocks;
 mod mcp_wave_state;
 #[path = "cases/report_write_characterization.rs"]
 mod report_write_characterization;
+#[path = "cases/report_write_origin_threading.rs"]
+mod report_write_origin_threading;
 #[path = "cases/task_projection_acceptance.rs"]
 mod task_projection_acceptance;

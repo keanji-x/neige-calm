@@ -76,6 +76,9 @@ use crate::wave_report::{
     resolve_report_for_wave, tasks_rebuild_tree_tx, tasks_rebuild_tx,
 };
 use crate::wave_report_doc::ReportDoc;
+use crate::wave_report_origin::{
+    SITE_REST_REPORT_DOCUMENT, WriteOrigin, verify_legacy_write_arguments,
+};
 use crate::wave_report_read::load_report_read_snapshot;
 use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
@@ -3498,12 +3501,31 @@ pub(crate) async fn update_wave_report(
     // request-body doc), so this is the only place User can be
     // recorded. PR5's spec system prompt will wake on
     // `WaveReportEdited { author: User }` specifically.
+    //
+    // #1252 S1 step 2 — the quadruple is bound once and then both checked and
+    // passed. The fourth member is not an argument here: `persist_report`
+    // hardcodes `recorder_shadow: None` for its callers, so this site declares
+    // "no recorder probe" as a `false` literal with a name, and the origin is
+    // the fact that `require_rest_user_actor` above admitted only
+    // `X-Calm-Actor: user` — not a reading of the other three bindings.
+    let write_actor = ActorId::User;
+    let author = EditAuthor::User;
+    let auto_promote_draft = false;
+    let recorder_shadow_passed = false;
+    verify_legacy_write_arguments(
+        SITE_REST_REPORT_DOCUMENT,
+        &WriteOrigin::RestUser,
+        &write_actor,
+        author,
+        auto_promote_draft,
+        recorder_shadow_passed,
+    )?;
     let updated = persist_report(
         s.repo.as_ref(),
         &s.events,
         &s.write,
-        ActorId::User,
-        EditAuthor::User,
+        write_actor,
+        author,
         wave,
         report_card,
         current_payload,
@@ -3511,7 +3533,7 @@ pub(crate) async fn update_wave_report(
         if_doc_rev,
         None,
         None,
-        false,
+        auto_promote_draft,
     )
     .await?;
 

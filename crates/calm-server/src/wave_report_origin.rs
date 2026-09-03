@@ -31,25 +31,43 @@
 //! know about it, and does not claim to catch one hidden on purpose. That
 //! script's "KNOWN GAPS" section enumerates what it misses.
 //!
-//! # Status: not wired into production
+//! # Status: wired into all three production call sites, in parallel
 //!
-//! Nothing in this module is called from a production path yet. S1 step 2
-//! threads it through the persist boundary. Its blocking prerequisite — the
-//! removal of kernel template seeding — is now met, and no `KernelSeed` origin
-//! was ever needed here.
+//! S1 step 2 landed: each of the three call sites listed above now builds a
+//! [`WriteOrigin`] from its own request context and calls
+//! [`verify_legacy_write_arguments`] before it writes. Nothing was deleted —
+//! the call sites still assemble and pass the old quadruple, and
+//! `persist_report_with_shadow` still takes all four of its members as separate
+//! parameters. What the check adds is that
+//! [`policy_for`]'s answer must **equal** that quadruple or the write is
+//! refused; per-field deletion is step 3.
+//!
+//! The origins are built from real request context, never from the quadruple:
+//! the MCP site builds [`AgentOrigin`] out of `ToolCallIdentity` plus the
+//! target wave, and both REST sites are [`WriteOrigin::RestUser`] because they
+//! are the REST user surface (both are gated to `X-Calm-Actor: user` by
+//! `routes::wave_report_blocks::require_rest_user_actor`). Deriving the origin
+//! from `author`/`auto_promote_draft`/`recorder_shadow` would make the check
+//! compare a value with itself.
+//!
+//! [`WriteOrigin::Fork`] is still unwired: the fork copies the report inside
+//! the wave-creation transaction (`persist_fork_report_and_project_tasks_tx`)
+//! and never reaches this boundary, so there is no call site to check it at.
 //!
 //! # What the policy table in this module's tests is, and is not
 //!
 //! The table asserted by the tests below is the **declared intent** for each
 //! origin, and it locks nothing but that declaration. Every line of it comes
 //! from the design ruling and from a reading of today's call sites; not one
-//! line comes from observing a running system. No test in this module compares
-//! `policy_for`'s output against what production computes.
+//! line comes from observing a running system. No test *in this module*
+//! compares `policy_for`'s output against what production computes.
 //!
-//! That comparison is **S1 step 2**'s job: it puts `policy_for`'s output next
-//! to the quadruples the existing production call sites actually pass. Until
-//! it exists and is green, whether this module agrees with production is an
-//! open question.
+//! That comparison is [`verify_legacy_write_arguments`], and since S1 step 2 it
+//! runs in production on every wave-report write that reaches one of the three
+//! call sites — a disagreement refuses the write. The rows it exercises are
+//! only the reachable ones: `Agent` for `Spec` and `Assistant`, and `RestUser`.
+//! `Fork`, and the `Worker`/`ReportCard` refusal, are still asserted by
+//! declaration alone.
 //!
 //! # Why attribution is two shapes, not `Option<EditAuthor>`
 //!
@@ -402,9 +420,9 @@ impl WritePolicy {
 /// The only error today mirrors `decision_sink::report_op_attribution`: a
 /// `Worker` or `ReportCard` agent may not write the wave report.
 ///
-/// Again: what this function returns is the *declared* policy. It is not
-/// asserted anywhere yet to equal what production computes; that comparison is
-/// S1 step 2's job.
+/// What this function returns is the *declared* policy. Since S1 step 2 it is
+/// asserted to equal what production computes, on every write that reaches one
+/// of the three call sites, by [`verify_legacy_write_arguments`].
 pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
     Ok(match origin {
         WriteOrigin::Agent(agent) => {
@@ -437,6 +455,106 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
             recorder: RecorderRequirement::NotGated,
         },
     })
+}
+
+/// The three call-site labels a mismatch error can name. One per surviving
+/// decision point; each constant is used at exactly one call site, and the
+/// string is that call site's path.
+pub const SITE_MCP_DECISION_SINK: &str = "decision_sink::CardDecisionSink::commit_report_op";
+pub const SITE_REST_REPORT_BLOCKS: &str = "routes::wave_report_blocks::commit";
+pub const SITE_REST_REPORT_DOCUMENT: &str = "routes::waves::update_wave_report";
+
+/// S1 step 2 — the equivalence check each production call site runs before it
+/// writes.
+///
+/// The call site still assembles the old quadruple and still passes it to
+/// `wave_report::persist_report{,_with_shadow}`; this function only asserts
+/// that [`policy_for`]'s output for the origin the call site built **equals**
+/// what it is about to pass. On any difference the write is refused
+/// (`CalmError::Internal`) rather than logged, so the two decision procedures
+/// cannot silently disagree in production. Deleting a parameter is step 3's
+/// job; this step is the runtime evidence that deleting it would be a no-op.
+///
+/// `recorder_shadow_passed` is `true` exactly when the write ends up handing
+/// `Some(probe)` to `persist_report_with_shadow`'s `recorder_shadow` argument.
+/// The two call sites that own that argument —
+/// `decision_sink::CardDecisionSink::commit_report_op` and
+/// `routes::wave_report_blocks::commit` — pass `Option::is_some` on the very
+/// binding they then hand to the persist call, so an arm that stops supplying a
+/// probe for one role or one entry point is a mismatch here rather than a
+/// silently ungated write. That shape is gap 3 of
+/// `tests/cases/report_write_characterization.rs`, which the control group
+/// cannot see. The third site, `routes::waves::update_wave_report`, has no such
+/// binding to read: it goes through the `wave_report::persist_report` wrapper,
+/// which hardcodes `None` with no parameter to vary it, so it passes a named
+/// `false` literal and what that literal tracks is the wrapper's constant.
+///
+/// The error names the call site, the field, the declared value and the passed
+/// value, because "the quadruples differ" is not actionable without all four.
+pub fn verify_legacy_write_arguments(
+    site: &str,
+    origin: &WriteOrigin,
+    actor: &ActorId,
+    author: EditAuthor,
+    auto_promote_draft: bool,
+    recorder_shadow_passed: bool,
+) -> Result<WritePolicy, CalmError> {
+    let policy = policy_for(origin)?;
+    let mismatch = |field: &str, declared: String, passed: String| {
+        CalmError::Internal(format!(
+            "{site}: write-origin mismatch on {field}: origin {origin:?} declares {declared}, \
+             call site passes {passed}"
+        ))
+    };
+
+    if policy.actor() != actor {
+        return Err(mismatch(
+            "actor",
+            format!("{:?}", policy.actor()),
+            format!("{actor:?}"),
+        ));
+    }
+    match policy.attribution() {
+        WriteAttribution::Authored(declared) if declared == author => {}
+        WriteAttribution::Authored(declared) => {
+            return Err(mismatch(
+                "author",
+                format!("{declared:?}"),
+                format!("{author:?}"),
+            ));
+        }
+        // No production call site is a `Fork` today, so this arm is the
+        // fail-closed answer to a caller that starts passing one: `Structural`
+        // has no `EditAuthor` to compare against, and the fork path does not go
+        // through this boundary at all (see [`RecorderRequirement::NotGated`]).
+        WriteAttribution::Structural => {
+            return Err(mismatch(
+                "author",
+                "structural (no author)".to_string(),
+                format!("{author:?}"),
+            ));
+        }
+    }
+    if policy.auto_promote_draft() != auto_promote_draft {
+        return Err(mismatch(
+            "auto_promote_draft",
+            format!("{}", policy.auto_promote_draft()),
+            format!("{auto_promote_draft}"),
+        ));
+    }
+    let declared_gate = matches!(policy.recorder(), RecorderRequirement::AgentGate);
+    if declared_gate != recorder_shadow_passed {
+        return Err(mismatch(
+            "recorder",
+            format!("{:?}", policy.recorder()),
+            if recorder_shadow_passed {
+                "Some(recorder probe)".to_string()
+            } else {
+                "None (no recorder probe)".to_string()
+            },
+        ));
+    }
+    Ok(policy)
 }
 
 /// Mirrors `ToolCallIdentity::to_actor_id`: MCP writes are keyed by worker
@@ -571,6 +689,152 @@ mod tests {
     // `fork by user` row of the table above. Whoever widens the admitted set
     // must add it back — that is the point at which the mutation becomes
     // detectable. See the `WriteOrigin::Fork` docs.
+
+    fn spec_session() -> ActorId {
+        ActorId::AiSpecSession(WorkerSessionId::from("sess_1".to_string()))
+    }
+
+    fn message(error: CalmError) -> String {
+        match error {
+            CalmError::Internal(message) => message,
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    /// The quadruple each of the three production call sites hand-writes today,
+    /// checked against the origin that call site builds. These rows are the
+    /// unit-level statement of the same equality the call sites assert at
+    /// runtime; the integration proof that the call sites really run it is
+    /// `tests/cases/report_write_origin_threading.rs`.
+    #[test]
+    fn every_production_call_site_quadruple_matches_its_origin() {
+        verify_legacy_write_arguments(
+            SITE_MCP_DECISION_SINK,
+            &agent(CardRole::Spec, AgentProvider::Codex),
+            &spec_session(),
+            EditAuthor::Spec,
+            true,
+            true,
+        )
+        .expect("the MCP funnel's spec quadruple");
+        verify_legacy_write_arguments(
+            SITE_MCP_DECISION_SINK,
+            &agent(CardRole::Assistant, AgentProvider::Codex),
+            &ActorId::AiCodexSession(WorkerSessionId::from("sess_1".to_string())),
+            EditAuthor::Assistant,
+            false,
+            true,
+        )
+        .expect("the MCP funnel's assistant quadruple");
+        for site in [SITE_REST_REPORT_BLOCKS, SITE_REST_REPORT_DOCUMENT] {
+            verify_legacy_write_arguments(
+                site,
+                &WriteOrigin::RestUser,
+                &ActorId::User,
+                EditAuthor::User,
+                false,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("{site}: {error:?}"));
+        }
+    }
+
+    /// One wrong member at a time, so each field's comparison is exercised
+    /// alone, and the message has to name the site and the field — that is what
+    /// makes a production refusal locatable.
+    #[test]
+    fn one_wrong_member_of_the_quadruple_is_refused_and_named() {
+        let origin = agent(CardRole::Spec, AgentProvider::Codex);
+        let cases: Vec<(&str, ActorId, EditAuthor, bool, bool)> = vec![
+            ("actor", ActorId::User, EditAuthor::Spec, true, true),
+            ("author", spec_session(), EditAuthor::Assistant, true, true),
+            (
+                "auto_promote_draft",
+                spec_session(),
+                EditAuthor::Spec,
+                false,
+                true,
+            ),
+            ("recorder", spec_session(), EditAuthor::Spec, true, false),
+        ];
+        for (field, actor, author, auto_promote_draft, recorder) in cases {
+            let error = verify_legacy_write_arguments(
+                SITE_MCP_DECISION_SINK,
+                &origin,
+                &actor,
+                author,
+                auto_promote_draft,
+                recorder,
+            )
+            .expect_err("a mismatched quadruple must fail closed");
+            let message = message(error);
+            assert!(
+                message.contains(SITE_MCP_DECISION_SINK),
+                "{field}: message names the call site; got {message}"
+            );
+            assert!(
+                message.contains(&format!("mismatch on {field}")),
+                "{field}: message names the field; got {message}"
+            );
+        }
+    }
+
+    /// The role branches differ in three of the four members, so feeding one
+    /// role's origin the other role's quadruple is refused. This is the
+    /// unit-level half of gap 3 of the characterization suite: a funnel that
+    /// keeps one arm's decisions while taking the other arm's origin cannot
+    /// pass.
+    #[test]
+    fn the_two_agent_roles_may_not_borrow_each_others_quadruple() {
+        let error = verify_legacy_write_arguments(
+            SITE_MCP_DECISION_SINK,
+            &agent(CardRole::Assistant, AgentProvider::Codex),
+            &spec_session(),
+            EditAuthor::Spec,
+            true,
+            true,
+        )
+        .expect_err("an assistant origin may not carry the spec's quadruple");
+        assert!(message(error).contains("mismatch on actor"));
+    }
+
+    /// A `Fork` origin has no `EditAuthor` to compare against, so it cannot be
+    /// reconciled with any quadruple this boundary is handed — the fork path
+    /// does not come through here at all.
+    #[test]
+    fn a_structural_origin_cannot_satisfy_an_authored_call_site() {
+        let error = verify_legacy_write_arguments(
+            SITE_REST_REPORT_DOCUMENT,
+            &WriteOrigin::Fork(user_fork()),
+            &ActorId::User,
+            EditAuthor::User,
+            false,
+            false,
+        )
+        .expect_err("structural attribution has no author");
+        let message = message(error);
+        assert!(message.contains("mismatch on author"), "got {message}");
+        assert!(message.contains("structural"), "got {message}");
+    }
+
+    /// A refused role is refused before any comparison happens: the error is
+    /// `policy_for`'s `Forbidden`, not a mismatch.
+    #[test]
+    fn a_refused_role_fails_closed_as_forbidden_not_as_a_mismatch() {
+        let error = verify_legacy_write_arguments(
+            SITE_MCP_DECISION_SINK,
+            &agent(CardRole::Worker, AgentProvider::Codex),
+            &ActorId::User,
+            EditAuthor::User,
+            false,
+            false,
+        )
+        .expect_err("a worker may not write the report");
+        assert!(
+            matches!(error, CalmError::Forbidden(_)),
+            "expected Forbidden, got {error:?}"
+        );
+    }
 
     /// Bump this alongside a new arm in [`actor_variant_label`].
     const ACTOR_ID_NON_USER_VARIANTS: usize = 9;
