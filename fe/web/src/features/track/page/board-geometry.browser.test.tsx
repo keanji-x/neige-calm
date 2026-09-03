@@ -48,7 +48,7 @@ function Page({ documentHeight, boardOpen }: { documentHeight: number; boardOpen
         <div className={styles.workspace} data-testid="workspace">
           <div className={styles.content}>
             <div className={styles.doc}>
-              <article style={{ blockSize: documentHeight }}>Report</article>
+              <article data-testid="report-content" style={{ blockSize: documentHeight }}>Report</article>
             </div>
             <aside className={styles.panel} data-nc-panel="">
               <div style={{ blockSize: 200 }}>Cards</div>
@@ -131,6 +131,19 @@ describe('the card board overlay, against a long report', () => {
       'the open board did not return to the visible content edge',
     ).toBeLessThanOrEqual(1);
     expect(boardBox().bottom).toBeLessThanOrEqual(pageBox().bottom + 1);
+
+    /* The board intentionally stops above `.page`'s trailing padding. A box
+       assertion cannot tell whether the overflowing report still paints in
+       that gap, so ask the browser what would receive a pointer there. */
+    const report = boxOf(document.querySelector('[data-testid="report-content"]'));
+    const trailingPaddingY = Math.floor((boardBox().bottom + pageBox().bottom) / 2);
+    expect(pageBox().bottom - boardBox().bottom).toBeGreaterThan(2);
+    expect(
+      document.elementFromPoint(report.left + 1, trailingPaddingY)
+        ?.closest('[data-testid="report-content"]')
+        ?.getAttribute('data-testid') ?? null,
+      `report content remained hit-testable below the board at y=${trailingPaddingY}`,
+    ).toBeNull();
   });
 
   /* A direct `?card=` visit can open the grid on a compact viewport even

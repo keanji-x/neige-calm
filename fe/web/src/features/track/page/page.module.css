@@ -164,11 +164,17 @@
    * resting position — the sticky header's height plus the page gap — which
    * preserves the Track title/back affordance instead of covering it. Because
    * the containing block remains `.workspace`, the board also remains inside
-   * the shell's main column and cannot cover the navigation rail.
+   * the shell's main column and cannot cover the navigation rail. Clip only
+   * this open-state box: the report deliberately overflows the ordinary
+   * workspace for panel sticky travel, but underneath an open board that same
+   * overflow would otherwise paint into the page's trailing padding. A paint
+   * clip, rather than `overflow: hidden`, keeps that overflow in `.page`'s
+   * scroll range so opening does not clamp the reader's retained `scrollTop`.
    */
   .pageBoard > .workspace {
     position: sticky;
     inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    clip-path: inset(0);
   }
 
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
