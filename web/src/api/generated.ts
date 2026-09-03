@@ -1593,12 +1593,12 @@ export interface components {
              * @description A user-defined recipe (`track_recipes` row, #1292) to start from.
              *
              *     Deliberately **not** folded into `template_id`. That field's value
-             *     lands on `tracks.template_id`, which the spec harness later resolves
-             *     against running plugins' manifests to recover a bound template
-             *     descriptor (`operation::spec_harness_start_adapter`). A recipe id has
-             *     no manifest to resolve against, so putting one there would make every
-             *     recipe-created track log a resolution failure at harness start — an
-             *     error record for an entirely normal situation.
+             *     lands on `tracks.template_id`, which the track start path later
+             *     resolves against running plugins' manifests to recover a bound
+             *     template descriptor. A recipe id has no manifest to resolve against,
+             *     so putting one there would make every recipe-created track log a
+             *     resolution failure while starting — an error record for an entirely
+             *     normal situation.
              *
              *     Supplying both is a 400: two starting points is not a preference to
              *     resolve, it is a request that does not name one thing.

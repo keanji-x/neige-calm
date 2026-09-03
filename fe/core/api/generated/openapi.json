@@ -5488,7 +5488,7 @@
               "string",
               "null"
             ],
-            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the spec harness later resolves\nagainst running plugins' manifests to recover a bound template\ndescriptor (`operation::spec_harness_start_adapter`). A recipe id has\nno manifest to resolve against, so putting one there would make every\nrecipe-created track log a resolution failure at harness start — an\nerror record for an entirely normal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing."
+            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the track start path later\nresolves against running plugins' manifests to recover a bound\ntemplate descriptor. A recipe id has no manifest to resolve against,\nso putting one there would make every recipe-created track log a\nresolution failure while starting — an error record for an entirely\nnormal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing."
           },
           "sort": {
             "type": [

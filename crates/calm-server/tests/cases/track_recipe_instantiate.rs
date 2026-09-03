@@ -15,7 +15,7 @@
 //!     not reach the recipe. Both directions, because either one leaking
 //!     would make a recipe a live reference rather than a snapshot.
 //!   * **`tracks.template_id` stays NULL.** A recipe id there would be
-//!     resolved against plugin manifests at spec-harness start and log a
+//!     resolved against plugin manifests on the track start path and log a
 //!     failure for an entirely normal track.
 //!   * **Two starting points is a 400**, not a silent winner.
 
@@ -269,7 +269,7 @@ async fn a_recipe_becomes_the_new_tracks_report() {
     );
 }
 
-/// A recipe id must not land on `tracks.template_id`: the spec harness
+/// A recipe id must not land on `tracks.template_id`: the track start path
 /// resolves that column against running plugins' manifests, and a recipe has
 /// no manifest — every recipe-created track would log a resolution failure
 /// for an entirely normal situation.
