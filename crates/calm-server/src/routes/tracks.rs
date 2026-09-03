@@ -1440,7 +1440,11 @@ async fn create_track_structure(
                     // `track.report_edited` (the report card's only event is
                     // the `CardAdded` below) and it cannot reach
                     // `guard_task_declarations` (#1115 — there is no author to
-                    // hand it). The fork's own release belt stays upstream in
+                    // hand it). It is not event-free, though: the projection it
+                    // returns is what the `plan.updated` further down is built
+                    // from, and its `kernel_events` leg is refused inside the
+                    // door itself rather than published from here (#1252 R1/F3).
+                    // The fork's own release belt stays upstream in
                     // `prepare_fork_report`, next to the normalization it
                     // belts, so `TrackInit::Template` does not acquire it.
                     let (persisted_report, projection) =

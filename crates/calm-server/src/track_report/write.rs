@@ -417,16 +417,31 @@ pub(crate) async fn agent_report_op(
 ///   Hanging it here would give `TrackInit::Template` a guard it has never had
 ///   and separate the belt from what it belts. An `Option<EditAuthor>` is the
 ///   same hole with a nullable type; see `track_report_origin`'s header.
-/// * **No `&EventBus`, and no event in the return type.** Q12. This door
-///   **cannot emit** — not "emits nothing today". The create transaction owns
-///   the report card's only event, one `Event::CardAdded` attributed to
-///   `actor.to_actor_id()`, and it is emitted by the create closure that calls
-///   this. So a fork or a template instantiation produces no
-///   `track.report_edited` and no `card.updated`, because there is no bus here
-///   to put one on.
-/// * **No `ActorId`.** The one event that exists is the create closure's, and
-///   the closure holds the actor. Threading one in here would give this door an
-///   attribution it has nothing to attribute.
+/// * **No `&EventBus`.** Q12. Nothing here can publish: there is no bus in
+///   this function, so a fork or a template instantiation produces no
+///   `track.report_edited` and no `card.updated` — those are [`persist`]'s
+///   pair and they are emitted from inside it.
+///
+///   Be exact about what this does *not* say, because an earlier version of
+///   this paragraph said it and it was false. This door's return type is not
+///   event-free: `TaskProjectionOutcome` carries `changed_keys` and
+///   `kernel_events`, and the create closure in
+///   `routes::tracks::create_track_structure` turns the first into a
+///   `plan.updated` and appends the second verbatim to the transaction's event
+///   list. A fork that copies task blocks **does** produce a `plan.updated`
+///   that way. What is closed by construction is the second half, and by a
+///   guard in the body rather than by the signature: `kernel_events` non-empty
+///   is an `Internal` error here. It is empty today for a structural reason
+///   (`project_tasks_tx` only produces them for tasks already `dispatched` /
+///   `running` / `verifying`, and a track being created has none), and the
+///   guard is what turns "empty today" into "any future projection event stops
+///   here and forces an explicit decision" instead of letting one escape
+///   through an unchanged signature.
+/// * **No `ActorId`.** The events that exist are the create closure's, and the
+///   closure holds the actor. Threading one in here would give this door an
+///   attribution it has nothing to attribute — and the `kernel_events` guard
+///   above is what keeps that true, since a kernel event is exactly a
+///   `(ActorId, EventScope, Event)` this door would otherwise be handing back.
 /// * **No `if_doc_rev` / `expected_rev`.** The target row was INSERTed by
 ///   `card_create_with_id_tx` earlier in *this same transaction*, so there is no
 ///   prior version for a compare-and-swap to be against. A CAS input here could
@@ -457,7 +472,7 @@ pub(crate) async fn structural_init_report_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     target: InitialReportTarget<'_>,
 ) -> Result<(Card, TaskProjectionOutcome), CalmError> {
-    write_report_row_and_project_tx(
+    let (card, projection) = write_report_row_and_project_tx(
         tx,
         target.report_card_id,
         target.track_id,
@@ -466,7 +481,31 @@ pub(crate) async fn structural_init_report_tx(
         target.declarations,
         target.diagnostics,
     )
-    .await
+    .await?;
+    // #1252 R1/F3 — fail closed on the one thing this door must not hand back.
+    //
+    // `project_tasks_tx` emits kernel events only for a task already
+    // `dispatched` / `running` / `verifying` whose declaration was withdrawn or
+    // removed; a track being created has no such task, so this vector is empty
+    // on every production path that reaches here. That makes the branch a
+    // no-op today — deliberately. Without it the "this door does not attribute"
+    // claim would be a fact about the current projection implementation rather
+    // than about this boundary, and a future create-time projection event would
+    // escape into the create closure's event list, attributed to whatever actor
+    // the kernel picked, **without changing this signature or reddening the syn
+    // gate on it**. With it, that change aborts the create transaction and
+    // somebody has to come here and decide.
+    if !projection.kernel_events.is_empty() {
+        return Err(CalmError::Internal(format!(
+            "structural_init_report_tx: task projection produced {} kernel event(s) while \
+             creating track {}; the structural door has no actor to attribute them to and no \
+             bus to put them on (#1252 Q12). If create-time projection events are now a real \
+             case, decide explicitly who emits them and where.",
+            projection.kernel_events.len(),
+            target.track_id
+        )));
+    }
+    Ok((card, projection))
 }
 
 /// Test-only direct access to the boundary, with the pre-#1318 signature.

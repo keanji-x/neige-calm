@@ -85,7 +85,9 @@ const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
     "WriteOrigin",
     "policy",
     "origin",
-    // Q12 — this door cannot emit, and cannot attribute.
+    // Q12 — no bus and no actor named in the signature. Not "no event
+    // anywhere": the pinned `TaskProjectionOutcome` carries a `kernel_events`
+    // vector, which the door's own body refuses when non-empty (#1252 R1/F3).
     "EventBus",
     "Event",
     "events",
@@ -150,9 +152,11 @@ fn rendered(tokens: &impl ToTokens) -> String {
 /// track-creation transaction. What makes it safe is not something it does; it
 /// is what its argument set is: two parameters and six fields, each pinned here
 /// **by name and by written type**, plus a pinned return type. So the door has
-/// no author to give `guard_task_declarations` (#1115), no bus and no event in
-/// what it returns (Q12), no prior revision to compare against, and no
-/// lifecycle, auto-promote or recorder-probe leg.
+/// no author to give `guard_task_declarations` (#1115), no `EventBus` and no
+/// `ActorId` (Q12 — the `kernel_events` half of what it *returns* is refused by
+/// a guard in the door's own body, not by this signature; see `write.rs`), no
+/// prior revision to compare against, and no lifecycle, auto-promote or
+/// recorder-probe leg.
 ///
 /// # What this test does and does not close
 ///
