@@ -22,7 +22,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::validation::{
     OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    template_overlay_payload_with_key,
+    OVERLAY_TEMPLATE_SCHEMA_VERSION,
 };
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
@@ -655,7 +655,14 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
             entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
             entity_id: stolen_id.clone(),
             kind: OVERLAY_TEMPLATE_KIND.into(),
-            payload: template_overlay_payload_with_key(ISSUE_DEVELOPMENT),
+            // Spelled out rather than built by a helper: #1300 deleted
+            // `template_overlay_payload_with_key` along with the kernel's last
+            // writer of `template_key`, and reviving it as a test-only
+            // constructor would put the forged shape back in production code.
+            payload: json!({
+                "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
+                "template_key": ISSUE_DEVELOPMENT,
+            }),
         })
         .await
         .expect("plant stolen template_key");

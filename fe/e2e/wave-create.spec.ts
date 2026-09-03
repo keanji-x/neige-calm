@@ -181,11 +181,11 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   expect(waveId).toBeTruthy();
   const detail = await request.get(`/api/waves/${waveId}`);
   expect(detail.ok()).toBe(true);
-  const body = await detail.json() as {
+  const detailBody = await detail.json() as {
     wave: { template_id: string | null };
     cards: { kind: string; payload: { body?: string } }[];
   };
-  expect(body.wave.template_id).toBe('small-change');
+  expect(detailBody.wave.template_id).toBe('small-change');
 
   /* #1300 — the assertion this case's name always claimed and never made.
      `template_id` on the wave row says the kernel accepted the binding; it says
@@ -202,7 +202,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
      between "the plan is present" and "the plan is running". A template's tasks
      are pre-set, not released; an instantiation that shipped them ready would
      start dispatching work nobody approved. */
-  const report = body.cards.find((card) => card.kind === 'wave-report');
+  const report = detailBody.cards.find((card) => card.kind === 'wave-report');
   expect(report, 'the created wave must have a wave-report card').toBeTruthy();
   const reportBody = report?.payload.body ?? '';
   for (const key of ['inspect', 'implement', 'verify']) {
