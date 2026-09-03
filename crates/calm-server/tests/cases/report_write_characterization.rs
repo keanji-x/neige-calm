@@ -1,5 +1,5 @@
 //! #1252 S1 step 1 — characterization of **today's** observable write
-//! semantics at three of the six report-write decision points.
+//! semantics at three of the five report-write decision points.
 //!
 //! These tests pin behaviour as it is on `origin/main`, not behaviour as it
 //! ought to be. Every expected value below is a literal that was read off an
@@ -10,7 +10,7 @@
 //! these assertions goes red, the semantics of a decision point changed —
 //! confirm the change was intended before touching the assertion.
 //!
-//! **Covered: 3 of the 6 decision points.**
+//! **Covered: 3 of the 5 decision points.**
 //!
 //! | decision point | production entry driven here |
 //! |---|---|
@@ -30,9 +30,15 @@
 //! genuinely entered rather than simulated.
 //!
 //! Not covered here, on purpose: `seed_template_wave` and
-//! `restamp_template_report_if_placeholder` (being removed under #1300) and
-//! `routes::wave_templates::update_wave_template` (#1230; its fate is
-//! undecided and it has a known attribution defect under #1291).
+//! `restamp_template_report_if_placeholder`, which #1300 S2 removes.
+//!
+//! There was a sixth, `routes::wave_templates::update_wave_template` (#1230).
+//! This file's first version listed it as "fate undecided, and it carries a
+//! known attribution defect under #1291" — pinning a behaviour that was about
+//! to be fixed would have made the fix harder. #1300 S1 settled the question by
+//! deleting it along with the template editor it served, which also closed the
+//! #1291 coupling for this path: there is no longer a write endpoint whose
+//! actor gate could be missing. Hence five decision points, not six.
 //!
 //! Per decision point, four things are observed:
 //!

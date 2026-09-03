@@ -23,7 +23,13 @@ use utoipa::ToSchema;
 /// does compare this string against the installed release (it is one of the
 /// nine compatibility fields), so leaving it at `"1"` across a REST body rename
 /// would be a contract constant contradicted by behaviour.
-pub const API_VERSION: &str = "2";
+///
+/// #1300 S1 bumped `"2"` -> `"3"`: `PUT /api/wave-templates/{id}` is **gone**,
+/// not renamed. That is strictly a larger break than #1209's field rename — a
+/// client holding the old contract gets a 404 with no field to correct — so
+/// leaving this at `"2"` would repeat exactly the contradiction the paragraph
+/// above records.
+pub const API_VERSION: &str = "3";
 
 /// Monotonically increasing frontend compatibility floor.
 ///
@@ -36,7 +42,12 @@ pub const API_VERSION: &str = "2";
 /// #1209 PR-2 bumped 16 -> 17 so cached bundles at 16 get the hard refresh
 /// curtain instead of sending the pre-rename wave-create field spellings and
 /// taking a 400 on every attempt.
-pub const WEB_COMPAT_VERSION: u32 = 17;
+///
+/// #1300 S1 bumped 17 -> 18 for the same reason in a new shape: a cached bundle
+/// at 17 still renders Settings › Templates, and its Save now 404s. The failure
+/// is worse than the #1209 one it mirrors, because it is silent until the user
+/// has typed an edit and pressed the button.
+pub const WEB_COMPAT_VERSION: u32 = 18;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

@@ -638,14 +638,17 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // #1230 — the Settings editor reads this list too, and there `[]` must not
-    // be readable as "loaded and empty": rendering an empty form for a template
-    // whose read has not landed is INV-SETTINGS-002's defect in another place.
+    // `[]` must not be readable as "loaded and empty" — the New wave picker
+    // renders a different affordance for "no templates" than for "not yet".
     //
     // A **failed** read is not loaded either. The first cut wrote
     // `!query.isPending`, which is true once a read has errored — so a dead
-    // server produced `loaded: true` with `templates: []`, and the editor said
-    // "No template named small-change" instead of reporting the failure.
+    // server produced `loaded: true` with `templates: []`, i.e. a picker
+    // claiming the server has no templates instead of reporting the failure.
+    //
+    // #1300 S1 removed the Settings editor, which was this field's other
+    // consumer. It stays because the picker is a consumer in its own right —
+    // `new-wave/public.tsx` branches on it — not as a leftover.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
@@ -886,11 +889,6 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
   };
 }
 
-/**
- * Saving a template invalidates the template list, which since #1230 is the
- * single read for both the New wave picker and the Settings editor. One
- * authority, one invalidation.
- */
 /**
  * Settings › Plugins — the installed list.
  *

@@ -370,40 +370,67 @@ async fn unbound_templates_carry_no_input_schema() {
 #[tokio::test]
 async fn put_is_not_routed_and_writes_nothing() {
     let boot = boot(false).await;
-    let before = db_digest(&boot.repo).await;
 
-    let resp = boot
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/wave-templates/{SMALL_CHANGE}"))
-                .header("X-Calm-Actor", "user")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "title": "Renamed by a caller that should not exist",
-                        "edits": [ { "key": "inspect", "goal": "rewritten" } ],
-                        "appends": []
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    assert!(
-        status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND,
-        "PUT /api/wave-templates/{{id}} must not be routed; got {status}"
-    );
+    // Every roster key, not just one. A residual route could easily be
+    // reintroduced for a subset — a `match id` that handles one template and
+    // falls through for the rest is a perfectly ordinary shape — and a
+    // single-key check would call that gone.
+    for id in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+        let before = db_digest(&boot.repo).await;
 
-    assert_eq!(
-        db_digest(&boot.repo).await,
-        before,
-        "a PUT that is not routed must not have written anything"
-    );
+        let resp = boot
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/wave-templates/{id}"))
+                    .header("X-Calm-Actor", "user")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "title": "Renamed by a caller that should not exist",
+                            "edits": [ { "key": "inspect", "goal": "rewritten" } ],
+                            "appends": []
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+
+        // 404 **with an empty body**, which is the discriminator that makes
+        // this an assertion about routing rather than about a status code.
+        //
+        // The path `/api/wave-templates/{id}` is not registered for any method,
+        // so axum's own fallback answers — and its 404 carries no body. A
+        // *handler* that ran and chose to refuse cannot produce that: every
+        // refusal in this kernel goes through `CalmError`, which renders a JSON
+        // `ErrorBody`. Accepting any 404 would have let a restored handler that
+        // writes on its way to answering `NotFound` pass — the exact
+        // construction a reviewer proposed against the first version of this
+        // test, and it would have been green.
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "PUT /api/wave-templates/{id} must not be routed; body={:?}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            body.is_empty(),
+            "a 404 with a body came from a handler, not from the router; body={:?}",
+            String::from_utf8_lossy(&body)
+        );
+
+        assert_eq!(
+            db_digest(&boot.repo).await,
+            before,
+            "{id}: a PUT that is not routed must not have written anything"
+        );
+    }
 }
 
 /// Whole-database content digest: every table, every row, in a stable order.
@@ -414,9 +441,17 @@ async fn put_is_not_routed_and_writes_nothing() {
 /// require guessing which table a resurrected handler would touch.
 async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     let pool = repo.sqlite_pool().expect("sqlite pool");
+    // `sqlite_sequence` is deliberately NOT excluded. It is an ordinary
+    // writable table holding the AUTOINCREMENT high-water mark, so an insert
+    // that is rolled back — or inserted and deleted — still advances it. That
+    // is precisely the "wrote something on its way to refusing" shape this
+    // digest exists to catch, and a blanket `name NOT LIKE 'sqlite_%'` would
+    // have hidden it. The other `sqlite_*` objects are internal indices with no
+    // rows of their own; `type = 'table'` already excludes them.
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master \
-         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations' \
+         WHERE type = 'table' AND name <> '_sqlx_migrations' \
+         AND name NOT LIKE 'sqlite_stat%' \
          ORDER BY name",
     )
     .fetch_all(&pool)
