@@ -106,7 +106,11 @@
 //! schema-validates that fence's payload. But that selector is a
 //! field of the op, sitting next to the content it selects a rule for; it is not
 //! a [`WriteOrigin`], and `apply_report_op` has no [`WriteOrigin`] parameter —
-//! this module is not wired into it at all, see the status section above.)
+//! this module is not wired into it at all, see the status section above.
+//! Likewise `apply_report_op` reads that `kind`/`content` pair off the caller's
+//! op, so the tombstone its own task-delete rewrite synthesizes is not checked:
+//! also a fact of the local control flow, derived from the op in hand rather
+//! than from any caller-settable knob.)
 //! Modelling them as booleans would
 //! reduce "turn a guard off" to writing `false` — and an exemption that can be
 //! expressed will eventually be used. Per-origin differences in CAS input

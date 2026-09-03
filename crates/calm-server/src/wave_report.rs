@@ -379,6 +379,29 @@ pub(crate) fn apply_report_op(
                 .0),
         }
     };
+    // #1269 (+ follow-up) — the content rule judges what a CALLER sent,
+    // so the `kind`/`content` it sees are read off the caller's own op,
+    // here, before `normalize_report_op` below can hand the `UpsertBlock`
+    // arm something else. That rewrite turns a user's `DeleteBlock` on a
+    // live task into a tombstone upsert the server synthesizes from
+    // fields already stored on that block; running a schema check over
+    // those bytes would make a *repair* path fail on the very data it
+    // exists to retire (a task stored with a `key` the current schema
+    // rejects could no longer be deleted at all, since the whole-document
+    // shapes refuse to drop a live task). `render_fence`'s output is
+    // still parsed and kind-matched by `ReportDoc::upsert_block`; only
+    // the payload-schema gate is scoped to caller bytes.
+    //
+    // This is `Some` exactly when the caller's op is an `UpsertBlock`,
+    // and `normalize_report_op` returns such an op unchanged (it rewrites
+    // only `DeleteBlock`), so the `UpsertBlock` arms below run with this
+    // `Some` for every caller-supplied upsert. Reading it here rather
+    // than checking before the match keeps the existing order of
+    // verdicts: a stale `if_rev` is still the `Conflict` it was.
+    let caller_block_content = match op {
+        ReportDocOp::UpsertBlock { kind, content, .. } => Some((kind.as_str(), content.as_str())),
+        _ => None,
+    };
     let op = normalize_report_op(doc, op.clone(), author)?;
     let before = doc.blocks_snapshot().map_err(|e| {
         CalmError::Internal(format!("wave_report: snapshot before task guard: {e}"))
@@ -439,18 +462,17 @@ pub(crate) fn apply_report_op(
                 // never arrives that way — they run
                 // `check_prose_markdown` on a prose argument and build
                 // data content with `render_data_block` — and the point
-                // is that the op stops depending on them to do so. The
-                // REST block *delete* does arrive carrying content
-                // neither of those built: `normalize_report_op` rewrites
-                // a user's delete of a *live* task into a `kind: "task"`
-                // upsert whose fence comes from bare `render_fence`.
-                // Which rule each
-                // `kind` gets, which production caller is *not* covered
-                // upstream, and what is left to `upsert_block` (and so
-                // still surfaces as a 500 rather than a 400), is written
-                // up once on `validate_block_content` rather than
-                // restated here.
-                validate_block_content(kind, content)?;
+                // is that the op stops depending on them to do so.
+                // `caller_block_content` is read before the delete
+                // rewrite, so the tombstone that rewrite synthesizes is
+                // not judged here; see its comment above. Which rule
+                // each `kind` gets and what is left to `upsert_block`
+                // (and so still surfaces as a 500 rather than a 400) is
+                // written up once on `validate_block_content` rather
+                // than restated here.
+                if let Some((kind, content)) = caller_block_content {
+                    validate_block_content(kind, content)?;
+                }
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -463,8 +485,12 @@ pub(crate) fn apply_report_op(
                 check_doc_rev(doc, expected)?;
                 // #1269 (+ follow-up) — same check on the create arm;
                 // leaving either arm unchecked would leave the op-layer
-                // gap open.
-                validate_block_content(kind, content)?;
+                // gap open. (The delete rewrite only ever produces the
+                // replace arm above, since it carries the stored block's
+                // id, so this arm sees caller content in every case.)
+                if let Some((kind, content)) = caller_block_content {
+                    validate_block_content(kind, content)?;
+                }
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len

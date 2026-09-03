@@ -1868,10 +1868,12 @@ fn prepare_fork_report(
             // `apply_report_op` call exercises it — no user request can,
             // because the MCP (#971) and REST (#990) block surfaces are the
             // only production builders of a prose `UpsertBlock` and both
-            // refuse fenced prose at their own argument. (The non-prose half
-            // has one production builder those two do not cover; see
-            // `wave_report_guard`'s module doc, which enumerates all four
-            // construction sites.) And "fenced prose" here means a fence
+            // refuse fenced prose at their own argument. (The same holds
+            // for the non-prose half: the fourth `UpsertBlock` builder,
+            // the task-delete rewrite, is server-synthesized and does not
+            // reach that check at all — see `wave_report_guard`'s module
+            // doc, which enumerates all four construction sites.) And
+            // "fenced prose" here means a fence
             // carried whole in one block; on the residual that a fence split
             // across two prose blocks still assembles in the projection, see
             // `wave_report_guard::validate_block_content`.

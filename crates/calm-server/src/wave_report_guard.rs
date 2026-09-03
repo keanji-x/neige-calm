@@ -31,8 +31,10 @@
 //!     were refused.
 //!
 //!   Both halves are **defence in depth at the op layer**, on the
-//!   evidence below — but note the third bullet, which is why "not a
-//!   user-reachable hole" is *not* stated flatly for the non-prose half.
+//!   evidence below. The `kind` / `content` they judge are read off the
+//!   *caller's* op, which is why the third bullet — the one production
+//!   `UpsertBlock` nobody outside the server authors — is out of their
+//!   reach by construction.
 //!   Production code constructs a `ReportDocOp::UpsertBlock` in exactly
 //!   four places, in three modules. Grep `ReportDocOp::UpsertBlock`: apart
 //!   from those four, the only non-test hits it returns are
@@ -52,8 +54,15 @@
 //!      rewrite. It emits only `kind: "task"` (never prose) and builds
 //!      its tombstone payload with `render_fence`, which does **not**
 //!      validate, from `key` / `declared_by` read back off an
-//!      already-stored task block. So it is the one production caller
-//!      whose payload this check is the first to schema-validate.
+//!      already-stored task block. It is the one site here that is not
+//!      caller input, and its payload is deliberately **not** checked:
+//!      `apply_report_op` binds the `kind` / `content` it hands to
+//!      [`validate_block_content`] from the caller's op *before* running
+//!      the rewrite, so these bytes never arrive. Checking them would
+//!      let a stored task the current schema rejects — a legacy `key`,
+//!      say — answer its owner's delete with a 400, closing the one
+//!      route that retires it. `ReportDoc::upsert_block` still parses
+//!      this fence and matches its kind.
 //!
 //!   For the prose half that enumeration does close the door: only (1)
 //!   and (2) can emit `kind: "prose"`, and both have run
@@ -151,23 +160,25 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
 ///   doc for why that leaves the *status* coarse without accepting
 ///   anything extra.
 ///
-/// The two halves stand differently with respect to what reaches them,
-/// and the module doc's third bullet is why. The **prose** half closes no
-/// hole a user could reach: the only production sites that can emit
-/// `kind: "prose"` are the MCP surface (#971) and the REST surface
-/// (#990), and both have run `check_prose_markdown` on their own argument
-/// since long before this — so here it is defence in depth, aimed at a
-/// direct `apply_report_op` caller. The **non-prose** half is not only
-/// that: `wave_report_edit_guard::normalize_report_op` rewrites a user's
-/// block-level delete of a *live* task into an `UpsertBlock { kind:
-/// "task", .. }`
-/// whose content it builds with bare `render_fence`, which does not
-/// validate, so this check is the first thing to schema-validate that
-/// payload. That path is user-reachable — `routes::wave_report_blocks::
-/// delete_block` commits as `EditAuthor::User`, the author the rewrite
-/// keys on (the MCP delete tool is `require_role_any([Spec, Assistant])`
-/// and so never triggers it). The module doc carries the full caller
-/// enumeration this rests on, and what each half therefore buys.
+/// Both halves judge **caller-supplied** content, and both are defence in
+/// depth rather than the last line before a user-reachable hole. The
+/// production sites that build an `UpsertBlock` out of caller input are
+/// the MCP surface (#971) and the REST surface (#990); they have run
+/// `check_prose_markdown` on a prose argument and `render_data_block`,
+/// which schema-validates, on a data one since long before this. What
+/// the op layer gains is that it stops *depending* on them: a direct
+/// `apply_report_op` call cannot land either shape.
+///
+/// The one production `UpsertBlock` that is not caller input — the
+/// tombstone `wave_report_edit_guard::normalize_report_op` synthesizes
+/// from an already-stored task block — is out of scope here, because
+/// `apply_report_op` binds the `kind` / `content` it passes to this
+/// function from the caller's op before that rewrite runs. That is what
+/// keeps a task whose *stored* payload the current schema rejects
+/// deletable by its owner; `tests::
+/// user_delete_of_a_task_with_a_schema_invalid_stored_key_still_tombstones`
+/// is the pin. The module doc carries the full four-site enumeration
+/// this rests on.
 ///
 /// The prose half is deliberately stricter than [`validate_body_fences`], which tolerates
 /// a well-formed, schema-valid fence. The op layer must not be weaker
@@ -674,53 +685,74 @@ mod tests {
         assert_eq!(block.payload, json!({ "src": "/apps/x", "height": 600 }));
     }
 
-    /// The regression pin for the task-tombstone path — the one production
-    /// caller whose `UpsertBlock` payload [`super::validate_block_content`]
-    /// is the *first* thing to schema-validate.
+    /// The task-delete rewrite is a repair path, and
+    /// [`super::validate_block_content`] must not close it.
     ///
-    /// `wave_report_edit_guard::normalize_report_op` builds its fence with
-    /// bare `render_fence`, which does not validate, so nothing upstream
-    /// stands between that payload and this check: if the tombstone shape
-    /// ever stopped satisfying the `task` schema, every user block-level
-    /// task delete would start failing with a 400. The op is not
-    /// hand-written here — it is taken from `normalize_report_op` itself,
-    /// so the shape under test cannot drift away from the shape production
-    /// emits.
+    /// `wave_report_edit_guard::normalize_report_op` turns a user's
+    /// block-level delete of a live task into a tombstone `UpsertBlock`
+    /// whose `key` it copies off the stored block, so gating that
+    /// synthesized op on the payload schema would make the delete's
+    /// verdict depend on bytes the caller never sent. A task whose
+    /// stored `key` the current schema rejects would answer its owner's
+    /// delete with a 400 — and `guard_task_declarations` refuses to drop
+    /// a live task through the whole-document shapes, and refuses a
+    /// non-user author on a user-controlled one, so that user would be
+    /// left with no way to retire it. `wave_report::apply_report_op`
+    /// therefore reads the content it checks off the caller's own op
+    /// (`caller_block_content`), before the rewrite runs.
+    ///
+    /// `Build` below is such a key: uppercase, which `key_is_valid`
+    /// refuses.
     #[test]
-    fn task_tombstone_payload_from_the_delete_rewrite_passes_the_content_check() {
-        let task_fence = calm_types::report_blocks::render_fence(
+    fn user_delete_of_a_task_with_a_schema_invalid_stored_key_still_tombstones() {
+        // Legacy stored shape: an uppercase `key`, which today's
+        // `key_is_valid` (`^[a-z0-9][a-z0-9._-]{0,63}$`) refuses.
+        assert!(
+            !calm_types::report_blocks::tasks::key_is_valid("Build"),
+            "the fixture only means anything while `Build` is an invalid key"
+        );
+        let legacy = calm_types::report_blocks::render_fence(
             "task",
             &json!({
-                "key": "build",
+                "key": "Build",
                 "goal": "build it",
                 "kind": "codex",
                 "ready": true,
-                "declared_by": "spec",
+                "declared_by": "user",
             }),
         );
-        let doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &task_fence));
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &legacy));
         let task = doc
             .blocks_snapshot()
             .unwrap()
             .into_iter()
             .find(|block| block.kind == "task")
-            .expect("the seeded task block is live");
+            .expect("the seeded task block projects");
+        assert_eq!(task.payload["key"], "Build");
+        assert!(
+            task.payload.get("tombstone").is_none(),
+            "the seeded block is live, not already retired"
+        );
 
-        let rewritten = crate::wave_report_edit_guard::normalize_report_op(
-            &doc,
-            ReportDocOp::DeleteBlock {
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::DeleteBlock {
                 id: task.id.clone(),
                 if_rev: task.rev,
             },
             EditAuthor::User,
         )
-        .expect("a user's delete of a live task is rewritten, not refused");
-        let ReportDocOp::UpsertBlock { kind, content, .. } = &rewritten else {
-            panic!("the user delete must become an UpsertBlock, got {rewritten:?}");
-        };
-        assert_eq!(kind, "task", "the rewrite emits a task upsert");
-        super::validate_block_content(kind, content)
-            .expect("the tombstone payload must pass the op-layer content check");
+        .expect("a user must still be able to retire a task whose stored key is invalid");
+
+        let after = doc.blocks_snapshot().unwrap();
+        let tombstone = after
+            .iter()
+            .find(|block| block.id == task.id)
+            .expect("the block is retired in place, not dropped");
+        assert_eq!(tombstone.kind, "task");
+        assert_eq!(tombstone.payload["tombstone"], json!({ "reason": null }));
+        assert_eq!(tombstone.payload["tombstoned_by"], "user");
+        assert_eq!(tombstone.payload["key"], "Build");
     }
 
     /// The residual that [`super::validate_block_content`]'s prose branch
