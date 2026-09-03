@@ -8,7 +8,7 @@
 # every entry states why it is there and pins how many lines it may match. That
 # shape works because `workflow` was down to ~30 files when the gate landed.
 #
-# #1316 starts from ~10.9k matching lines for `cove` and ~26.8k for `wave`
+# #1316 starts from ~10.9k occurrences for `cove` and ~26.8k for `wave`
 # across ~900 files. A per-file allowlist of that size would be unreadable and
 # nobody would ever check an entry's reason, which is precisely the fig leaf the
 # #1209 header warns about. So S0 ships the OTHER standard shape — a ratchet —
@@ -35,7 +35,7 @@
 #                         `--update-baseline` and commit the new numbers.
 #
 # The second direction is not pedantry. A baseline left at an old, higher number
-# silently re-permits every line the slice just removed. A ratchet that only
+# silently re-permits every occurrence the slice just removed. A ratchet that only
 # checks one direction is a ratchet with no pawl.
 #
 # WHAT EACH PATTERN COVERS, STATED HONESTLY
@@ -182,24 +182,76 @@ INFO_SCOPES=(web)
 # closed. Occurrence counting is also strictly tighter in the down direction —
 # deleting one of two matches on a shared line now registers.
 count() { # $1=pattern $2=scope
-  git grep -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null | wc -l
+  local matches grep_status
+
+  matches="$(git grep -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null)"
+  grep_status=$?
+  case "$grep_status" in
+    0) printf '%s\n' "$matches" | wc -l ;;
+    1) printf '0\n' ;;
+    *)
+      echo "::error::git grep failed with exit $grep_status while scanning '$2'; refusing to use a partial count." >&2
+      return "$grep_status"
+      ;;
+  esac
+}
+
+ensure_baseline_inputs_are_tracked() {
+  local untracked
+
+  if ! untracked="$(git ls-files --others --exclude-standard -- "${RATCHETED_SCOPES[@]}")"; then
+    echo "::error::could not check ratcheted scopes for untracked files; refusing to update $BASELINE." >&2
+    return 1
+  fi
+
+  if [ -n "$untracked" ]; then
+    echo "::error::refusing to update $BASELINE: git grep would omit these untracked files from ratcheted scopes:" >&2
+    while IFS= read -r path; do
+      printf '  %s\n' "$path" >&2
+    done <<<"$untracked"
+    echo "::error::Stage intended files with git add (or git add -N), then rerun --update-baseline." >&2
+    return 1
+  fi
 }
 
 emit_baseline() {
+  local found
+
   echo "# #1316 retiring-vocabulary ratchet baseline. Regenerate with:"
   echo "#   ./$SELF --update-baseline"
-  echo "# Counts are MATCHING LINES per (term, scope). Only-down is enforced."
+  echo "# Counts are OCCURRENCES per (term, scope). Only-down is enforced."
   printf '# term\tscope\tcount\n'
   while IFS=$'\t' read -r term pattern; do
     case "$term" in ''|'#'*) continue ;; esac
     for scope in "${RATCHETED_SCOPES[@]}"; do
-      printf '%s\t%s\t%s\n' "$term" "$scope" "$(count "$pattern" "$scope")"
+      if ! found="$(count "$pattern" "$scope")"; then
+        return 1
+      fi
+      printf '%s\t%s\t%s\n' "$term" "$scope" "$found"
     done
   done <<<"$TERMS"
 }
 
 if [ "${1:-}" = '--update-baseline' ]; then
-  emit_baseline >"$BASELINE"
+  ensure_baseline_inputs_are_tracked || exit 1
+
+  if ! baseline_tmp="$(mktemp "$BASELINE.tmp.XXXXXX")"; then
+    echo "::error::could not create a temporary baseline next to $BASELINE." >&2
+    exit 1
+  fi
+  cleanup_baseline_tmp() { rm -f -- "$baseline_tmp"; }
+  trap cleanup_baseline_tmp EXIT
+  trap 'exit 130' HUP INT TERM
+
+  if ! emit_baseline >"$baseline_tmp"; then
+    echo "::error::failed to generate $BASELINE; the existing baseline was preserved." >&2
+    exit 1
+  fi
+  if ! chmod 0644 "$baseline_tmp" || ! mv -- "$baseline_tmp" "$BASELINE"; then
+    echo "::error::could not replace $BASELINE; the existing baseline was preserved." >&2
+    exit 1
+  fi
+  trap - EXIT HUP INT TERM
   echo "wrote $BASELINE"
   exit 0
 fi
@@ -211,11 +263,56 @@ if [ "${1:-}" = '--selftest' ]; then
   # invisible — the first version of this selftest reported a pass for an
   # injection the gate had never actually seen. `git add -N` puts the probe in
   # the index so the probe is subject to the same scan a real commit would be.
-  trap 'git rm -q --cached --force -- "$probe" >/dev/null 2>&1; rm -f "$probe"' EXIT
+  fail_git_dir=''
+  trap 'git rm -q --cached --force -- "$probe" >/dev/null 2>&1; rm -f "$probe"; if [ -n "$fail_git_dir" ]; then rm -f "$fail_git_dir/git"; rmdir "$fail_git_dir"; fi' EXIT
   fails=0
+
+  # Baseline generation must fail closed before opening the baseline for write.
+  # Otherwise `git grep` silently omits an untracked file and records a count
+  # below the tree that will actually be committed.
+  baseline_hash="$(git hash-object -- "$BASELINE")"
+  printf 'let x = wave_id;\n' >"$probe"
+  if update_output="$("./$SELF" --update-baseline 2>&1)"; then
+    echo "SELFTEST FAIL: --update-baseline accepted an untracked file in a ratcheted scope"
+    fails=1
+  elif ! grep -Fq "$probe" <<<"$update_output"; then
+    echo "SELFTEST FAIL: --update-baseline rejected an untracked file without naming it"
+    fails=1
+  elif [ "$(git hash-object -- "$BASELINE")" != "$baseline_hash" ]; then
+    echo "SELFTEST FAIL: rejected --update-baseline changed the existing baseline"
+    fails=1
+  else
+    echo "selftest ok: --update-baseline rejects an untracked input and preserves the baseline"
+  fi
 
   printf 'let x = cove_id;\n' >"$probe"
   git add -N -- "$probe" || exit 1
+
+  # A scan error must propagate through emit_baseline, and the atomic update
+  # must leave the prior baseline intact. The wrapper fails only `git grep` and
+  # delegates every other Git command used by the nested gate invocation.
+  fail_git_dir="$(mktemp -d)" || exit 1
+  cat >"$fail_git_dir/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = grep ]; then
+  exit 128
+fi
+exec "$GATE_1316_REAL_GIT" "$@"
+EOF
+  chmod +x "$fail_git_dir/git" || exit 1
+  if scan_error_output="$(PATH="$fail_git_dir:$PATH" GATE_1316_REAL_GIT="$(command -v git)" "./$SELF" --update-baseline 2>&1)"; then
+    echo "SELFTEST FAIL: --update-baseline accepted a git grep failure"
+    fails=1
+  elif ! grep -Fq 'git grep failed with exit 128' <<<"$scan_error_output"; then
+    echo "SELFTEST FAIL: --update-baseline did not report the git grep failure"
+    fails=1
+  elif [ "$(git hash-object -- "$BASELINE")" != "$baseline_hash" ]; then
+    echo "SELFTEST FAIL: failed baseline scan changed the existing baseline"
+    fails=1
+  else
+    echo "selftest ok: --update-baseline propagates scan errors and preserves the baseline"
+  fi
+
   if "./$SELF" >/dev/null 2>&1; then
     echo "SELFTEST FAIL: injected 'cove_id' did not trip the gate"; fails=1
   else
@@ -288,16 +385,19 @@ while IFS=$'\t' read -r term pattern; do
   case "$term" in ''|'#'*) continue ;; esac
   for scope in "${RATCHETED_SCOPES[@]}"; do
     key="$term/$scope"
-    got="$(count "$pattern" "$scope")"
+    if ! got="$(count "$pattern" "$scope")"; then
+      fail=1
+      continue
+    fi
     want="${EXPECTED[$key]:-}"
     if [ -z "$want" ]; then
       echo "::error::$BASELINE has no row for '$key'. Run --update-baseline."
       fail=1
     elif [ "$got" -gt "$want" ]; then
-      echo "::error::$key rose from $want to $got matching lines — new '$term' vocabulary entered the tree (#1316 is retiring it)."
+      echo "::error::$key rose from $want to $got occurrences — new '$term' vocabulary entered the tree (#1316 is retiring it)."
       fail=1
     elif [ "$got" -lt "$want" ]; then
-      echo "::error::$key fell from $want to $got. Tighten the ratchet: ./$SELF --update-baseline, then commit $BASELINE. A baseline left high re-permits every line this change removed."
+      echo "::error::$key fell from $want to $got. Tighten the ratchet: ./$SELF --update-baseline, then commit $BASELINE. A baseline left high re-permits every occurrence this change removed."
       fail=1
     fi
   done
@@ -307,7 +407,11 @@ echo "--- informational only (not gated; the legacy bundle is being deleted) ---
 while IFS=$'\t' read -r term pattern; do
   case "$term" in ''|'#'*) continue ;; esac
   for scope in "${INFO_SCOPES[@]}"; do
-    printf '    %-14s %-6s %s\n' "$term" "$scope" "$(count "$pattern" "$scope")"
+    if ! got="$(count "$pattern" "$scope")"; then
+      fail=1
+      continue
+    fi
+    printf '    %-14s %-6s %s\n' "$term" "$scope" "$got"
   done
 done <<<"$TERMS"
 
