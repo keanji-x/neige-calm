@@ -18,7 +18,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{CardId, CoveId, WaveId};
+use calm_server::ids::{AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::{
     TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT, plan_cancel_after_pre_read_for_test,
@@ -26,7 +26,7 @@ use calm_server::mcp_server::tools::plan::{
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
+    CardRole, NewArea, NewCard, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
@@ -39,7 +39,7 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -53,8 +53,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-plan".into(),
             color: "#000".into(),
             sort: None,
@@ -64,7 +64,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "initial".into(),
             sort: None,
             cwd: String::new(),
@@ -159,15 +159,15 @@ async fn boot() -> Boot {
     .await;
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         wave_vcs: repo
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -182,7 +182,7 @@ async fn boot() -> Boot {
         ctx,
         registry,
         repo,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -234,7 +234,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -246,7 +246,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -294,7 +294,7 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
 }
 
 /// Count surviving `tasks` rows for the boot wave directly — after a
-/// wave/cove delete the repo read path would trivially return empty, so
+/// wave/area delete the repo read path would trivially return empty, so
 /// orphan detection must go to the table.
 async fn task_row_count(boot: &Boot) -> i64 {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
@@ -366,7 +366,7 @@ async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
         .repo
         .wave_create(calm_server::model::NewWave {
             template_input: None,
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: "defaults".into(),
             sort: None,
             cwd: String::new(),
@@ -782,20 +782,20 @@ async fn wave_delete_removes_plan_rows() {
 }
 
 #[tokio::test]
-async fn cove_delete_removes_plan_rows() {
+async fn area_delete_removes_plan_rows() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     assert_eq!(task_row_count(&boot).await, 1);
 
     boot.repo
-        .cove_delete(boot.cove_id.as_str())
+        .area_delete(boot.area_id.as_str())
         .await
-        .expect("cove delete");
+        .expect("area delete");
     assert_eq!(
         task_row_count(&boot).await,
         0,
-        "cove delete must not orphan plan rows"
+        "area delete must not orphan plan rows"
     );
 }
 

@@ -13,12 +13,13 @@
 use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
 use crate::model::{
-    Card, CardPatch, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
-    CovePatch, CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove,
-    NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveConversationSummary,
+    Area, AreaConversationSummary, AreaFolder, AreaKind, AreaPatch, AreaResolve, Card, CardPatch,
+    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, NewArea, NewAreaFolder,
+    NewCard, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveConversationSummary,
     WaveDetail, WavePatch, WaveWorkspacePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
+use crate::routes::area_folders::ResolveQuery;
 use crate::routes::cards::{
     CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
     ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, SpecRunTokenUsage,
@@ -26,7 +27,6 @@ use crate::routes::cards::{
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
-use crate::routes::cove_folders::ResolveQuery;
 use crate::routes::fs::{
     DirEntry, GitChangedFile, GitDiffResponse, GitStatusResponse, ListdirResponse, ReadFileResponse,
 };
@@ -64,30 +64,30 @@ use utoipa::OpenApi;
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
-        // ---- coves ----
-        crate::routes::coves::list_coves,
-        crate::routes::coves::create_cove,
-        crate::routes::coves::get_or_create_system_cove,
-        crate::routes::coves::update_cove,
-        crate::routes::coves::delete_cove,
-        // ---- cove_folders (#250 PR 1) ----
-        // ---- cove conversations (#1098) ----
-        crate::routes::cove_conversations::list_cove_conversations,
-        crate::routes::cove_conversations::create_cove_conversation,
-        crate::routes::cove_folders::list_folders,
-        crate::routes::cove_folders::create_folder,
-        crate::routes::cove_folders::delete_folder,
-        crate::routes::cove_folders::resolve_path,
+        // ---- areas ----
+        crate::routes::areas::list_areas,
+        crate::routes::areas::create_area,
+        crate::routes::areas::get_or_create_system_area,
+        crate::routes::areas::update_area,
+        crate::routes::areas::delete_area,
+        // ---- area_folders (#250 PR 1) ----
+        // ---- area conversations (#1098) ----
+        crate::routes::area_conversations::list_area_conversations,
+        crate::routes::area_conversations::create_area_conversation,
+        crate::routes::area_folders::list_folders,
+        crate::routes::area_folders::create_folder,
+        crate::routes::area_folders::delete_folder,
+        crate::routes::area_folders::resolve_path,
         // ---- waves ----
         crate::routes::wave_templates::list_wave_templates,
         // ---- wave conversations (#1189) ----
         crate::routes::wave_conversations::list_wave_conversations,
         crate::routes::wave_conversations::create_wave_conversation,
-        crate::routes::waves::list_waves_by_cove,
+        crate::routes::waves::list_waves_by_area,
         crate::routes::waves::list_waves_window,
         crate::routes::waves::get_wave_detail,
         crate::routes::waves::create_wave,
-        crate::routes::waves::ensure_cove_chat_wave,
+        crate::routes::waves::ensure_area_chat_wave,
         crate::routes::waves::update_wave,
         crate::routes::waves::delete_wave,
         crate::routes::waves::get_wave_backlinks,
@@ -155,13 +155,13 @@ use utoipa::OpenApi;
     ),
     components(schemas(
         // domain models
-        Cove,
-        CoveKind,
-        NewCove,
-        CovePatch,
-        CoveFolder,
-        NewCoveFolder,
-        CoveResolve,
+        Area,
+        AreaKind,
+        NewArea,
+        AreaPatch,
+        AreaFolder,
+        NewAreaFolder,
+        AreaResolve,
         FolderConflict,
         FolderConflictKind,
         ResolveQuery,
@@ -208,8 +208,8 @@ use utoipa::OpenApi;
         HarnessItemsQuery,
         SendSpecInputRequest,
         SendSpecInputResponse,
-        CoveConversationSummary,
-        crate::routes::cove_conversations::NewCoveConversationBody,
+        AreaConversationSummary,
+        crate::routes::area_conversations::NewAreaConversationBody,
         WaveConversationSummary,
         crate::routes::wave_conversations::NewWaveConversationBody,
         InterruptSpecCardResponse,
@@ -256,8 +256,8 @@ use utoipa::OpenApi;
         ErrorBody,
     )),
     tags(
-        (name = "coves", description = "Cove CRUD"),
-        (name = "cove_folders", description = "Cove ↔ folder mapping: claim filesystem paths for a cove, resolve a cwd to its owning cove"),
+        (name = "areas", description = "Area CRUD"),
+        (name = "area_folders", description = "Area ↔ folder mapping: claim filesystem paths for an area, resolve a cwd to its owning area"),
         (name = "waves", description = "Wave CRUD + composite detail"),
         (name = "cards", description = "Card CRUD"),
         (name = "overlays", description = "Plugin-rendered overlays attached to waves/cards"),

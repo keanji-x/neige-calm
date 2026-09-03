@@ -35,7 +35,7 @@ use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
 #[cfg(test)]
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 
 use super::events::SubscriptionFilter;
 use super::mcp::{CallToolResult, McpClient, RpcError};
@@ -58,7 +58,7 @@ pub struct CallbackCtx<'a> {
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` — the
     /// callback dispatcher only does eventized writes + out-of-domain
     /// plugin/kv writes + reads. Raw sync-domain writes (`card_update`,
-    /// `overlay_upsert`, `cove_create`, …) are unreachable so a plugin's
+    /// `overlay_upsert`, `area_create`, …) are unreachable so a plugin's
     /// inbound RPC can't quietly bypass the audit log.
     pub repo: Arc<dyn RouteRepo>,
     pub event_bus: Arc<EventBus>,
@@ -109,7 +109,7 @@ async fn overlay_scope_for_callback(
         .unwrap_or(EventScope::System)
 }
 
-/// Build a `EventScope::Card { card, wave, cove }` for the given wave +
+/// Build a `EventScope::Card { card, wave, area }` for the given wave +
 /// pre-minted card id. Falls back to `EventScope::System` when the wave
 /// lookup fails so the dispatch doesn't refuse the write on a transient
 /// read error.
@@ -118,7 +118,7 @@ async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, wave_id: &st
         Ok(Some(w)) => EventScope::Card {
             card,
             wave: w.id,
-            cove: w.cove_id,
+            area: w.area_id,
         },
         _ => EventScope::System,
     }
@@ -873,14 +873,15 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Tests still seed fixtures via raw sync-domain writes (`cove_create`,
+    // Tests still seed fixtures via raw sync-domain writes (`area_create`,
     // `wave_create`, `card_create`), so the harness keeps a full
     // `Arc<dyn Repo>`. Production `CallbackCtx::repo` is the narrowed
     // `Arc<dyn RouteRepo>` — `ctx()` does the upcast.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewCard, NewCove, NewPlugin, NewWave};
+    use crate::model::{NewArea, NewCard, NewPlugin, NewWave};
+    use crate::plugin_host::InitializeMeta;
     use crate::plugin_host::manifest::Manifest;
     use crate::plugin_host::mcp::McpClient;
     use crate::plugin_host::registry::PluginRegistry;
@@ -889,7 +890,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
-    /// Test scaffold: builds a CallbackCtx with a seeded cove + wave so card
+    /// Test scaffold: builds a CallbackCtx with a seeded area + wave so card
     /// tests have something to attach to. The McpClient is a real one wired
     /// to a stub "plugin" that auto-replies to `initialize` then drains.
     struct Harness {
@@ -996,9 +997,16 @@ mod tests {
             }
         });
 
-        McpClient::connect_with_auth(k_r, k_w, None)
-            .await
-            .expect("stub connect")
+        McpClient::connect_with_auth(
+            k_r,
+            k_w,
+            InitializeMeta {
+                expected_echo: None,
+                config: None,
+            },
+        )
+        .await
+        .expect("stub connect")
     }
 
     impl Harness {
@@ -1022,9 +1030,9 @@ mod tests {
             })
             .await
             .unwrap();
-            // Seed a cove + wave so card tests can attach.
-            let cove = repo
-                .cove_create(NewCove {
+            // Seed an area + wave so card tests can attach.
+            let area = repo
+                .area_create(NewArea {
                     name: "test".into(),
                     color: "#fff".into(),
                     sort: None,
@@ -1034,7 +1042,7 @@ mod tests {
             let wave = repo
                 .wave_create(NewWave {
                     template_input: None,
-                    cove_id: cove.id.clone(),
+                    area_id: area.id.clone(),
                     title: "w".into(),
                     sort: None,
                     cwd: String::new(),
@@ -1059,10 +1067,10 @@ mod tests {
             repo.seed_card_role_cache(&card_role_cache)
                 .await
                 .expect("seed role cache");
-            let wave_cove_cache = WaveCoveCache::new();
-            repo.seed_wave_cove_cache(&wave_cove_cache)
+            let wave_area_cache = WaveAreaCache::new();
+            repo.seed_wave_area_cache(&wave_area_cache)
                 .await
-                .expect("seed wave-cove cache");
+                .expect("seed wave-area cache");
 
             Self {
                 ctx_storage: Arc::new(HarnessStorage {
@@ -1073,7 +1081,7 @@ mod tests {
                     registry,
                     mcp,
                     subs,
-                    write: WriteContext::new(card_role_cache, wave_cove_cache),
+                    write: WriteContext::new(card_role_cache, wave_area_cache),
                 }),
                 wave_id: wave.id.to_string(),
             }
@@ -1081,7 +1089,7 @@ mod tests {
 
         fn ctx(&self) -> CallbackCtx<'_> {
             // Upcast `Arc<dyn Repo>` (held in the harness so fixture seeds
-            // like `cove_create` / `wave_create` work) to the narrow
+            // like `area_create` / `wave_create` work) to the narrow
             // `Arc<dyn RouteRepo>` the production `CallbackCtx` exposes.
             // The let-binding with explicit type drives stable trait-object
             // upcasting (Rust 1.86+) — `Arc::clone(&_)` alone wouldn't
@@ -1229,7 +1237,7 @@ mod tests {
             &h.ctx(),
             "neige.overlay.set",
             json!({
-                "entity_kind": "cove",
+                "entity_kind": "area",
                 "entity_id": "x",
                 "kind": "status",
                 "payload": {}

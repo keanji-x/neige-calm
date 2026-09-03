@@ -110,7 +110,7 @@ function assertNoOscEcho(dump: string, when: string): void {
   }
 }
 
-// Multi-step real-server flow (cove → wave → New terminal → daemon
+// Multi-step real-server flow (area → wave → New terminal → daemon
 // spawn → theme toggles). The default 30s budget is tight once the
 // `make dev` Vite server is compiling lazy chunks on a cold cache; 60s
 // gives the first run room.
@@ -119,42 +119,42 @@ test.setTimeout(60_000);
 test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', async ({
   page,
 }) => {
-  // Step 1 — mint a fresh user cove via the sidebar (issue #175). Keep
+  // Step 1 — mint a fresh user area via the sidebar (issue #175). Keep
   // `?testMounts=1` on every navigation so the XtermView test hooks
   // (`__xtermDumps__`, `__calmSetTheme`) stay installed across routes.
   await page.goto('/calm/?testMounts=1');
-  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-  const coveName = `E2E osc-echo cove ${Date.now()}`;
-  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+  const areaName = `E2E osc-echo area ${Date.now()}`;
+  await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+  const nameInput = sidebarAreas.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
 
-  // Match the cove-nav entry by EXACT name so we don't also resolve the
-  // sibling "Delete cove "<name>"" button (whose accessible name embeds
-  // the cove name), which would trip strict-mode's single-match rule.
-  const coveBtn = sidebarCoves.getByRole('button', {
-    name: coveName,
+  // Match the area-nav entry by EXACT name so we don't also resolve the
+  // sibling "Delete area "<name>"" button (whose accessible name embeds
+  // the area name), which would trip strict-mode's single-match rule.
+  const areaBtn = sidebarAreas.getByRole('button', {
+    name: areaName,
     exact: true,
   });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-  // Step 2 — create a wave in this cove via the kernel REST API (same
+  // Step 2 — create a wave in this area via the kernel REST API (same
   // shortcut as new-terminal-card.spec.ts). `theme` is a required
   // NewWave field (#177); dark sentinel mirrors DARK_THEME_RGB.
-  const coveId = new URL(page.url()).pathname.split('/').pop()!;
+  const areaId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E osc-echo ${Date.now()}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title: waveTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about OSC echo through the terminal card, not
-      // working directories. See `helpers/reset.ts::createWaveInCove`
-      // for why the invented `/tmp/playwright-cove-<id>` attached path
+      // working directories. See `helpers/reset.ts::createWaveInArea`
+      // for why the invented `/tmp/playwright-area-<id>` attached path
       // was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

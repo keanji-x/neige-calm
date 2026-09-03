@@ -4,9 +4,9 @@
 
 - id: INV-A11Y-003
   kind: invariant
-  family: cove-semantics
+  family: area-semantics
   statement: >
-    Sidebar 的 cove 导航项必须是 `<button>`，其 accessible name 只能是 cove 名本身；
+    Sidebar 的 area 导航项必须是 `<button>`，其 accessible name 只能是 area 名本身；
     色块与计数是视觉装饰，不得进入 name
   why: >
     §2.1 明示：不希望屏幕阅读器把计数读成名字的一部分（读 "Atlas" 而不是 "Atlas 3"）；
@@ -60,7 +60,7 @@
   why: >
     单一导航入口保持焦点、路由状态和激活语义一致
   source: fe/web/src/app/router/navigation.ts:27-34
-  authoritative_test: fe/web/src/app/shell/sidebar.contract.test.tsx:173-190; fe/web/src/features/cove/page/public.contract.test.tsx:91-97
+  authoritative_test: fe/web/src/app/shell/sidebar.contract.test.tsx:173-190; fe/web/src/features/area/page/public.contract.test.tsx:91-97
   owner_slice: app/router/navigation
   intentional_omission: true
   runtime_layer: app
@@ -72,15 +72,15 @@
   kind: invariant
   family: rename-name-split
   statement: >
-    CovePage 的标题 rename 按钮的 `aria-label` 必须只是 cove 名；「Rename」动词必须由
+    AreaPage 的标题 rename 按钮的 `aria-label` 必须只是 area 名；「Rename」动词必须由
     `<h1>` **外部**的 `<span className="sr-only">` 通过 `aria-describedby` 承载
   why: >
     §2.1 + §5：sr-only span 若留在 `<h1>` 内会污染 heading 的 accessible-name 计算，
-    heading-nav（屏幕阅读器 H 键）会念成 "Rename cove name: Atlas, heading level 1"。
+    heading-nav（屏幕阅读器 H 键）会念成 "Rename area name: Atlas, heading level 1"。
     #56 followup 修复
-  source: web/src/pages/Cove.tsx:286-313
+  source: web/src/pages/Area.tsx:286-313
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -89,15 +89,15 @@
 
 - id: INV-A11Y-005
   kind: invariant
-  family: cove-semantics
+  family: area-semantics
   statement: >
-    CovePage 标题在可 rename 时必须是 `<h1>` 包裹一个真实 `<button>`；只读时是纯 `<h1>`。
+    AreaPage 标题在可 rename 时必须是 `<h1>` 包裹一个真实 `<button>`；只读时是纯 `<h1>`。
     箭头导航进入可操作元素时必须落在内层 button 上
   why: >
     §2.1 与 §5 都指明内建 role 的 `<button>` 是首选范式（intrinsic role，无需手写按键处理）
-  source: web/src/pages/Cove.tsx:286-313
+  source: web/src/pages/Area.tsx:286-313
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -106,12 +106,12 @@
 
 - id: CAP-A11Y-006
   kind: capability
-  family: cove-semantics
+  family: area-semantics
   statement: >
-    Sidebar 在 bootstrap 态必须提供可见文本为 "New cove" 的按钮，位于
-    `<nav aria-label="Coves">` 子 landmark 内
+    Sidebar 在 bootstrap 态必须提供可见文本为 "New area" 的按钮，位于
+    `<nav aria-label="Areas">` 子 landmark 内
   why: >
-    §2.1 记录：这是 bootstrap-only 的唯一建 cove 入口
+    §2.1 记录：这是 bootstrap-only 的唯一建 area 入口
   source: web/src/shared/components/Sidebar.tsx:161-167
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
@@ -131,7 +131,7 @@
   statement: >
     Sidebar 根必须始终挂载为 `<aside aria-label="Navigation">`；展开时挂载子 landmark：
     `<nav aria-label="Sidebar navigation">`（Today）、`<section aria-label="Waiting on you">`、
-    `<section aria-label="Pinned">`、`<nav aria-label="Coves">`
+    `<section aria-label="Pinned">`、`<nav aria-label="Areas">`
   why: >
     §2.2（#60 followup）：这些名字必须互不重复，否则 axe 的 `landmark-unique` 规则变红；
     同时测试要靠 landmark scope 消歧同名 button
@@ -166,8 +166,8 @@
   statement: >
     Sidebar 的一级 Today 导航按钮必须是顶层唯一的 Today 入口
   why: >
-    #175：kernel 默认的 Today terminal 移入隐藏 system cove（默认被 `GET /api/coves` 过滤掉），
-    测试不再需要与 seeded `Scratch` cove 下自动创建的 Today wave 消歧；但用户自己把 wave
+    #175：kernel 默认的 Today terminal 移入隐藏 system area（默认被 `GET /api/areas` 过滤掉），
+    测试不再需要与 seeded `Scratch` area 下自动创建的 Today wave 消歧；但用户自己把 wave
     命名为 "Today" 时 WaveRow 的 landmark scoping 模式仍然必要
   source: web/src/shared/components/Sidebar.tsx:258-267
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
@@ -183,15 +183,15 @@
   family: wave-semantics
   statement: >
     Sidebar「Waiting on you」分区（`aria-label` 为该串的 section）里，行的 accessible name
-    由行按钮的可见内容算出：`side-wave-title` span 恒渲染 wave 标题，`side-wave-cove` span
-    只在该行解析到 cove 时才渲染（查不到时上游传 `cove` 为 null），所以 name 是「标题」或
-    「标题 + cove 名」两种形态之一；按钮不带 aria-label／aria-labelledby，传给它的 `title`
-    属性（`<cove> · <title>`）纯属信息性，不进入 name
+    由行按钮的可见内容算出：`side-wave-title` span 恒渲染 wave 标题，`side-wave-area` span
+    只在该行解析到 area 时才渲染（查不到时上游传 `area` 为 null），所以 name 是「标题」或
+    「标题 + area 名」两种形态之一；按钮不带 aria-label／aria-labelledby，传给它的 `title`
+    属性（`<area> · <title>`）纯属信息性，不进入 name
   why: >
     §2.2 明示 title attribute is informational only —— 这一半仍然成立，且是这条的真正约束：
     只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 wave
-    title」，与实现相反：cove 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
-    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 cove 的消歧信息）。#1148 第二轮：cove span
+    title」，与实现相反：area 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
+    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 area 的消歧信息）。#1148 第二轮：area span
     是条件渲染，写成恒为两段是把条件渲染写成了恒真；source 同时并回 271-283，因为 `WaveRow`
     是所有分区共用的，只引按钮那几行看不出这条限定在「Waiting on you」分区。#1148 第三轮：
     271-283 里的 `displayTitle` 是父作用域 map 中的同名变量，真正喂给 :658 那个 span 的是
@@ -244,13 +244,13 @@
   kind: invariant
   family: wave-semantics
   statement: >
-    CovePage 必须把它那一份排序后的 wave 列表包进 `<section aria-label="Waves">`
+    AreaPage 必须把它那一份排序后的 wave 列表包进 `<section aria-label="Waves">`
   why: >
     §2.2：否则 `getByRole('button', { name: /today/i })` 会与 sidebar 的 Today 导航按钮
     冲突；测试范式是 `getByRole('region', { name: 'Waves' }).getByRole('button', …)`
-  source: web/src/pages/Cove.tsx:168-189
+  source: web/src/pages/Area.tsx:168-189
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -261,14 +261,14 @@
   kind: invariant
   family: wave-semantics
   statement: >
-    CovePage 只渲染**单个**已排序的 wave 列表（`waiting → running → idle`），
+    AreaPage 只渲染**单个**已排序的 wave 列表（`waiting → running → idle`），
     不得拆成 per-status 子分区
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
     §3.1 的 tab 顺序
-  source: web/src/pages/Cove.tsx:99,168-189
+  source: web/src/pages/Area.tsx:99,168-189
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -286,7 +286,7 @@
     §2.2 + §3.2：这是全项目唯一无法避免 `role="button"` 的地方——必须坐在 `<h1>` 里而
     不破坏 heading 的 accessible-name 组合
   source: web/src/pages/Wave.tsx:401-430
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:609
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:609
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -506,8 +506,8 @@
     不得用子串/正则
   why: >
     #891 slice ③ 的 CI 回归：`/browse/i` 同时命中 Browse… 按钮和一个名为
-    "E2E browse cove" 的 select trigger，触发 strict-mode 冲突。已扫过的哨兵 locator：
-    `'Browse…'`(U+2026)、`'Create task'`、`'Use a different cove'`
+    "E2E browse area" 的 select trigger，触发 strict-mode 冲突。已扫过的哨兵 locator：
+    `'Browse…'`(U+2026)、`'Create task'`、`'Use a different area'`
   source: web/e2e/wave-create-browse-cwd.spec.ts:57
   authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
   owner_slice: none/e2e/infra
@@ -539,13 +539,13 @@
   statement: >
     Workflow select 的选项用 `.calm-select-opt-name` + 空格文本节点 + `.calm-select-opt-desc`
     两段式，无分隔符字形；其 accessible name 因此展平成 "name + description"
-    （"None plain wave" / "Issue dev issue → PR autoflow"）。Cove 选项为纯文本
+    （"None plain wave" / "Issue dev issue → PR autoflow"）。Area 选项为纯文本
   why: >
     §2.2：区分靠排印而非分隔符；locator 必须用前缀匹配
     `getByRole('option', { name: /^None/ })`，因为描述被折进了 name
-  source: web/src/pages/Cove.tsx:494-552
+  source: web/src/pages/Area.tsx:494-552
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -561,7 +561,7 @@
   why: >
     #891 slice ③：per-variant state 必须干净起步；Dialog 自身的 initial-focus 只在 open
     时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
-  source: web/src/pages/Cove.tsx:470-473,549-555
+  source: web/src/pages/Area.tsx:470-473,549-555
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -579,7 +579,7 @@
     （Browse… 目录选择器）仍然渲染自己的标题头
   why: >
     §2.2 记录的既定形状；缺了 aria-label 对话框就没有 accessible name
-  source: web/src/pages/Cove.tsx:480-490; web/src/ui/Dialog/Dialog.tsx:342-382
+  source: web/src/pages/Area.tsx:480-490; web/src/ui/Dialog/Dialog.tsx:342-382
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: true
@@ -628,12 +628,12 @@
   kind: invariant
   family: wave-create-form
   statement: >
-    Workflow 与 Cove 两个 select 必须通过 label 关联暴露为
-    `getByRole('combobox', { name: 'Workflow' | 'Cove' })`；断言当前值读 select 的 `value`，
+    Workflow 与 Area 两个 select 必须通过 label 关联暴露为
+    `getByRole('combobox', { name: 'Workflow' | 'Area' })`；断言当前值读 select 的 `value`，
     切换用 `selectOptions`
   why: >
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
-  source: web/src/pages/Cove.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
+  source: web/src/pages/Area.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -924,7 +924,7 @@
   family: tab-order
   statement: >
     Sidebar 展开时，Tab 顺序必须是：Today → Collapse sidebar → waiting-on-you waves（若有）
-    → pinned waves（若有）→ Coves 控件（`New cove`、cove 展开按钮、cove 按钮、展开的内联
+    → pinned waves（若有）→ Areas 控件（`New area`、area 展开按钮、area 按钮、展开的内联
     wave 行）→ 用户菜单 → 主内容
   why: >
     §3.1 记录的确切 stop 序列。**全项目唯一记录处，无 lint 无单测**——丢了就没有任何
@@ -974,14 +974,14 @@
   kind: invariant
   family: tab-order
   statement: >
-    CovePage 的 Tab 顺序必须是：标题（可 rename 时为 rename 按钮）→ 各 wave 行
+    AreaPage 的 Tab 顺序必须是：标题（可 rename 时为 rename 按钮）→ 各 wave 行
     （每行是真 `<button className="wave-row">`，其兄弟 `<button className="wave-row-delete">`
     在下一个 stop）→ `+ New wave` ghost 按钮。分区标题不是 tab stop
   why: >
     §3.1 记录的确切序列，无测试覆盖
-  source: web/src/pages/Cove.tsx:99-143,168-189
+  source: web/src/pages/Area.tsx:99-143,168-189
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -992,7 +992,7 @@
   kind: invariant
   family: tab-order
   statement: >
-    WavePage 的 Tab 顺序必须是：返回按钮 → view-mode cycle 按钮 → cove 面包屑按钮 →
+    WavePage 的 Tab 顺序必须是：返回按钮 → view-mode cycle 按钮 → area 面包屑按钮 →
     wave 标题 rename 按钮 → Add panel → 删除按钮 → 正文（report 视图的 report 内容 /
     grid 视图的卡片 / list 视图的列表）
   why: >
@@ -1013,7 +1013,7 @@
   family: activation
   statement: >
     能用真实 `<button>` 的地方必须用真实 `<button>`（Enter 与 Space 天然激活）；
-    WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
+    WaveRow 与 AreaPage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
   source: web/src/shared/components/WaveRow.tsx:44-65
@@ -1084,7 +1084,7 @@
   why: >
     §3.3 + §5：与 blur-commit 相对，Esc 是唯一的丢弃路径
   source: web/src/pages/Wave.tsx:139-142
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:162
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:162
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -1096,14 +1096,14 @@
   kind: invariant
   family: escape
   statement: >
-    内联 NewWave / NewCove 输入框必须 blur-commit（`onBlur` 调 `submit()`），
+    内联 NewWave / NewArea 输入框必须 blur-commit（`onBlur` 调 `submit()`），
     而 Escape 接到 `close`（丢弃草稿）
   why: >
     §3.3 明示这对不对称行为：blur 存、Esc 丢。重写时若把 Esc 也接成 commit 会静默吞掉
     用户的「我不要了」意图
-  source: web/src/pages/Cove.tsx:226-229
+  source: web/src/pages/Area.tsx:226-229
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1418,12 +1418,12 @@
   family: rename-name-split
   statement: >
     rename 的展示元素必须是一等 tab stop（WavePage 用 `<span role="button" tabIndex={0}>`；
-    CovePage 用 `<h1>` 内的真实嵌套 `<button>`——后者是首选）
+    AreaPage 用 `<h1>` 内的真实嵌套 `<button>`——后者是首选）
   why: >
     §5：不可聚焦就没有键盘进入 rename 的路径
-  source: web/src/pages/Cove.tsx:188-293
+  source: web/src/pages/Area.tsx:188-293
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1439,9 +1439,9 @@
   why: >
     §5 称之为 canonical pattern；#56 followup 修的正是「heading-nav 叙述噪音」。
     `.sr-only` 用项目级类（`web/src/calm.css`）
-  source: web/src/pages/Cove.tsx:188-293
+  source: web/src/pages/Area.tsx:188-293
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1474,9 +1474,9 @@
   why: >
     §5 明示三路语义。blur-commit 是最容易在重写中丢失的一条——新写的人通常只实现
     Enter/Esc
-  source: web/src/pages/Cove.tsx:188-293
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:241
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:188-293
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:241
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1490,9 +1490,9 @@
     rename 输入框必须继承展示元素的视觉 class，使 swap 时不发生视觉位移
   why: >
     §5 明示；位移会让点击/焦点目标跳动
-  source: web/src/pages/Cove.tsx:188-293
+  source: web/src/pages/Area.tsx:188-293
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1544,11 +1544,11 @@
   family: focus-visible
   statement: >
     已登记的 `outline: none` / `:focus-visible` 配对清单必须保持完整：
-    `.side .cove-nav-edit input`、`.wave-title[role="button"]`、`.wave-title-input`、
+    `.side .area-nav-edit input`、`.wave-title[role="button"]`、`.wave-title-input`、
     `.h-display-rename`、`.login-input`、`.wave-list-item`
   why: >
     §6 的表格是这份清单的唯一记录处。另有无 `outline:none` 但有 focus-visible 的表面：
-    `.cove-title-input`、`.new-wave-input`；而 `.wave-back` / `.wave-cove` / `.crumb-link`
+    `.area-title-input`、`.new-wave-input`；而 `.wave-back` / `.wave-area` / `.crumb-link`
     用实心 `outline` + `outline-offset`，从不剥默认焦点环
   source: web/src/calm.css:283
   authoritative_test: NONE

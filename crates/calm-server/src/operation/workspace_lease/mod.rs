@@ -11,7 +11,7 @@ use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::model::{WaveWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
 use calm_truth::decision_gate::PermissiveGate;
@@ -46,7 +46,7 @@ const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
     PhaseTag::Compensating,
 ];
 
-/// Defensive wave/cove teardown fence for in-flight forge actions.
+/// Defensive wave/area teardown fence for in-flight forge actions.
 ///
 /// This is a non-transactional read used before the teardown transaction, so it
 /// has a TOCTOU window: a forge-action could enter a recoverable phase after
@@ -57,7 +57,7 @@ pub(crate) async fn wave_has_active_forge_action(pool: &SqlitePool, wave_id: &st
     any_wave_has_active_forge_action(pool, &[wave_id]).await
 }
 
-/// Cove-friendly variant of [`wave_has_active_forge_action`].
+/// Area-friendly variant of [`wave_has_active_forge_action`].
 pub(crate) async fn any_wave_has_active_forge_action(
     pool: &SqlitePool,
     wave_ids: &[&str],
@@ -231,7 +231,7 @@ async fn acquire_workspace_lease_at_path_tx(
     // Here rather than in the two `acquire_*` wrappers: this is the single
     // statement both of them bottom out in, so a third lease flavour added
     // later inherits the freeze instead of having to remember it. The system
-    // cove is excluded inside the freeze itself — the launchpad takes leases
+    // area is excluded inside the freeze itself — the launchpad takes leases
     // on every codex task and is the one wave whose path the kernel keeps
     // re-deriving.
     crate::db::sqlite::wave_workspace_freeze_tx(tx, wave_id, now).await?;
@@ -573,7 +573,7 @@ pub(crate) struct WorkspaceWaveRelease {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceWaveSweep {
     wave_id: String,
-    cove_id: String,
+    area_id: String,
     cwd: String,
     leases: Vec<WorkspaceLease>,
 }
@@ -591,7 +591,7 @@ async fn workspace_wave_sweep_for_wave_tx(
         return None;
     }
     // #1147 S1 — `waves.cwd` dropped by migration 0077.
-    let row = match sqlx::query("SELECT workspace_path, cove_id FROM waves WHERE id = ?1")
+    let row = match sqlx::query("SELECT workspace_path, area_id FROM waves WHERE id = ?1")
         .bind(wave_id)
         .fetch_optional(&mut **tx)
         .await
@@ -621,13 +621,13 @@ async fn workspace_wave_sweep_for_wave_tx(
             return None;
         }
     };
-    let cove_id: String = match row.try_get("cove_id") {
-        Ok(cove_id) => cove_id,
+    let area_id: String = match row.try_get("area_id") {
+        Ok(area_id) => area_id,
         Err(error) => {
             tracing::warn!(
                 wave_id,
                 error = %error,
-                "workspace wave teardown could not read cove_id column for preserved worktree sweep"
+                "workspace wave teardown could not read area_id column for preserved worktree sweep"
             );
             return None;
         }
@@ -667,7 +667,7 @@ async fn workspace_wave_sweep_for_wave_tx(
     };
     Some(WorkspaceWaveSweep {
         wave_id: wave_id.to_string(),
-        cove_id,
+        area_id,
         cwd,
         leases,
     })
@@ -958,10 +958,10 @@ async fn persist_wave_sweep_removed_events(
     removed: Vec<RemovedWorkspaceWorktree>,
 ) -> Result<Vec<BroadcastEnvelope>> {
     let wave_id = sweep.wave_id.clone();
-    let cove_id = sweep.cove_id.clone();
+    let area_id = sweep.area_id.clone();
     write_in_tx_typed(repo, move |tx| {
         let wave_id = wave_id.clone();
-        let cove_id = cove_id.clone();
+        let area_id = area_id.clone();
         let removed = removed.clone();
         Box::pin(async move {
             let mut events = Vec::with_capacity(removed.len());
@@ -969,7 +969,7 @@ async fn persist_wave_sweep_removed_events(
                 let scope = EventScope::Card {
                     card: CardId::from(removed.card_id.clone()),
                     wave: WaveId::from(wave_id.clone()),
-                    cove: CoveId::from(cove_id.clone()),
+                    area: AreaId::from(area_id.clone()),
                 };
                 events.push((
                     ActorId::KernelDispatcher,
@@ -1039,7 +1039,7 @@ async fn append_workspace_events_tx(
 }
 
 async fn workspace_scope_tx(tx: &mut Tx<'_>, card_id: &str, wave_id: &str) -> Result<EventScope> {
-    let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id = ?1")
+    let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE id = ?1")
         .bind(wave_id)
         .fetch_optional(&mut **tx)
         .await?
@@ -1047,7 +1047,7 @@ async fn workspace_scope_tx(tx: &mut Tx<'_>, card_id: &str, wave_id: &str) -> Re
     Ok(EventScope::Card {
         card: CardId::from(card_id.to_string()),
         wave: WaveId::from(wave_id.to_string()),
-        cove: CoveId::from(cove_id),
+        area: AreaId::from(area_id),
     })
 }
 

@@ -7,13 +7,13 @@ import { useCallback, useMemo } from 'react';
  * The mobile report's secondary panel, and the surface the reader reached the
  * report from. Both ride in the URL (#1191 §1) because they are navigation
  * *destinations*: a panel has to survive a reload, be shareable, and answer the
- * hardware Back button. Transient overlays (the Pages/Coves sheets) deliberately
+ * hardware Back button. Transient overlays (the Pages/Areas sheets) deliberately
  * stay in component state — see §0.1/§0.2. (The mobile card detail page was the
  * other example here and is gone: #1234 S1b-4a removed it, because opening a
  * card is not offered on this viewport at all.)
  */
 export type MobilePanel = 'outline' | 'cards' | 'tasks' | 'conversations';
-export type WaveSource = 'pages' | 'cove';
+export type WaveSource = 'pages' | 'area';
 
 /**
  * History state written by {@link useWavePanelNavigation} when opening a panel
@@ -36,7 +36,7 @@ export const SPEC_OPEN_STATE_KEY = 'ncOpenSpec';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
-  | Readonly<{ name: 'cove'; coveId: string }>
+  | Readonly<{ name: 'area'; areaId: string }>
   /**
    * #1211 — starting a wave is a **place**, not a dialog.
    *
@@ -55,7 +55,7 @@ export type NavTarget =
    * template chosen after the row exists has nowhere to go. Minting late keeps
    * both choices where the kernel can still act on them.
    */
-  | Readonly<{ name: 'new-wave'; coveId: string }>
+  | Readonly<{ name: 'new-wave'; areaId: string }>
   /**
    * `blockId` lands the reader on one block of the wave's report (§8.3).
    * `cardId` opens the card-grid overlay on that card (`?card=`).
@@ -99,8 +99,8 @@ export type WaveSearch = Readonly<{ card?: string; panel?: MobilePanel; from?: W
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
-    case 'cove': return `/cove/${encodeURIComponent(target.coveId)}`;
-    case 'new-wave': return `/cove/${encodeURIComponent(target.coveId)}/new`;
+    case 'area': return `/area/${encodeURIComponent(target.areaId)}`;
+    case 'new-wave': return `/area/${encodeURIComponent(target.areaId)}/new`;
     case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
     case 'settings': return '/settings';
     case 'settings-plugins': return '/settings/plugins';
@@ -322,7 +322,7 @@ export function asMobilePanel(value: string | null): MobilePanel | null {
 
 export function asWaveSource(value: string | null): WaveSource | null {
   switch (value) {
-    case 'pages': case 'cove': return value;
+    case 'pages': case 'area': return value;
     default: return null;
   }
 }
@@ -432,12 +432,12 @@ export function useCurrentPath(): string {
  * a `string` and keeps the prefix table next to `pathFor`, so the two cannot
  * drift apart.
  */
-export function useRouteParam(prefix: '/cove/' | '/wave/'): string | undefined {
+export function useRouteParam(prefix: '/area/' | '/wave/'): string | undefined {
   const path = useCurrentPath();
   return routeParamFromPath(path, prefix);
 }
 
-export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/'): string | undefined {
+export function routeParamFromPath(path: string, prefix: '/area/' | '/wave/'): string | undefined {
   if (!path.startsWith(prefix)) return undefined;
   const segment = path.slice(prefix.length).split('/', 1)[0];
   if (segment === '') return undefined;

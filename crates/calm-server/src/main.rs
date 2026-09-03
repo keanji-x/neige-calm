@@ -49,11 +49,11 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
-    // #275 / #1109 — refuse to serve on an ambiguous `cove_folders`
+    // #275 / #1109 — refuse to serve on an ambiguous `area_folders`
     // table. Overlapping claims are unreachable through today's atomic
     // writer, but a pre-#275 database can hold them, and folder
-    // resolution would then hand a wave to an arbitrary cove.
-    calm_server::assert_cove_folders_disjoint_on_boot(&state).await?;
+    // resolution would then hand a wave to an arbitrary area.
+    calm_server::assert_area_folders_disjoint_on_boot(&state).await?;
 
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind

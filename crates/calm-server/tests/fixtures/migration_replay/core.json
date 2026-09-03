@@ -19,10 +19,10 @@
       "rows": [
         {
           "columns": {
-            "id": "cove-user",
-            "name": "user cove",
+            "id": "area-user",
+            "name": "user area",
             "color": "#112233",
-            "sort": 1.0,
+            "sort": 1,
             "kind": "user",
             "created_at": 1000,
             "updated_at": 1000
@@ -30,10 +30,37 @@
         },
         {
           "columns": {
-            "id": "cove-system",
-            "name": "system cove",
+            "id": "area-system",
+            "name": "system area",
             "color": "#000000",
-            "sort": 0.0,
+            "sort": 0,
+            "kind": "system",
+            "created_at": 1000,
+            "updated_at": 1000
+          }
+        }
+      ]
+    },
+    {
+      "table": "areas",
+      "rows": [
+        {
+          "columns": {
+            "id": "area-user",
+            "name": "user area",
+            "color": "#112233",
+            "sort": 1,
+            "kind": "user",
+            "created_at": 1000,
+            "updated_at": 1000
+          }
+        },
+        {
+          "columns": {
+            "id": "area-system",
+            "name": "system area",
+            "color": "#000000",
+            "sort": 0,
             "kind": "system",
             "created_at": 1000,
             "updated_at": 1000
@@ -47,7 +74,20 @@
         {
           "columns": {
             "id": 1,
-            "cove_id": "cove-user",
+            "path": "/tmp/replay-fixture",
+            "created_at": 1100,
+            "cove_id": "area-user"
+          }
+        }
+      ]
+    },
+    {
+      "table": "area_folders",
+      "rows": [
+        {
+          "columns": {
+            "id": 1,
+            "area_id": "area-user",
             "path": "/tmp/replay-fixture",
             "created_at": 1100
           }
@@ -60,24 +100,25 @@
         {
           "columns": {
             "id": "wave-draft",
-            "cove_id": "cove-user",
+            "area_id": "area-user",
             "title": "draft wave",
-            "sort": 0.0,
+            "sort": 0,
             "archived_at": null,
             "lifecycle": "draft",
             "cwd": "/tmp",
             "terminal_at": null,
             "pinned_at": null,
             "created_at": 1200,
-            "updated_at": 1200
+            "updated_at": 1200,
+            "cove_id": "area-user"
           }
         },
         {
           "columns": {
             "id": "wave-working",
-            "cove_id": "cove-user",
+            "area_id": "area-user",
             "title": "working wave",
-            "sort": 1.0,
+            "sort": 1,
             "archived_at": null,
             "lifecycle": "working",
             "cwd": "/tmp/work",
@@ -85,52 +126,56 @@
             "pinned_at": 1400,
             "task_budget": 3,
             "created_at": 1200,
-            "updated_at": 1300
+            "updated_at": 1300,
+            "cove_id": "area-user"
           }
         },
         {
           "columns": {
             "id": "wave-done",
-            "cove_id": "cove-user",
+            "area_id": "area-user",
             "title": "done wave",
-            "sort": 2.0,
+            "sort": 2,
             "archived_at": 2000,
             "lifecycle": "done",
             "cwd": "/tmp",
             "terminal_at": null,
             "pinned_at": null,
             "created_at": 1200,
-            "updated_at": 2000
+            "updated_at": 2000,
+            "cove_id": "area-user"
           }
         },
         {
           "columns": {
             "id": "wave-failed",
-            "cove_id": "cove-user",
+            "area_id": "area-user",
             "title": "failed wave",
-            "sort": 3.0,
+            "sort": 3,
             "archived_at": null,
             "lifecycle": "failed",
             "cwd": "/tmp",
             "terminal_at": null,
             "pinned_at": null,
             "created_at": 1200,
-            "updated_at": 1900
+            "updated_at": 1900,
+            "cove_id": "area-user"
           }
         },
         {
           "columns": {
             "id": "wave-planning",
-            "cove_id": "cove-user",
+            "area_id": "area-user",
             "title": "planning wave",
-            "sort": 4.0,
+            "sort": 4,
             "archived_at": null,
             "lifecycle": "planning",
             "cwd": "/tmp",
             "terminal_at": null,
             "pinned_at": null,
             "created_at": 1200,
-            "updated_at": 1250
+            "updated_at": 1250,
+            "cove_id": "area-user"
           }
         }
       ]
@@ -143,8 +188,11 @@
             "id": "card-spec",
             "wave_id": "wave-working",
             "kind": "codex",
-            "sort": 0.0,
-            "payload": { "codex_source": "shared", "codex_thread_id": "thread-spec-1" },
+            "sort": 0,
+            "payload": {
+              "codex_source": "shared",
+              "codex_thread_id": "thread-spec-1"
+            },
             "role": "spec",
             "deletable": 0,
             "body_crdt": null,
@@ -157,8 +205,10 @@
             "id": "card-spec-no-token",
             "wave_id": "wave-done",
             "kind": "codex",
-            "sort": 0.0,
-            "payload": { "codex_source": "shared" },
+            "sort": 0,
+            "payload": {
+              "codex_source": "shared"
+            },
             "role": "spec",
             "deletable": 0,
             "body_crdt": null,
@@ -171,8 +221,10 @@
             "id": "card-codex-w",
             "wave_id": "wave-working",
             "kind": "codex",
-            "sort": 1.0,
-            "payload": { "terminal_id": "term-codex-w" },
+            "sort": 1,
+            "payload": {
+              "terminal_id": "term-codex-w"
+            },
             "role": "worker",
             "deletable": 1,
             "body_crdt": null,
@@ -185,8 +237,10 @@
             "id": "card-term",
             "wave_id": "wave-draft",
             "kind": "terminal",
-            "sort": 0.0,
-            "payload": { "terminal_id": "term-plain" },
+            "sort": 0,
+            "payload": {
+              "terminal_id": "term-plain"
+            },
             "role": "worker",
             "deletable": 1,
             "body_crdt": null,
@@ -199,8 +253,11 @@
             "id": "card-claude",
             "wave_id": "wave-planning",
             "kind": "claude",
-            "sort": 0.0,
-            "payload": { "terminal_id": "term-claude", "claude_session_id": "sess-claude-1" },
+            "sort": 0,
+            "payload": {
+              "terminal_id": "term-claude",
+              "claude_session_id": "sess-claude-1"
+            },
             "role": "worker",
             "deletable": 1,
             "body_crdt": null,
@@ -214,7 +271,7 @@
             "id": "card-plain-legacy",
             "wave_id": "wave-done",
             "kind": "terminal",
-            "sort": 1.0,
+            "sort": 1,
             "payload": {},
             "role": "plain",
             "deletable": 1,
@@ -228,8 +285,12 @@
             "id": "card-report",
             "wave_id": "wave-failed",
             "kind": "wave-report",
-            "sort": -1.0,
-            "payload": { "schemaVersion": 1, "summary": "", "body": "# Goal\n" },
+            "sort": -1,
+            "payload": {
+              "schemaVersion": 1,
+              "summary": "",
+              "body": "# Goal\n"
+            },
             "role": "reportcard",
             "deletable": 0,
             "body_crdt": null,
@@ -248,7 +309,9 @@
             "card_id": "card-codex-w",
             "program": "codex",
             "cwd": "/tmp/work",
-            "env": { "TERM": "xterm-256color" },
+            "env": {
+              "TERM": "xterm-256color"
+            },
             "daemon_handle": "legacy-handle-1",
             "pid": null,
             "theme_fg": "216,219,226",
@@ -350,15 +413,18 @@
           "columns": {
             "id": 1,
             "kind": "wave.updated",
-            "payload": { "id": "wave-working" },
+            "payload": {
+              "id": "wave-working"
+            },
             "actor": "user",
             "at": 1600,
             "correlation": null,
             "event_version": 1,
             "scope_kind": "wave",
-            "scope_cove": "cove-user",
+            "scope_area": "area-user",
             "scope_wave": "wave-working",
-            "scope_card": null
+            "scope_card": null,
+            "scope_cove": "area-user"
           }
         },
         {
@@ -366,15 +432,18 @@
           "columns": {
             "id": 2,
             "kind": "codex.job_requested",
-            "payload": { "wave_id": "wave-working" },
+            "payload": {
+              "wave_id": "wave-working"
+            },
             "actor": "ai:spec",
             "at": 1610,
             "correlation": "corr-1",
             "event_version": 1,
             "scope_kind": "wave",
-            "scope_cove": "cove-user",
+            "scope_area": "area-user",
             "scope_wave": "wave-working",
-            "scope_card": null
+            "scope_card": null,
+            "scope_cove": "area-user"
           }
         },
         {
@@ -382,30 +451,36 @@
           "columns": {
             "id": 3,
             "kind": "codex.worker_requested",
-            "payload": { "wave_id": "wave-working" },
+            "payload": {
+              "wave_id": "wave-working"
+            },
             "actor": "ai:spec",
             "at": 1620,
             "correlation": null,
             "event_version": 2,
             "scope_kind": "wave",
-            "scope_cove": "cove-user",
+            "scope_area": "area-user",
             "scope_wave": "wave-working",
-            "scope_card": null
+            "scope_card": null,
+            "scope_cove": "area-user"
           }
         },
         {
           "columns": {
             "id": 4,
             "kind": "task.completed",
-            "payload": { "ok": true },
+            "payload": {
+              "ok": true
+            },
             "actor": "ai:worker",
             "at": 1630,
             "correlation": null,
             "event_version": 1,
             "scope_kind": "card",
-            "scope_cove": "cove-user",
+            "scope_area": "area-user",
             "scope_wave": "wave-working",
-            "scope_card": "card-codex-w"
+            "scope_card": "card-codex-w",
+            "scope_cove": "area-user"
           }
         }
       ]
@@ -445,7 +520,9 @@
             "thread_id": "thread-spec-1",
             "session_id": null,
             "active_turn_id": null,
-            "handle_state_json": { "last_thread_id": "thread-spec-1" },
+            "handle_state_json": {
+              "last_thread_id": "thread-spec-1"
+            },
             "lease_owner": "kernel-1",
             "lease_until_ms": 99999999999,
             "created_at_ms": 1700,
@@ -465,7 +542,9 @@
             "thread_id": "thread-spec-2",
             "session_id": null,
             "active_turn_id": null,
-            "handle_state_json": { "last_thread_id": "thread-spec-2" },
+            "handle_state_json": {
+              "last_thread_id": "thread-spec-2"
+            },
             "lease_owner": null,
             "lease_until_ms": null,
             "created_at_ms": 1700,
@@ -508,8 +587,12 @@
             "payload_hash": "hash-1",
             "target_type": "card",
             "target_id": "card-codex-w",
-            "target_json": { "card_id": "card-codex-w" },
-            "payload_json": { "goal": "do the thing" },
+            "target_json": {
+              "card_id": "card-codex-w"
+            },
+            "payload_json": {
+              "goal": "do the thing"
+            },
             "tx_output_json": null,
             "phase": "pending",
             "phase_detail_json": null,
@@ -533,9 +616,13 @@
             "payload_hash": "hash-2",
             "target_type": "card",
             "target_id": "card-claude",
-            "target_json": { "card_id": "card-claude" },
+            "target_json": {
+              "card_id": "card-claude"
+            },
             "payload_json": {},
-            "tx_output_json": { "card_id": "card-claude" },
+            "tx_output_json": {
+              "card_id": "card-claude"
+            },
             "phase": "succeeded",
             "phase_detail_json": null,
             "attempt": 1,
@@ -558,11 +645,15 @@
             "payload_hash": "hash-3",
             "target_type": "card",
             "target_id": "card-term",
-            "target_json": { "card_id": "card-term" },
+            "target_json": {
+              "card_id": "card-term"
+            },
             "payload_json": {},
             "tx_output_json": null,
             "phase": "parked",
-            "phase_detail_json": { "reason": "waiting" },
+            "phase_detail_json": {
+              "reason": "waiting"
+            },
             "attempt": 1,
             "last_error": null,
             "compensation_state": null,
@@ -571,7 +662,9 @@
             "created_at_ms": 1900,
             "updated_at_ms": 1960,
             "completed_at_ms": null,
-            "spawn_artifacts_json": { "pid": 4242 },
+            "spawn_artifacts_json": {
+              "pid": 4242
+            },
             "parked_at_ms": 1960,
             "parked_deadline_ms": 2960
           }
@@ -610,7 +703,9 @@
             "key": "t1",
             "kind": "codex",
             "goal": "implement the slice",
-            "context_json": { "files": [] },
+            "context_json": {
+              "files": []
+            },
             "acceptance_criteria": "tests green",
             "cwd": null,
             "depends_on_json": [],
@@ -637,13 +732,19 @@
             "context_json": {},
             "acceptance_criteria": null,
             "cwd": "/tmp/work",
-            "depends_on_json": ["t1"],
+            "depends_on_json": [
+              "t1"
+            ],
             "priority": 0,
-            "gate_json": { "cmd": "cargo test" },
+            "gate_json": {
+              "cmd": "cargo test"
+            },
             "status": "done",
             "status_detail": "gate-green",
             "worker_card_id": "card-term",
-            "gate_result_json": { "exit": 0 },
+            "gate_result_json": {
+              "exit": 0
+            },
             "gate_attempt": 1,
             "created_at_ms": 2100,
             "updated_at_ms": 2200,
@@ -709,7 +810,10 @@
             "entity_kind": "view",
             "entity_id": "wave-working",
             "kind": "layout",
-            "payload": { "schemaVersion": 1, "positions": {} },
+            "payload": {
+              "schemaVersion": 1,
+              "positions": {}
+            },
             "updated_at": 2400
           }
         }
@@ -735,7 +839,9 @@
             "id": "plugin-echo",
             "version": "1.0.0",
             "install_path": "/tmp/plugins/echo",
-            "manifest": { "id": "plugin-echo" },
+            "manifest": {
+              "id": "plugin-echo"
+            },
             "enabled": 1,
             "user_config": {},
             "installed_at": 2600,

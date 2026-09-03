@@ -1,6 +1,6 @@
-// The wave listing the cove page renders.
+// The wave listing the area page renders.
 //
-// Presentational: waves and coves arrive as props and every mutation leaves
+// Presentational: waves and areas arrive as props and every mutation leaves
 // through a callback, because `features/**` may not reach into `app/**`.
 //
 // Two things are deliberately *not* re-implemented here:
@@ -8,7 +8,7 @@
 //     → quiet). Every surface that lists waves has to agree on it.
 //   - the row, which is `WaveRow` (INV-DUP-009).
 
-import { coveOf, type Cove } from '../../../../../core/domain/cove.ts';
+import { areaOf, type Area } from '../../../../../core/domain/area.ts';
 import { sortByLifecycleRank, visibleWaves, type Wave } from '../../../../../core/domain/wave.ts';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import { WaveRow } from '../row/public.tsx';
@@ -16,9 +16,9 @@ import styles from './list.module.css';
 
 export type WaveListProps = Readonly<{
   waves: readonly Wave[];
-  /** Used for the per-row cove name/colour lookup; ignored unless `showCove`. */
-  coves: readonly Cove[];
-  showCove?: boolean;
+  /** Used for the per-row area name/colour lookup; ignored unless `showArea`. */
+  areas: readonly Area[];
+  showArea?: boolean;
   activeWaveId?: string | null;
   onOpenWave: (waveId: string) => void;
   /** Supplying this reveals each row's pin button. */
@@ -37,7 +37,7 @@ export type WaveListProps = Readonly<{
 }>;
 
 export function WaveList({
-  waves, coves, showCove = false, activeWaveId = null,
+  waves, areas, showArea = false, activeWaveId = null,
   onOpenWave, onSetPinned, onDeleteWave, nowMs, emptyMessage, variant = 'default',
 }: WaveListProps) {
   const ordered = sortByLifecycleRank(visibleWaves(waves));
@@ -55,17 +55,17 @@ export function WaveList({
   return (
     <ul className={styles.list} data-nc-wave-list="">
       {ordered.map((wave) => {
-        // Unknown cove ids are real: a wave can outlive the cove read that
-        // populated `coves`. Falling back keeps the row renderable.
-        const cove = showCove ? coveOf(wave.coveId, coves) : undefined;
+        // Unknown area ids are real: a wave can outlive the area read that
+        // populated `areas`. Falling back keeps the row renderable.
+        const area = showArea ? areaOf(wave.areaId, areas) : undefined;
         return (
           <li key={wave.id} className={styles.item}>
             {/* No identity dot per row — every row in this list belongs to the
-                same cove, and the page header already says which (§8.2). */}
+                same area, and the page header already says which (§8.2). */}
             <WaveRow
               wave={wave}
               variant={variant}
-              coveName={showCove ? cove?.name ?? 'Unknown cove' : undefined}
+              areaName={showArea ? area?.name ?? 'Unknown area' : undefined}
               nowMs={nowMs}
               active={wave.id === activeWaveId}
               onOpen={onOpenWave}

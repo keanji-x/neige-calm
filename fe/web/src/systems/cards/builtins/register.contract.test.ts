@@ -123,7 +123,7 @@ describe('builtin card composition contract', () => {
       registry.resolve({ id: 'a', kind: 'codex', payload: { harness_profile: 'assistant' } })?.type,
       'the assistant marker must fall through the earlier codex adapter',
     ).toBe('assistant');
-    /* And the marker is the whole predicate, in both directions: a cove chat
+    /* And the marker is the whole predicate, in both directions: an area chat
        card carries `plain_chat` under the same field and must not become an
        assistant. */
     expect(

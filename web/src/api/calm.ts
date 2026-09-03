@@ -6,10 +6,10 @@ import type { paths } from './generated';
 import type { HarnessItem, HarnessPhaseTag } from './generated-events';
 import type {
   CardPatchBody,
-  CovePatchBody,
-  CoveResolveBody,
+  AreaPatchBody,
+  AreaResolveBody,
   KernelCard,
-  KernelCove,
+  KernelArea,
   KernelOverlay,
   KernelTerminal,
   KernelWave,
@@ -20,7 +20,7 @@ import type {
   NewCardBody,
   NewClaudeCardBody,
   NewCodexCardBody,
-  NewCoveBody,
+  NewAreaBody,
   NewOverlayBody,
   NewTerminalCardBody,
   NewWaveBody,
@@ -105,57 +105,57 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-// ---------------- coves ----------------
+// ---------------- areas ----------------
 
-export const listCoves = () =>
-  request<KernelCove[]>('GET', '/api/coves');
-export const createCove = (b: NewCoveBody) =>
-  request<KernelCove>('POST', '/api/coves', b);
+export const listAreas = () =>
+  request<KernelArea[]>('GET', '/api/areas');
+export const createArea = (b: NewAreaBody) =>
+  request<KernelArea>('POST', '/api/areas', b);
 
 /**
- * Issue #175 — idempotent upsert for the singleton system cove that hosts
+ * Issue #175 — idempotent upsert for the singleton system area that hosts
  * the default Today terminal's wave + card. Returns the existing row when
  * one is present (200), otherwise mints a fresh row (201). The
  * `useTodayTerminal` hook calls this on bootstrap so the user's sidebar
- * never sees the underlying scaffolding cove.
+ * never sees the underlying scaffolding area.
  *
- * The server-side `POST /api/coves/system` handler enforces the
+ * The server-side `POST /api/areas/system` handler enforces the
  * at-most-one invariant via a partial unique index on
- * `coves(kind) WHERE kind='system'` (migration 0009) — two tabs racing
+ * `areas(kind) WHERE kind='system'` (migration 0009) — two tabs racing
  * this call are both safe.
  */
-export const getOrCreateSystemCove = () =>
-  request<KernelCove>('POST', '/api/coves/system');
-export const updateCove = (id: string, b: CovePatchBody) =>
-  request<KernelCove>('PATCH', `/api/coves/${encodeURIComponent(id)}`, b);
-export const deleteCove = (id: string) =>
-  request<void>('DELETE', `/api/coves/${encodeURIComponent(id)}`);
-export const wavesInCove = (coveId: string) =>
-  request<KernelWave[]>('GET', `/api/coves/${encodeURIComponent(coveId)}/waves`);
+export const getOrCreateSystemArea = () =>
+  request<KernelArea>('POST', '/api/areas/system');
+export const updateArea = (id: string, b: AreaPatchBody) =>
+  request<KernelArea>('PATCH', `/api/areas/${encodeURIComponent(id)}`, b);
+export const deleteArea = (id: string) =>
+  request<void>('DELETE', `/api/areas/${encodeURIComponent(id)}`);
+export const wavesInArea = (areaId: string) =>
+  request<KernelWave[]>('GET', `/api/areas/${encodeURIComponent(areaId)}/waves`);
 
 /**
- * Issue #250 PR 3 — "which cove (if any) already claims this absolute
+ * Issue #250 PR 3 — "which area (if any) already claims this absolute
  * path?". At most one claim can cover a path (overlap is rejected
  * atomically at create time, issue #275), so there is no tiebreak and
- * no ambiguity. Returns `null` when no cove covers it; the caller then either picks an existing cove + opts in
- * to `attach_folder: true` on the wave-create, or mints a fresh cove.
+ * no ambiguity. Returns `null` when no area covers it; the caller then either picks an existing area + opts in
+ * to `attach_folder: true` on the wave-create, or mints a fresh area.
  *
  * NewTaskForm is the only consumer today — debounced cwd-input change
- * fires this lookup so the cove dropdown can lock to the auto-matched
- * cove (hit) or stay user-editable (miss). 400 means non-absolute path
+ * fires this lookup so the area dropdown can lock to the auto-matched
+ * area (hit) or stay user-editable (miss). 400 means non-absolute path
  * and is treated as a "skip resolve" — the form already enforces the
  * absolute-path shape inline before submit.
  */
-export const resolveCovePath = (path: string) =>
-  request<CoveResolveBody | null>(
+export const resolveAreaPath = (path: string) =>
+  request<AreaResolveBody | null>(
     'GET',
-    `/api/coves/resolve?path=${encodeURIComponent(path)}`,
+    `/api/areas/resolve?path=${encodeURIComponent(path)}`,
   );
 
 // ---------------- waves ----------------
 
 /**
- * Issue #250 PR 2 — calendar window query. `GET /api/waves?since=&until=&cove_id=`
+ * Issue #250 PR 2 — calendar window query. `GET /api/waves?since=&until=&area_id=`
  * returns every wave overlapping the window `[since, until]` (unix ms,
  * inclusive at both endpoints). The kernel applies the dual predicate
  * `created_at <= until AND (terminal_at IS NULL OR terminal_at >= since)`
@@ -164,17 +164,17 @@ export const resolveCovePath = (path: string) =>
  *
  * Calendar (issue #250 PR 5) uses this as the one read for the weekly
  * grid: pass `since`/`until` for the current week's window in local
- * time, no `cove_id` so the result aggregates across coves.
+ * time, no `area_id` so the result aggregates across areas.
  */
 export const wavesRange = (params: {
   since?: number;
   until?: number;
-  cove_id?: string;
+  area_id?: string;
 }) => {
   const qs = new URLSearchParams();
   if (params.since !== undefined) qs.set('since', String(params.since));
   if (params.until !== undefined) qs.set('until', String(params.until));
-  if (params.cove_id) qs.set('cove_id', params.cove_id);
+  if (params.area_id) qs.set('area_id', params.area_id);
   const tail = qs.toString();
   return request<KernelWave[]>('GET', `/api/waves${tail ? `?${tail}` : ''}`);
 };

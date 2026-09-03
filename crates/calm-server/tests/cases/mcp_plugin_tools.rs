@@ -14,7 +14,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, now_ms};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -640,22 +640,22 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let events = EventBus::new();
 
     let trusted_plugin_id = configured_trusted_plugin_id();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-plugin-tools".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-plugin-tools".into(),
             sort: None,
             cwd: String::new(),
@@ -671,7 +671,7 @@ async fn boot_fixture() -> Fixture {
     let bound_wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-plugin-tools-bound".into(),
             sort: None,
             cwd: String::new(),
@@ -682,9 +682,9 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create bound wave");
-    repo.seed_wave_cove_cache(&wave_cove_cache)
+    repo.seed_wave_area_cache(&wave_area_cache)
         .await
-        .expect("seed wave/cove cache");
+        .expect("seed wave/area cache");
 
     let (raw_token, thread_id) = mint_card_with_thread(
         &sqlx_repo,
@@ -714,7 +714,7 @@ async fn boot_fixture() -> Fixture {
         plugins_dir.clone(),
         plugins_data_dir.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         &trusted_plugin_id,
     )
     .await;
@@ -739,7 +739,7 @@ async fn boot_fixture() -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),

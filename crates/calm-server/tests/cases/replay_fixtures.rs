@@ -54,7 +54,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{
-    NewCard, NewCove, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle,
+    NewArea, NewCard, NewWave, Overlay, Task, TaskKind, TaskStatus, WaveLifecycle,
 };
 use calm_server::model::{WavePatch, new_id, now_ms};
 use calm_server::replay::{self, Fixture};
@@ -87,18 +87,18 @@ fn load_fixture(name: &str) -> Fixture {
 }
 
 async fn seed_rooted_wave(repo: &SqlxRepo) {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "reset-rooted".into(),
             color: "#123456".into(),
             sort: None,
         })
         .await
-        .expect("create reset cove");
+        .expect("create reset area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "reset rooted wave".into(),
             sort: None,
             cwd: String::new(),
@@ -309,18 +309,18 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
     let (repo, _events, state) = replay::boot_in_memory()
         .await
         .expect("boot in-memory replay state");
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "replay-terminal".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
             // #1147 S6 — the dispatcher's terminal worker defaults its cwd to
@@ -336,8 +336,8 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .await
         .expect("create wave");
     state
-        .wave_cove_cache
-        .insert(wave.id.clone(), cove.id.clone());
+        .wave_area_cache
+        .insert(wave.id.clone(), area.id.clone());
     repo.wave_update(
         wave.id.as_str(),
         WavePatch {
@@ -519,7 +519,7 @@ async fn record_session_roundtrips_through_loader() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
             ev,
         )
         .await
@@ -689,7 +689,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
             extra,
         )
         .await
@@ -1040,7 +1040,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
     use calm_server::state::{AppState, CodexClient, DaemonClient};
 
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -1048,7 +1048,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         std::env::temp_dir().join("calm-plugins-data-schema-fwd"),
         Vec::new(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
     let state = AppState::from_parts(
         repo,
@@ -1057,7 +1057,7 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     routes::router()
         .layer(axum::middleware::from_fn(

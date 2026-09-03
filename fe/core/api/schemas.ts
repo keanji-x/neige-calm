@@ -15,25 +15,25 @@ import type { ApiDecodeFailure } from './types.js';
 // ---------------- Entity schemas (mirror model.rs) ----------------
 
 /**
- * Issue #175 — `model::CoveKind`. Marks whether a cove is part of the
+ * Issue #175 — `model::AreaKind`. Marks whether an area is part of the
  * user-visible workspace (`'user'`) or is the kernel-owned singleton that
  * hosts the default Today terminal's wave (`'system'`). The kernel already
- * filters `kind='system'` out of `GET /api/coves` by default, so this
+ * filters `kind='system'` out of `GET /api/areas` by default, so this
  * frontend schema's main job is to type the field for the optional
  * belt-and-suspenders `.filter(c => c.kind === 'user')` in CalmApp /
  * router. Defaults to `'user'` so pre-#175 wire payloads (event-log
  * replay, legacy fixtures) round-trip without forcing a fixture rewrite.
  */
-export const coveKindSchema = z.enum(['user', 'system']).default('user');
-export type CoveKind = z.infer<typeof coveKindSchema>;
+export const areaKindSchema = z.enum(['user', 'system']).default('user');
+export type AreaKind = z.infer<typeof areaKindSchema>;
 
-/** `model::Cove` — cove metadata row. */
-export const coveSchema = z.object({
+/** `model::Area` — area metadata row. */
+export const areaSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: z.string(),
   sort: z.number(),
-  kind: coveKindSchema,
+  kind: areaKindSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -105,7 +105,7 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
 
 const waveObjectSchema = z.object({
   id: z.string(),
-  cove_id: z.string(),
+  area_id: z.string(),
   title: z.string(),
   sort: z.number(),
   archived_at: z.number().nullable(),
@@ -258,13 +258,13 @@ export const overlaySchema = z.object({
 
 // ---------------- Event schemas (mirror event.rs) ----------------
 
-export const coveUpdatedSchema = z.object({
-  ev: z.literal('cove.updated'),
-  data: coveSchema,
+export const areaUpdatedSchema = z.object({
+  ev: z.literal('area.updated'),
+  data: areaSchema,
 });
 
-export const coveDeletedSchema = z.object({
-  ev: z.literal('cove.deleted'),
+export const areaDeletedSchema = z.object({
+  ev: z.literal('area.deleted'),
   data: z.object({ id: z.string() }),
 });
 
@@ -280,7 +280,7 @@ export const waveUpdatedSchema = z.object({
 
 export const waveDeletedSchema = z.object({
   ev: z.literal('wave.deleted'),
-  data: z.object({ id: z.string(), cove_id: z.string() }),
+  data: z.object({ id: z.string(), area_id: z.string() }),
 });
 
 /**
@@ -288,13 +288,13 @@ export const waveDeletedSchema = z.object({
  * validated `from → to` transition. Reducers downstream can subscribe to
  * `kind = wave.lifecycle_changed` directly without inspecting every
  * `wave.updated` for a possibly-unchanged `lifecycle` field. Wave-scoped
- * (routes to `wave:<id>` and `cove:<cove>` topics).
+ * (routes to `wave:<id>` and `area:<area>` topics).
  */
 export const waveLifecycleChangedSchema = z.object({
   ev: z.literal('wave.lifecycle_changed'),
   data: z.object({
     id: z.string(),
-    cove_id: z.string(),
+    area_id: z.string(),
     from: waveLifecycleSchema,
     to: waveLifecycleSchema,
     agent_message: z.string().optional(),
@@ -581,7 +581,7 @@ export const codexWorkerRequestedSchema = z.object({
 /**
  * `Event::TerminalWorkerRequested` — spec card asks the dispatcher to spawn
  * a terminal worker card. `cwd` is `None` when the spec card defers to
- * the wave/cove default working directory.
+ * the wave/area default working directory.
  */
 export const terminalWorkerRequestedSchema = z.object({
   ev: z.literal('terminal.worker_requested'),
@@ -985,26 +985,26 @@ export const taskGateResultSchema = z.object({
 // ---------------- EventScope (mirror event.rs) ----------------
 
 /**
- * `EventScope` — the event's "home scope" in the cove → wave → card
+ * `EventScope` — the event's "home scope" in the area → wave → card
  * hierarchy. PR2 of #136 adds this to every persisted event so future
  * MCP subscribers / dispatcher routes can filter without re-parsing
  * the payload. Tagged `{kind, id}` shape via `#[serde(tag, content)]`
  * on the Rust side.
  *
  * `System` is the catch-all for events that genuinely don't belong to
- * a single cove/wave/card (`plugin.state`, cove-create, the pre-PR2
+ * a single area/wave/card (`plugin.state`, area-create, the pre-PR2
  * NULL-fallback). Pre-PR2 history rows replay as `System`.
  */
 export const eventScopeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('System') }),
-  z.object({ kind: z.literal('Cove'), id: z.object({ cove: z.string() }) }),
+  z.object({ kind: z.literal('Area'), id: z.object({ area: z.string() }) }),
   z.object({
     kind: z.literal('Wave'),
-    id: z.object({ wave: z.string(), cove: z.string() }),
+    id: z.object({ wave: z.string(), area: z.string() }),
   }),
   z.object({
     kind: z.literal('Card'),
-    id: z.object({ card: z.string(), wave: z.string(), cove: z.string() }),
+    id: z.object({ card: z.string(), wave: z.string(), area: z.string() }),
   }),
 ]);
 
@@ -1018,8 +1018,8 @@ export type EventScope = z.infer<typeof eventScopeSchema>;
  * each frame through this schema and skips dispatch on mismatch.
  */
 export const wireEventSchema = z.discriminatedUnion('ev', [
-  coveUpdatedSchema,
-  coveDeletedSchema,
+  areaUpdatedSchema,
+  areaDeletedSchema,
   waveUpdatedSchema,
   waveDeletedSchema,
   waveLifecycleChangedSchema,
@@ -1074,13 +1074,13 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
 // Available for consumers that want a stronger type than `WireEvent` from
 // `wire.ts`. Not migrated yet — the two coexist by design until a sweep.
 
-export type Cove = z.infer<typeof coveSchema>;
+export type Area = z.infer<typeof areaSchema>;
 export type Wave = z.infer<typeof waveSchema>;
 export type Card = z.infer<typeof cardSchema>;
 export type Overlay = z.infer<typeof overlaySchema>;
 
-export type CoveUpdatedEvent = z.infer<typeof coveUpdatedSchema>;
-export type CoveDeletedEvent = z.infer<typeof coveDeletedSchema>;
+export type AreaUpdatedEvent = z.infer<typeof areaUpdatedSchema>;
+export type AreaDeletedEvent = z.infer<typeof areaDeletedSchema>;
 export type WaveUpdatedEvent = z.infer<typeof waveUpdatedSchema>;
 export type WaveDeletedEvent = z.infer<typeof waveDeletedSchema>;
 export type WaveLifecycleChangedEvent = z.infer<typeof waveLifecycleChangedSchema>;

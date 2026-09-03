@@ -13,12 +13,12 @@ import type { ReactNode } from 'react';
 // Hoisted mock for the api client. Each function returns a Promise stub so
 // React Query treats them as proper async resolutions.
 vi.mock('./calm', () => ({
-  listCoves: vi.fn(),
-  wavesInCove: vi.fn(),
+  listAreas: vi.fn(),
+  wavesInArea: vi.fn(),
   getWaveDetail: vi.fn(),
-  createCove: vi.fn(),
-  updateCove: vi.fn(),
-  deleteCove: vi.fn(),
+  createArea: vi.fn(),
+  updateArea: vi.fn(),
+  deleteArea: vi.fn(),
   createWave: vi.fn(),
   updateWave: vi.fn(),
   deleteWave: vi.fn(),
@@ -29,19 +29,19 @@ vi.mock('./calm', () => ({
 
 import * as api from './calm';
 import {
-  covesQueryOptions,
-  wavesByCoveQueryOptions,
+  areasQueryOptions,
+  wavesByAreaQueryOptions,
   waveDetailQueryOptions,
   queryKeys,
-  useCovesQuery,
+  useAreasQuery,
   useWaveDetailQuery,
-  useCreateCoveMutation,
+  useCreateAreaMutation,
 } from './queries';
 
 // --- helpers -----------------------------------------------------------
 
 /** Fresh QueryClient per test — Query caches between renders, and we don't
- *  want one test's `listCoves` resolution leaking into the next. Turn off
+ *  want one test's `listAreas` resolution leaking into the next. Turn off
  *  retries so a deliberately-rejecting mutation/test errors fast.            */
 function makeClient(): QueryClient {
   return new QueryClient({
@@ -65,15 +65,15 @@ beforeEach(() => {
 // --- query key factories -----------------------------------------------
 
 describe('queryKeys / query option factories', () => {
-  it("covesQueryOptions uses ['coves'] as queryKey", () => {
-    const opts = covesQueryOptions();
-    expect(opts.queryKey).toEqual(['coves']);
+  it("areasQueryOptions uses ['areas'] as queryKey", () => {
+    const opts = areasQueryOptions();
+    expect(opts.queryKey).toEqual(['areas']);
     expect(typeof opts.queryFn).toBe('function');
   });
 
-  it('wavesByCoveQueryOptions interpolates coveId', () => {
-    const opts = wavesByCoveQueryOptions('cove_xyz');
-    expect(opts.queryKey).toEqual(['waves', 'cove_xyz']);
+  it('wavesByAreaQueryOptions interpolates areaId', () => {
+    const opts = wavesByAreaQueryOptions('area_xyz');
+    expect(opts.queryKey).toEqual(['waves', 'area_xyz']);
   });
 
   it('waveDetailQueryOptions interpolates waveId', () => {
@@ -82,17 +82,17 @@ describe('queryKeys / query option factories', () => {
   });
 
   it('queryKeys helpers match the factory output', () => {
-    expect(queryKeys.coves()).toEqual(['coves']);
-    expect(queryKeys.wavesInCove('c1')).toEqual(['waves', 'c1']);
+    expect(queryKeys.areas()).toEqual(['areas']);
+    expect(queryKeys.wavesInArea('c1')).toEqual(['waves', 'c1']);
     expect(queryKeys.waveDetail('w1')).toEqual(['wave', 'w1']);
   });
 });
 
 // --- hooks --------------------------------------------------------------
 
-describe('useCovesQuery', () => {
+describe('useAreasQuery', () => {
   it('starts in pending state and resolves to the mocked list', async () => {
-    const fakeCoves = [
+    const fakeAreas = [
       {
         id: 'c1',
         name: 'Atlas',
@@ -103,10 +103,10 @@ describe('useCovesQuery', () => {
         updated_at: 2,
       },
     ];
-    (api.listCoves as ReturnType<typeof vi.fn>).mockResolvedValue(fakeCoves);
+    (api.listAreas as ReturnType<typeof vi.fn>).mockResolvedValue(fakeAreas);
 
     const client = makeClient();
-    const { result } = renderHook(() => useCovesQuery(), {
+    const { result } = renderHook(() => useAreasQuery(), {
       wrapper: wrapper(client),
     });
 
@@ -115,8 +115,8 @@ describe('useCovesQuery', () => {
     // version-agnostic signal.
     expect(result.current.data).toBeUndefined();
 
-    await waitFor(() => expect(result.current.data).toEqual(fakeCoves));
-    expect(api.listCoves).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.data).toEqual(fakeAreas));
+    expect(api.listAreas).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -131,7 +131,7 @@ describe('useWaveDetailQuery', () => {
     (api.getWaveDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
       wave: {
         id: 'w1',
-        cove_id: 'c1',
+        area_id: 'c1',
         title: 't',
         sort: 0,
         archived_at: null,
@@ -159,7 +159,7 @@ describe('useWaveDetailQuery', () => {
     const firstSnapshot = {
       wave: {
         id: 'w1',
-        cove_id: 'c1',
+        area_id: 'c1',
         title: 'first',
         sort: 0,
         archived_at: null,
@@ -223,9 +223,9 @@ describe('useWaveDetailQuery', () => {
 
 // --- mutations ----------------------------------------------------------
 
-describe('useCreateCoveMutation', () => {
-  it('calls api.createCove and invalidates the coves query on success', async () => {
-    const newCove = {
+describe('useCreateAreaMutation', () => {
+  it('calls api.createArea and invalidates the areas query on success', async () => {
+    const newArea = {
       id: 'c2',
       name: 'New',
       color: '#fff',
@@ -233,18 +233,18 @@ describe('useCreateCoveMutation', () => {
       created_at: 1,
       updated_at: 2,
     };
-    (api.createCove as ReturnType<typeof vi.fn>).mockResolvedValue(newCove);
+    (api.createArea as ReturnType<typeof vi.fn>).mockResolvedValue(newArea);
 
     const client = makeClient();
     const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
 
-    const { result } = renderHook(() => useCreateCoveMutation(), {
+    const { result } = renderHook(() => useCreateAreaMutation(), {
       wrapper: wrapper(client),
     });
 
     await result.current.mutateAsync({ name: 'New', color: '#fff' });
 
-    expect(api.createCove).toHaveBeenCalledWith({ name: 'New', color: '#fff' });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['coves'] });
+    expect(api.createArea).toHaveBeenCalledWith({ name: 'New', color: '#fff' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['areas'] });
   });
 });

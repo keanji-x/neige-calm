@@ -224,7 +224,7 @@ describe('EventBridge contracts', () => {
     render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
-    emit(eventFrame(9, { ev: 'wave.deleted', data: { id: 'w1', cove_id: 'c1' } }));
+    emit(eventFrame(9, { ev: 'wave.deleted', data: { id: 'w1', area_id: 'c1' } }));
     expect(cursor.value).toBe(9);
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
       ['waves', 'c1'],
@@ -251,7 +251,7 @@ describe('EventBridge contracts', () => {
     render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
-    emit(eventFrame(5, { ev: 'cove.deleted', data: { id: 'c1' } }));
+    emit(eventFrame(5, { ev: 'area.deleted', data: { id: 'c1' } }));
     expect(cursor.value).toBe(20);
   });
 });

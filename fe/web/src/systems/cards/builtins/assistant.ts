@@ -18,9 +18,9 @@ export type AssistantCard = Readonly<{ type: 'assistant'; id: string }>;
  * drawer instead. Those are one decision, so the router imports this predicate
  * rather than re-spelling the payload check — the same arrangement `spec` has.
  *
- * It must not be widened to "any `harness_profile` marker": a cove chat card
+ * It must not be widened to "any `harness_profile` marker": an area chat card
  * carries `plain_chat` under the same field, and answering the assistant
- * question with it would give a cove chat the assistant's surface. The server
+ * question with it would give an area chat the assistant's surface. The server
  * refuses to conflate them for the same reason and says so at length.
  */
 export function isAssistantHarnessPayload(payload: unknown): boolean {

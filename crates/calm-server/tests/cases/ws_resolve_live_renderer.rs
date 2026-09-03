@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, Terminal};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -133,7 +133,7 @@ impl TestFixture {
                 events,
                 calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    calm_server::wave_area_cache::WaveAreaCache::new(),
                 ),
             )),
             Arc::new(CodexClient::new_stub()),
@@ -148,20 +148,20 @@ impl TestFixture {
     }
 
     async fn seed_terminal(&self) -> Terminal {
-        let cove = self
+        let area = self
             .repo
-            .cove_create(NewCove {
+            .area_create(NewArea {
                 name: "ws-resolve-e2e".into(),
                 color: "#000".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = self
             .repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "ws-resolve-e2e".into(),
                 sort: None,
                 cwd: workspace_root().display().to_string(),

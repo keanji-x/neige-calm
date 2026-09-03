@@ -54,7 +54,7 @@ describe('lifecycle predicates', () => {
 function fixture(overrides: Partial<Wave>): Wave {
   return {
     id: 'w1',
-    coveId: 'c1',
+    areaId: 'c1',
     title: 't',
     lifecycle: 'draft',
     anyCardNeedsInput: false,

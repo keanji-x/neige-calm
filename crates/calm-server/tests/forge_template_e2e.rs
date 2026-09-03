@@ -24,13 +24,13 @@ use calm_server::event::{
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{
     AppContext, McpServer, ToolCallIdentity, ToolRegistry, build_default_registry,
 };
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms,
 };
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
@@ -46,7 +46,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -88,14 +88,14 @@ struct Fixture {
     events: EventBus,
     write: WriteContext,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     review_ctx: Arc<AppContext>,
     review_registry: Arc<ToolRegistry>,
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
     wave_id: String,
-    cove_id: String,
+    area_id: String,
     spec_card_id: String,
     worker_card_id: String,
     lease_id: String,
@@ -142,7 +142,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "bound template wave",
             "cwd": wave_dir.path().display().to_string(),
             "attach_folder": true,
@@ -189,7 +189,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "input without template",
             "cwd": orphan_input_dir.path().display().to_string(),
             "attach_folder": true,
@@ -211,7 +211,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "bound without required input",
             "cwd": required_dir.path().display().to_string(),
             "attach_folder": true,
@@ -239,7 +239,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "bound with partial input",
             "cwd": partial_dir.path().display().to_string(),
             "attach_folder": true,
@@ -273,7 +273,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "bound with invalid input",
             "cwd": invalid_dir.path().display().to_string(),
             "attach_folder": true,
@@ -309,7 +309,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "bound with extra input key",
             "cwd": extra_dir.path().display().to_string(),
             "attach_folder": true,
@@ -362,7 +362,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "input against schema-less template",
             "cwd": no_schema_dir.path().display().to_string(),
             "attach_folder": true,
@@ -398,7 +398,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "schema-less bound wave",
             "cwd": no_input_dir.path().display().to_string(),
             "attach_folder": true,
@@ -424,7 +424,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app.clone(),
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "missing template wave",
             "cwd": missing_dir.path().display().to_string(),
             "attach_folder": true,
@@ -455,7 +455,7 @@ async fn git_forge_template_registers_and_wave_create_binds() {
     let (status, body) = post_wave(
         app,
         json!({
-            "cove_id": fx.cove_id,
+            "area_id": fx.area_id,
             "title": "untrusted template wave",
             "cwd": untrusted_dir.path().display().to_string(),
             "attach_folder": true,
@@ -1346,7 +1346,7 @@ async fn review_round_recovers_into_pending_queue() {
         repo,
         fx.events.clone(),
         fx.card_role_cache.clone(),
-        fx.wave_cove_cache.clone(),
+        fx.wave_area_cache.clone(),
         daemon,
         &registry,
         runtime,
@@ -1534,22 +1534,22 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let events = EventBus::new();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "forge-template-e2e".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "forge-template-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
@@ -1560,9 +1560,9 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create wave");
-    repo.seed_wave_cove_cache(&wave_cove_cache)
+    repo.seed_wave_area_cache(&wave_area_cache)
         .await
-        .expect("seed wave/cove cache");
+        .expect("seed wave/area cache");
 
     let spec_card = repo
         .card_create(NewCard {
@@ -1664,14 +1664,14 @@ async fn boot_fixture() -> Fixture {
         events,
         write,
         card_role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         review_ctx,
         review_registry,
         socket_path,
         raw_token: caller.raw_token,
         thread_id: caller.thread_id,
         wave_id: caller.wave_id,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         spec_card_id: spec_card.id.to_string(),
         worker_card_id: caller.card_id,
         lease_id: caller.lease_id,
@@ -1789,7 +1789,7 @@ fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         Some(fx.card_role_cache.clone()),
-        Some(fx.wave_cove_cache.clone()),
+        Some(fx.wave_area_cache.clone()),
     );
     calm_server::routes::waves::router()
         .layer(axum::middleware::from_fn(
@@ -1807,7 +1807,7 @@ fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         Some(fx.card_role_cache.clone()),
-        Some(fx.wave_cove_cache.clone()),
+        Some(fx.wave_area_cache.clone()),
     );
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -2037,7 +2037,7 @@ fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(fx.wave_id.clone()),
-        cove_id: fx.cove_id.clone(),
+        area_id: fx.area_id.clone(),
         thread_id: "spec-thread".into(),
     }
 }
@@ -2236,7 +2236,7 @@ async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message:
     let wave_id = WaveId::from(fx.wave_id.clone());
     let scope = EventScope::Wave {
         wave: wave_id.clone(),
-        cove: CoveId::from(fx.cove_id.clone()),
+        area: AreaId::from(fx.area_id.clone()),
     };
     let actor = ActorId::AiSpec(CardId::from(fx.spec_card_id.clone()));
     let targets = targets.to_vec();
@@ -2285,7 +2285,7 @@ async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
     let wave_id = WaveId::from(fx.wave_id.clone());
     let scope = EventScope::Wave {
         wave: wave_id,
-        cove: CoveId::from(fx.cove_id.clone()),
+        area: AreaId::from(fx.area_id.clone()),
     };
     let task_key = format!("impl-review-{slice_id}");
     let idempotency_key = format!("{}:{task_key}", fx.wave_id);
@@ -2795,7 +2795,7 @@ async fn transition_wave_to_done(fx: &Fixture) {
     let wave_id = WaveId::from(fx.wave_id.clone());
     let scope = EventScope::Wave {
         wave: wave_id.clone(),
-        cove: CoveId::from(fx.cove_id.clone()),
+        area: AreaId::from(fx.area_id.clone()),
     };
     let actor = ActorId::Kernel;
     write_with_actor_events_typed::<(), _>(

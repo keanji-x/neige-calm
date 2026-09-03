@@ -184,8 +184,8 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
     // (fixtures replay as `ActorId::User`, which the gate lets through
     // without a cache lookup). An empty cache is fine.
     let card_role_cache = crate::card_role_cache::CardRoleCache::new();
-    let wave_cove_cache = crate::wave_cove_cache::WaveCoveCache::new();
-    let write = crate::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let wave_area_cache = crate::wave_area_cache::WaveAreaCache::new();
+    let write = crate::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         repo.clone(),
@@ -202,7 +202,7 @@ pub async fn boot_in_memory() -> anyhow::Result<(Arc<SqlxRepo>, EventBus, AppSta
         plugin,
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
         replay_terminal_spawn_hook(),
     );
     Ok((repo, events, state))
@@ -247,7 +247,7 @@ pub async fn seed_events(
     // (replay should refuse to ingest events the live kernel would
     // refuse to mint).
     let cache = crate::card_role_cache::CardRoleCache::new();
-    let wcc = crate::wave_cove_cache::WaveCoveCache::new();
+    let wcc = crate::wave_area_cache::WaveAreaCache::new();
     for ev in &fixture.events {
         let event = Event::from_kind_and_payload(&ev.kind, ev.payload.clone())
             .map_err(|e| anyhow::anyhow!("reconstruct event {}: {}", ev.kind, e))?;
@@ -314,7 +314,7 @@ fn actor_from_legacy_string(s: &str) -> ActorId {
 /// envelopes on the bus exactly as the initial boot did.
 ///
 /// Tables wiped match the schema declared by `migrations/0001..0004`:
-/// `events`, `overlays`, `cards`, `waves`, `coves`, `terminals`,
+/// `events`, `overlays`, `cards`, `waves`, `areas`, `terminals`,
 /// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`, plus the
 /// #644 `tasks` table (migration 0041) and the #854 `retention_meta`
 /// table (migration 0060). Migration rows
@@ -331,7 +331,7 @@ pub async fn reset_from_fixture(
     // `terminals.card_id → cards` is now `ON DELETE RESTRICT`
     // (migration 0011), so terminals MUST be wiped before cards or
     // the FK trips with `(code: 1811) FOREIGN KEY constraint failed`.
-    // After that, `cards.wave_id → waves` and `waves.cove_id → coves`
+    // After that, `cards.wave_id → waves` and `waves.area_id → areas`
     // still cascade, but we delete them explicitly in child-first order
     // so the whole table-wipe sequence is uniform and order-correct
     // regardless of which FKs are RESTRICT vs CASCADE. The SqlxRepo
@@ -370,7 +370,7 @@ pub async fn reset_from_fixture(
         // leave before their parent waves.
         "DELETE FROM worker_sessions",
         "DELETE FROM waves",
-        "DELETE FROM coves",
+        "DELETE FROM areas",
         "DELETE FROM plugin_kv",
         "DELETE FROM plugin_tokens",
         "DELETE FROM plugins",
@@ -494,9 +494,9 @@ pub async fn force_spec_phase(
         .wave_get(card.wave_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-    if role == CardRole::Spec && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
+    if role == CardRole::Spec && wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
-            "spec harness is disabled for cove chat wave {}",
+            "spec harness is disabled for area chat wave {}",
             wave.id
         )));
     }
@@ -621,7 +621,7 @@ pub async fn force_spec_phase(
             repo.clone(),
             state.events.clone(),
             state.card_role_cache.clone(),
-            state.wave_cove_cache.clone(),
+            state.wave_area_cache.clone(),
             state.shared_codex_appserver.clone(),
             &state.harness,
             runtime.clone(),

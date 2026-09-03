@@ -1,7 +1,7 @@
 // The CARDS module's `+`: which kind, and then what that kind needs to know.
 //
 // Two presentational pieces, and neither calls an API — `app/router` owns every
-// create, the same way it owns the wave create behind `features/cove/new-wave`.
+// create, the same way it owns the wave create behind `features/area/new-wave`.
 //
 // ## Why the menu is a projection of the registry
 //
@@ -64,7 +64,7 @@ export type AddCardMenuProps = Readonly<{
  * 172px row, measured) rather than the row. Both are defects that only exist
  * because the styling was rewritten instead of used.
  *
- * `DropdownMenu` is the same control `features/cove/new-wave`'s Start-from
+ * `DropdownMenu` is the same control `features/area/new-wave`'s Start-from
  * picker uses, and it owns all of it: the popover surface and its layer, the
  * item shape and its hover/active states, the APG menu-button keyboard model
  * (arrows move real focus, Tab closes, Escape restores), and typeahead. What

@@ -79,7 +79,7 @@ pub enum ResolveError {
     ReferencedWaveAbsent(String),
     ReferencedBlockAbsent(String),
     ReportAbsent(String),
-    CrossCove(String),
+    CrossArea(String),
     InvalidReference(String),
 }
 
@@ -94,7 +94,7 @@ impl ResolveError {
             Self::ReferencedWaveAbsent(_) => "referenced_wave_absent",
             Self::ReferencedBlockAbsent(_) => "referenced_block_absent",
             Self::ReportAbsent(_) => "report_absent",
-            Self::CrossCove(_) => "cross_cove",
+            Self::CrossArea(_) => "cross_area",
             Self::InvalidReference(_) => "invalid_reference",
         }
     }
@@ -364,9 +364,9 @@ impl TaskContextMonitor {
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
             .ok_or_else(|| ResolveError::ReferencedWaveAbsent(task_wave_id.into()))?;
-        let system_cove = self
+        let system_area = self
             .repo
-            .cove_get_system()
+            .area_get_system()
             .await
             .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
             .map(|c| c.id.to_string());
@@ -383,13 +383,13 @@ impl TaskContextMonitor {
                 break;
             }
             let is_root = depth == 0;
-            let (cove_id, block) = self
+            let (area_id, block) = self
                 .load_block(&wave_id, &block_id, is_root, &mut doc_revs)
                 .await?;
-            if cove_id != task_wave.cove_id.as_str()
-                && system_cove.as_deref() != Some(cove_id.as_str())
+            if area_id != task_wave.area_id.as_str()
+                && system_area.as_deref() != Some(area_id.as_str())
             {
-                return Err(ResolveError::CrossCove(format!("{wave_id}#{block_id}")));
+                return Err(ResolveError::CrossArea(format!("{wave_id}#{block_id}")));
             }
             refs.push(context_ref(&wave_id, &block, is_root));
             for (dst_wave, dst_block) in block_links(&block)? {
@@ -446,7 +446,7 @@ impl TaskContextMonitor {
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Ok((wave.cove_id.to_string(), values))
+        Ok((wave.area_id.to_string(), values))
     }
 
     async fn load_block(
@@ -456,7 +456,7 @@ impl TaskContextMonitor {
         is_root: bool,
         doc_revs: &mut BTreeMap<String, u64>,
     ) -> std::result::Result<(String, ReportBlock), ResolveError> {
-        let (cove, blocks) = self.report_snapshot(wave_id, doc_revs).await?;
+        let (area, blocks) = self.report_snapshot(wave_id, doc_revs).await?;
         let value = blocks
             .into_iter()
             .find(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(block_id))
@@ -469,7 +469,7 @@ impl TaskContextMonitor {
             })?;
         let block = serde_json::from_value(value)
             .map_err(|_| ResolveError::MalformedStoredReport(wave_id.into()))?;
-        Ok((cove, block))
+        Ok((area, block))
     }
 
     async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> RefsMatch {
@@ -478,7 +478,7 @@ impl TaskContextMonitor {
             Ok(None) => return RefsMatch::Mismatch(Vec::new(), "referenced_wave_absent"),
             Err(error) => return RefsMatch::Retryable(error.to_string()),
         };
-        let system = match self.repo.cove_get_system().await {
+        let system = match self.repo.area_get_system().await {
             Ok(system) => system,
             Err(error) => return RefsMatch::Retryable(error.to_string()),
         };
@@ -492,7 +492,7 @@ impl TaskContextMonitor {
                     &mut ignored_doc_revs,
                 )
                 .await;
-            let (cove, block) = match loaded {
+            let (area, block) = match loaded {
                 Ok(value) => value,
                 Err(ResolveError::StorageUnavailable(error)) => return RefsMatch::Retryable(error),
                 Err(ResolveError::MalformedStoredReport(_)) => {
@@ -511,8 +511,8 @@ impl TaskContextMonitor {
                     );
                 }
             };
-            if cove != task_wave.cove_id.as_str()
-                && system.as_ref().map(|c| c.id.as_str()) != Some(cove.as_str())
+            if area != task_wave.area_id.as_str()
+                && system.as_ref().map(|c| c.id.as_str()) != Some(area.as_str())
             {
                 return RefsMatch::Mismatch(
                     vec![TaskContextChangedRef {
@@ -522,7 +522,7 @@ impl TaskContextMonitor {
                         from_hash: frozen.hash.clone(),
                         ..Default::default()
                     }],
-                    "cross_cove",
+                    "cross_area",
                 );
             }
             let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
@@ -939,7 +939,7 @@ struct FrozenTaskTx {
     wave_id: String,
     task_key: String,
     status: String,
-    cove_id: String,
+    area_id: String,
     refs: Option<Vec<TaskContextRef>>,
     closure_truncated: bool,
     decl_ready: bool,
@@ -959,7 +959,7 @@ async fn frozen_task_tx(
     wave_id: &str,
 ) -> Result<Option<FrozenTaskTx>> {
     let row: Option<FrozenTaskDbRow> = sqlx::query_as(
-        "SELECT t.key,t.status,w.cove_id,t.claim_context_json,\
+        "SELECT t.key,t.status,w.area_id,t.claim_context_json,\
          t.context_closure_truncated,t.decl_ready,t.decl_released_by_user \
          FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
     )
@@ -971,7 +971,7 @@ async fn frozen_task_tx(
         |(
             task_key,
             status,
-            cove_id,
+            area_id,
             claim_context_json,
             closure_truncated,
             decl_ready,
@@ -981,7 +981,7 @@ async fn frozen_task_tx(
             wave_id: wave_id.into(),
             task_key,
             status,
-            cove_id,
+            area_id,
             refs: claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
@@ -1002,23 +1002,23 @@ async fn current_context_evidence_tx(
     let Some(refs) = task.refs.as_deref() else {
         return Ok(CurrentContextEvidence::Mismatch);
     };
-    let system_cove: Option<String> =
-        sqlx::query_scalar("SELECT id FROM coves WHERE kind='system' LIMIT 1")
+    let system_area: Option<String> =
+        sqlx::query_scalar("SELECT id FROM areas WHERE kind='system' LIMIT 1")
             .fetch_optional(&mut **tx)
             .await?;
     let mut saw_root = false;
     for frozen in refs {
         let report: Option<(String, String)> = sqlx::query_as(
-            "SELECT w.cove_id,c.payload FROM waves w \
+            "SELECT w.area_id,c.payload FROM waves w \
              JOIN cards c ON c.wave_id=w.id AND c.kind='wave-report' WHERE w.id=?1",
         )
         .bind(frozen.wave_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-        let Some((current_cove, payload)) = report else {
+        let Some((current_area, payload)) = report else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
-        if current_cove != task.cove_id && system_cove.as_deref() != Some(current_cove.as_str()) {
+        if current_area != task.area_id && system_area.as_deref() != Some(current_area.as_str()) {
             return Ok(CurrentContextEvidence::Mismatch);
         }
         let Ok(report) =
@@ -1106,7 +1106,7 @@ async fn restore_context_tx(
         ActorId::Kernel,
         EventScope::Wave {
             wave: WaveId::from(task.wave_id.as_str()),
-            cove: task.cove_id.into(),
+            area: task.area_id.into(),
         },
         Event::TaskContextAdvanced {
             wave_id: WaveId::from(task.wave_id.as_str()),
@@ -1195,7 +1195,7 @@ mod tests {
 
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::db::{Repo, ServerRepoSyncDomainRawExt};
-    use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
     use calm_types::wave_report::WaveReportPayload;
 
     async fn seed_restore_transaction_fixture(
@@ -1203,8 +1203,8 @@ mod tests {
         stale_at_ms: Option<i64>,
     ) -> (SqlxRepo, String, String) {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: format!("restore-guard-{status}"),
                 color: "#000".into(),
                 sort: None,
@@ -1214,7 +1214,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: format!("restore-guard-{status}"),
                 sort: None,
                 cwd: String::new(),

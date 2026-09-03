@@ -48,7 +48,7 @@ use crate::db::sqlite::{
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::{ActorId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, WaveId};
 use crate::model::{TaskStatus, now_ms};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
@@ -163,7 +163,7 @@ pub struct GateVerdict {
 pub(crate) struct GateResultCtx {
     pub task_id: String,
     pub wave_id: WaveId,
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
 }
 
 /// The ONE gate-result body (design §3 / §6.5): guarded
@@ -209,7 +209,7 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     }
     let scope = EventScope::Wave {
         wave: rctx.wave_id.clone(),
-        cove: rctx.cove_id.clone(),
+        area: rctx.area_id.clone(),
     };
     let mut events = vec![Event::TaskGateResult {
         task_id: rctx.task_id.clone(),
@@ -476,7 +476,7 @@ fn timeout_verdict(log_path: &Path, attempt: i64, timeout_secs: i64) -> GateVerd
 pub(crate) struct FrozenVerify {
     pub task_id: String,
     pub wave_id: String,
-    pub cove_id: String,
+    pub area_id: String,
     pub key: String,
     pub attempt: i64,
     pub cwd: String,
@@ -494,7 +494,7 @@ impl FrozenVerify {
         GateResultCtx {
             task_id: self.task_id.clone(),
             wave_id: WaveId::from(self.wave_id.clone()),
-            cove_id: CoveId::from(self.cove_id.clone()),
+            area_id: AreaId::from(self.area_id.clone()),
         }
     }
 }
@@ -670,11 +670,11 @@ impl ProviderAdapter for TaskVerifyAdapter {
         // migration 0077 (this is a raw SELECT, so it would have failed at
         // RUNTIME, not compile time, had it been missed).
         let wave: Option<(String, String)> =
-            sqlx::query_as("SELECT workspace_path, cove_id FROM waves WHERE id = ?1")
+            sqlx::query_as("SELECT workspace_path, area_id FROM waves WHERE id = ?1")
                 .bind(&task.wave_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let (wave_cwd, cove_id) =
+        let (wave_cwd, area_id) =
             wave.ok_or_else(|| CalmError::Conflict(format!("wave {} is gone", task.wave_id)))?;
         let cwd = gate
             .cwd
@@ -701,7 +701,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let frozen = FrozenVerify {
             task_id: task.id.clone(),
             wave_id: task.wave_id.clone(),
-            cove_id,
+            area_id,
             key: task.key.clone(),
             attempt,
             cwd,
@@ -1162,7 +1162,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     args: json!({
                         "task_id": frozen.task_id,
                         "wave_id": frozen.wave_id,
-                        "cove_id": frozen.cove_id,
+                        "area_id": frozen.area_id,
                         "attempt": frozen.attempt,
                         "reason": reason,
                     }),
@@ -1219,9 +1219,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     .get("wave_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let cove_id = step
+                let area_id = step
                     .args
-                    .get("cove_id")
+                    .get("area_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let attempt = step
@@ -1237,7 +1237,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 let rctx = GateResultCtx {
                     task_id: task_id.to_string(),
                     wave_id: WaveId::from(wave_id.to_string()),
-                    cove_id: CoveId::from(cove_id.to_string()),
+                    area_id: AreaId::from(area_id.to_string()),
                 };
                 let verdict = GateVerdict {
                     passed: false,

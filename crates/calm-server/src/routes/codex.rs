@@ -211,7 +211,7 @@ pub(crate) async fn ingest_provider_hook(
     // the unknown-card guard catches a card that was deleted between
     // hook fire and ingest.
     //
-    // Scope: same as before — try to resolve `card → wave → cove`;
+    // Scope: same as before — try to resolve `card → wave → area`;
     // fall back to `EventScope::System` when the card has been
     // deleted. The gate's unknown-card branch then refuses the write,
     // which is what we want: a hook for a deleted card is an audit
@@ -221,7 +221,7 @@ pub(crate) async fn ingest_provider_hook(
             Some(w) => EventScope::Card {
                 card: c.id,
                 wave: w.id,
-                cove: w.cove_id,
+                area: w.area_id,
             },
             None => EventScope::System,
         },
@@ -237,7 +237,7 @@ pub(crate) async fn ingest_provider_hook(
             None,
             &s.events,
             s.write.role_cache(),
-            s.write.cove_cache(),
+            s.write.area_cache(),
             provider.event(card_id_typed, kind, payload, hook_idempotency_key.clone()),
         )
         .await?;

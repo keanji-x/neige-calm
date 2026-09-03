@@ -56,7 +56,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
     session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
 };
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, now_ms};
 use calm_server::plugin_host::Manifest;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -616,7 +616,7 @@ struct Seeded {
 }
 
 /// Mirror of forge_template_e2e's `boot_fixture`/`create_worker_caller`
-/// seeding, against the durable file DB: cove + wave (cwd = git clone of the
+/// seeding, against the durable file DB: area + wave (cwd = git clone of the
 /// bare origin), Worker card keeping its `raw_token`, runtime + thread
 /// binding, and a `held` workspace lease with **`boot_id` NULL** (the boot
 /// reclaim predicate only reclaims when BOTH boot_ids are non-NULL and
@@ -624,18 +624,18 @@ struct Seeded {
 /// `lease_until_ms = now + 1h` (don't depend on the TTL being unchecked).
 async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
     let as_repo: Arc<dyn Repo> = repo.clone();
-    let cove = as_repo
-        .cove_create(NewCove {
+    let area = as_repo
+        .area_create(NewArea {
             name: "merge-crash-e2".into(),
             color: "#123456".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = as_repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "merge-crash-e2".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),

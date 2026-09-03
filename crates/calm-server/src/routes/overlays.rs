@@ -8,7 +8,7 @@
 //! surface a plugin gets, never the kernel's own reserved namespaces.
 //!
 //! Writes go through `Repo::write_with_event` via `write_with_event_typed`
-//! per Scope A — see `routes/coves.rs` for the template.
+//! per Scope A — see `routes/areas.rs` for the template.
 
 use crate::actor::Actor;
 use crate::db::RepoRead;

@@ -35,7 +35,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -64,7 +64,7 @@ pub struct ClaudeAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     codex: Arc<CodexClient>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -75,7 +75,7 @@ pub struct ClaudeWorkerAdapter {
     codex: Arc<CodexClient>,
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -85,13 +85,13 @@ impl ClaudeAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -102,14 +102,14 @@ impl ClaudeAdapter {
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             codex,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -121,14 +121,14 @@ impl ClaudeWorkerAdapter {
         codex: Arc<CodexClient>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
             mcp_server,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -140,7 +140,7 @@ impl ClaudeWorkerAdapter {
         codex: Arc<CodexClient>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
@@ -148,7 +148,7 @@ impl ClaudeWorkerAdapter {
             codex,
             mcp_server,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -470,7 +470,7 @@ impl ProviderAdapter for ClaudeAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -479,7 +479,7 @@ impl ProviderAdapter for ClaudeAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -610,7 +610,7 @@ impl ProviderAdapter for ClaudeAdapter {
                             .await?;
                     let write = WriteContext::new(
                         self.card_role_cache.clone(),
-                        self.wave_cove_cache.clone(),
+                        self.wave_area_cache.clone(),
                     );
                     let card_id_for_tx = card_id.clone();
                     let (_unit, _ids) = write_with_events_typed(
@@ -936,7 +936,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             mark_claude_worker_running(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &terminal_id,
                 &wave_id,
@@ -954,7 +954,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             log_claude_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &wave_id,
             )
@@ -979,7 +979,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             mark_claude_worker_running(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &terminal_id,
                 &wave_id,
@@ -997,7 +997,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             log_claude_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &wave_id,
             )
@@ -1056,7 +1056,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 mark_claude_worker_running(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &terminal_id,
                     &wave_id,
@@ -1074,7 +1074,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 log_claude_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &wave_id,
                 )
@@ -1100,7 +1100,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 mark_claude_worker_running(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &terminal_id,
                     &wave_id,
@@ -1118,7 +1118,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 log_claude_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &wave_id,
                 )
@@ -1230,7 +1230,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
 async fn mark_claude_worker_running(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     card_id: &str,
     terminal_id: &str,
     wave_id: &WaveId,
@@ -1254,7 +1254,7 @@ async fn mark_claude_worker_running(
         wave_id.clone(),
     )
     .await?;
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let card_id_for_tx = card_id.to_string();
     let (_unit, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
@@ -1301,7 +1301,7 @@ async fn mark_claude_worker_running(
 async fn log_claude_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     card_id: &str,
     wave_id: &WaveId,
 ) -> Result<()> {
@@ -1323,7 +1323,7 @@ async fn log_claude_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             Event::CardAdded(card),
         )
         .await?;

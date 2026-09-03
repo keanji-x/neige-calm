@@ -90,6 +90,13 @@ path = "tests/fixtures/stub-plugin-caller/main.rs"
 name = "plugin-host-stub-toolcall"
 path = "tests/fixtures/stub-plugin-toolcall/main.rs"
 
+# #1284 S2 — stub that captures `initialize.params._meta["dev.neige/config"]`
+# and hands it back through `tools/call`. The end-to-end witness that an app
+# plugin really receives its effective configuration.
+[[bin]]
+name = "plugin-host-stub-config"
+path = "tests/fixtures/stub-plugin-config/main.rs"
+
 # #760 slice ③-b-i — stub forge-action tool that returns a lowered
 # forge-action payload through structuredContent.
 [[bin]]

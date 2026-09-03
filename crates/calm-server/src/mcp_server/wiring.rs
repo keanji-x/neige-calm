@@ -102,7 +102,7 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
     use crate::db::sqlite::{SqlxRepo, card_create_with_id_tx};
-    use crate::model::{CardRole, NewCard, NewCove, NewWave, new_id};
+    use crate::model::{CardRole, NewArea, NewCard, NewWave, new_id};
 
     #[test]
     fn card_mcp_env_emits_per_card_keys_in_order() {
@@ -153,8 +153,8 @@ mod tests {
     #[tokio::test]
     async fn set_card_mcp_token_rotates_and_returns_matching_hashes() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "wiring-mcp-token".into(),
                 color: "#000".into(),
                 sort: None,
@@ -164,7 +164,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "wiring-mcp-token".into(),
                 sort: None,
                 cwd: String::new(),

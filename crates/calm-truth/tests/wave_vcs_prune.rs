@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calm_truth::db::prelude::RepoSyncDomainRaw;
 use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use calm_truth::ids::WaveId;
-use calm_truth::model::{NewCove, NewWave, RequestTheme, now_ms};
+use calm_truth::model::{NewArea, NewWave, RequestTheme, now_ms};
 use calm_truth::wave_vcs::{
     self, MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeManifest, canonical_json_bytes,
 };
@@ -37,18 +37,18 @@ async fn fresh_wave() -> (SqlxRepo, WaveId) {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#336699".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -575,18 +575,18 @@ async fn sweep_preserves_live_objects_from_other_waves() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#336699".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave_a = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave a".into(),
             sort: None,
             cwd: "/tmp/a".into(),
@@ -600,7 +600,7 @@ async fn sweep_preserves_live_objects_from_other_waves() {
     let wave_b = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "wave b".into(),
             sort: None,
             cwd: "/tmp/b".into(),

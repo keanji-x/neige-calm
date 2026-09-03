@@ -18,15 +18,15 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
   const requests: ApiRequest[] = [];
   let deleted = false;
   const wave = {
-    id: 'w1', cove_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: Date.now() - 1000, updated_at: Date.now(),
   };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
-    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: deleted ? [] : [wave] });
+    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: deleted ? [] : [wave] });
     if (request.method === 'DELETE') deleted = true;
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
@@ -47,27 +47,27 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
   expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
 });
 
-it('requires the shared confirmation before deleting from the CoveRoute panel', async () => {
+it('requires the shared confirmation before deleting from the AreaRoute panel', async () => {
   const requests: ApiRequest[] = [];
-  const wave = { id: 'w1', cove_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const wave = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
-    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
+    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/cove/c1'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   /*
    * Scoped to the panel, like the Today case above, because the *page* holds two
-   * buttons by this name: the CoveRoute panel's row and the sidebar's listing of
+   * buttons by this name: the AreaRoute panel's row and the sidebar's listing of
    * the same wave. An unscoped `findByRole` resolves on the first poll at which
    * exactly one exists and throws once both do, so what it was really asserting
    * was that the two subtrees settle in different frames — measured on
@@ -84,14 +84,14 @@ it('requires the shared confirmation before deleting from the CoveRoute panel', 
 
 it('does not navigate on a delete success that arrives after cancellation', async () => {
   let resolveDelete!: (response: ApiTransportResponse) => void;
-  const wave = { id: 'w1', cove_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const wave = { id: 'w1', area_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
-    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
+    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
     if (request.path === '/api/waves/w1') return Promise.resolve({ status: 200, statusText: 'OK', body: { wave, cards: [], overlays: [] } });
     if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
@@ -111,43 +111,43 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
   await waitFor(() => expect(router.state.location.pathname).toBe('/settings'));
 });
 
-it('does not navigate on a cove delete success that arrives after cancellation', async () => {
+it('does not navigate on an area delete success that arrives after cancellation', async () => {
   let resolveDelete!: (response: ApiTransportResponse) => void;
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
-    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/cove/c1'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete cove Work' }));
+  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete area Work' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Type Work to confirm.' }), 'Work');
-  await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
   await waitFor(() => expect(resolveDelete).toBeTypeOf('function'));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
   await new Promise((done) => { setTimeout(done, 10); });
-  expect(router.state.location.pathname).toBe('/cove/c1');
+  expect(router.state.location.pathname).toBe('/area/c1');
 });
 
 it('round-trips an encoded wave id through useGo, TanStack history, and useRouteParam', async () => {
   const requests: ApiRequest[] = [];
   const waveId = 'a/b %';
-  const wave = { id: waveId, cove_id: 'c1', title: 'Encoded wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  const wave = { id: waveId, area_id: 'c1', title: 'Encoded wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
   const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
     requests.push(request);
-    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+    if (request.path === '/api/areas') return Promise.resolve({ status: 200, statusText: 'OK', body: [
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
-    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
+    if (request.path === '/api/areas/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
     if (request.path.includes('/api/waves/')) return Promise.resolve({ status: 200, statusText: 'OK', body: { wave, cards: [], overlays: [] } });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };

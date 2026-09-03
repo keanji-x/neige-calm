@@ -367,10 +367,10 @@ pub(super) async fn hook_events_for_card_tx(
 ) -> Result<Vec<HookEventProjection>> {
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_cove, scope_wave, scope_card
+                  scope_kind, scope_area, scope_wave, scope_card
            FROM (
                SELECT id, kind, payload, actor, at,
-                      scope_kind, scope_cove, scope_wave, scope_card
+                      scope_kind, scope_area, scope_wave, scope_card
                FROM events
                WHERE scope_wave = ?1
                  AND scope_card = ?2

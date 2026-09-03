@@ -16,10 +16,10 @@
 //! (`sort` precision has its own file, `wave_detail_sort_precision_tests`;
 //! ordering has `wave_detail_order_tests`.)
 
-use super::{SqlxRepo, card_create_tx, cove_create_tx, overlay_upsert_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, wave_create_tx};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RepoRead;
-use crate::model::{NewCard, NewCove, NewOverlay, NewWave, RequestTheme};
+use crate::model::{NewArea, NewCard, NewOverlay, NewWave, RequestTheme};
 use serde_json::json;
 
 /// Every escape hazard a TEXT column can carry into hand-built JSON: the two
@@ -29,20 +29,20 @@ const HOSTILE_TEXT: &str = "quote\" backslash\\ newline\n tab\t ctrl\u{1}\u{1f} 
 
 async fn empty_wave(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "shape".into(),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("cove");
+    .expect("area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "shape".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -54,7 +54,7 @@ async fn empty_wave(repo: &SqlxRepo) -> String {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("wave");

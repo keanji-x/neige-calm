@@ -70,15 +70,15 @@ async fn migration_0079_preserves_the_renamed_column_values() {
 
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&pool)
     .await
-    .expect("seed cove");
+    .expect("seed area");
 
     sqlx::query(
         "INSERT INTO waves (id, cove_id, title, sort, lifecycle, workflow_id, workflow_input, created_at, updated_at)
-         VALUES ('w-1', 'cove-1', 't', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
+         VALUES ('w-1', 'area-1', 't', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
     )
     .execute(&pool)
     .await

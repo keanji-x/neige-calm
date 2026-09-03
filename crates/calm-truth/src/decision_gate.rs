@@ -5,10 +5,10 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::model::CardRole;
 use crate::role_gate::{RoleViolation, enforce_role};
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use crate::worker::{Principal, WorkerSession, WorkerSessionId};
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ pub trait WriteTx: sealed::Sealed + Send {
     /// for a row that isn't there (deny, never assume).
     async fn read_card_wave(&mut self, card: &CardId) -> Result<Option<WaveId>>;
 
-    async fn read_wave_cove(&mut self, wave: &WaveId) -> Result<Option<CoveId>>;
+    async fn read_wave_area(&mut self, wave: &WaveId) -> Result<Option<AreaId>>;
 }
 
 /// Resolve session-keyed actors through the live `worker_sessions` row, then
@@ -54,8 +54,8 @@ pub trait WriteTx: sealed::Sealed + Send {
 /// This is HP1-a-2's option (b) seam: session→card is a live DB read at gate
 /// time, not the option-(a) session→card cache, so deleted, unknown, or
 /// never-committed sessions deny by construction. Once a session resolves to a
-/// bound card, card→{role,wave,cove} still comes from the existing
-/// `CardRoleCache` and `WaveCoveCache` through [`enforce_role`]. That keeps a
+/// bound card, card→{role,wave,area} still comes from the existing
+/// `CardRoleCache` and `WaveAreaCache` through [`enforce_role`]. That keeps a
 /// session actor's decision identical to the equivalent card-keyed actor's
 /// decision, with no duplicate containment logic. All ambiguous states deny
 /// closed, and cardless authority remains denied until PR11 lands.
@@ -65,13 +65,13 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     event: &Event,
     scope: &EventScope,
     cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
 ) -> std::result::Result<(), RoleViolation> {
     let session_id = match actor {
         ActorId::AiSpecSession(session)
         | ActorId::AiCodexSession(session)
         | ActorId::AiClaudeSession(session) => session.clone(),
-        _ => return enforce_role(actor, event, scope, cache, wave_cove_cache),
+        _ => return enforce_role(actor, event, scope, cache, wave_area_cache),
     };
 
     if session_id.as_str().is_empty() {
@@ -122,7 +122,7 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         _ => unreachable!("session actor match above guarantees session variant"),
     };
 
-    enforce_role(&synthetic, event, scope, cache, wave_cove_cache)
+    enforce_role(&synthetic, event, scope, cache, wave_area_cache)
 }
 
 impl<'a> sealed::Sealed for Transaction<'a, Sqlite> {}
@@ -168,12 +168,12 @@ impl<'a> WriteTx for Transaction<'a, Sqlite> {
         Ok(row.map(|(wave,)| WaveId::from(wave)))
     }
 
-    async fn read_wave_cove(&mut self, wave: &WaveId) -> Result<Option<CoveId>> {
-        let row: Option<(String,)> = sqlx::query_as("SELECT cove_id FROM waves WHERE id = ?1")
+    async fn read_wave_area(&mut self, wave: &WaveId) -> Result<Option<AreaId>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT area_id FROM waves WHERE id = ?1")
             .bind(wave.as_str())
             .fetch_optional(&mut **self)
             .await?;
-        Ok(row.map(|(id,)| CoveId::from(id)))
+        Ok(row.map(|(id,)| AreaId::from(id)))
     }
 }
 
@@ -396,7 +396,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Cove, CoveKind, Wave, WaveLifecycle};
+    use crate::model::{Area, AreaKind, Wave, WaveLifecycle};
     use crate::worker::{
         LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSessionState,
     };
@@ -486,7 +486,7 @@ mod tests {
                 .map(|(_, _, wave)| wave.clone()))
         }
 
-        async fn read_wave_cove(&mut self, _wave: &WaveId) -> Result<Option<CoveId>> {
+        async fn read_wave_area(&mut self, _wave: &WaveId) -> Result<Option<AreaId>> {
             Ok(None)
         }
     }
@@ -495,7 +495,7 @@ mod tests {
         Principal::Agent {
             session_id: WorkerSessionId::from(session_id),
             wave_id: WaveId::from("wave-1"),
-            cove_id: CoveId::from("cove-1"),
+            area_id: AreaId::from("area-1"),
         }
     }
 
@@ -529,10 +529,10 @@ mod tests {
         }
     }
 
-    fn wave(id: &str, cove: &str) -> Wave {
+    fn wave(id: &str, area: &str) -> Wave {
         Wave {
             id: WaveId::from(id),
-            cove_id: CoveId::from(cove),
+            area_id: AreaId::from(area),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
@@ -550,18 +550,18 @@ mod tests {
         }
     }
 
-    fn card_scope(card: &str, wave: &str, cove: &str) -> EventScope {
+    fn card_scope(card: &str, wave: &str, area: &str) -> EventScope {
         EventScope::Card {
             card: CardId::from(card),
             wave: WaveId::from(wave),
-            cove: CoveId::from(cove),
+            area: AreaId::from(area),
         }
     }
 
-    fn wave_scope(wave: &str, cove: &str) -> EventScope {
+    fn wave_scope(wave: &str, area: &str) -> EventScope {
         EventScope::Wave {
             wave: WaveId::from(wave),
-            cove: CoveId::from(cove),
+            area: AreaId::from(area),
         }
     }
 
@@ -569,23 +569,23 @@ mod tests {
         Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave("w", "c"), None))
     }
 
-    fn cove_updated() -> Event {
-        Event::CoveUpdated(Cove {
-            id: CoveId::from("c"),
+    fn area_updated() -> Event {
+        Event::AreaUpdated(Area {
+            id: AreaId::from("c"),
             name: "n".into(),
             color: "#fff".into(),
             sort: 1.0,
-            kind: CoveKind::User,
+            kind: AreaKind::User,
             created_at: 0,
             updated_at: 0,
         })
     }
 
-    fn seeded_caches(card: &CardId, role: CardRole) -> (CardRoleCache, WaveCoveCache) {
+    fn seeded_caches(card: &CardId, role: CardRole) -> (CardRoleCache, WaveAreaCache) {
         let cache = CardRoleCache::new();
         cache.insert(card.clone(), role, WaveId::from("w"));
-        let wcc = WaveCoveCache::new();
-        wcc.insert(WaveId::from("w"), CoveId::from("c"));
+        let wcc = WaveAreaCache::new();
+        wcc.insert(WaveId::from("w"), AreaId::from("c"));
         (cache, wcc)
     }
 
@@ -836,7 +836,7 @@ mod tests {
         let res = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("s1")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope(worker_card.as_str(), "w", "c"),
             &cache,
             &wcc,
@@ -880,7 +880,7 @@ mod tests {
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-worker")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope(worker_card.as_str(), "w", "c"),
             &cache,
             &wcc,
@@ -901,7 +901,7 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_spec_session_bound_to_unknown_card_on_ordinary_event() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let ghost = CardId::from("ghost");
         let mut tx =
             FakeWriteTx::with_worker_session(worker_session("s-spec-ghost", Some(ghost.clone())));
@@ -909,7 +909,7 @@ mod tests {
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ghost")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope(ghost.as_str(), "w", "c"),
             &cache,
             &wcc,
@@ -939,7 +939,7 @@ mod tests {
         let res = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ordinary")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope(spec_card.as_str(), "w", "c"),
             &cache,
             &wcc,
@@ -956,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_empty_card_id_via_worker_variant_sync_gate() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
             "s-empty-card",
             Some(CardId::from("")),
@@ -965,7 +965,7 @@ mod tests {
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("s-empty-card")),
-            &cove_updated(),
+            &area_updated(),
             &EventScope::System,
             &cache,
             &wcc,
@@ -980,13 +980,13 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_missing_row() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let mut tx = FakeWriteTx::new();
 
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("missing")),
-            &cove_updated(),
+            &area_updated(),
             &EventScope::System,
             &cache,
             &wcc,
@@ -1001,13 +1001,13 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_cardless_row() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let mut tx = FakeWriteTx::with_worker_session(worker_session("cardless", None));
 
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("cardless")),
-            &cove_updated(),
+            &area_updated(),
             &EventScope::System,
             &cache,
             &wcc,
@@ -1036,7 +1036,7 @@ mod tests {
             let err = enforce_role_resolving_session(
                 &mut tx,
                 &ActorId::AiCodexSession(WorkerSessionId::from(session_id)),
-                &cove_updated(),
+                &area_updated(),
                 &card_scope(worker_card.as_str(), "w", "c"),
                 &cache,
                 &wcc,
@@ -1057,13 +1057,13 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_read_error() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let mut tx = FakeWriteTx::with_worker_session_read_error();
 
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("s-error")),
-            &cove_updated(),
+            &area_updated(),
             &EventScope::System,
             &cache,
             &wcc,
@@ -1078,13 +1078,13 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_empty_session_id() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let mut tx = FakeWriteTx::new();
 
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("")),
-            &cove_updated(),
+            &area_updated(),
             &EventScope::System,
             &cache,
             &wcc,
@@ -1099,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn session_resolver_denies_unknown_card_via_sync_gate() {
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         let ghost = CardId::from("ghost");
         let mut tx =
             FakeWriteTx::with_worker_session(worker_session("s-ghost", Some(ghost.clone())));
@@ -1107,7 +1107,7 @@ mod tests {
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("s-ghost")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope(ghost.as_str(), "w", "c"),
             &cache,
             &wcc,
@@ -1129,7 +1129,7 @@ mod tests {
         let err = enforce_role_resolving_session(
             &mut tx,
             &ActorId::AiCodexSession(WorkerSessionId::from("s-out-of-scope")),
-            &cove_updated(),
+            &area_updated(),
             &card_scope("other-card", "w", "c"),
             &cache,
             &wcc,
@@ -1168,7 +1168,7 @@ mod tests {
         let worker_card = CardId::from("worker-card");
         let (cache, wcc) = seeded_caches(&worker_card, CardRole::Worker);
         let actor = ActorId::AiCodex(worker_card.clone());
-        let event = cove_updated();
+        let event = area_updated();
         let scope = card_scope(worker_card.as_str(), "w", "c");
         let direct = enforce_role(&actor, &event, &scope, &cache, &wcc);
         let mut tx = FakeWriteTx::new();

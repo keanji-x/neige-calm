@@ -24,20 +24,20 @@ async fn fresh_repo() -> SqlxRepo {
         .expect("open in-memory sqlite repo")
 }
 
-async fn make_cove(repo: &SqlxRepo, name: &str) -> Cove {
-    repo.cove_create(NewCove {
+async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
+    repo.area_create(NewArea {
         name: name.into(),
         color: "#abcdef".into(),
         sort: None,
     })
     .await
-    .expect("create cove")
+    .expect("create area")
 }
 
-async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
+async fn make_wave(repo: &SqlxRepo, area_id: &str, title: &str) -> Wave {
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: cove_id.into(),
+        area_id: area_id.into(),
         title: title.into(),
         sort: None,
         cwd: String::new(),
@@ -120,25 +120,25 @@ async fn make_overlay(
 // ---------------------------------------------------------------- CRUD ----
 
 #[tokio::test]
-async fn cove_crud_round_trip() {
+async fn area_crud_round_trip() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "Personal").await;
+    let c = make_area(&repo, "Personal").await;
     assert_eq!(c.name, "Personal");
 
     let got = repo
-        .cove_get(c.id.as_str())
+        .area_get(c.id.as_str())
         .await
         .unwrap()
-        .expect("cove exists");
+        .expect("area exists");
     assert_eq!(got.id, c.id);
 
-    let listed = repo.coves_list().await.unwrap();
+    let listed = repo.areas_list().await.unwrap();
     assert_eq!(listed.len(), 1);
 
     let updated = repo
-        .cove_update(
+        .area_update(
             c.id.as_str(),
-            CovePatch {
+            AreaPatch {
                 name: Some("Work".into()),
                 color: None,
                 sort: None,
@@ -149,13 +149,13 @@ async fn cove_crud_round_trip() {
     assert_eq!(updated.name, "Work");
     assert_eq!(updated.color, c.color);
 
-    repo.cove_delete(c.id.as_str()).await.unwrap();
-    assert!(repo.cove_get(c.id.as_str()).await.unwrap().is_none());
+    repo.area_delete(c.id.as_str()).await.unwrap();
+    assert!(repo.area_get(c.id.as_str()).await.unwrap().is_none());
 
-    let err = repo.cove_delete(c.id.as_str()).await.unwrap_err();
+    let err = repo.area_delete(c.id.as_str()).await.unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
     let err = repo
-        .cove_update(c.id.as_str(), CovePatch::default())
+        .area_update(c.id.as_str(), AreaPatch::default())
         .await
         .unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
@@ -164,7 +164,7 @@ async fn cove_crud_round_trip() {
 #[tokio::test]
 async fn wave_crud_round_trip() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "first").await;
     assert!(w.archived_at.is_none());
     // Issue #145 — every newly minted wave seeds at Draft.
@@ -210,7 +210,7 @@ async fn wave_crud_round_trip() {
     let err = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: "no-such-cove".into(),
+            area_id: "no-such-area".into(),
             title: "x".into(),
             sort: None,
             cwd: String::new(),
@@ -234,7 +234,7 @@ async fn wave_lifecycle_round_trips_through_patch() {
     // so a future refactor that drops the column from the UPDATE
     // statement surfaces here.
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "lifecycle-test").await;
     assert_eq!(w.lifecycle, WaveLifecycle::Draft);
 
@@ -280,25 +280,25 @@ async fn events_for_wave_filters_since_in_query() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::event::{Event, EventBus, EventScope};
     use calm_server::ids::ActorId;
-    use calm_server::wave_cove_cache::WaveCoveCache;
+    use calm_server::wave_area_cache::WaveAreaCache;
 
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let wave = make_wave(&repo, c.id.as_str(), "events-wave").await;
     let other_wave = make_wave(&repo, c.id.as_str(), "other-wave").await;
     let bus = EventBus::new();
     let role_cache = CardRoleCache::new();
-    let cove_cache = WaveCoveCache::new();
+    let area_cache = WaveAreaCache::new();
     repo.seed_card_role_cache(&role_cache).await.unwrap();
-    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&area_cache).await.unwrap();
 
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: c.id.clone(),
+        area: c.id.clone(),
     };
     let other_scope = EventScope::Wave {
         wave: other_wave.id.clone(),
-        cove: c.id.clone(),
+        area: c.id.clone(),
     };
     let first_id = repo
         .log_pure_event(
@@ -307,7 +307,7 @@ async fn events_for_wave_filters_since_in_query() {
             None,
             &bus,
             &role_cache,
-            &cove_cache,
+            &area_cache,
             Event::TaskFailed {
                 idempotency_key: "before-watermark".into(),
                 reason: "before".into(),
@@ -322,7 +322,7 @@ async fn events_for_wave_filters_since_in_query() {
         None,
         &bus,
         &role_cache,
-        &cove_cache,
+        &area_cache,
         Event::TaskFailed {
             idempotency_key: "other-wave".into(),
             reason: "other".into(),
@@ -338,7 +338,7 @@ async fn events_for_wave_filters_since_in_query() {
             None,
             &bus,
             &role_cache,
-            &cove_cache,
+            &area_cache,
             Event::TaskFailed {
                 idempotency_key: "after-watermark".into(),
                 reason: "after".into(),
@@ -379,7 +379,7 @@ async fn events_for_wave_filters_since_in_query() {
 #[tokio::test]
 async fn card_crud_round_trip() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     assert_eq!(card.payload, json!({"hello": "world"}));
@@ -412,15 +412,15 @@ async fn card_crud_round_trip() {
 // ----------------------------------------------------------- Cascades ----
 
 #[tokio::test]
-async fn cove_delete_cascades_to_waves_and_cards() {
+async fn area_delete_cascades_to_waves_and_cards() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w1 = make_wave(&repo, c.id.as_str(), "w1").await;
     let w2 = make_wave(&repo, c.id.as_str(), "w2").await;
     let c1 = make_card(&repo, w1.id.as_str(), "terminal").await;
     let c2 = make_card(&repo, w2.id.as_str(), "terminal").await;
 
-    repo.cove_delete(c.id.as_str()).await.unwrap();
+    repo.area_delete(c.id.as_str()).await.unwrap();
 
     assert!(repo.wave_get(w1.id.as_str()).await.unwrap().is_none());
     assert!(repo.wave_get(w2.id.as_str()).await.unwrap().is_none());
@@ -429,10 +429,10 @@ async fn cove_delete_cascades_to_waves_and_cards() {
 }
 
 #[tokio::test]
-async fn cove_delete_succeeds_when_wave_references_root_session() {
+async fn area_delete_succeeds_when_wave_references_root_session() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo, "rooted").await;
-    let wave = make_wave(&repo, cove.id.as_str(), "rooted wave").await;
+    let area = make_area(&repo, "rooted").await;
+    let wave = make_wave(&repo, area.id.as_str(), "rooted wave").await;
     let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
 
@@ -444,9 +444,9 @@ async fn cove_delete_succeeds_when_wave_references_root_session() {
             .unwrap();
     assert_eq!(root.as_deref(), Some(root_session_id.as_str()));
 
-    repo.cove_delete(cove.id.as_str()).await.unwrap();
+    repo.area_delete(area.id.as_str()).await.unwrap();
 
-    assert!(repo.cove_get(cove.id.as_str()).await.unwrap().is_none());
+    assert!(repo.area_get(area.id.as_str()).await.unwrap().is_none());
     assert!(repo.wave_get(wave.id.as_str()).await.unwrap().is_none());
     assert!(
         repo.card_get(root_card.id.as_str())
@@ -459,7 +459,7 @@ async fn cove_delete_succeeds_when_wave_references_root_session() {
 #[tokio::test]
 async fn wave_delete_cascades_to_cards() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let other_wave = make_wave(&repo, c.id.as_str(), "other").await;
@@ -487,8 +487,8 @@ async fn wave_delete_cascades_to_cards() {
 #[tokio::test]
 async fn root_card_delete_clears_wave_root_session_id() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo, "rooted-card").await;
-    let wave = make_wave(&repo, cove.id.as_str(), "rooted wave").await;
+    let area = make_area(&repo, "rooted-card").await;
+    let wave = make_wave(&repo, area.id.as_str(), "rooted wave").await;
     let root_card = make_card(&repo, wave.id.as_str(), "codex").await;
     let other_card = make_card(&repo, wave.id.as_str(), "terminal").await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
@@ -530,7 +530,7 @@ async fn root_card_delete_clears_wave_root_session_id() {
 #[tokio::test]
 async fn card_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
 
@@ -550,7 +550,7 @@ async fn card_delete_sweeps_card_overlays() {
 #[tokio::test]
 async fn wave_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card1 = make_card(&repo, w.id.as_str(), "terminal").await;
     let card2 = make_card(&repo, w.id.as_str(), "terminal").await;
@@ -577,7 +577,7 @@ async fn wave_delete_sweeps_card_overlays() {
 #[tokio::test]
 async fn wave_delete_sweeps_wave_and_view_overlays() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     make_overlay(&repo, "p", "wave", w.id.as_str(), "status").await;
@@ -600,10 +600,10 @@ async fn wave_delete_sweeps_wave_and_view_overlays() {
 }
 
 #[tokio::test]
-async fn cove_delete_sweeps_all_overlays_transitively() {
+async fn area_delete_sweeps_all_overlays_transitively() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
-    make_overlay(&repo, "p", "cove", c.id.as_str(), "status").await;
+    let c = make_area(&repo, "C").await;
+    make_overlay(&repo, "p", "area", c.id.as_str(), "status").await;
 
     let waves = [
         make_wave(&repo, c.id.as_str(), "w1").await,
@@ -622,10 +622,10 @@ async fn cove_delete_sweeps_all_overlays_transitively() {
         }
     }
 
-    repo.cove_delete(c.id.as_str()).await.unwrap();
+    repo.area_delete(c.id.as_str()).await.unwrap();
 
     assert!(
-        repo.overlays_for("cove", c.id.as_str())
+        repo.overlays_for("area", c.id.as_str())
             .await
             .unwrap()
             .is_empty()
@@ -665,17 +665,17 @@ async fn overlay_sweep_is_idempotent_no_rows() {
 // --- Terminal FK contract regression tests (issues #4, #197) ---------------
 //
 // Originally these three tests documented the `ON DELETE CASCADE` FK on
-// `terminals.card_id`: deleting a card / wave / cove silently nuked the
+// `terminals.card_id`: deleting a card / wave / area silently nuked the
 // terminal row beneath it. Issue #197 inverted that contract: the FK is now
 // `ON DELETE RESTRICT` (migration 0011) so the schema **refuses** to nuke
 // the terminal row implicitly — eager teardown in the route handlers
 // (`routes/cards.rs::delete_card`, `routes/waves.rs::delete_wave`,
-// `routes/coves.rs::delete_cove`) owns the kill-daemon-unlink-socket
+// `routes/areas.rs::delete_area`) owns the kill-daemon-unlink-socket
 // sequence and explicitly drops the terminal row before the parent.
 //
 // The tests below now verify the RESTRICT semantics at the bare
-// `Repo::card_delete` / `wave_delete` / `cove_delete` surface: a card/
-// wave/cove that has a live terminal underneath cannot be deleted; once
+// `Repo::card_delete` / `wave_delete` / `area_delete` surface: a card/
+// wave/area that has a live terminal underneath cannot be deleted; once
 // the terminal row is removed, the parent delete proceeds.
 
 async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
@@ -693,7 +693,7 @@ async fn make_terminal(repo: &SqlxRepo, card_id: &str) -> Terminal {
 #[tokio::test]
 async fn fk_restrict_card_delete_blocked_by_terminal() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
@@ -719,7 +719,7 @@ async fn fk_restrict_card_delete_blocked_by_terminal() {
 #[tokio::test]
 async fn fk_restrict_wave_delete_blocked_by_terminal_under_card() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
@@ -771,26 +771,26 @@ async fn fk_restrict_wave_delete_blocked_by_terminal_under_card() {
 }
 
 #[tokio::test]
-async fn fk_restrict_cove_delete_blocked_by_terminal_under_subtree() {
+async fn fk_restrict_area_delete_blocked_by_terminal_under_subtree() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
-    let err = repo.cove_delete(c.id.as_str()).await.unwrap_err();
+    let err = repo.area_delete(c.id.as_str()).await.unwrap_err();
     assert!(
         matches!(err, CalmError::Db(_)),
         "expected an FK constraint error from sqlx, got: {err:?}"
     );
-    assert!(repo.cove_get(c.id.as_str()).await.unwrap().is_some());
+    assert!(repo.area_get(c.id.as_str()).await.unwrap().is_some());
     assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_some());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_some());
     assert!(repo.terminal_get(term.id.as_str()).await.unwrap().is_some());
 
     repo.terminal_delete(term.id.as_str()).await.unwrap();
-    repo.cove_delete(c.id.as_str()).await.unwrap();
-    assert!(repo.cove_get(c.id.as_str()).await.unwrap().is_none());
+    repo.area_delete(c.id.as_str()).await.unwrap();
+    assert!(repo.area_get(c.id.as_str()).await.unwrap().is_none());
     assert!(repo.wave_get(w.id.as_str()).await.unwrap().is_none());
     assert!(repo.card_get(card.id.as_str()).await.unwrap().is_none());
 }
@@ -798,21 +798,21 @@ async fn fk_restrict_cove_delete_blocked_by_terminal_under_subtree() {
 // ----------------------------------------------------- Sort defaulting ----
 
 #[tokio::test]
-async fn sort_defaulting_assigns_1_2_3_for_coves() {
+async fn sort_defaulting_assigns_1_2_3_for_areas() {
     let repo = fresh_repo().await;
-    let a = make_cove(&repo, "a").await;
-    let b = make_cove(&repo, "b").await;
-    let c = make_cove(&repo, "c").await;
+    let a = make_area(&repo, "a").await;
+    let b = make_area(&repo, "b").await;
+    let c = make_area(&repo, "c").await;
     assert_eq!(a.sort, 1.0);
     assert_eq!(b.sort, 2.0);
     assert_eq!(c.sort, 3.0);
 }
 
 #[tokio::test]
-async fn sort_defaulting_is_scoped_per_cove_for_waves() {
+async fn sort_defaulting_is_scoped_per_area_for_waves() {
     let repo = fresh_repo().await;
-    let c1 = make_cove(&repo, "c1").await;
-    let c2 = make_cove(&repo, "c2").await;
+    let c1 = make_area(&repo, "c1").await;
+    let c2 = make_area(&repo, "c2").await;
     let w1a = make_wave(&repo, c1.id.as_str(), "w1a").await;
     let w1b = make_wave(&repo, c1.id.as_str(), "w1b").await;
     let w2a = make_wave(&repo, c2.id.as_str(), "w2a").await;
@@ -825,7 +825,7 @@ async fn sort_defaulting_is_scoped_per_cove_for_waves() {
 #[tokio::test]
 async fn sort_defaulting_is_scoped_per_wave_for_cards() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "c").await;
+    let c = make_area(&repo, "c").await;
     let w1 = make_wave(&repo, c.id.as_str(), "w1").await;
     let w2 = make_wave(&repo, c.id.as_str(), "w2").await;
     let c1a = make_card(&repo, w1.id.as_str(), "terminal").await;
@@ -843,7 +843,7 @@ async fn sort_defaulting_is_scoped_per_wave_for_cards() {
 #[tokio::test]
 async fn wave_detail_includes_sorted_cards_and_scoped_overlays() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let other_w = make_wave(&repo, c.id.as_str(), "other").await;
 
@@ -916,7 +916,7 @@ async fn wave_detail_returns_none_for_missing_wave() {
 #[tokio::test]
 async fn overlay_upsert_is_idempotent_on_unique_key() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     let p = NewOverlay {
@@ -951,15 +951,15 @@ async fn overlay_upsert_is_idempotent_on_unique_key() {
 }
 
 #[tokio::test]
-async fn overlays_by_kind_returns_all_wave_overlays_across_coves() {
+async fn overlays_by_kind_returns_all_wave_overlays_across_areas() {
     let repo = fresh_repo().await;
-    let c1 = make_cove(&repo, "C1").await;
-    let c2 = make_cove(&repo, "C2").await;
+    let c1 = make_area(&repo, "C1").await;
+    let c2 = make_area(&repo, "C2").await;
     let w1 = make_wave(&repo, c1.id.as_str(), "W1").await;
     let w2 = make_wave(&repo, c2.id.as_str(), "W2").await;
     let card = make_card(&repo, w1.id.as_str(), "terminal").await;
 
-    // Two wave overlays in different coves + one card overlay.
+    // Two wave overlays in different areas + one card overlay.
     repo.overlay_upsert(NewOverlay {
         plugin_id: "p".into(),
         entity_kind: "wave".into(),
@@ -1005,7 +1005,7 @@ async fn overlays_by_kind_returns_all_wave_overlays_across_coves() {
 #[tokio::test]
 async fn terminal_create_rejects_duplicate_card_id() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
 
@@ -1061,7 +1061,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
 #[tokio::test]
 async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1126,7 +1126,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
 #[tokio::test]
 async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     // Sanity: wave has no cards yet, and no orphan terminals exist.
@@ -1174,7 +1174,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
 #[tokio::test]
 async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1206,7 +1206,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
 #[tokio::test]
 async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     // Pre-seed two cards so the next sort default lands at 3.0 — same
@@ -1241,7 +1241,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
 #[tokio::test]
 async fn terminal_create_tx_enforces_unique_card_id() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let _seeded = make_terminal(&repo, card.id.as_str()).await;
@@ -1298,7 +1298,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
 #[tokio::test]
 async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
@@ -1375,7 +1375,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
 #[tokio::test]
 async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     assert!(repo.cards_by_wave(w.id.as_str()).await.unwrap().is_empty());
@@ -1421,7 +1421,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
 #[tokio::test]
 async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
@@ -1776,7 +1776,7 @@ async fn open_succeeds_on_fresh_and_current_db() {
 #[tokio::test]
 async fn terminal_set_exit_round_trip_all_branches() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "W").await;
     let card = make_card(&repo, w.id.as_str(), "terminal").await;
     let t = repo
@@ -1834,7 +1834,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     use calm_server::model::{CardRole, NewCard};
 
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "shared-boot-exclusion").await;
+    let c = make_area(&repo, "shared-boot-exclusion").await;
     let mapped_wave = make_wave(&repo, c.id.as_str(), "mapped").await;
     let pending_wave = make_wave(&repo, c.id.as_str(), "").await;
     let phantom_wave = make_wave(&repo, c.id.as_str(), "phantom").await;

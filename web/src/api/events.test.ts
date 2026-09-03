@@ -128,14 +128,14 @@ describe('EventStream cursor', () => {
     const ws = currentWs();
     ws.open();
 
-    ws.push({ _id: 7, ev: 'cove.deleted', data: { id: 'c-x' } });
+    ws.push({ _id: 7, ev: 'area.deleted', data: { id: 'c-x' } });
     expect(s.cursor).toBe(7);
     // requestIdleCallback in jsdom falls back to setTimeout(0); flush.
     await new Promise((r) => setTimeout(r, 0));
     expect(localStorage.getItem('calm:sync:cursor')).toBe('7');
 
     // Larger id advances.
-    ws.push({ _id: 9, ev: 'cove.deleted', data: { id: 'c-y' } });
+    ws.push({ _id: 9, ev: 'area.deleted', data: { id: 'c-y' } });
     expect(s.cursor).toBe(9);
     await new Promise((r) => setTimeout(r, 0));
     expect(localStorage.getItem('calm:sync:cursor')).toBe('9');
@@ -151,13 +151,13 @@ describe('EventStream cursor', () => {
     // `_id: 0` is the synthetic-emit sentinel (bus.emit in tests). The
     // cursor must not regress to 0 — otherwise the next reconnect would
     // ask for a full replay it doesn't need.
-    ws.push({ _id: 0, ev: 'cove.deleted', data: { id: 'c-x' } });
+    ws.push({ _id: 0, ev: 'area.deleted', data: { id: 'c-x' } });
     expect(s.cursor).toBeNull();
 
-    ws.push({ ev: 'cove.deleted', data: { id: 'c-x' } });
+    ws.push({ ev: 'area.deleted', data: { id: 'c-x' } });
     expect(s.cursor).toBeNull();
 
-    ws.push({ _id: 'nope', ev: 'cove.deleted', data: { id: 'c-x' } });
+    ws.push({ _id: 'nope', ev: 'area.deleted', data: { id: 'c-x' } });
     expect(s.cursor).toBeNull();
   });
 
@@ -168,11 +168,11 @@ describe('EventStream cursor', () => {
     const ws = currentWs();
     ws.open();
 
-    ws.push({ _id: 100, ev: 'cove.deleted', data: { id: 'c-x' } });
+    ws.push({ _id: 100, ev: 'area.deleted', data: { id: 'c-x' } });
     expect(s.cursor).toBe(100);
 
     // A smaller `_id` arriving after must NOT regress the cursor.
-    ws.push({ _id: 50, ev: 'cove.deleted', data: { id: 'c-y' } });
+    ws.push({ _id: 50, ev: 'area.deleted', data: { id: 'c-y' } });
     expect(s.cursor).toBe(100);
   });
 });
@@ -217,7 +217,7 @@ describe('EventStream future-protocol eventVersion gate (issue #198)', () => {
       ws.push({
         _id: 42,
         eventVersion: 99,
-        ev: 'cove.deleted',
+        ev: 'area.deleted',
         data: { id: 'c-future' },
       });
 
@@ -314,7 +314,7 @@ describe('EventStream future-protocol eventVersion gate (issue #198)', () => {
     ws.push({
       _id: 17,
       eventVersion: 99,
-      ev: 'cove.deleted',
+      ev: 'area.deleted',
       data: { id: 'c-x' },
     });
     expect(s.cursor).toBe(17);
@@ -331,7 +331,7 @@ describe('EventStream future-protocol eventVersion gate (issue #198)', () => {
     ws.push({
       _id: 3,
       eventVersion: 2,
-      ev: 'cove.deleted',
+      ev: 'area.deleted',
       data: { id: 'c-z' },
     });
     expect(s.cursor).toBe(3);
@@ -398,7 +398,7 @@ describe('EventStream reconnect', () => {
       const ws1 = currentWs();
       ws1.open();
 
-      ws1.push({ _id: 5, ev: 'cove.deleted', data: { id: 'c-x' } });
+      ws1.push({ _id: 5, ev: 'area.deleted', data: { id: 'c-x' } });
       // Flush requestIdleCallback fallback (setTimeout 0) under fake timers.
       vi.advanceTimersByTime(1);
       expect(localStorage.getItem('calm:sync:cursor')).toBe('5');

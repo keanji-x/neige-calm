@@ -29,13 +29,13 @@ use std::sync::Arc;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_tx, cove_create_tx, overlay_upsert_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, wave_create_tx,
 };
 use calm_server::db::write_with_event_typed;
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave, Wave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave, Wave};
 
 /// Boot an in-memory `SqlxRepo` and a fresh `EventBus`. Repo is returned
 /// as both `Arc<dyn Repo>` (for trait-based calls) and `Arc<SqlxRepo>` (for
@@ -59,12 +59,12 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
     let (repo, concrete, bus) = boot().await;
     let mut sub = bus.subscribe();
 
-    let p = NewCove {
+    let p = NewArea {
         name: "c".into(),
         color: "#000".into(),
         sort: None,
     };
-    let (cove, event_id) = write_with_event_typed(
+    let (area, event_id) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -72,12 +72,12 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(tx, p).await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
+                let area = area_create_tx(tx, p).await?;
+                Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
     )
@@ -85,8 +85,8 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
     .expect("write_with_event ok");
 
     // Entity persisted.
-    let fetched = repo.cove_get(cove.id.as_str()).await.unwrap();
-    assert_eq!(fetched.map(|c| c.id), Some(cove.id.clone()));
+    let fetched = repo.area_get(area.id.as_str()).await.unwrap();
+    assert_eq!(fetched.map(|c| c.id), Some(area.id.clone()));
 
     // Event row persisted with the same id we got back.
     let row: (i64, String, String) =
@@ -96,7 +96,7 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
             .await
             .unwrap();
     assert_eq!(row.0, event_id);
-    assert_eq!(row.1, "cove.updated");
+    assert_eq!(row.1, "area.updated");
     // PR2 of #136: events.actor stores the JSON form of the typed
     // ActorId. The `User` unit variant serializes as `{"kind":"User"}`.
     let actor_json: serde_json::Value = serde_json::from_str(&row.2).unwrap();
@@ -106,7 +106,7 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
     let env = sub.try_recv().expect("envelope delivered");
     assert_eq!(env.id, event_id);
     match env.event {
-        Event::CoveUpdated(c) => assert_eq!(c.id, cove.id),
+        Event::AreaUpdated(c) => assert_eq!(c.id, area.id),
         _ => panic!("wrong event"),
     }
 }
@@ -120,10 +120,10 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
     let (repo, concrete, bus) = boot().await;
     let mut sub = bus.subscribe();
 
-    // Seed a cove so the wave_create_tx step inside the closure succeeds —
+    // Seed an area so the wave_create_tx step inside the closure succeeds —
     // we only want the *closure-level* error to fail the txn.
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -139,7 +139,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         .await
         .unwrap();
 
-    let cove_id = cove.id.clone();
+    let area_id = area.id.clone();
     let err = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
@@ -148,7 +148,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -157,7 +157,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                     tx,
                     NewWave {
                         template_input: None,
-                        cove_id,
+                        area_id,
                         title: "doomed".into(),
                         sort: None,
                         cwd: String::new(),
@@ -168,7 +168,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                     },
                     None,
                     &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    &calm_server::wave_area_cache::WaveAreaCache::new(),
                 )
                 .await?;
                 // ... but then the closure deliberately fails.
@@ -194,8 +194,8 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
         .unwrap();
     assert_eq!(events_after.0, events_before.0);
 
-    // And no broadcast fired. (We seeded with the cove pre-txn, which did
-    // produce a write directly to repo.cove_create — that path does NOT
+    // And no broadcast fired. (We seeded with the area pre-txn, which did
+    // produce a write directly to repo.area_create — that path does NOT
     // emit on the bus today, so the subscriber's queue is empty.)
     assert!(sub.try_recv().is_err());
 }
@@ -220,7 +220,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
 async fn event_insert_failure_rolls_back_entity_write() {
     let (repo, concrete, bus) = boot().await;
 
-    let coves_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM coves")
+    let areas_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM areas")
         .fetch_one(concrete.pool())
         .await
         .unwrap();
@@ -235,13 +235,13 @@ async fn event_insert_failure_rolls_back_entity_write() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "c".into(),
                         color: "#000".into(),
                         sort: None,
@@ -251,7 +251,7 @@ async fn event_insert_failure_rolls_back_entity_write() {
                 // Drop the events table so the wrapper's subsequent
                 // `INSERT INTO events` fails inside the same txn.
                 sqlx::query("DROP TABLE events").execute(&mut **tx).await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
+                Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
     )
@@ -262,15 +262,15 @@ async fn event_insert_failure_rolls_back_entity_write() {
         res
     );
 
-    // The cove must have been rolled back even though the closure's
+    // The area must have been rolled back even though the closure's
     // explicit entity-write succeeded — that's the cross-step atomicity
     // guarantee the design hinges on.
-    let coves_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM coves")
+    let areas_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM areas")
         .fetch_one(concrete.pool())
         .await
         .unwrap();
     assert_eq!(
-        coves_after.0, coves_before.0,
+        areas_after.0, areas_before.0,
         "entity write must roll back when event-insert fails"
     );
 }
@@ -285,7 +285,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
     let mut live = bus.subscribe();
 
     // Drive a small write sequence through the wrapper.
-    let (cove, _) = write_with_event_typed(
+    let (area, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -293,26 +293,26 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "c1".into(),
                         color: "#000".into(),
                         sort: None,
                     },
                 )
                 .await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
+                Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
     )
     .await
     .unwrap();
-    let cove_id = cove.id.clone();
+    let area_id = area.id.clone();
 
     let (wave, _) = write_with_event_typed(
         repo.as_ref(),
@@ -322,7 +322,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -330,7 +330,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                     tx,
                     NewWave {
                         template_input: None,
-                        cove_id,
+                        area_id,
                         title: "w1".into(),
                         sort: None,
                         cwd: String::new(),
@@ -341,7 +341,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                     },
                     None,
                     &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    &calm_server::wave_area_cache::WaveAreaCache::new(),
                 )
                 .await?;
                 Ok((
@@ -363,7 +363,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -418,9 +418,9 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
 async fn replay_then_live_dedup_under_concurrent_write() {
     let (repo, concrete, bus) = boot().await;
 
-    // Seed a cove so the wave creates have somewhere to live.
-    let cove = repo
-        .cove_create(NewCove {
+    // Seed an area so the wave creates have somewhere to live.
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -431,7 +431,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
     // ----- pre-replay history --------------------------------------------
     // Drive three writes through `write_with_event` first.
     for i in 0..3 {
-        let cove_id = cove.id.clone();
+        let area_id = area.id.clone();
         let title = format!("w{}", i);
         write_with_event_typed(
             repo.as_ref(),
@@ -441,7 +441,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             &bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
@@ -449,7 +449,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         tx,
                         NewWave {
                             template_input: None,
-                            cove_id,
+                            area_id,
                             title,
                             sort: None,
                             cwd: String::new(),
@@ -460,7 +460,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         },
                         None,
                         &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                        &calm_server::wave_area_cache::WaveAreaCache::new(),
                     )
                     .await?;
                     Ok((
@@ -507,7 +507,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
 
     // ----- inject a write while the replay is blocked --------------------
     {
-        let cove_id = cove.id.clone();
+        let area_id = area.id.clone();
         write_with_event_typed(
             repo.as_ref(),
             ActorId::User,
@@ -516,7 +516,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
             &bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
@@ -524,7 +524,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         tx,
                         NewWave {
                             template_input: None,
-                            cove_id,
+                            area_id,
                             title: "during-replay".into(),
                             sort: None,
                             cwd: String::new(),
@@ -535,7 +535,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                         },
                         None,
                         &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                        &calm_server::wave_area_cache::WaveAreaCache::new(),
                     )
                     .await?;
                     Ok((
@@ -603,24 +603,24 @@ async fn replay_then_live_dedup_under_concurrent_write() {
 
 #[derive(Clone, Debug)]
 enum Op {
-    CreateCove(String),
-    CreateWaveInLastCove(String),
+    CreateArea(String),
+    CreateWaveInLastArea(String),
     CreateCardInLastWave(String),
     SetOverlayOnLastCard(String),
 }
 
 /// Apply an op through `write_with_event` against the shared repo + bus.
 /// Returns `true` if the op committed, `false` if it was skipped (e.g.
-/// `CreateWaveInLastCove` with no cove yet).
+/// `CreateWaveInLastArea` with no area yet).
 async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &Op) -> bool {
     match op {
-        Op::CreateCove(name) => {
-            let p = NewCove {
+        Op::CreateArea(name) => {
+            let p = NewArea {
                 name: name.clone(),
                 color: "#abc".into(),
                 sort: None,
             };
-            let (cove, _) = write_with_event_typed(
+            let (area, _) = write_with_event_typed(
                 repo,
                 ActorId::User,
                 EventScope::System,
@@ -628,22 +628,22 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    calm_server::wave_area_cache::WaveAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
-                        let c = cove_create_tx(tx, p).await?;
-                        Ok((c.clone(), Event::CoveUpdated(c)))
+                        let c = area_create_tx(tx, p).await?;
+                        Ok((c.clone(), Event::AreaUpdated(c)))
                     })
                 },
             )
             .await
             .unwrap();
-            state.last_cove = Some(cove.id);
+            state.last_area = Some(area.id);
             true
         }
-        Op::CreateWaveInLastCove(title) => {
-            let Some(cove_id) = state.last_cove.clone() else {
+        Op::CreateWaveInLastArea(title) => {
+            let Some(area_id) = state.last_area.clone() else {
                 return false;
             };
             let title = title.clone();
@@ -655,7 +655,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    calm_server::wave_area_cache::WaveAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
@@ -663,7 +663,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                             tx,
                             NewWave {
                                 template_input: None,
-                                cove_id,
+                                area_id,
                                 title,
                                 sort: None,
                                 cwd: String::new(),
@@ -674,7 +674,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                             },
                             None,
                             &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                            &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                            &calm_server::wave_area_cache::WaveAreaCache::new(),
                         )
                         .await?;
                         Ok((
@@ -703,7 +703,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    calm_server::wave_area_cache::WaveAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
@@ -749,7 +749,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 bus,
                 &calm_server::state::WriteContext::new(
                     calm_server::card_role_cache::CardRoleCache::new(),
-                    calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    calm_server::wave_area_cache::WaveAreaCache::new(),
                 ),
                 move |tx| {
                     Box::pin(async move {
@@ -767,7 +767,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
 
 #[derive(Default)]
 struct PropState {
-    last_cove: Option<calm_server::ids::CoveId>,
+    last_area: Option<calm_server::ids::AreaId>,
     last_wave: Option<calm_server::ids::WaveId>,
     last_card: Option<calm_server::ids::CardId>,
 }
@@ -780,13 +780,13 @@ async fn property_cold_replay_converges_with_continuous_subscriber() {
     // once we're willing to add the crate; design §6.1 calls it out
     // explicitly.
     let ops = vec![
-        Op::CreateWaveInLastCove("skip-me".into()), // no cove yet → skipped
-        Op::CreateCove("alpha".into()),
-        Op::CreateWaveInLastCove("aw1".into()),
+        Op::CreateWaveInLastArea("skip-me".into()), // no area yet → skipped
+        Op::CreateArea("alpha".into()),
+        Op::CreateWaveInLastArea("aw1".into()),
         Op::CreateCardInLastWave("ac1".into()),
         Op::SetOverlayOnLastCard("ao1".into()),
-        Op::CreateCove("beta".into()),
-        Op::CreateWaveInLastCove("bw1".into()),
+        Op::CreateArea("beta".into()),
+        Op::CreateWaveInLastArea("bw1".into()),
         Op::CreateCardInLastWave("bc1".into()),
         Op::CreateCardInLastWave("bc2".into()),
         Op::SetOverlayOnLastCard("bo1".into()),
@@ -860,7 +860,7 @@ async fn event_version_round_trips_from_write_to_replay() {
     let (repo, concrete, bus) = boot().await;
 
     // Write one event through the production path.
-    let (_cove, event_id) = write_with_event_typed(
+    let (_area, event_id) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -868,20 +868,20 @@ async fn event_version_round_trips_from_write_to_replay() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "version-rt".into(),
                         color: "#000".into(),
                         sort: None,
                     },
                 )
                 .await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
+                Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
     )
@@ -931,7 +931,7 @@ async fn replay_treats_unstamped_row_as_version_one() {
     // codifying by requiring the column to be NOT NULL DEFAULT 1).
     sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation)
-           VALUES ('cove.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}', 'user', 0, NULL)"##,
+           VALUES ('area.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}', 'user', 0, NULL)"##,
     )
     .execute(concrete.pool())
     .await
@@ -960,12 +960,12 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     // Hand-insert a pre-PR2 row: only the columns that existed before
     // migration 0007 are bound. The `scope_kind` column has a `NOT NULL
     // DEFAULT 'system'` clause, so it backfills automatically; the
-    // ancestor cols (`scope_cove` / `scope_wave` / `scope_card`) stay
+    // ancestor cols (`scope_area` / `scope_wave` / `scope_card`) stay
     // NULL. This is exactly the shape any row written before PR2 lands
     // takes after the migration's column defaults fire.
     sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version)
-           VALUES ('cove.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}',
+           VALUES ('area.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}',
                    '"user"', 0, NULL, 1)"##,
     )
     .execute(concrete.pool())
@@ -975,9 +975,9 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     // Hand-insert a post-PR2 row with full scope_* columns populated.
     sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version,
-                                 scope_kind, scope_cove, scope_wave, scope_card)
-           VALUES ('cove.updated', '{"id":"c2","name":"n2","color":"#000","sort":0,"created_at":0,"updated_at":0}',
-                   '"user"', 0, NULL, 1, 'cove', 'c2', NULL, NULL)"##,
+                                 scope_kind, scope_area, scope_wave, scope_card)
+           VALUES ('area.updated', '{"id":"c2","name":"n2","color":"#000","sort":0,"created_at":0,"updated_at":0}',
+                   '"user"', 0, NULL, 1, 'area', 'c2', NULL, NULL)"##,
     )
     .execute(concrete.pool())
     .await
@@ -996,7 +996,7 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     let (_, _, scope, _) = &log[1];
     assert_eq!(
         *scope,
-        EventScope::Cove { cove: "c2".into() },
+        EventScope::Area { area: "c2".into() },
         "post-PR2 row reconstructs typed scope"
     );
 }

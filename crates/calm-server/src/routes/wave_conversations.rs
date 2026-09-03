@@ -7,7 +7,7 @@
 //! all; the card, its session and its codex thread are all minted by the first
 //! message, which is what this module's POST does in one operation.
 //!
-//! # How this differs from `cove_conversations`
+//! # How this differs from `area_conversations`
 //!
 //! The retry contract is shared verbatim (`conversations_shared`), the derived
 //! ids live in separate namespaces (`conversation_keys`), and the two things
@@ -50,7 +50,7 @@ use crate::routes::terminal_cards::{
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
-/// The `kind` every row of this list carries. Distinct from the cove list's
+/// The `kind` every row of this list carries. Distinct from the area list's
 /// `"shared-chat"`: see [`WaveConversationSummary::kind`].
 const WAVE_CONVERSATION_KIND: &str = "wave-assistant";
 
@@ -99,13 +99,13 @@ pub(crate) async fn list_wave_conversations(
     tag = "waves",
     params(
         ("wave_id" = String, Path, description = "Wave id"),
-        ("Idempotency-Key" = String, Header, description = "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, with the same four arms as `POST /api/coves/{cove_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation."),
+        ("Idempotency-Key" = String, Header, description = "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, with the same four arms as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation."),
     ),
     request_body = NewWaveConversationBody,
     responses(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = WaveConversationSummary),
         (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
-        (status = 403, description = "The wave is a cove chat wave; its conversations are created through the cove endpoint.", body = ErrorBody),
+        (status = 403, description = "The wave is an area chat wave; its conversations are created through the area endpoint.", body = ErrorBody),
         (status = 404, description = "Wave not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
         (status = 500, description = "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.", body = ErrorBody),
@@ -115,7 +115,7 @@ pub(crate) async fn list_wave_conversations(
 /// Mint a wave assistant conversation and deliver its first message.
 ///
 /// The `Idempotency-Key` contract, the first-message claim and both of its
-/// known gaps are identical to `create_cove_conversation`, whose doc comment is
+/// known gaps are identical to `create_area_conversation`, whose doc comment is
 /// the long-form statement of all of them; this handler differs only in the
 /// profile it mints under and the namespace its ids come from. The gaps are
 /// restated in brief where they bite:
@@ -160,15 +160,15 @@ pub(crate) async fn create_wave_conversation(
         .wave_get(&wave_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
-    // A cove chat wave is hidden scaffolding whose conversations are the cove
+    // An area chat wave is hidden scaffolding whose conversations are the area
     // endpoint's plain chats. Narrowing, not the guard `validate` relies on:
     // the mint's actual wall is the derived-id recomputation, which does not
     // care what kind of wave this is. This exists so the two endpoints cannot
     // both plant conversations on one wave and produce a list the UI has no
     // place to show.
-    if wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
+    if wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
-            "wave {} is a cove chat wave; create its conversations through the cove endpoint",
+            "wave {} is an area chat wave; create its conversations through the area endpoint",
             wave.id
         )));
     }
@@ -273,21 +273,21 @@ pub(crate) async fn create_wave_conversation(
 
 /// Read the assistant conversation rows of one wave.
 ///
-/// **Not** a reuse of `cove_conversations::load_conversation_summaries`, and
+/// **Not** a reuse of `area_conversations::load_conversation_summaries`, and
 /// the difference is the whole point of G3. That query selects
 /// `role = 'worker' AND kind = 'codex' AND harness_profile = 'plain_chat'`,
-/// which on a cove chat wave is exact because nothing else lives there. An
+/// which on an area chat wave is exact because nothing else lives there. An
 /// ordinary wave is populated: a spec card, a report card, and every codex
 /// worker card the dispatcher has spawned for the plan (#1149). Widen this
 /// predicate to "a codex card" and the conversation list fills up with the
 /// wave's workers.
 ///
-/// `role = 'assistant'` is the primary discriminator and, unlike the cove
+/// `role = 'assistant'` is the primary discriminator and, unlike the area
 /// query's `role` conjunct, it is exact rather than defence in depth: the role
 /// column is what the authorization gate reads, so a row that is listed here is
 /// by construction a row that holds the assistant tool surface.
 ///
-/// The marker conjunct is kept as the second half for the same reason the cove
+/// The marker conjunct is kept as the second half for the same reason the area
 /// query keeps `kind`: nothing stops a future card from being created with the
 /// assistant role by some other path, and a conversation the user can open must
 /// be one this endpoint knows how to mint.

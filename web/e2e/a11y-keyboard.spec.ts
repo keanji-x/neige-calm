@@ -5,10 +5,10 @@
 // (or any keyboard-only user, screen-reader user, etc.) can drive every
 // flow the product cares about using role/name and key events alone.
 //
-// The one carve-out is entry-point setup (sidebar → cove → wave) in the
+// The one carve-out is entry-point setup (sidebar → area → wave) in the
 // list-view reorder test: that test clicks its way to the wave surface to
 // sidestep `tabUntil` brittleness across test runs that accumulate waves.
-// Sidebar / cove navigation has its own dedicated keyboard coverage
+// Sidebar / area navigation has its own dedicated keyboard coverage
 // elsewhere in this suite — the plumbing clicks there are not the
 // contract under test. Every such click carries an inline comment.
 //
@@ -22,10 +22,10 @@
 // does NOT project them onto the entity tables (see
 // `crates/calm-server/src/replay.rs`); that's intentional, so the entity
 // tables start empty. Issue #175 — the web app's Today page then
-// auto-creates a hidden **system** cove + "Today" wave + terminal card
-// via `useTodayTerminal` on first paint; that cove is filtered out of
-// `GET /api/coves` by default, so the sidebar never renders it. Each
-// `beforeEach` below mints an `Atlas` **user** cove via the REST API
+// auto-creates a hidden **system** area + "Today" wave + terminal card
+// via `useTodayTerminal` on first paint; that area is filtered out of
+// `GET /api/areas` by default, so the sidebar never renders it. Each
+// `beforeEach` below mints an `Atlas` **user** area via the REST API
 // so the keyboard tests have a stable sidebar anchor to navigate from.
 //
 // Where it matters, we pair the UI assertion with an event-trace
@@ -35,8 +35,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
   createIframeCard,
-  createUserCove,
-  createWaveInCove,
+  createUserArea,
+  createWaveInArea,
   resetReplayServer,
   seedWaveViewMode,
 } from './helpers/reset';
@@ -118,7 +118,7 @@ async function tabUntil(
         }
       }
       // aria-describedby → joined text of referenced elements. Mirrors
-      // the aria-labelledby path above; used by the Cove/Wave rename
+      // the aria-labelledby path above; used by the Area/Wave rename
       // surfaces to convey the rename verb without polluting the name.
       const describedBy = el.getAttribute('aria-describedby');
       let describedByText: string | null = null;
@@ -149,14 +149,14 @@ async function tabUntil(
 }
 
 // Wait for the auto-bootstrap to land. `useTodayTerminal` runs on first
-// paint of the Today page and creates a hidden system cove + "Today"
-// wave + terminal card (issue #175 — the system cove is not visible
+// paint of the Today page and creates a hidden system area + "Today"
+// wave + terminal card (issue #175 — the system area is not visible
 // in the sidebar). The `beforeEach` below also mints an `Atlas` user
-// cove via REST so the keyboard tests have a stable sidebar anchor;
-// this helper waits for that user cove to render (the WS feed
-// invalidates the coves query and the live render picks it up).
+// area via REST so the keyboard tests have a stable sidebar anchor;
+// this helper waits for that user area to render (the WS feed
+// invalidates the areas query and the live render picks it up).
 async function waitForBootstrap(page: Page): Promise<void> {
-  // `exact: true` excludes the per-row "Delete cove \"Atlas\"" button
+  // `exact: true` excludes the per-row "Delete area \"Atlas\"" button
   // whose accessible name also contains "Atlas" — strict mode otherwise
   // resolves to two buttons.
   await expect(
@@ -190,21 +190,21 @@ test.describe('a11y · keyboard-only navigation', () => {
     // page navigation below mounts against a hermetic starting state
     // regardless of what an earlier spec did. The endpoint is mounted
     // only by `replay --serve` (see `crates/calm-server/src/bin/replay.rs`).
-    // Without this hook, accumulating cove/wave/card mutations across
+    // Without this hook, accumulating area/wave/card mutations across
     // tests cause flakes — see issue #56 followup.
     await resetReplayServer(request);
-    // Issue #175 — the kernel hides the system cove that hosts the
+    // Issue #175 — the kernel hides the system area that hosts the
     // default Today terminal from the sidebar. Mint a user-visible
-    // `Atlas` cove + `Today` wave via the REST API so the keyboard
+    // `Atlas` area + `Today` wave via the REST API so the keyboard
     // tests below have a stable sidebar anchor (they all
     // `tabUntil(... /atlas/i)`) and a Today wave under it (the
     // WaveRow tests anchor on /today/i inside the Waves region). The
-    // replay server's `POST /api/coves` + `POST /api/waves` are the
+    // replay server's `POST /api/areas` + `POST /api/waves` are the
     // same handlers production uses; the live frontend invalidates the
-    // coves / waves queries on the resulting WS events and renders the
+    // areas / waves queries on the resulting WS events and renders the
     // new rows without a reload.
-    const atlas = await createUserCove(request, 'Atlas');
-    await createWaveInCove(request, atlas.id, 'Today');
+    const atlas = await createUserArea(request, 'Atlas');
+    await createWaveInArea(request, atlas.id, 'Today');
     // Every spec opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
@@ -212,7 +212,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await waitForBootstrap(page);
     // Clear the trace once bootstrap is done so each test's assertions
     // see a clean ring buffer — the bootstrap path generates its own
-    // events (`cove.updated`, `wave.updated`, …) that would otherwise
+    // events (`area.updated`, `wave.updated`, …) that would otherwise
     // pollute per-test trace expectations.
     await clearEventTrace(page);
   });
@@ -224,33 +224,33 @@ test.describe('a11y · keyboard-only navigation', () => {
     cleanupAttachedWorkspaces();
   });
 
-  test('Today → Cove via keyboard', async ({ page }) => {
+  test('Today → Area via keyboard', async ({ page }) => {
     // Tab forward from the document start until focus lands on the
-    // Atlas cove nav button in the sidebar. Its textContent-derived
+    // Atlas area nav button in the sidebar. Its textContent-derived
     // helper name includes the wave-count badge (e.g. "Atlas1"), so
-    // match the nav button class plus the cove-name prefix.
+    // match the nav button class plus the area-name prefix.
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
-    // Activate the cove. The Sidebar's cove rows are real <button>s, so
+    // Activate the area. The Sidebar's area rows are real <button>s, so
     // Enter is the canonical activation key — Space would also work, but
     // Enter is what a screen reader announces ("Activate").
     await page.keyboard.press('Enter');
-    // Router transitions to /calm/cove/<id> — the cove-id portion is
+    // Router transitions to /calm/area/<id> — the area-id portion is
     // opaque (kernel-generated UUID), so we just match the prefix.
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
-    // The CovePage's <h1> title button renders the cove name + period
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
+    // The AreaPage's <h1> title button renders the area name + period
     // ("Atlas."). Asserting it is visible proves the route actually
     // mounted, not just that the URL changed.
     await expect(page.getByRole('heading', { name: /atlas/i })).toBeVisible();
   });
 
   // Issue #250 PR 3 — keyboard-driven wave creation through NewTaskForm.
-  // The cove-page "+ New wave" CTA expands inline into the shared
-  // configuration card (task description + cwd + cove inference); the
+  // The area-page "+ New wave" CTA expands inline into the shared
+  // configuration card (task description + cwd + area inference); the
   // legacy single-line title input is gone (replaced by the full form
   // per the issue's "all creation entrypoints must go through the
   // same configuration card" comment).
@@ -264,16 +264,16 @@ test.describe('a11y · keyboard-only navigation', () => {
   //     specifically on cwd; the title textarea preserves Enter for
   //     newlines, per the form's design).
   //   - Successful submit navigates to /calm/wave/<id>.
-  test('Cove → New wave via keyboard creates a wave', async ({ page }) => {
-    // First land on the cove page via keyboard (same path as above).
+  test('Area → New wave via keyboard creates a wave', async ({ page }) => {
+    // First land on the area page via keyboard (same path as above).
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
 
     // Tab to the "+ New wave" CTA. Its accessible name comes from the
     // button text (no aria-label); the title attribute is "New wave".
@@ -291,7 +291,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     const title = `a11y wave ${Date.now()}`;
     await page.keyboard.type(title);
 
-    // Tab to the cwd input. The cove section between cwd and the
+    // Tab to the cwd input. The area section between cwd and the
     // actions isn't a direct keyboard-focusable target on first
     // paint (we're still in the resolve-debounce window) so a single
     // Tab from the textarea lands the cwd input.
@@ -300,7 +300,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await expect(cwdInput).toBeFocused();
 
     // Unique absolute cwd so concurrent runs / re-runs don't trip
-    // the cove_folders UNIQUE(path) backstop.
+    // the area_folders UNIQUE(path) backstop.
     //
     // #1147 S3 — the keyboard contract under test is "Enter on the cwd
     // input submits", so this spec cannot drop the cwd and take the
@@ -316,13 +316,13 @@ test.describe('a11y · keyboard-only navigation', () => {
     await page.keyboard.type(cwd);
 
     // Enter on the cwd input submits the form. The form's auto-
-    // match-cove path picks the surrounding Atlas cove (CovePage
-    // passes `defaultCoveId={cove.id}`); since no folder claim
+    // match-area path picks the surrounding Atlas area (AreaPage
+    // passes `defaultAreaId={area.id}`); since no folder claim
     // covers `cwd`, the submit goes through with
     // `attach_folder: true`.
     await page.keyboard.press('Enter');
 
-    // The CovePage's onWaveCreated handler navigates straight to the
+    // The AreaPage's onWaveCreated handler navigates straight to the
     // new wave's detail page (router.tsx wires
     // `go({name:'wave',id:...})`).
     await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/, { timeout: 10_000 });
@@ -339,16 +339,16 @@ test.describe('a11y · keyboard-only navigation', () => {
   test('Wave → AddPanel opens with Enter and closes with Escape', async ({ page }) => {
     // Navigate to a wave page via keyboard so the AddPanel trigger
     // exists in the DOM. We use the auto-created "Today" wave under the
-    // Atlas cove — it's the only wave that exists at this point.
+    // Atlas area — it's the only wave that exists at this point.
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
-    // From the cove page, the "Today" wave row is a real <button> with
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
+    // From the area page, the "Today" wave row is a real <button> with
     // the wave title as its accessible name (see WaveRow.tsx). Two
     // buttons share the name "Today" — sidebar nav and the WaveRow — so
     // we filter on `wave-row` in className to land on the row button
@@ -389,11 +389,11 @@ test.describe('a11y · keyboard-only navigation', () => {
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
     await tabUntil(
       page,
       (info) =>
@@ -446,16 +446,16 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Navigate to a wave page via keyboard. We use the auto-created
-    // "Today" wave under the Atlas cove — the only one that exists at
+    // "Today" wave under the Atlas area — the only one that exists at
     // bootstrap time on the replay fixture.
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
     // WaveRow is a real <button>; filter on `wave-row` className to
     // disambiguate from the sidebar Today nav button (both real
     // <button>s with the same accessible name).
@@ -558,7 +558,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
@@ -659,7 +659,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     await tabUntil(
       page,
       (info) =>
-        info.className.includes('cove-nav') &&
+        info.className.includes('area-nav') &&
         (info.name?.toLowerCase().startsWith('atlas') ?? false),
     );
     await page.keyboard.press('Enter');
@@ -680,7 +680,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // pages/Wave.tsx. After #56 followup its accessible name is just the
     // wave title (e.g. "Today"); the rename verb is conveyed via
     // aria-describedby. We match the span by its description to land
-    // specifically on the rename target (and not on the cove crumb
+    // specifically on the rename target (and not on the area crumb
     // button, which also carries text but no rename description).
     await tabUntil(page, (info) => /^rename wave$/i.test(info.description ?? ''));
     // F2 is the documented rename shortcut (Windows convention). Enter
@@ -723,26 +723,26 @@ test.describe('a11y · keyboard-only navigation', () => {
     page,
   }) => {
     // Click (not keyboard) into the wave: skips tabUntil to avoid tab-count
-    // brittleness when previous tests accumulate waves. The Atlas cove
+    // brittleness when previous tests accumulate waves. The Atlas area
     // and its auto-created Today wave are the stable entrypoints; this
     // test exercises the list-view toggle + Alt+Arrow reorder contract,
-    // not the sidebar / cove navigation (those have their own keyboard
+    // not the sidebar / area navigation (those have their own keyboard
     // coverage elsewhere in this suite).
-    // `exact: true` excludes the per-row "Delete cove \"Atlas\"" button
+    // `exact: true` excludes the per-row "Delete area \"Atlas\"" button
     // whose accessible name also contains "Atlas" (strict mode otherwise
     // resolves to two buttons).
     await page
       .locator('aside.side')
       .getByRole('button', { name: 'Atlas', exact: true })
       .click();
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
     // Click into the auto-bootstrapped "Today" wave row. WaveRow is a
     // real <button> with the wave title as its accessible name (see
-    // WaveRow.tsx). The CovePage wraps its single sorted wave list in a
+    // WaveRow.tsx). The AreaPage wraps its single sorted wave list in a
     // `<section aria-label="Waves">` landmark so role-scoped queries
     // can disambiguate the row from the sidebar "Today" nav button
     // (both real <button>s with the same accessible name).
-    // Click (not keyboard): same rationale as the cove-nav click above —
+    // Click (not keyboard): same rationale as the area-nav click above —
     // skip tabUntil to avoid tab-count brittleness across accumulating waves.
     await page
       .getByRole('region', { name: 'Waves' })

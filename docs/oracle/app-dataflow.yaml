@@ -576,13 +576,13 @@
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    `cove.updated` 必须把事件 payload **同步 write-through** 写进 `['coves']` cache，
+    `area.updated` 必须把事件 payload **同步 write-through** 写进 `['areas']` cache，
     并且必须保留列表中其他未受影响的行。
   why: >
     生产 sidebar 陈旧 bug 的回归锁（issue #288）：仅 invalidate 依赖一次 refetch 往返，
     实测有时 refetch 成功但 Sidebar 不刷新。write-through 让观察者
-    （Sidebar 的 useCovesQuery）在下一次渲染就看到新名字，不依赖 HTTP。
-    朴素的 `setQueryData([updated])` 会静默丢掉其他 cove，所以"保留其他行"必须一起锁。
+    （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
+    朴素的 `setQueryData([updated])` 会静默丢掉其他 area，所以"保留其他行"必须一起锁。
   source: fe/web/src/app/events/query-invalidation-adapter.ts:69-79
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:100
   owner_slice: app/events-glue/invalidation
@@ -596,9 +596,9 @@
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    `cove.updated` 命中一个 cache 中不存在的 cove 时必须是 no-op —— **不得凭事件造出 phantom cove**。
+    `area.updated` 命中一个 cache 中不存在的 area 时必须是 no-op —— **不得凭事件造出 phantom area**。
   why: >
-    issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 cove，事件 payload 不是
+    issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
   source: fe/web/src/app/events/query-invalidation-adapter.ts:74-76
@@ -614,7 +614,7 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.updated` / `wave.lifecycle_changed` 必须失效四个面：所属 cove 的 wave 列表、
+    `wave.updated` / `wave.lifecycle_changed` 必须失效四个面：所属 area 的 wave 列表、
     该 wave 的 detail、该 wave 的 wave-files、以及全局 `['waves-range']`。
   why: >
     wave 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
@@ -632,7 +632,7 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.deleted` 必须失效 cove 的 wave 列表 + wave overlay 快照 + `['waves-range']`，
+    `wave.deleted` 必须失效 area 的 wave 列表 + wave overlay 快照 + `['waves-range']`，
     并且必须 **removeQueries** 掉该 wave 的 detail（而不是仅 invalidate）。
   why: >
     已删除的 wave detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
@@ -1148,7 +1148,7 @@
     whoami 返回 401 时必须渲染 `<LoginPage />`，且 **router / children 绝不挂载**。
   why: >
     这是 issue #189 的 load-bearing 不变式：route loader 不得与 auth gate 竞态。
-    一个已登出的标签页落在 `/coves/c-1` 上，绝不能把 401 印到首帧。
+    一个已登出的标签页落在 `/areas/c-1` 上，绝不能把 401 印到首帧。
   source: web/src/app/SessionProvider.tsx:1-20,174-176
   authoritative_test: web/src/app/SessionProvider.test.tsx:93
   owner_slice: features/auth/session
@@ -1565,7 +1565,7 @@
   kind: invariant
   family: app-router
   statement: >
-    cove / wave 路由的 loader 必须**非阻塞**地 prime 缓存（`void ... .catch(() => {})`），
+    area / wave 路由的 loader 必须**非阻塞**地 prime 缓存（`void ... .catch(() => {})`），
     不得 await，路由必须立即 commit。
   why: >
     选择反馈（URL commit + 侧栏高亮）要即时；页面组件自己负责短暂的页内 loading 态。
@@ -1584,9 +1584,9 @@
   kind: invariant
   family: app-router
   statement: >
-    index 路由只 prefetch coves 列表；cove → waves 的扇出必须保持惰性（页面内 `useQueries`）。
+    index 路由只 prefetch areas 列表；area → waves 的扇出必须保持惰性（页面内 `useQueries`）。
   why: >
-    在 loader 里扇出会让一个慢 cove 阻塞整个日历。
+    在 loader 里扇出会让一个慢 area 阻塞整个日历。
   source: web/src/app/router.tsx:90-99,184-189
   authoritative_test: NONE
   owner_slice: app/router
@@ -1619,11 +1619,11 @@
   kind: capability
   family: app-router
   statement: >
-    cove 列表仍在加载时，CoveComponent / WaveComponent 必须渲染 `null` 而不是
+    area 列表仍在加载时，AreaComponent / WaveComponent 必须渲染 `null` 而不是
     MissingShell；只有 settled 的"找不到"才显示 MissingShell。
   why: >
-    硬刷新 `/cove/:id` 可能在缓存 prime 前落到这里；不判 isLoading 就会闪一次
-    "That Cove isn't here anymore."。
+    硬刷新 `/area/:id` 可能在缓存 prime 前落到这里；不判 isLoading 就会闪一次
+    "That Area isn't here anymore."。
   source: web/src/app/router.tsx:239-246,332-336; web/src/app/shell.tsx:17-36
   authoritative_test: NONE
   owner_slice: app/router
@@ -1766,10 +1766,10 @@
   kind: invariant
   family: app-router
   statement: >
-    Today / CalmApp 路径必须双层过滤掉 `kind === 'system'` 的 cove
+    Today / CalmApp 路径必须双层过滤掉 `kind === 'system'` 的 area
     （服务端已默认隐藏，前端仍需再挡一层）。
   why: >
-    issue #175 的 belt-and-suspenders：系统 cove 不能进 Today 的日历/时钟扇出。
+    issue #175 的 belt-and-suspenders：系统 area 不能进 Today 的日历/时钟扇出。
   source: web/src/app/router.tsx:175-179
   authoritative_test: NONE
   owner_slice: app/router
@@ -1817,7 +1817,7 @@
   kind: capability
   family: app-router
   statement: >
-    四条路由页面组件（Today / Cove / Wave / Settings）必须按需 lazy 加载，
+    四条路由页面组件（Today / Area / Wave / Settings）必须按需 lazy 加载，
     由 CalmApp 的单一 `<Suspense>` 兜底；loader 与 JS 下载并行。
   why: >
     入口 chunk 只带 shell + 路由接线；loader 并行跑，懒 chunk resolve 时数据已 prime，
@@ -1874,7 +1874,7 @@
     使侧栏的 "waiting on you" / "running" 指示对**每个** wave 都准确，而不只是已打开的那个。
   why: >
     只用 wave detail 的 overlay 会让未打开的 wave 状态永远为空；
-    eventBridge 在 overlay.set/.deleted 以及 wave/cove 删除时失效该快照
+    eventBridge 在 overlay.set/.deleted 以及 wave/area 删除时失效该快照
     （kernel 可能不级联单个事件）。
   source: web/src/app/router.tsx:191-212
   authoritative_test: NONE
@@ -1889,9 +1889,9 @@
   kind: capability
   family: app-router
   statement: >
-    cove 重命名 / cove 删除 / wave 删除 / wave 重命名 / wave pin 的失败必须
-    `console.warn` 后吞掉（不冒泡崩页面）；cove 删除成功后必须跳 Today，
-    wave 删除成功后必须跳所属 cove。
+    area 重命名 / area 删除 / wave 删除 / wave 重命名 / wave pin 的失败必须
+    `console.warn` 后吞掉（不冒泡崩页面）；area 删除成功后必须跳 Today，
+    wave 删除成功后必须跳所属 area。
   why: >
     这些是用户发起的可容错操作，失败时页面必须保持可用；成功后当前 URL 指向的实体
     已不存在，必须导航走，否则会落到 MissingShell。

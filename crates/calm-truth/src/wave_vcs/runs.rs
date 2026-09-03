@@ -30,7 +30,7 @@ async fn run_events_for_wave_tx(
 ) -> Result<Vec<WaveEvent>> {
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_cove, scope_wave, scope_card
+                  scope_kind, scope_area, scope_wave, scope_card
            FROM events
            WHERE scope_wave = ?1
              AND kind IN (
@@ -426,7 +426,7 @@ async fn run_events_for_key_tx(
     );
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_cove, scope_wave, scope_card
+                  scope_kind, scope_area, scope_wave, scope_card
            FROM events
            WHERE scope_wave = ?1
              AND kind IN (

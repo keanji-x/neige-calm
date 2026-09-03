@@ -39,7 +39,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -86,7 +86,7 @@ pub struct SpecHarnessStartAdapter {
     harness_registry: HarnessRegistry,
     plugin: Arc<PluginHost>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     mcp_socket_path: Option<PathBuf>,
     per_card_mint_locks: PerCardLocks,
 }
@@ -98,7 +98,7 @@ impl SpecHarnessStartAdapter {
         harness_registry: HarnessRegistry,
         plugin: Arc<PluginHost>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         mcp_socket_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -107,7 +107,7 @@ impl SpecHarnessStartAdapter {
             harness_registry,
             plugin,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             mcp_socket_path,
             per_card_mint_locks: new_per_card_locks(),
         }
@@ -244,9 +244,9 @@ pub struct SpecHarnessStartOperationPayload {
     /// older binaries.
     #[serde(default)]
     pub create_card: Option<LazyMintCardSeed>,
-    /// #1098 slice 3, round-3 Y1 — SHA-256 (lower-case hex) of the cove
+    /// #1098 slice 3, round-3 Y1 — SHA-256 (lower-case hex) of the area
     /// conversation's first message, set only by
-    /// `POST /api/coves/{cove_id}/conversations`.
+    /// `POST /api/areas/{area_id}/conversations`.
     ///
     /// This field is **never read** by this adapter. It exists so the first
     /// message body reaches `stable_payload_hash`, which is what makes
@@ -259,7 +259,7 @@ pub struct SpecHarnessStartOperationPayload {
     /// `operations.payload_json`, and storing the body would copy every user
     /// message into a second table with a different retention story.
     ///
-    /// `skip_serializing_if` keeps every non-cove caller's payload bytes
+    /// `skip_serializing_if` keeps every non-area caller's payload bytes
     /// byte-identical to what older binaries wrote, so adding this field
     /// cannot move their `payload_hash` and turn an in-flight retry into a
     /// spurious 409. `#[serde(default)]` because
@@ -268,7 +268,7 @@ pub struct SpecHarnessStartOperationPayload {
     pub first_message_sha256: Option<String>,
 }
 
-/// The user-supplied part of a lazily minted conversation card — a cove chat
+/// The user-supplied part of a lazily minted conversation card — an area chat
 /// (`HarnessProfile::PlainChat`) or a wave assistant (`HarnessProfile::Assistant`).
 /// Everything the kernel owns (kind, role, `deletable`, the persisted
 /// `harness_profile` marker) is pinned by the adapter and deliberately absent
@@ -287,9 +287,9 @@ pub struct LazyMintCardSeed {
     /// The caller's `Idempotency-Key`, so [`SpecHarnessStartAdapter::validate`]
     /// can **recompute** the deterministic card id and refuse anything it did
     /// not derive itself (§4.3). Required on the assistant profile; see the
-    /// guard for why the cove profile does not read it.
+    /// guard for why the area profile does not read it.
     ///
-    /// It lives on the seed rather than on the payload root so the cove route,
+    /// It lives on the seed rather than on the payload root so the area route,
     /// which does not set it, keeps writing byte-identical
     /// `operations.payload_json` — a changed payload hash would turn an
     /// in-flight retry across a deploy into a spurious 409.
@@ -441,15 +441,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }
                 HarnessProfile::PlainChat => {
                     // Deliberately NOT migrated to the derived-id guard. The
-                    // cove flavour's id is derived from `(cove_id, key)`, and
+                    // area flavour's id is derived from `(area_id, key)`, and
                     // recomputing it here would mean binding the key into the
-                    // cove route's operation payload — changing a live payload
+                    // area route's operation payload — changing a live payload
                     // hash for no gain, since this check is already exact for
-                    // that flavour: a cove chat card belongs on a cove chat
+                    // that flavour: an area chat card belongs on an area chat
                     // wave and nowhere else.
-                    if wave.purpose.as_deref() != Some(crate::COVE_CHAT_PURPOSE) {
+                    if wave.purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE) {
                         return Err(CalmError::Forbidden(format!(
-                            "wave {} is not a cove chat wave; chat cards are only minted there",
+                            "wave {} is not an area chat wave; chat cards are only minted there",
                             wave.id
                         )));
                     }
@@ -559,10 +559,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             return Err(CalmError::BadRequest(message));
         }
         if expected_role == CardRole::Spec
-            && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE)
+            && wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
         {
             return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for cove chat wave {}",
+                "spec harness is disabled for area chat wave {}",
                 wave.id
             )));
         }
@@ -635,7 +635,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 &event,
                 &scope,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
             ) {
                 return Err(CalmError::Forbidden(violation.to_string()));
             }
@@ -943,7 +943,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let transcript_runtime_id = runtime_id.clone();
         let transcript_card_id = CardId::from(card_id.clone());
         let transcript_wave_id = WaveId::from(wave_id.clone());
-        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_area_cache.clone());
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
@@ -1093,7 +1093,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     None,
                     &ctx.events,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     Event::HarnessTranscriptCleared {
                         runtime_id: transcript_runtime_id,
                         card_id: transcript_card_id,
@@ -1145,7 +1145,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             repo: self.repo.clone(),
             events: ctx.events.clone(),
             card_role_cache: self.card_role_cache.clone(),
-            wave_cove_cache: self.wave_cove_cache.clone(),
+            wave_area_cache: self.wave_area_cache.clone(),
             daemon: self.daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
@@ -1325,7 +1325,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 let wave_id = WaveId::from(wave_id);
                 let scope = card_scope(ctx.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
                 let write =
-                    WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+                    WriteContext::new(self.card_role_cache.clone(), self.wave_area_cache.clone());
                 let write_for_tx = write.clone();
                 // Narrow to the single deprecated call. A function-level allow
                 // here would silently cover every other arm of this match.
@@ -1494,7 +1494,7 @@ mod tests {
     use crate::db::prelude::{ServerRepoOutOfDomainExt, ServerRepoSyncDomainRawExt};
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::model::{NewCove, NewPlugin, NewWave};
+    use crate::model::{NewArea, NewPlugin, NewWave};
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
@@ -1806,17 +1806,17 @@ mod tests {
         template_id: Option<&str>,
         template_input: Option<serde_json::Value>,
     ) -> crate::model::Wave {
-        let cove = repo
-            .cove_create(NewCove {
-                name: format!("cove-{template_id:?}"),
+        let area = repo
+            .area_create(NewArea {
+                name: format!("area-{template_id:?}"),
                 color: "#101010".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         repo.wave_create(NewWave {
             template_input,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "template resolver".into(),
             sort: None,
             cwd: String::new(),
@@ -1878,7 +1878,7 @@ mod tests {
             plugins_data_dir,
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         ));
         (host, tmp)
     }
@@ -1891,7 +1891,7 @@ mod tests {
             HarnessRegistry::new(),
             plugin,
             CardRoleCache::new(),
-            WaveCoveCache::new(),
+            WaveAreaCache::new(),
             None,
         )
     }
@@ -1956,7 +1956,7 @@ mod tests {
             std::env::temp_dir().join(format!("calm-plan-compensation-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         ));
         let adapter = adapter_for(repo.clone(), host);
         let reason = format!(
@@ -2019,7 +2019,7 @@ mod tests {
             std::env::temp_dir().join(format!("calm-compensation-order-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         ));
         let adapter = adapter_for(repo.clone(), host);
 

@@ -1,15 +1,15 @@
 // Pick a foreground colour (black or white) that reads against an
 // arbitrary background colour string. Used by Calendar's WaveBar so
-// the cove-coloured bar always carries WCAG-AA-passing text regardless
-// of whether the user picked a pastel green or a deep navy for the cove.
+// the area-coloured bar always carries WCAG-AA-passing text regardless
+// of whether the user picked a pastel green or a deep navy for the area.
 //
 // Why this exists: the bar background is whatever colour the user
-// chose for the cove (`cove.color` — any CSS-parseable RGB / hex
+// chose for the area (`area.color` — any CSS-parseable RGB / hex
 // string). Pre-fix the bar text fell back to `var(--text)`-derived
 // values, which were near-black in light mode and near-white in dark
-// mode. When the cove colour happens to land on the same end of the
-// scale as the page text (e.g. a light-green cove in light mode, or a
-// deep-navy cove in dark mode) contrast collapsed below 4.5:1 and
+// mode. When the area colour happens to land on the same end of the
+// scale as the page text (e.g. a light-green area in light mode, or a
+// deep-navy area in dark mode) contrast collapsed below 4.5:1 and
 // axe-core flagged it (`color-contrast`, serious). Computing the
 // foreground per-bar from the actual bar background sidesteps the
 // problem regardless of theme.
@@ -30,7 +30,7 @@
 //                              not the background, so the alpha doesn't
 //                              affect the perceived bar paint at this
 //                              point. Calendar's bar never uses alpha
-//                              on `cove.color`.)
+//                              on `area.color`.)
 //   - rgb(r, g, b) / rgba(r, g, b, a) — integer or float components,
 //     percentages NOT supported (no caller produces them).
 //

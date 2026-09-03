@@ -106,14 +106,14 @@ wait_for_health() {
   local deadline=$((SECONDS + 120)) status
   while (( SECONDS < deadline )); do
     check_server_logs
-    status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/coves" 2>/dev/null || true)"
+    status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/areas" 2>/dev/null || true)"
     if [[ "$status" == 2* || "$status" == "401" ]]; then
       printf 'Health ready: HTTP %s\n' "$status"
       return 0
     fi
     sleep 2
   done
-  fail "health check timed out after 120s waiting for http://127.0.0.1:$PORT/api/coves"
+  fail "health check timed out after 120s waiting for http://127.0.0.1:$PORT/api/areas"
 }
 
 dump_artifacts() {

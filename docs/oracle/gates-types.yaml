@@ -1322,8 +1322,8 @@
   kind: gate
   family: wire-types
   statement: >
-    coveSchema / waveSchema / cardSchema / overlaySchema 各自的 infer 类型必须等于
-    生成的 Cove / Wave / Card / Overlay
+    areaSchema / waveSchema / cardSchema / overlaySchema 各自的 infer 类型必须等于
+    生成的 Area / Wave / Card / Overlay
   why: >
     逐 entity 钉住让回归容易定位——`Card.payload` 的漂移会先在这里亮，而不是在整个
     wireEventSchema 上给一坨天书报错。
@@ -1419,7 +1419,7 @@
     后加的 wire 字段必须在 zod 侧带 `.default(...)`，与 Rust 侧的 `#[serde(default)]`
     对齐，使旧 event-log / replay fixture 无需迁移即可解析
   why: >
-    已知的成对默认值：cove.kind → 'user'（#175）、wave.lifecycle → 'draft'（#145，与
+    已知的成对默认值：area.kind → 'user'（#175）、wave.lifecycle → 'draft'（#145，与
     migration 0012 的 DB DEFAULT 一致）、wave.cwd → ''（#250 PR2）、
     wave.template_id / purpose / terminal_at → null、wave.template_input → null（#891）、
     pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。

@@ -34,7 +34,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{
-    CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms,
+    CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewWave, new_id, now_ms,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
@@ -65,7 +65,7 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -75,12 +75,12 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
     (state, concrete)
 }
 
-/// Seed a cove + wave + terminal-kind card with a terminal row and active
+/// Seed an area + wave + terminal-kind card with a terminal row and active
 /// terminal runtime. Returns the (card_id, terminal_id) pair.
 async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
-    let cove = state
+    let area = state
         .raw_repo()
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -91,7 +91,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         .raw_repo()
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -156,9 +156,9 @@ async fn seed_shared_spec_pair(
     concrete: &SqlxRepo,
     thread_id: &str,
 ) -> (String, String) {
-    let cove = state
+    let area = state
         .raw_repo()
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -169,7 +169,7 @@ async fn seed_shared_spec_pair(
         .raw_repo()
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -229,9 +229,9 @@ async fn seed_shared_spec_pair(
 }
 
 async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
-    let cove = state
+    let area = state
         .raw_repo()
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -242,7 +242,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         .raw_repo()
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),

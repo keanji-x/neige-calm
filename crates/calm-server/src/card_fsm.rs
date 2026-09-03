@@ -532,7 +532,7 @@ impl Inner {
             kind: "status".to_string(),
             payload: card_payload,
         };
-        // Resolve `wave → cove` so the audit row carries the full
+        // Resolve `wave → area` so the audit row carries the full
         // ancestor chain (PR2 of #136). On lookup failure fall back to
         // `EventScope::System` — we'd rather emit a less-scoped event
         // than refuse the FSM commit, since the projection itself is
@@ -541,7 +541,7 @@ impl Inner {
             Ok(Some(w)) => EventScope::Card {
                 card: card_id.clone(),
                 wave: w.id,
-                cove: w.cove_id,
+                area: w.area_id,
             },
             _ => EventScope::System,
         };
@@ -649,13 +649,13 @@ impl Inner {
             return; // unchanged — skip the write
         }
 
-        // Resolve cove for the event scope. On failure, fall back to
+        // Resolve area for the event scope. On failure, fall back to
         // `EventScope::System` — same defensive policy as the per-card
         // overlay write above.
         let scope = match self.repo.wave_get(wave_id.as_str()).await {
             Ok(Some(w)) => EventScope::Wave {
                 wave: w.id,
-                cove: w.cove_id,
+                area: w.area_id,
             },
             _ => EventScope::System,
         };
@@ -867,22 +867,22 @@ mod tests {
 
     // ----- end-to-end behavior tests against an in-memory repo --------------
 
-    // Tests seed fixtures via raw sync-domain writes (`cove_create`,
+    // Tests seed fixtures via raw sync-domain writes (`area_create`,
     // `wave_create`, `card_create`), so they need the full `Repo`. Production
     // `spawn` takes the narrowed `Arc<dyn RepoEventWrite>` — the call below
     // relies on stable trait-object coercion at the function-argument site.
     use crate::db::Repo;
     use crate::db::sqlite::SqlxRepo;
     use crate::ids::WaveId;
-    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::model::{NewArea, NewCard, NewWave};
     use serde_json::Value;
     use std::time::Duration as StdDuration;
 
     async fn setup() -> (Arc<dyn Repo>, EventBus, WaveId, CardId) {
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -892,7 +892,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "w".into(),
                 sort: None,
                 cwd: String::new(),
@@ -989,7 +989,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         // Give the spawn a tick to subscribe.
@@ -1093,7 +1093,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1132,7 +1132,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1184,7 +1184,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1219,7 +1219,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1283,7 +1283,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;
@@ -1409,8 +1409,8 @@ mod tests {
         // other stays Working; flipping both to Working should clear it.
         let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let bus = EventBus::new();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -1420,7 +1420,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "w".into(),
                 sort: None,
                 cwd: String::new(),
@@ -1456,7 +1456,7 @@ mod tests {
             bus.clone(),
             WriteContext::new(
                 crate::card_role_cache::CardRoleCache::new(),
-                crate::wave_cove_cache::WaveCoveCache::new(),
+                crate::wave_area_cache::WaveAreaCache::new(),
             ),
         );
         tokio::task::yield_now().await;

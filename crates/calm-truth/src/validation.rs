@@ -414,7 +414,7 @@ fn card_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFu
         Ok(EventScope::Card {
             card: card.id,
             wave: wave.id,
-            cove: wave.cove_id,
+            area: wave.area_id,
         })
     })
 }
@@ -427,7 +427,7 @@ fn wave_overlay_scope<'a>(repo: &'a dyn RepoRead, id: &'a str) -> OverlayScopeFu
         };
         Ok(EventScope::Wave {
             wave: wave.id,
-            cove: wave.cove_id,
+            area: wave.area_id,
         })
     })
 }

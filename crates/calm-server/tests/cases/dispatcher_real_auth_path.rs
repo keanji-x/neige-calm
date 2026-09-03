@@ -17,7 +17,7 @@
 //!
 //! Composition under test, exercised in ONE flow:
 //!
-//!   1. Cove → wave → codex card seeded. The wave-create route
+//!   1. Area → wave → codex card seeded. The wave-create route
 //!      mints a spec card with `CardRole::Spec`; we add a second
 //!      `kind: 'codex'` card via the route surface to get a worker-
 //!      adjacent `CardRole::Worker` row whose `card_id` is valid for
@@ -27,7 +27,7 @@
 //!      `hook.codex.*` events row records:
 //!        * `actor = "ai:codex"` (middleware + scope-β reattribution)
 //!        * `scope` resolves to `Card` (codex.rs scope derivation
-//!          followed `card → wave → cove` correctly).
+//!          followed `card → wave → area` correctly).
 //!   3. POST `/internal/codex/hook?card_id=<worker>` WITHOUT the
 //!      `X-Calm-Actor` header lands `actor = "user"` (middleware
 //!      default), and the gate accepts it — `ActorId::User` is the
@@ -62,7 +62,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCove};
+use calm_server::model::{CardRole, NewArea};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -76,7 +76,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
-    cove_id: String,
+    area_id: String,
     card_role_cache: CardRoleCache,
     _tmp: TempDir,
 }
@@ -88,8 +88,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "dispatch-auth-path".into(),
             color: "#000".into(),
             sort: None,
@@ -108,8 +108,8 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -121,7 +121,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-auth-path"),
             Vec::new(),
             events,
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the
@@ -132,7 +132,7 @@ async fn boot() -> Boot {
             Arc::new(codex)
         },
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -142,7 +142,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         repo,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         card_role_cache,
         _tmp: tmp,
     }
@@ -193,7 +193,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         boot.app.clone(),
         "/api/waves",
         Some("user"),
-        json!({"cove_id": boot.cove_id, "title": "real-auth wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "real-auth wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(
@@ -202,7 +202,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "wave create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); spec card + role-cache write-through still happen pre-boot so the assertions below still hold",
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     let wave = waves.into_iter().next().unwrap();
     let cards_after_wave = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
@@ -272,9 +272,9 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     );
 
     // The route stamps `actor = "ai:codex"` and resolves the scope
-    // through `card → wave → cove`. Confirm both at the SQL level —
+    // through `card → wave → area`. Confirm both at the SQL level —
     // the scope is decomposed across `scope_kind`, `scope_card`,
-    // `scope_wave`, `scope_cove` (migration 0007).
+    // `scope_wave`, `scope_area` (migration 0007).
     // events.kind is the `Event` enum's `kind_tag()` — `"codex.hook"`
     // for `Event::CodexHook` (the inner `kind` field, formatted as
     // "hook.codex.<event_name>", lives in the JSON payload). Filter
@@ -288,7 +288,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         Option<String>,
         String,
     ) = sqlx::query_as(
-        "SELECT actor, kind, scope_kind, scope_card, scope_wave, scope_cove, payload \
+        "SELECT actor, kind, scope_kind, scope_card, scope_wave, scope_area, payload \
          FROM events WHERE kind = 'codex.hook' ORDER BY id DESC LIMIT 1",
     )
     .fetch_one(boot.repo.pool())
@@ -327,7 +327,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
         "scope_card must point at the codex card we POSTed against",
     );
     assert!(row.4.is_some(), "scope_wave populated for card scope");
-    assert!(row.5.is_some(), "scope_cove populated for card scope");
+    assert!(row.5.is_some(), "scope_area populated for card scope");
 
     let after_ok = event_count(&boot.repo).await;
     assert_eq!(

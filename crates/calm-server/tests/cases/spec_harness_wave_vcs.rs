@@ -12,15 +12,15 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, SpecHarness,
     SpecHarnessParams,
 };
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
-use calm_server::model::{Card, CardPatch, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::model::{Card, CardPatch, CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::WriteContext;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_fs_view::WaveFsView;
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::wave_vcs;
@@ -32,11 +32,11 @@ struct Boot {
     daemon: Arc<SharedCodexAppServer>,
     events: EventBus,
     roles: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     write: WriteContext,
     runtime_id: String,
     wave_id: WaveId,
-    cove_id: CoveId,
+    area_id: AreaId,
     spec_card_id: CardId,
     thread_id: String,
 }
@@ -45,10 +45,10 @@ async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    let write = WriteContext::new(roles.clone(), wave_cove_cache.clone());
-    let cove = repo
-        .cove_create(NewCove {
+    let wave_area_cache = WaveAreaCache::new();
+    let write = WriteContext::new(roles.clone(), wave_area_cache.clone());
+    let area = repo
+        .area_create(NewArea {
             name: "wave-vcs-pr2".into(),
             color: "#111111".into(),
             sort: None,
@@ -58,7 +58,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave-vcs-pr2".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -69,14 +69,14 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    wave_area_cache.insert(wave.id.clone(), area.id.clone());
     let spec_card = add_card_with_event(
         &repo,
         &events,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Spec,
         json!({"schemaVersion": 1, "spec_harness": true}),
@@ -119,7 +119,7 @@ async fn boot() -> Boot {
         repo: repo_dyn,
         events: events.clone(),
         card_role_cache: roles.clone(),
-        wave_cove_cache: wave_cove_cache.clone(),
+        wave_area_cache: wave_area_cache.clone(),
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
@@ -135,11 +135,11 @@ async fn boot() -> Boot {
         daemon,
         events,
         roles,
-        wave_cove_cache,
+        wave_area_cache,
         write,
         runtime_id,
         wave_id: wave.id,
-        cove_id: cove.id,
+        area_id: area.id,
         spec_card_id: spec_card.id,
         thread_id,
     }
@@ -155,7 +155,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_wave_vcs() {
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
@@ -196,7 +196,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_wave_vcs() {
         repo: repo_dyn,
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
-        wave_cove_cache: boot.wave_cove_cache.clone(),
+        wave_area_cache: boot.wave_area_cache.clone(),
         daemon: boot.daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
@@ -243,9 +243,9 @@ async fn plain_chat_turn_does_not_refresh_or_read_wave_vcs() {
 ///   N conversations on one wave; keeping the refresh would multiply a
 ///   wave-scoped write transaction by N and contend with the spec harness's own
 ///   per-turn refresh for the sqlite write lock. The sibling above asserts the
-///   same for a cove chat.
+///   same for an area chat.
 /// * It **still receives the since-last-turn diff.** This is where the assistant
-///   differs from the cove chat, and it is the half that would be silently lost
+///   differs from the area chat, and it is the half that would be silently lost
 ///   if `HarnessProfile::Assistant` were simply added to the plain-chat branch:
 ///   an assistant whose job is answering questions about the wave and editing
 ///   its report must see what changed under it. Skipping the refresh does not
@@ -263,7 +263,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_wave_di
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "codex",
         CardRole::Assistant,
         json!({"schemaVersion": 1, "harness_profile": "assistant"}),
@@ -281,7 +281,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_wave_di
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1}),
@@ -345,7 +345,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_wave_di
         repo: repo_dyn,
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
-        wave_cove_cache: boot.wave_cove_cache.clone(),
+        wave_area_cache: boot.wave_area_cache.clone(),
         daemon: boot.daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
@@ -386,7 +386,7 @@ async fn add_card_with_event(
     roles: &CardRoleCache,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     kind: &str,
     role: CardRole,
     payload: Value,
@@ -404,7 +404,7 @@ async fn add_card_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     repo.write_with_event(
         ActorId::Kernel,
@@ -445,7 +445,7 @@ async fn add_report_card_event(boot: &Boot) -> Card {
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "wave-report",
         CardRole::ReportCard,
         serde_json::to_value(WaveReportPayload::initial()).unwrap(),
@@ -460,7 +460,7 @@ async fn add_worker_card_event(boot: &Boot, label: &str) -> Card {
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "label": label}),
@@ -475,12 +475,12 @@ async fn log_worker_codex_hook(boot: &Boot, card: &Card, key: &str, prompt: &str
             EventScope::Card {
                 card: card.id.clone(),
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.events,
             &boot.roles,
-            &boot.wave_cove_cache,
+            &boot.wave_area_cache,
             Event::CodexHook {
                 card_id: card.id.clone(),
                 kind: "hook.codex.user_prompt_submit".into(),
@@ -522,7 +522,7 @@ async fn start_worker_runtime_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: boot.wave_id.clone(),
-        cove: boot.cove_id.clone(),
+        area: boot.area_id.clone(),
     };
     boot.repo
         .write_with_event(
@@ -581,7 +581,7 @@ async fn set_worker_runtime_status_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: boot.wave_id.clone(),
-        cove: boot.cove_id.clone(),
+        area: boot.area_id.clone(),
     };
     boot.repo
         .write_with_event(
@@ -840,7 +840,7 @@ async fn update_card_payload_with_event(boot: &Boot, card: &Card, payload: Value
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: card.wave_id.clone(),
-        cove: boot.cove_id.clone(),
+        area: boot.area_id.clone(),
     };
     boot.repo
         .write_with_event(
@@ -949,7 +949,7 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
         repo: repo_dyn,
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
-        wave_cove_cache: boot.wave_cove_cache.clone(),
+        wave_area_cache: boot.wave_area_cache.clone(),
         daemon: boot.daemon.clone(),
         config: HarnessConfig::default(),
         snapshot,
@@ -1326,7 +1326,7 @@ async fn ai_actor_attribution_flows_into_diff_block() {
         &boot.roles,
         &boot.write,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "ai-attribution"}),
@@ -1342,7 +1342,7 @@ async fn ai_actor_attribution_flows_into_diff_block() {
             EventScope::Card {
                 card: worker_id.clone(),
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.events,

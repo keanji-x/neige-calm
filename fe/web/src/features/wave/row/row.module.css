@@ -175,7 +175,7 @@
   }
 
   /* The rail's waves take the strong tone: they are what you came to find. The
-     cove heading above them is the quiet one (see shell.module.css). */
+     area heading above them is the quiet one (see shell.module.css). */
   .variantRail .title {
     font-weight: var(--weight-normal);
     color: var(--text);
@@ -270,15 +270,15 @@
    * There is no tree indent in the rail, and that is deliberate.
    *
    * The rail has exactly two vertical icon columns — state on the left (a
-   * cove's disclosure chevron, a wave's pin) and action on the right (the
+   * area's disclosure chevron, a wave's pin) and action on the right (the
    * section `+`, every `×`) — and one text column that every row starts in,
-   * cove and wave alike. An indent would have been a third alignment fighting
+   * area and wave alike. An indent would have been a third alignment fighting
    * the first two: a child's title would sit right of its parent's while its
    * pin sat directly under its parent's chevron, so one row would read as
    * indented and flush at once.
    *
-   * Depth is carried by the chevron that collapses the group, by the cove
-   * heading's own type treatment, by the 10px that separates one cove group
+   * Depth is carried by the chevron that collapses the group, by the area
+   * heading's own type treatment, by the 10px that separates one area group
    * from the next, and by adjacency.
    */
 
@@ -326,7 +326,7 @@
    * Two sides, two meanings — **left is state, right is action** — but only
    * where a left column actually exists.
    *
-   * In the rail it does: every cove row carries a disclosure chevron there, so
+   * In the rail it does: every area row carries a disclosure chevron there, so
    * a wave's pin joins an established column and the whole rail reads down two
    * clean icon rules. In the main column there is no chevron and nothing else
    * to join, so a leading gutter would indent the entire list 28px away from

@@ -207,7 +207,7 @@ describe('the drawer against a real rendering engine', () => {
   /*
    * The premise `/new` is built on, asserted rather than assumed in prose.
    *
-   * `cove-conversation.test.tsx` states this too, but it can only reach for
+   * `area-conversation.test.tsx` states this too, but it can only reach for
    * `plus.closest('[data-nc-panel]')` — a DOM ancestor relation that stays true
    * with the `:has()` rule deleted from the stylesheet entirely. Here the claim
    * is what the reader can actually do.

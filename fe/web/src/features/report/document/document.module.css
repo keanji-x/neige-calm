@@ -83,7 +83,7 @@
    * so the block AND its backlink sidenote are both grid items of `.doc`;
    * hiding only the block leaves the sidenote in column 3, and a cited contract
    * block renders as nothing at all plus a lone `◂ 3` floating in the gutter.
-   * A contract block is citable — it has a stable id in `cove.outline` — so
+   * A contract block is citable — it has a stable id in `area.outline` — so
    * that is a reachable state, not a theoretical one.
    *
    * This rule is what carries the behaviour; the `return null` in `ProseBlock`

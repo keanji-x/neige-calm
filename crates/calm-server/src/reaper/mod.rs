@@ -485,7 +485,7 @@ pub(crate) async fn converge_dead_root(
     let from = candidate.lifecycle;
     let scope = EventScope::Wave {
         wave: candidate.wave_id.clone(),
-        cove: candidate.cove_id.clone(),
+        area: candidate.area_id.clone(),
     };
     let agent_message = match from {
         WaveLifecycle::Draft => "[auto] dead root: spec-harness start failed; wave never advanced",
@@ -547,7 +547,7 @@ pub(crate) async fn converge_dead_worker(
 
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let wave_id = wave.id.clone();
     // FIX 3: the kernel `TaskFailed` carries the provider's interpreted Failed

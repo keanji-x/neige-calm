@@ -8,20 +8,20 @@ use utoipa::ToSchema;
 
 use crate::worker::WorkerSessionId;
 
-/// Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
+/// Area identifier. UUID-shaped (32 hex, no dashes) in practice, but the
 /// kernel treats the value as opaque; never parses it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct CoveId(pub String);
+pub struct AreaId(pub String);
 
-/// Wave identifier. See [`CoveId`] for the opacity contract.
+/// Wave identifier. See [`AreaId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveId(pub String);
 
-/// Card identifier. See [`CoveId`] for the opacity contract.
+/// Card identifier. See [`AreaId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -104,7 +104,7 @@ macro_rules! newtype_id_impls {
     };
 }
 
-newtype_id_impls!(CoveId);
+newtype_id_impls!(AreaId);
 newtype_id_impls!(WaveId);
 newtype_id_impls!(CardId);
 

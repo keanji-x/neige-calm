@@ -8,7 +8,7 @@
  *   * 401 → renders `<LoginPage />`. The router NEVER mounts in this
  *           branch, which is the load-bearing invariant: route loaders
  *           must not race the auth gate. A logged-out tab landing on
- *           `/coves/c-1` must not stamp a 401 onto the first paint.
+ *           `/areas/c-1` must not stamp a 401 onto the first paint.
  *   * other → renders a minimal loading / error stub. We don't bounce to
  *           LoginPage on a transient network blip — refresh is the
  *           recommended recovery path.

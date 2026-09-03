@@ -52,24 +52,24 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
   await login(page);
 
   const suffix = Date.now();
-  const coveRes = await page.request.post('/api/coves', {
+  const areaRes = await page.request.post('/api/areas', {
     data: { name: `E2E tui-host demo ${suffix}`, color: '#6a8' },
     headers: { 'content-type': 'application/json' },
   });
-  if (!coveRes.ok()) {
-    throw new Error(`POST /api/coves failed: ${coveRes.status()}`);
+  if (!areaRes.ok()) {
+    throw new Error(`POST /api/areas failed: ${areaRes.status()}`);
   }
-  const cove = (await coveRes.json()) as { id: string };
+  const area = (await areaRes.json()) as { id: string };
   const title = `E2E tui-host ${suffix}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: cove.id,
+      area_id: area.id,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about the TUI host renderer, not working
       // directories (the terminal card below still passes its own
       // `cwd: '/tmp'`, which is a real directory inside the kernel).
-      // See `helpers/reset.ts::createWaveInCove` for why the invented
+      // See `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-tui-host-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { createCove, createWave } from './helpers/seed.js';
+import { createArea, createWave } from './helpers/seed.js';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -10,10 +10,10 @@ function captureBrowserErrors(page: Page): string[] {
   return errors;
 }
 
-test.beforeEach(() => { createdCoveIds.length = 0; });
+test.beforeEach(() => { createdAreaIds.length = 0; });
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
-  createdCoveIds.length = 0;
+  for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
+  createdAreaIds.length = 0;
 });
 
 test('the application routes are reachable through the real kernel', async ({ page, request }) => {
@@ -24,17 +24,17 @@ test('the application routes are reachable through the real kernel', async ({ pa
     expect.objectContaining({ dbInstanceId: expect.stringMatching(/^[0-9a-f-]{36}$/i) }),
   );
 
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
-  const wave = await createWave(request, cove.id);
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  const wave = await createWave(request, area.id);
   const routes = [
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
-    { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-wave page is a route like the others, so it belongs in
        the reachability sweep: this is what would catch it failing to render at
        all behind the real kernel. Anchored on the composer because the page has
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
-    { path: `/next/cove/${cove.id}/new`, anchor: page.getByLabel('What this wave should do') },
+    { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this wave should do') },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
     { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
     { path: '/next/settings/appearance', anchor: page.getByRole('combobox', { name: 'Theme' }) },

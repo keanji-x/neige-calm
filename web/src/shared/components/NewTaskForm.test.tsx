@@ -1,7 +1,7 @@
 // NewTaskForm unit tests — issue #250 PR 3.
 //
-// Surface: the form's cwd → resolve → cove-inference flow, inline cwd
-// validation, the two submit branches (existing cove + new cove), and
+// Surface: the form's cwd → resolve → area-inference flow, inline cwd
+// validation, the two submit branches (existing area + new area), and
 // the structured 409 (FolderConflict) error rendering. We mock the
 // `api` module wholesale because the form drives real network shape
 // via TanStack Query mutations; the QueryClientProvider here uses
@@ -33,7 +33,7 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
 
 // Variant that wraps NewTaskForm in a Dialog — required for the Browse…
 // button's `useModalView()` path to exercise (the dialog provides the
-// modal-view context). Matches how CovePage's NewWaveCTA renders the
+// modal-view context). Matches how AreaPage's NewWaveCTA renders the
 // form in production.
 function renderFormInDialog(
   overrides: Partial<React.ComponentProps<typeof NewTaskForm>> = {},
@@ -65,8 +65,8 @@ afterEach(() => {
 });
 
 describe('NewTaskForm — initial render', () => {
-  it('renders title, cwd, and cove fields with only cwd required', () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+  it('renders title, cwd, and area fields with only cwd required', () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     renderForm();
     const title = screen.getByLabelText(/task description/i) as HTMLTextAreaElement;
     const cwd = screen.getByLabelText(/working directory/i) as HTMLInputElement;
@@ -80,15 +80,15 @@ describe('NewTaskForm — initial render', () => {
   });
 
   it('disables Create when no cwd entered', () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     renderForm();
     expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
   });
 });
 
-describe('NewTaskForm — cwd validation + cove inference', () => {
+describe('NewTaskForm — cwd validation + area inference', () => {
   it('shows inline error for non-absolute cwd', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     const cwd = screen.getByLabelText(/working directory/i);
@@ -97,9 +97,9 @@ describe('NewTaskForm — cwd validation + cove inference', () => {
     expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
   });
 
-  it('calls resolveCovePath when an absolute path is entered (debounced)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
-    const spy = vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+  it('calls resolveAreaPath when an absolute path is entered (debounced)', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
+    const spy = vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     const cwd = screen.getByLabelText(/working directory/i);
@@ -113,11 +113,11 @@ describe('NewTaskForm — cwd validation + cove inference', () => {
   });
 
   it('renders auto-match banner when resolve hits', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue({
-      cove_id: 'cove-1',
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue({
+      area_id: 'area-1',
       folder_id: 1,
       folder_path: '/Users/me/code',
     });
@@ -128,17 +128,17 @@ describe('NewTaskForm — cwd validation + cove inference', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByTestId('cove-auto-match').textContent).toMatch(/atlas/i);
+      expect(screen.getByTestId('area-auto-match').textContent).toMatch(/atlas/i);
     });
-    // The radiogroup should NOT render in auto mode — cove is locked.
-    expect(screen.queryByRole('radiogroup', { name: /cove selection/i })).toBeNull();
+    // The radiogroup should NOT render in auto mode — area is locked.
+    expect(screen.queryByRole('radiogroup', { name: /area selection/i })).toBeNull();
   });
 
-  it('renders cove dropdown / new-cove input when resolve misses', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+  it('renders area dropdown / new-area input when resolve misses', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/new');
@@ -146,23 +146,23 @@ describe('NewTaskForm — cwd validation + cove inference', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
-    // Existing-cove + new-cove radios are present.
-    expect(screen.getByLabelText(/existing cove/i)).toBeTruthy();
-    expect(screen.getByLabelText(/create new cove/i)).toBeTruthy();
+    // Existing-area + new-area radios are present.
+    expect(screen.getByLabelText(/existing area/i)).toBeTruthy();
+    expect(screen.getByLabelText(/create new area/i)).toBeTruthy();
   });
 });
 
 describe('NewTaskForm — submit', () => {
-  it('posts createWave with attach_folder=true for the existing-cove branch', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+  it('posts createWave with attach_folder=true for the existing-area branch', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
       id: 'w-new',
-      cove_id: 'cove-1',
+      area_id: 'area-1',
       title: 'do the thing',
       cwd: '/Users/me/code/new',
       lifecycle: 'draft',
@@ -173,7 +173,7 @@ describe('NewTaskForm — submit', () => {
     } as unknown as Awaited<ReturnType<typeof api.createWave>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    const { onCreated } = renderForm({ defaultCoveId: 'cove-1' });
+    const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/task description/i), 'do the thing');
     await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/new');
@@ -181,13 +181,13 @@ describe('NewTaskForm — submit', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
-    // Default mode under defaultCoveId is "existing" — submit straight away.
+    // Default mode under defaultAreaId is "existing" — submit straight away.
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
     const body = createSpy.mock.calls[0][0];
-    expect(body.cove_id).toBe('cove-1');
+    expect(body.area_id).toBe('area-1');
     expect(body.cwd).toBe('/Users/me/code/new');
     expect(body.attach_folder).toBe(true);
     expect(body.title).toBe('do the thing');
@@ -196,13 +196,13 @@ describe('NewTaskForm — submit', () => {
   });
 
   it('posts createWave with an empty title when task description is blank', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
       id: 'w-empty',
-      cove_id: 'cove-1',
+      area_id: 'area-1',
       title: '',
       cwd: '/Users/me/code/blank',
       lifecycle: 'draft',
@@ -213,43 +213,43 @@ describe('NewTaskForm — submit', () => {
     } as unknown as Awaited<ReturnType<typeof api.createWave>>);
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    const { onCreated } = renderForm({ defaultCoveId: 'cove-1' });
+    const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/blank');
     await act(async () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
 
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
     const body = createSpy.mock.calls[0][0];
-    expect(body.cove_id).toBe('cove-1');
+    expect(body.area_id).toBe('area-1');
     expect(body.cwd).toBe('/Users/me/code/blank');
     expect(body.attach_folder).toBe(true);
     expect(body.title).toBe('');
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
-  it('mints a new cove first, then posts the wave for the new-cove branch', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
-    const newCove = {
-      id: 'cove-new',
+  it('mints a new area first, then posts the wave for the new-area branch', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
+    const newArea = {
+      id: 'area-new',
       name: 'Project Z',
       color: '#5a9',
       sort: 0,
       updated_at: 0,
       created_at: 0,
     };
-    const coveSpy = vi.spyOn(api, 'createCove').mockResolvedValue(
-      newCove as unknown as Awaited<ReturnType<typeof api.createCove>>,
+    const areaSpy = vi.spyOn(api, 'createArea').mockResolvedValue(
+      newArea as unknown as Awaited<ReturnType<typeof api.createArea>>,
     );
     const waveSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
       id: 'w-new',
-      cove_id: 'cove-new',
+      area_id: 'area-new',
       title: 'hi',
       cwd: '/x',
       lifecycle: 'draft',
@@ -267,36 +267,36 @@ describe('NewTaskForm — submit', () => {
     await act(async () => {
       vi.advanceTimersByTime(400);
     });
-    // Default mode (no defaultCoveId) is "new" — fill the new-cove name.
+    // Default mode (no defaultAreaId) is "new" — fill the new-area name.
     await waitFor(() => {
-      expect(screen.getByLabelText(/new cove name/i)).toBeTruthy();
+      expect(screen.getByLabelText(/new area name/i)).toBeTruthy();
     });
-    await user.type(screen.getByLabelText(/new cove name/i), 'Project Z');
+    await user.type(screen.getByLabelText(/new area name/i), 'Project Z');
     await user.click(screen.getByRole('button', { name: /create task/i }));
-    await waitFor(() => expect(coveSpy).toHaveBeenCalled());
-    expect(coveSpy.mock.calls[0][0].name).toBe('Project Z');
+    await waitFor(() => expect(areaSpy).toHaveBeenCalled());
+    expect(areaSpy.mock.calls[0][0].name).toBe('Project Z');
     await waitFor(() => expect(waveSpy).toHaveBeenCalled());
     const body = waveSpy.mock.calls[0][0];
-    expect(body.cove_id).toBe('cove-new');
+    expect(body.area_id).toBe('area-new');
     expect(body.attach_folder).toBe(true);
   });
 
   it('surfaces folder-conflict 409 with a user-readable message', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     vi.spyOn(api, 'createWave').mockRejectedValue(
       new CalmApiError(409, 'conflict', 'conflict', {
         folder_id: 2,
-        cove_id: 'cove-other',
+        area_id: 'area-other',
         conflict_path: '/Users/me/code',
         conflict_kind: 'descendant',
       }),
     );
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/task description/i), 'do');
     await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/x');
@@ -304,37 +304,37 @@ describe('NewTaskForm — submit', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
     await user.click(screen.getByRole('button', { name: /create task/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/already claimed by another cove/i);
+      expect(screen.getByRole('alert').textContent).toMatch(/already claimed by another area/i);
     });
   });
 
-  it('shows the conflicting cove name when known to useCovesQuery', async () => {
-    // PR3 review followup: when the 409 body's `cove_id` matches a
-    // cove we already have in the local cache, the error message
-    // should name it ("cove “Atlas”") instead of the generic
-    // "another cove" phrasing — so the user can find the offender
+  it('shows the conflicting area name when known to useAreasQuery', async () => {
+    // PR3 review followup: when the 409 body's `area_id` matches a
+    // area we already have in the local cache, the error message
+    // should name it ("area “Atlas”") instead of the generic
+    // "another area" phrasing — so the user can find the offender
     // in the sidebar without copy/pasting a UUID.
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Mine', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'cove-other', name: 'Atlas', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Mine', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      { id: 'area-other', name: 'Atlas', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     vi.spyOn(api, 'createWave').mockRejectedValue(
       new CalmApiError(409, 'conflict', 'conflict', {
         folder_id: 2,
-        cove_id: 'cove-other',
+        area_id: 'area-other',
         conflict_path: '/Users/me/code',
         conflict_kind: 'descendant',
       }),
     );
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/task description/i), 'do');
     await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/x');
@@ -342,7 +342,7 @@ describe('NewTaskForm — submit', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
     await user.click(screen.getByRole('button', { name: /create task/i }));
 
@@ -355,25 +355,25 @@ describe('NewTaskForm — submit', () => {
 });
 
 describe('NewTaskForm — auto-match override', () => {
-  it('lets the user override an auto-matched cove and pick a different one', async () => {
-    // PR3 review followup B2: a resolve hit should lock the cove via
+  it('lets the user override an auto-matched area and pick a different one', async () => {
+    // PR3 review followup B2: a resolve hit should lock the area via
     // the auto-match banner BUT also expose an escape hatch ("Use a
-    // different cove") so the user isn't trapped if the inferred cove
+    // different area") so the user isn't trapped if the inferred area
     // is wrong. Clicking the override reveals the radio picker; a
     // subsequent submit must use the user's manual choice, not the
     // auto-matched id.
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'cove-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
     ]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue({
-      cove_id: 'cove-1',
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue({
+      area_id: 'area-1',
       folder_id: 1,
       folder_path: '/Users/me/code',
     });
     const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
       id: 'w-new',
-      cove_id: 'cove-2',
+      area_id: 'area-2',
       title: 'do it',
       cwd: '/Users/me/code/proj',
       lifecycle: 'draft',
@@ -395,57 +395,57 @@ describe('NewTaskForm — auto-match override', () => {
     // Auto-match banner is visible and the override button is in the
     // tab order with a clear label.
     await waitFor(() => {
-      expect(screen.getByTestId('cove-auto-match').textContent).toMatch(/atlas/i);
+      expect(screen.getByTestId('area-auto-match').textContent).toMatch(/atlas/i);
     });
-    const overrideBtn = screen.getByRole('button', { name: /use a different cove/i });
+    const overrideBtn = screen.getByRole('button', { name: /use a different area/i });
     expect(overrideBtn).toBeTruthy();
 
     // Click the override — banner collapses, radio picker takes over.
     await user.click(overrideBtn);
     await waitFor(() => {
-      expect(screen.queryByTestId('cove-auto-match')).toBeNull();
-      expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+      expect(screen.queryByTestId('area-auto-match')).toBeNull();
+      expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
     });
 
-    // The fallback defaults to the first cove (cove-1). Switch to
-    // cove-2 via the select to prove the user can actually pick a
+    // The fallback defaults to the first area (area-1). Switch to
+    // area-2 via the select to prove the user can actually pick a
     // different one (not just see the picker).
     const select = screen.getByRole('combobox') as HTMLSelectElement;
-    await user.selectOptions(select, 'cove-2');
+    await user.selectOptions(select, 'area-2');
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
     const body = createSpy.mock.calls[0][0];
-    expect(body.cove_id).toBe('cove-2');
+    expect(body.area_id).toBe('area-2');
     // attach_folder must be true on the override path — we're claiming
-    // the cwd under the user's manual cove now, not the auto-matched
+    // the cwd under the user's manual area now, not the auto-matched
     // one that already covers it.
     expect(body.attach_folder).toBe(true);
   });
 
-  it('respects the manual cove choice after a subsequent cwd re-resolves to another hit', async () => {
+  it('respects the manual area choice after a subsequent cwd re-resolves to another hit', async () => {
     // PR3 review followup B2 (latch): once the user overrides, a fresh
     // resolve hit (from re-editing cwd) must NOT auto-overwrite the
-    // manual coveChoice — otherwise the override would be silently
+    // manual areaChoice — otherwise the override would be silently
     // undone the next time the user keeps typing.
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'cove-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
     ]);
     const resolveSpy = vi
-      .spyOn(api, 'resolveCovePath')
+      .spyOn(api, 'resolveAreaPath')
       .mockResolvedValueOnce({
-        cove_id: 'cove-1',
+        area_id: 'area-1',
         folder_id: 1,
         folder_path: '/Users/me/code',
       })
       .mockResolvedValueOnce({
-        cove_id: 'cove-1',
+        area_id: 'area-1',
         folder_id: 1,
         folder_path: '/Users/me/code',
       });
     const createSpy = vi.spyOn(api, 'createWave').mockResolvedValue({
       id: 'w-new',
-      cove_id: 'cove-2',
+      area_id: 'area-2',
       title: 'x',
       cwd: '/Users/me/code/proj2',
       lifecycle: 'draft',
@@ -465,17 +465,17 @@ describe('NewTaskForm — auto-match override', () => {
       vi.advanceTimersByTime(400);
     });
     await waitFor(() => {
-      expect(screen.getByTestId('cove-auto-match')).toBeTruthy();
+      expect(screen.getByTestId('area-auto-match')).toBeTruthy();
     });
 
-    // Override → pick cove-2.
-    await user.click(screen.getByRole('button', { name: /use a different cove/i }));
+    // Override → pick area-2.
+    await user.click(screen.getByRole('button', { name: /use a different area/i }));
     const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
-    await user.selectOptions(select, 'cove-2');
+    await user.selectOptions(select, 'area-2');
 
     // Now type more into cwd — this triggers a fresh resolve which
-    // also hits cove-1. The override must hold; we should still be in
-    // the radio picker with cove-2 selected.
+    // also hits area-1. The override must hold; we should still be in
+    // the radio picker with area-2 selected.
     await user.clear(cwdInput);
     await user.type(cwdInput, '/Users/me/code/proj2');
     await act(async () => {
@@ -483,11 +483,11 @@ describe('NewTaskForm — auto-match override', () => {
     });
     await waitFor(() => expect(resolveSpy).toHaveBeenCalledTimes(2));
     // No auto-match banner — manual choice still owns the UI.
-    expect(screen.queryByTestId('cove-auto-match')).toBeNull();
+    expect(screen.queryByTestId('area-auto-match')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
-    expect(createSpy.mock.calls[0][0].cove_id).toBe('cove-2');
+    expect(createSpy.mock.calls[0][0].area_id).toBe('area-2');
   });
 });
 
@@ -497,25 +497,25 @@ describe('NewTaskForm — race guard', () => {
     // `clearTimeout` only kills pending debounces, not in-flight
     // requests. Two overlapping fetches can land out-of-order; without
     // the latest-cwd ref check, the stale one wins and the user's UI
-    // shows the wrong cove.
+    // shows the wrong area.
     //
-    // Setup: first resolve (for `/a`) takes 100ms and hits cove-1;
-    // second resolve (for `/b`) is fast and hits cove-2. Without the
+    // Setup: first resolve (for `/a`) takes 100ms and hits area-1;
+    // second resolve (for `/b`) is fast and hits area-2. Without the
     // race guard, the slow `/a` reply would land last and clobber the
     // `/b` state.
-    vi.spyOn(api, 'listCoves').mockResolvedValue([
-      { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'cove-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
     ]);
-    let resolveSlow: ((v: Awaited<ReturnType<typeof api.resolveCovePath>>) => void) | null = null;
-    const slowReply = new Promise<Awaited<ReturnType<typeof api.resolveCovePath>>>((res) => {
+    let resolveSlow: ((v: Awaited<ReturnType<typeof api.resolveAreaPath>>) => void) | null = null;
+    const slowReply = new Promise<Awaited<ReturnType<typeof api.resolveAreaPath>>>((res) => {
       resolveSlow = res;
     });
     const spy = vi
-      .spyOn(api, 'resolveCovePath')
+      .spyOn(api, 'resolveAreaPath')
       .mockImplementationOnce(() => slowReply)
       .mockImplementationOnce(async () => ({
-        cove_id: 'cove-2',
+        area_id: 'area-2',
         folder_id: 2,
         folder_path: '/b',
       }));
@@ -539,26 +539,26 @@ describe('NewTaskForm — race guard', () => {
     });
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
 
-    // The second (fast) fetch lands → auto-match banner for cove-2.
+    // The second (fast) fetch lands → auto-match banner for area-2.
     await waitFor(() => {
-      expect(screen.getByTestId('cove-auto-match').textContent).toMatch(/borealis/i);
+      expect(screen.getByTestId('area-auto-match').textContent).toMatch(/borealis/i);
     });
 
     // Now let the slow `/a` reply land. With the race guard it must be
     // dropped: the banner must still show Borealis, not Atlas.
     await act(async () => {
-      resolveSlow?.({ cove_id: 'cove-1', folder_id: 1, folder_path: '/a' });
+      resolveSlow?.({ area_id: 'area-1', folder_id: 1, folder_path: '/a' });
       // Let the microtask flush.
       await Promise.resolve();
     });
-    expect(screen.getByTestId('cove-auto-match').textContent).toMatch(/borealis/i);
-    expect(screen.getByTestId('cove-auto-match').textContent).not.toMatch(/atlas/i);
+    expect(screen.getByTestId('area-auto-match').textContent).toMatch(/borealis/i);
+    expect(screen.getByTestId('area-auto-match').textContent).not.toMatch(/atlas/i);
   });
 });
 
 describe('NewTaskForm — cancel', () => {
   it('Escape calls onCancel', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const { onCancel } = renderForm();
     await user.type(screen.getByLabelText(/task description/i), 'wip');
@@ -567,7 +567,7 @@ describe('NewTaskForm — cancel', () => {
   });
 
   it('Cancel button calls onCancel', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const { onCancel } = renderForm();
     await user.click(screen.getByRole('button', { name: /cancel/i }));
@@ -578,13 +578,13 @@ describe('NewTaskForm — cancel', () => {
 // Browse… → DirectoryBrowser flow.
 //
 // In production NewTaskForm always renders inside a Dialog (NewWaveCTA
-// in Cove.tsx), so the Browse button's `useModalView()` push lands on a
+// in Area.tsx), so the Browse button's `useModalView()` push lands on a
 // real modal-view context. The test mirrors that wrapping so the
 // pushed-view path is the one we exercise — the inline fallback is
 // covered indirectly by the rule that production never hits it.
 describe('NewTaskForm — Browse cwd', () => {
   it('Browse opens the directory browser and selecting a path updates the cwd input', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     // Two-step listing: the first call (initial mount of the browser)
     // returns `/home/u` with one child directory `projects`. Clicking
     // that entry triggers a second listDir for `/home/u/projects`,

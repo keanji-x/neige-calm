@@ -3,19 +3,19 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Cove } from '../../../../../core/domain/cove.ts';
+import type { Area } from '../../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../../core/domain/wave.ts';
 import { WaveList } from './public.tsx';
 
 afterEach(cleanup);
 
-function cove(overrides: Partial<Cove> = {}): Cove {
+function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Alpha', sort: 1, lifecycle: 'done', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Alpha', sort: 1, lifecycle: 'done', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -28,14 +28,14 @@ function titlesInOrder(): string[] {
 
 describe('WaveList', () => {
   it('renders the empty message when there are no waves', () => {
-    render(<WaveList waves={[]} coves={[]} onOpenWave={vi.fn()} emptyMessage="No waves in this cove yet." />);
-    expect(screen.getByText('No waves in this cove yet.')).toBeTruthy();
+    render(<WaveList waves={[]} areas={[]} onOpenWave={vi.fn()} emptyMessage="No waves in this area yet." />);
+    expect(screen.getByText('No waves in this area yet.')).toBeTruthy();
   });
 
   it('does not list archived waves', () => {
     render(<WaveList
       waves={[wave({ title: 'Filed away', archivedAt: 42 })]}
-      coves={[cove()]}
+      areas={[area()]}
       onOpenWave={vi.fn()}
       emptyMessage="No visible waves."
     />);
@@ -50,7 +50,7 @@ describe('WaveList', () => {
         wave({ id: 'r', title: 'Running', lifecycle: 'working' }),
         wave({ id: 'a', title: 'Attention', lifecycle: 'blocked' }),
       ]}
-      coves={[cove()]}
+      areas={[area()]}
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
@@ -65,7 +65,7 @@ describe('WaveList', () => {
         wave({ id: 'r', title: 'Running', lifecycle: 'working' }),
         wave({ id: 'n', title: 'Needy', lifecycle: 'draft', anyCardNeedsInput: true }),
       ]}
-      coves={[cove()]}
+      areas={[area()]}
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
@@ -74,37 +74,37 @@ describe('WaveList', () => {
 
   it('opens the wave the row stands for', async () => {
     const onOpenWave = vi.fn();
-    render(<WaveList waves={[wave()]} coves={[cove()]} onOpenWave={onOpenWave} emptyMessage="empty" />);
+    render(<WaveList waves={[wave()]} areas={[area()]} onOpenWave={onOpenWave} emptyMessage="empty" />);
     await userEvent.click(screen.getByRole('button', { name: /^Wave Alpha/ }));
     expect(onOpenWave).toHaveBeenCalledWith('w1');
   });
 
-  it('names the cove only when showCove is set', () => {
+  it('names the area only when showArea is set', () => {
     const { unmount } = render(
-      <WaveList waves={[wave()]} coves={[cove()]} onOpenWave={vi.fn()} emptyMessage="empty" />,
+      <WaveList waves={[wave()]} areas={[area()]} onOpenWave={vi.fn()} emptyMessage="empty" />,
     );
     expect(screen.getByRole('button', { name: 'Wave Alpha, Done' })).toBeTruthy();
     unmount();
 
-    render(<WaveList waves={[wave()]} coves={[cove()]} showCove onOpenWave={vi.fn()} emptyMessage="empty" />);
-    expect(screen.getByRole('button', { name: 'Wave Alpha, Done, in cove Work' })).toBeTruthy();
+    render(<WaveList waves={[wave()]} areas={[area()]} showArea onOpenWave={vi.fn()} emptyMessage="empty" />);
+    expect(screen.getByRole('button', { name: 'Wave Alpha, Done, in area Work' })).toBeTruthy();
   });
 
-  it('falls back to Unknown cove when the wave points at a cove we cannot see', () => {
+  it('falls back to Unknown area when the wave points at an area we cannot see', () => {
     render(<WaveList
-      waves={[wave({ coveId: 'gone' })]}
-      coves={[cove()]}
-      showCove
+      waves={[wave({ areaId: 'gone' })]}
+      areas={[area()]}
+      showArea
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
-    expect(screen.getByRole('button', { name: /in cove Unknown cove$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /in area Unknown area$/ })).toBeTruthy();
   });
 
   it('marks the active wave with aria-current', () => {
     render(<WaveList
       waves={[wave({ id: 'w1', title: 'Alpha' }), wave({ id: 'w2', title: 'Beta' })]}
-      coves={[cove()]}
+      areas={[area()]}
       activeWaveId="w2"
       onOpenWave={vi.fn()}
       emptyMessage="empty"
@@ -114,7 +114,7 @@ describe('WaveList', () => {
   });
 
   it('hides pin and delete unless the callbacks are supplied', () => {
-    render(<WaveList waves={[wave()]} coves={[cove()]} onOpenWave={vi.fn()} emptyMessage="empty" />);
+    render(<WaveList waves={[wave()]} areas={[area()]} onOpenWave={vi.fn()} emptyMessage="empty" />);
     expect(screen.queryByRole('button', { name: 'Pin Alpha' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete Alpha' })).toBeNull();
   });
@@ -124,7 +124,7 @@ describe('WaveList', () => {
     const onDeleteWave = vi.fn();
     render(<WaveList
       waves={[wave()]}
-      coves={[cove()]}
+      areas={[area()]}
       onOpenWave={vi.fn()}
       onSetPinned={onSetPinned}
       onDeleteWave={onDeleteWave}

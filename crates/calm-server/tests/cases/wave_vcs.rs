@@ -9,9 +9,9 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::harness::HarnessSnapshot;
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::model::{
-    Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch,
+    Card, CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewWave, WaveLifecycle, WavePatch,
     new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
@@ -19,7 +19,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::state::WriteContext;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_fs_view::WaveFsView;
 use calm_server::wave_report::{WaveReportPayload, persist_report};
 use calm_server::wave_vcs::{self, DiffStatus, MANIFEST_SCHEMA_VERSION};
@@ -40,20 +40,20 @@ async fn fresh_file_repo() -> (tempfile::TempDir, Arc<SqlxRepo>) {
     (dir, Arc::new(repo))
 }
 
-async fn make_cove(repo: &SqlxRepo) -> calm_server::model::Cove {
-    repo.cove_create(NewCove {
-        name: "cove".into(),
+async fn make_area(repo: &SqlxRepo) -> calm_server::model::Area {
+    repo.area_create(NewArea {
+        name: "area".into(),
         color: "#abcdef".into(),
         sort: None,
     })
     .await
-    .expect("create cove")
+    .expect("create area")
 }
 
-async fn make_wave(repo: &SqlxRepo, cove_id: &str) -> calm_server::model::Wave {
+async fn make_wave(repo: &SqlxRepo, area_id: &str) -> calm_server::model::Wave {
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: CoveId::from(cove_id),
+        area_id: AreaId::from(area_id),
         title: "wave".into(),
         sort: None,
         cwd: "/tmp".into(),
@@ -73,7 +73,7 @@ async fn add_card_with_event(
     roles: &CardRoleCache,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     kind: &str,
     role: CardRole,
     payload: serde_json::Value,
@@ -84,7 +84,7 @@ async fn add_card_with_event(
         roles,
         write,
         wave_id,
-        cove_id,
+        area_id,
         new_id(),
         kind,
         role,
@@ -100,7 +100,7 @@ async fn add_card_with_id_with_event(
     roles: &CardRoleCache,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     card_id: String,
     kind: &str,
     role: CardRole,
@@ -110,7 +110,7 @@ async fn add_card_with_id_with_event(
     let scope = EventScope::Card {
         card: CardId::from(card_id.clone()),
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     let new_card = NewCard {
         wave_id: wave_id.clone(),
@@ -159,7 +159,7 @@ async fn add_report_card(
     roles: &CardRoleCache,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
 ) -> Card {
     add_card_with_event(
         repo,
@@ -167,7 +167,7 @@ async fn add_report_card(
         roles,
         write,
         wave_id,
-        cove_id,
+        area_id,
         "wave-report",
         CardRole::ReportCard,
         serde_json::to_value(WaveReportPayload::initial()).expect("report payload"),
@@ -180,7 +180,7 @@ async fn update_card_with_event(
     bus: &EventBus,
     write: &WriteContext,
     card: &Card,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     patch: CardPatch,
 ) -> Card {
     let card_id = card.id.clone();
@@ -188,7 +188,7 @@ async fn update_card_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: card.wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     repo.write_with_event(
         ActorId::Kernel,
@@ -219,7 +219,7 @@ async fn update_wave_title_with_actor(
     bus: &EventBus,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     title: &str,
     actor: ActorId,
 ) {
@@ -229,7 +229,7 @@ async fn update_wave_title_with_actor(
         actor,
         EventScope::Wave {
             wave: wave_id.clone(),
-            cove: cove_id.clone(),
+            area: area_id.clone(),
         },
         None,
         bus,
@@ -301,7 +301,7 @@ async fn start_codex_runtime_with_event(
     bus: &EventBus,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     card_id: &CardId,
 ) -> String {
     let runtime_id = new_id();
@@ -310,7 +310,7 @@ async fn start_codex_runtime_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     repo.write_with_event(
         ActorId::Kernel,
@@ -372,7 +372,7 @@ async fn set_runtime_status_with_event(
     bus: &EventBus,
     write: &WriteContext,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     card_id: &CardId,
     runtime_id: &str,
     old_status: WorkerSessionState,
@@ -383,7 +383,7 @@ async fn set_runtime_status_with_event(
     let scope = EventScope::Card {
         card: card_id.clone(),
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     repo.write_with_event(
         ActorId::Kernel,
@@ -411,11 +411,11 @@ async fn set_runtime_status_with_event(
     .expect("runtime status changed event");
 }
 
-fn write_context() -> (CardRoleCache, WaveCoveCache, WriteContext) {
+fn write_context() -> (CardRoleCache, WaveAreaCache, WriteContext) {
     let roles = CardRoleCache::new();
-    let coves = WaveCoveCache::new();
-    let write = WriteContext::new(roles.clone(), coves.clone());
-    (roles, coves, write)
+    let areas = WaveAreaCache::new();
+    let write = WriteContext::new(roles.clone(), areas.clone());
+    (roles, areas, write)
 }
 
 async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
@@ -598,9 +598,9 @@ async fn log_codex_hook(
     repo: &SqlxRepo,
     bus: &EventBus,
     roles: &CardRoleCache,
-    coves: &WaveCoveCache,
+    areas: &WaveAreaCache,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     card_id: &CardId,
     key: &str,
     prompt: &str,
@@ -610,12 +610,12 @@ async fn log_codex_hook(
         EventScope::Card {
             card: card_id.clone(),
             wave: wave_id.clone(),
-            cove: cove_id.clone(),
+            area: area_id.clone(),
         },
         None,
         bus,
         roles,
-        coves,
+        areas,
         Event::CodexHook {
             card_id: card_id.clone(),
             kind: "hook.codex.user_prompt_submit".into(),
@@ -632,9 +632,9 @@ async fn log_claude_hook(
     repo: &SqlxRepo,
     bus: &EventBus,
     roles: &CardRoleCache,
-    coves: &WaveCoveCache,
+    areas: &WaveAreaCache,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     card_id: &CardId,
     key: &str,
     prompt: &str,
@@ -644,12 +644,12 @@ async fn log_claude_hook(
         EventScope::Card {
             card: card_id.clone(),
             wave: wave_id.clone(),
-            cove: cove_id.clone(),
+            area: area_id.clone(),
         },
         None,
         bus,
         roles,
-        coves,
+        areas,
         Event::ClaudeHook {
             card_id: card_id.clone(),
             kind: "hook.claude.user_prompt_submit".into(),
@@ -789,18 +789,18 @@ async fn seed_legacy_card_lens_manifest(
 #[tokio::test]
 async fn snapshot_tree_hash_is_deterministic_for_same_state() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "terminal",
         CardRole::Worker,
         json!({"z": "last", "a": "first"}),
@@ -824,18 +824,18 @@ async fn snapshot_tree_hash_is_deterministic_for_same_state() {
 #[tokio::test]
 async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "terminal",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "legacy-paths"}),
@@ -861,7 +861,7 @@ async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "post cutover",
         ActorId::User,
     )
@@ -883,18 +883,18 @@ async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
 #[tokio::test]
 async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let spec = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "spec",
         CardRole::Spec,
         json!({"schemaVersion": 1}),
@@ -907,7 +907,7 @@ async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "post cutover",
         ActorId::User,
     )
@@ -940,10 +940,10 @@ async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
 #[tokio::test]
 async fn next_commit_after_legacy_eventless_card_lens_manifest_rewrites_dotfile_paths() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
+    let (roles, _areas, write) = write_context();
     let worker = insert_raw_card(
         &repo,
         &roles,
@@ -977,7 +977,7 @@ async fn next_commit_after_legacy_eventless_card_lens_manifest_rewrites_dotfile_
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "post eventless cutover",
         ActorId::User,
     )
@@ -1007,16 +1007,16 @@ fn canonical_json_sorts_keys_and_uses_integer_time_shape() {
 async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
     let repo = fresh_repo().await;
     let bus = EventBus::new();
-    let (_roles, _coves, write) = write_context();
+    let (_roles, _areas, write) = write_context();
     let missing_wave = WaveId::from("missing-wave");
-    let missing_cove = CoveId::from("missing-cove");
+    let missing_area = AreaId::from("missing-area");
 
     let err = repo
         .write_with_event(
             ActorId::User,
             EventScope::Wave {
                 wave: missing_wave,
-                cove: missing_cove,
+                area: missing_area,
             },
             None,
             &bus,
@@ -1044,18 +1044,18 @@ async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
 #[tokio::test]
 async fn actor_event_batch_writes_wave_vcs_commit_with_lifecycle_and_verdict() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let spec = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "spec",
         CardRole::Spec,
         json!({"schemaVersion": 1}),
@@ -1065,7 +1065,7 @@ async fn actor_event_batch_writes_wave_vcs_commit_with_lifecycle_and_verdict() {
     let before_commits = wave_commit_rows(&repo, wave.id.as_str()).await;
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     let wave_id = wave.id.clone();
     let spec_actor = ActorId::AiSpec(spec.id.clone());
@@ -1234,9 +1234,9 @@ async fn actor_event_batch_writes_wave_vcs_commit_with_lifecycle_and_verdict() {
 #[tokio::test]
 async fn wave_delete_cascades_refs_and_commits_but_leaves_objects() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
-    let (roles, _coves, _write) = write_context();
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
+    let (roles, _areas, _write) = write_context();
     insert_raw_report_card(&repo, &roles, &wave.id).await;
 
     let backfilled = wave_vcs::backfill_existing_waves(repo.pool())
@@ -1258,11 +1258,11 @@ async fn wave_delete_cascades_refs_and_commits_but_leaves_objects() {
 #[tokio::test]
 async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let object_hashes = vcs_object_hashes(repo.pool()).await;
     assert!(object_hashes.len() > 1);
     let fresh_hash = object_hashes[0].clone();
@@ -1285,11 +1285,11 @@ async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
 #[tokio::test]
 async fn object_sweep_keeps_objects_referenced_by_live_commits() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let before = count_rows(repo.pool(), "wave_vcs_objects").await;
     assert!(before > 0);
 
@@ -1305,11 +1305,11 @@ async fn object_sweep_keeps_objects_referenced_by_live_commits() {
 #[tokio::test]
 async fn object_sweep_reports_corrupt_tree_object_hash() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
 
     let tree_hash: String = sqlx::query_scalar(
         r#"SELECT tree_hash
@@ -1343,13 +1343,13 @@ async fn object_sweep_reports_corrupt_tree_object_hash() {
 #[tokio::test]
 async fn object_sweep_keeps_blob_shared_by_deleted_and_live_waves() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let deleted_wave = make_wave(&repo, cove.id.as_str()).await;
-    let live_wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let deleted_wave = make_wave(&repo, area.id.as_str()).await;
+    let live_wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &cove.id).await;
-    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &area.id).await;
+    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &area.id).await;
 
     let deleted_manifest = head_manifest(&repo, &deleted_wave.id).await;
     let live_manifest = head_manifest(&repo, &live_wave.id).await;
@@ -1396,13 +1396,13 @@ async fn object_sweep_keeps_blob_shared_by_deleted_and_live_waves() {
 #[tokio::test]
 async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
     let (_dir, repo) = fresh_file_repo().await;
-    let cove = make_cove(&repo).await;
-    let live_wave = make_wave(&repo, cove.id.as_str()).await;
-    let deleted_wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let live_wave = make_wave(&repo, area.id.as_str()).await;
+    let deleted_wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &cove.id).await;
-    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &live_wave.id, &area.id).await;
+    add_report_card(&repo, &bus, &roles, &write, &deleted_wave.id, &area.id).await;
     repo.wave_delete(deleted_wave.id.as_str())
         .await
         .expect("delete wave");
@@ -1413,7 +1413,7 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
     let write_bus = bus.clone();
     let write_context = write.clone();
     let live_wave_id = live_wave.id.clone();
-    let live_cove_id = cove.id.clone();
+    let live_area_id = area.id.clone();
     let update_wave_id = live_wave.id.clone();
 
     let sweep = tokio::spawn(async move {
@@ -1427,7 +1427,7 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
                 ActorId::User,
                 EventScope::Wave {
                     wave: live_wave_id,
-                    cove: live_cove_id,
+                    area: live_area_id,
                 },
                 None,
                 &write_bus,
@@ -1466,33 +1466,33 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
 #[tokio::test]
 async fn concurrent_same_wave_writes_form_linear_history() {
     let (_dir, repo) = fresh_file_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
     let roles = CardRoleCache::new();
-    let coves = WaveCoveCache::new();
-    let write = WriteContext::new(roles.clone(), coves.clone());
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let areas = WaveAreaCache::new();
+    let write = WriteContext::new(roles.clone(), areas.clone());
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
 
     let mut handles = Vec::new();
     for key in ["one", "two"] {
         let repo = repo.clone();
         let bus = bus.clone();
         let roles = roles.clone();
-        let coves = coves.clone();
+        let areas = areas.clone();
         let wave_id = wave.id.clone();
-        let cove_id = cove.id.clone();
+        let area_id = area.id.clone();
         handles.push(tokio::spawn(async move {
             repo.log_pure_event(
                 ActorId::User,
                 EventScope::Wave {
                     wave: wave_id,
-                    cove: cove_id,
+                    area: area_id,
                 },
                 None,
                 &bus,
                 &roles,
-                &coves,
+                &areas,
                 Event::TaskCompleted {
                     idempotency_key: key.into(),
                     result: json!({"status": "accepted"}),
@@ -1519,9 +1519,9 @@ async fn concurrent_same_wave_writes_form_linear_history() {
 #[tokio::test]
 async fn backfill_is_idempotent_and_uses_null_event_id_for_eventless_wave() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
-    let (roles, _coves, _write) = write_context();
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
+    let (roles, _areas, _write) = write_context();
     insert_raw_report_card(&repo, &roles, &wave.id).await;
 
     assert_eq!(
@@ -1551,10 +1551,10 @@ async fn backfill_is_idempotent_and_uses_null_event_id_for_eventless_wave() {
 #[tokio::test]
 async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, _write) = write_context();
+    let (roles, areas, _write) = write_context();
     insert_raw_report_card(&repo, &roles, &wave.id).await;
     let worker = insert_raw_card(
         &repo,
@@ -1577,12 +1577,12 @@ async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
         EventScope::Card {
             card: worker.id.clone(),
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CardUpdated(worker.clone()),
     )
     .await
@@ -1617,13 +1617,13 @@ async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
 #[tokio::test]
 async fn batch_write_creates_one_commit_at_last_wave_event() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let wave_id = wave.id.clone();
-    let cove_id = cove.id.clone();
+    let area_id = area.id.clone();
 
     let ids = repo
         .write_with_events(
@@ -1633,7 +1633,7 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
             &write,
             Box::new(move |tx| {
                 let wave_id = wave_id.clone();
-                let cove_id = cove_id.clone();
+                let area_id = area_id.clone();
                 Box::pin(async move {
                     let updated = wave_update_tx(
                         tx,
@@ -1648,14 +1648,14 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
                         (
                             EventScope::Wave {
                                 wave: wave_id.clone(),
-                                cove: cove_id.clone(),
+                                area: area_id.clone(),
                             },
                             Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)),
                         ),
                         (
                             EventScope::Wave {
                                 wave: wave_id,
-                                cove: cove_id,
+                                area: area_id,
                             },
                             Event::TaskCompleted {
                                 idempotency_key: "batch".into(),
@@ -1687,18 +1687,18 @@ async fn batch_write_creates_one_commit_at_last_wave_event() {
 #[tokio::test]
 async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "mixed-actor-batch"}),
@@ -1709,7 +1709,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
         .unwrap()
         .expect("head before mixed batch");
     let wave_id = wave.id.clone();
-    let cove_id = cove.id.clone();
+    let area_id = area.id.clone();
 
     repo.write_with_actor_events(
         None,
@@ -1717,7 +1717,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
         &write,
         Box::new(move |tx| {
             let wave_id = wave_id.clone();
-            let cove_id = cove_id.clone();
+            let area_id = area_id.clone();
             Box::pin(async move {
                 let updated = wave_update_tx(
                     tx,
@@ -1733,7 +1733,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
                         ActorId::User,
                         EventScope::Wave {
                             wave: wave_id.clone(),
-                            cove: cove_id.clone(),
+                            area: area_id.clone(),
                         },
                         Event::WaveUpdated(WaveUpdatedPayload::new(updated, None)),
                     ),
@@ -1741,7 +1741,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
                         ActorId::Kernel,
                         EventScope::Wave {
                             wave: wave_id,
-                            cove: cove_id,
+                            area: area_id,
                         },
                         Event::TaskCompleted {
                             idempotency_key: "mixed-actor-batch".into(),
@@ -1788,11 +1788,11 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
 #[tokio::test]
 async fn incremental_commit_changes_only_expected_wave_paths() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let wave_id = wave.id.clone();
     let first = wave_vcs::head(repo.pool(), &wave.id)
         .await
@@ -1803,7 +1803,7 @@ async fn incremental_commit_changes_only_expected_wave_paths() {
         ActorId::User,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
@@ -1855,11 +1855,11 @@ async fn incremental_commit_changes_only_expected_wave_paths() {
 #[tokio::test]
 async fn card_added_commit_updates_index_markdown_card_count() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let before = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
@@ -1871,7 +1871,7 @@ async fn card_added_commit_updates_index_markdown_card_count() {
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "terminal",
         CardRole::Worker,
         json!({"schemaVersion": 1}),
@@ -1895,17 +1895,17 @@ async fn card_added_commit_updates_index_markdown_card_count() {
 #[tokio::test]
 async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "hook-no-drip"}),
@@ -1924,9 +1924,9 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
         &repo,
         &bus,
         &roles,
-        &coves,
+        &areas,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         "hook-no-drip-codex",
         "codex progress",
@@ -1956,9 +1956,9 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
         &repo,
         &bus,
         &roles,
-        &coves,
+        &areas,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         "hook-no-drip-claude",
         "claude progress",
@@ -1995,17 +1995,17 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
 #[tokio::test]
 async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "hook-unchanged"}),
@@ -2020,9 +2020,9 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
         &repo,
         &bus,
         &roles,
-        &coves,
+        &areas,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         "hook-unchanged-1",
         "progress one",
@@ -2032,9 +2032,9 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
         &repo,
         &bus,
         &roles,
-        &coves,
+        &areas,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         "hook-unchanged-2",
         "progress two",
@@ -2067,17 +2067,17 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
 #[tokio::test]
 async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "turn-boundary"}),
@@ -2093,9 +2093,9 @@ async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
             &repo,
             &bus,
             &roles,
-            &coves,
+            &areas,
             &wave.id,
-            &cove.id,
+            &area.id,
             &worker.id,
             &format!("turn-boundary-hook-{seq}"),
             &format!("boundary progress {seq}"),
@@ -2158,10 +2158,10 @@ async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
 #[tokio::test]
 async fn transcript_refresh_includes_backfilled_inherited_cards() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     insert_raw_report_card(&repo, &roles, &wave.id).await;
     let worker = insert_raw_card(
         &repo,
@@ -2184,9 +2184,9 @@ async fn transcript_refresh_includes_backfilled_inherited_cards() {
         &repo,
         &bus,
         &roles,
-        &coves,
+        &areas,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         "inherited-transcript-hook",
         "inherited card progress",
@@ -2225,17 +2225,17 @@ async fn transcript_refresh_includes_backfilled_inherited_cards() {
 #[tokio::test]
 async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "replay-parity"}),
@@ -2246,9 +2246,9 @@ async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
             &repo,
             &bus,
             &roles,
-            &coves,
+            &areas,
             &wave.id,
-            &cove.id,
+            &area.id,
             &worker.id,
             &format!("replay-parity-hook-{seq}"),
             &format!("replay parity progress {seq}"),
@@ -2270,18 +2270,18 @@ async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
 #[tokio::test]
 async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "run-a", "goal": "check parity"}),
@@ -2292,12 +2292,12 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
         ActorId::Kernel,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CodexWorkerRequested {
             idempotency_key: "run-a".into(),
             goal: "check parity".into(),
@@ -2308,18 +2308,18 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
     )
     .await
     .expect("worker requested");
-    start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
+    start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &area.id, &worker.id).await;
     repo.log_pure_event(
         ActorId::Kernel,
         EventScope::Card {
             card: worker.id.clone(),
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CodexHook {
             card_id: worker.id.clone(),
             kind: "hook.codex.user_prompt_submit".into(),
@@ -2345,12 +2345,12 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
         ActorId::KernelDispatcher,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::TaskCompleted {
             idempotency_key: "run-a".into(),
             result: json!({"summary": "done"}),
@@ -2378,17 +2378,17 @@ async fn manifest_blob_bytes_match_wave_fs_view_for_populated_wave() {
 #[tokio::test]
 async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "snapshot-transcripts"}),
@@ -2401,12 +2401,12 @@ async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
             EventScope::Card {
                 card: worker.id.clone(),
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &roles,
-            &coves,
+            &areas,
             Event::CodexHook {
                 card_id: worker.id.clone(),
                 kind: "hook.codex.user_prompt_submit".into(),
@@ -2467,17 +2467,17 @@ async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
 #[tokio::test]
 async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "snapshot-transcripts-noop"}),
@@ -2490,12 +2490,12 @@ async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
             EventScope::Card {
                 card: worker.id.clone(),
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &roles,
-            &coves,
+            &areas,
             Event::CodexHook {
                 card_id: worker.id.clone(),
                 kind: "hook.codex.user_prompt_submit".into(),
@@ -2560,18 +2560,18 @@ async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity()
     const EXTRA_EVENTS: usize = 50;
 
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "hook-cap", "goal": "cap hooks"}),
@@ -2584,12 +2584,12 @@ async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity()
             EventScope::Card {
                 card: worker.id.clone(),
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &roles,
-            &coves,
+            &areas,
             Event::CodexHook {
                 card_id: worker.id.clone(),
                 kind: "hook.codex.user_prompt_submit".into(),
@@ -2660,11 +2660,11 @@ async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity()
 #[tokio::test]
 async fn card_retarget_from_wave_report_is_refused_and_preserves_report_blob() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let before_head = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
@@ -2705,11 +2705,11 @@ async fn card_retarget_from_wave_report_is_refused_and_preserves_report_blob() {
 #[tokio::test]
 async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let old_body = "# Goal\n\n```text\nstable\n```\n\nold line\n";
     let new_body = "# Goal\n\n```text\nstable\n```\n\nnew line\n";
     let initial = WaveReportPayload::initial();
@@ -2797,11 +2797,11 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
 #[tokio::test]
 async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let before = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
@@ -2813,7 +2813,7 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
             &bus,
             &write,
             &wave.id,
-            &cove.id,
+            &area.id,
             &format!("title-{i}"),
             ActorId::User,
         )
@@ -2835,11 +2835,11 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
 #[tokio::test]
 async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let before = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
@@ -2850,7 +2850,7 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "legacy-null-author",
         ActorId::User,
     )
@@ -2880,17 +2880,17 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
 #[tokio::test]
 async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let high_id = add_card_with_id_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "worker-z-card".into(),
         "codex",
         CardRole::Worker,
@@ -2903,7 +2903,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "worker-a-card".into(),
         "codex",
         CardRole::Worker,
@@ -2915,7 +2915,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         &bus,
         &write,
         &high_id,
-        &cove.id,
+        &area.id,
         CardPatch {
             title: None,
             kind: None,
@@ -2930,7 +2930,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         &bus,
         &write,
         &low_id,
-        &cove.id,
+        &area.id,
         CardPatch {
             title: None,
             kind: None,
@@ -2955,12 +2955,12 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         ActorId::Kernel,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CodexWorkerRequested {
             idempotency_key: "dup-key".into(),
             goal: "duplicate key".into(),
@@ -3004,17 +3004,17 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
 #[tokio::test]
 async fn superseded_only_runtime_payload_matches_live_view_without_runtime_fields() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "superseded-only"}),
@@ -3051,12 +3051,12 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
         EventScope::Card {
             card: worker.id.clone(),
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::RuntimeSuperseded {
             old_runtime_id: runtime.id,
             new_runtime_id: "missing-replacement".into(),
@@ -3082,17 +3082,17 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
 #[tokio::test]
 async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
+    let (roles, areas, write) = write_context();
     let spec = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Spec,
         json!({"schemaVersion": 1, "spec_harness": true}),
@@ -3144,12 +3144,12 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
         EventScope::Card {
             card: spec.id.clone(),
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::RuntimeStarted {
             runtime_id: runtime.id,
             card_id: runtime.card_id,
@@ -3191,24 +3191,24 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
 #[tokio::test]
 async fn runtime_event_heals_legacy_projected_payload_blob_once() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
+    let (roles, _areas, write) = write_context();
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({"schemaVersion": 1, "idempotency_key": "legacy-heal", "goal": "heal"}),
     )
     .await;
     let runtime_id =
-        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
+        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &area.id, &worker.id).await;
     let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
 
     let legacy_hash = seed_head_payload_blob(
@@ -3234,7 +3234,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         &runtime_id,
         WorkerSessionState::Running,
@@ -3292,7 +3292,7 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         &runtime_id,
         WorkerSessionState::Idle,
@@ -3315,18 +3315,18 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
 #[tokio::test]
 async fn runtime_status_flip_does_not_change_run_json_bytes() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     let worker = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         "codex",
         CardRole::Worker,
         json!({
@@ -3341,12 +3341,12 @@ async fn runtime_status_flip_does_not_change_run_json_bytes() {
         ActorId::Kernel,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CodexWorkerRequested {
             idempotency_key: "runtime-flip".into(),
             goal: "runtime must not project into run payload".into(),
@@ -3358,7 +3358,7 @@ async fn runtime_status_flip_does_not_change_run_json_bytes() {
     .await
     .expect("request event");
     let runtime_id =
-        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &cove.id, &worker.id).await;
+        start_codex_runtime_with_event(&repo, &bus, &write, &wave.id, &area.id, &worker.id).await;
 
     let run_path = "runs/runtime-flip.json";
     let before = wave_vcs::head(repo.pool(), &wave.id)
@@ -3377,7 +3377,7 @@ async fn runtime_status_flip_does_not_change_run_json_bytes() {
         &bus,
         &write,
         &wave.id,
-        &cove.id,
+        &area.id,
         &worker.id,
         &runtime_id,
         WorkerSessionState::Running,
@@ -3422,11 +3422,11 @@ async fn runtime_status_flip_does_not_change_run_json_bytes() {
 #[tokio::test]
 async fn task_completion_updates_only_the_affected_run_paths() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     for key in ["one", "two"] {
         add_card_with_event(
             &repo,
@@ -3434,7 +3434,7 @@ async fn task_completion_updates_only_the_affected_run_paths() {
             &roles,
             &write,
             &wave.id,
-            &cove.id,
+            &area.id,
             "codex",
             CardRole::Worker,
             json!({"schemaVersion": 1, "idempotency_key": key}),
@@ -3444,12 +3444,12 @@ async fn task_completion_updates_only_the_affected_run_paths() {
             ActorId::Kernel,
             EventScope::Wave {
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &roles,
-            &coves,
+            &areas,
             Event::CodexWorkerRequested {
                 idempotency_key: key.into(),
                 goal: format!("run {key}"),
@@ -3470,12 +3470,12 @@ async fn task_completion_updates_only_the_affected_run_paths() {
         ActorId::KernelDispatcher,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::TaskCompleted {
             idempotency_key: "one".into(),
             result: json!({"summary": "done"}),
@@ -3513,11 +3513,11 @@ async fn task_completion_updates_only_the_affected_run_paths() {
 #[tokio::test]
 async fn eventless_card_row_stays_hidden_until_card_added_event() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
 
     let hidden_id = new_id();
     let mut tx = repo.pool().begin().await.expect("begin hidden insert");
@@ -3543,12 +3543,12 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
         ActorId::Kernel,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CodexWorkerRequested {
             idempotency_key: "hidden-run".into(),
             goal: "hidden worker".into(),
@@ -3587,12 +3587,12 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
         EventScope::Card {
             card: hidden.id.clone(),
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::CardAdded(hidden),
     )
     .await
@@ -3607,13 +3607,13 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
 }
 
 #[tokio::test]
-async fn cove_delete_cascades_wave_vcs_refs_and_commits() {
+async fn area_delete_cascades_wave_vcs_refs_and_commits() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, _coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, _areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
     assert!(
         wave_vcs::head(repo.pool(), &wave.id)
             .await
@@ -3621,9 +3621,9 @@ async fn cove_delete_cascades_wave_vcs_refs_and_commits() {
             .is_some()
     );
 
-    repo.cove_delete(cove.id.as_str())
+    repo.area_delete(area.id.as_str())
         .await
-        .expect("delete cove");
+        .expect("delete area");
     assert_eq!(count_rows(repo.pool(), "wave_vcs_refs").await, 0);
     assert_eq!(count_rows(repo.pool(), "wave_vcs_commits").await, 0);
     assert!(
@@ -3637,22 +3637,22 @@ async fn cove_delete_cascades_wave_vcs_refs_and_commits() {
 #[tokio::test]
 async fn reserved_run_key_does_not_clobber_runs_index() {
     let repo = fresh_repo().await;
-    let cove = make_cove(&repo).await;
-    let wave = make_wave(&repo, cove.id.as_str()).await;
+    let area = make_area(&repo).await;
+    let wave = make_wave(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
-    let (roles, coves, write) = write_context();
-    add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
+    let (roles, areas, write) = write_context();
+    add_report_card(&repo, &bus, &roles, &write, &wave.id, &area.id).await;
 
     repo.log_pure_event(
         ActorId::KernelDispatcher,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &bus,
         &roles,
-        &coves,
+        &areas,
         Event::TaskCompleted {
             idempotency_key: "index".into(),
             result: json!({"summary": "reserved"}),

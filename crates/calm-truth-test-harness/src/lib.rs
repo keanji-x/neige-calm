@@ -24,7 +24,7 @@ use calm_truth::decision_gate::{
 use calm_truth::error::{Result as TruthResult, TruthError};
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::{ActorId, CardId};
-use calm_truth::model::{NewCard, NewCove, NewWave, RequestTheme, new_id, now_ms};
+use calm_truth::model::{NewArea, NewCard, NewWave, RequestTheme, new_id, now_ms};
 use calm_truth::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepo,
     WorkerSessionState,
@@ -32,7 +32,7 @@ use calm_truth::session_projection_repo::{
 use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
 use calm_truth::test_helpers;
-use calm_truth::wave_cove_cache::WaveCoveCache;
+use calm_truth::wave_area_cache::WaveAreaCache;
 use calm_types::ids::WaveId;
 use calm_types::worker::{
     ExitEvidence, ExitInterpretation, ExitSource, Liveness, LivenessTag, SessionMode,
@@ -43,18 +43,18 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open migrated sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "truth conformance".into(),
             color: "#111111".into(),
             sort: None,
         })
         .await
-        .expect("seed cove");
+        .expect("seed area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "truth conformance".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -69,7 +69,7 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
 }
 
 fn write_context() -> WriteContext {
-    WriteContext::new(CardRoleCache::new(), WaveCoveCache::new())
+    WriteContext::new(CardRoleCache::new(), WaveAreaCache::new())
 }
 
 fn session(id: &str, wave_id: WaveId) -> WorkerSession {

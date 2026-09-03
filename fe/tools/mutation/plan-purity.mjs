@@ -82,11 +82,18 @@ function checkPurity(label, args) {
     violationUnless(plan.status === 0, `${label} exited ${plan.status}: ${plan.stderr}`);
     const lines = plan.stdout.split('\n').filter((line) => line !== '');
     violationUnless(lines.length === 1, `${label} wrote ${lines.length} stdout lines, expected exactly one JSON line`);
+    /** @type {{selected: number, total: number, shards: number[], clamped: boolean,
+     * matrix: Array<{shard: number, browser: boolean}>, test_scope: string}} */
     const parsed = JSON.parse(lines[0]);
-    violationUnless(Object.keys(parsed).sort().join(',') === 'clamped,selected,shards,total',
+    violationUnless(Object.keys(parsed).sort().join(',') === 'clamped,matrix,selected,shards,test_scope,total',
       `${label} JSON keys are ${Object.keys(parsed).sort().join(',')}`);
     violationUnless(Array.isArray(parsed.shards) && parsed.shards.length === parsed.total, `${label} shards do not match total`);
+    violationUnless(Array.isArray(parsed.matrix) && parsed.matrix.length === parsed.total,
+      `${label} matrix does not match total`);
+    violationUnless(parsed.matrix.every((entry, index) => entry.shard === parsed.shards[index]
+      && typeof entry.browser === 'boolean'), `${label} matrix entries do not match shards/browser schema`);
     violationUnless(typeof parsed.selected === 'number' && typeof parsed.clamped === 'boolean', `${label} selected/clamped have wrong types`);
+    violationUnless(parsed.test_scope === 'full' || parsed.test_scope === 'witness', `${label} has invalid test_scope`);
 
     const status = spawnSync('git', ['status', '--porcelain'], { cwd: feRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     assert(status.status === 0, `git status exited ${status.status}`);
@@ -138,6 +145,7 @@ function expectImpure(label, args) {
 }
 
 expectPure(`${runner} --plan`, [runner, '--plan']);
+expectPure(`${runner} --plan --test-scope witness`, [runner, '--plan', '--test-scope', 'witness']);
 
 // --base exercises changedPaths / baseManifestAt — the whole PR-mode selection path, which the
 // bare --plan above never reaches. Skipped rather than failed where the ref is absent (shallow
@@ -149,4 +157,4 @@ else console.log(`  skipped: ${runner} --plan --base ${baseRef} (${baseRef} is n
 
 expectImpure(impureFixture, [impureFixture]);
 
-console.log(`mutation plan purity: ${baseExists ? 2 : 1} pure command(s) verified, impure fixture correctly reported as failing`);
+console.log(`mutation plan purity: ${baseExists ? 3 : 2} pure command(s) verified, impure fixture correctly reported as failing`);

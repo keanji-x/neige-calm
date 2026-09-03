@@ -18,7 +18,7 @@ use calm_server::mcp_server::tools::wave_report_blocks::{
 };
 use calm_server::mcp_server::tools::wave_state::TOOL_WAVE_STATE;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -49,8 +49,8 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<dyn Repo>,
-    cove_id: String,
-    other_cove_id: String,
+    area_id: String,
+    other_area_id: String,
     source_wave_id: String,
     source_report_id: String,
     cookie: String,
@@ -155,8 +155,8 @@ fn seed_fixture_body() -> String {
 async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "fork-test".into(),
             color: "#000".into(),
             sort: None,
@@ -165,7 +165,7 @@ async fn boot() -> Boot {
         .unwrap();
     let source = repo
         .wave_create(NewWave {
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "source".into(),
             sort: None,
             cwd: tmp.path().to_string_lossy().into_owned(),
@@ -177,8 +177,8 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let other_cove = repo
-        .cove_create(NewCove {
+    let other_area = repo
+        .area_create(NewArea {
             name: "fork-test-other".into(),
             color: "#111".into(),
             sort: None,
@@ -198,9 +198,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_roles = CardRoleCache::new();
-    let wave_coves = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_coves).await.unwrap();
-    let write = calm_server::state::WriteContext::new(card_roles.clone(), wave_coves.clone());
+    let wave_areas = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_areas).await.unwrap();
+    let write = calm_server::state::WriteContext::new(card_roles.clone(), wave_areas.clone());
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -223,7 +223,7 @@ async fn boot() -> Boot {
             Arc::new(codex)
         },
         Some(card_roles),
-        Some(wave_coves),
+        Some(wave_areas),
     );
     let auth_state = AuthState::new(AuthConfig {
         username: Some("alice".into()),
@@ -326,8 +326,8 @@ async fn boot() -> Boot {
         app,
         state,
         repo,
-        cove_id: cove.id.to_string(),
-        other_cove_id: other_cove.id.to_string(),
+        area_id: area.id.to_string(),
+        other_area_id: other_area.id.to_string(),
         source_wave_id: source_id,
         source_report_id: report.id.to_string(),
         cookie,
@@ -336,7 +336,7 @@ async fn boot() -> Boot {
 }
 
 #[tokio::test]
-async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creation() {
+async fn fork_source_and_area_checks_fail_with_four_hundred_and_roll_back_creation() {
     let boot = boot().await;
     let (status, body) = request_json(
         &boot.app,
@@ -344,8 +344,8 @@ async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creati
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.other_cove_id,
-            "title": "cross-cove target",
+            "area_id": boot.other_area_id,
+            "title": "cross-area target",
             "sort": null,
             "cwd": target_cwd("-cross"),
             "attach_folder": true,
@@ -357,24 +357,24 @@ async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creati
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     assert!(
         boot.repo
-            .waves_by_cove(&boot.other_cove_id)
+            .waves_by_area(&boot.other_area_id)
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
         boot.repo
-            .cove_folders_by_cove(&boot.other_cove_id)
+            .area_folders_by_area(&boot.other_area_id)
             .await
             .unwrap()
             .is_empty()
     );
 
-    let source_cove_id = boot.cove_id.clone();
+    let source_area_id = boot.area_id.clone();
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            sqlx::query("UPDATE coves SET kind='system' WHERE id=?1")
-                .bind(source_cove_id)
+            sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
+                .bind(source_area_id)
                 .execute(&mut **tx)
                 .await?;
             Ok(())
@@ -388,7 +388,7 @@ async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creati
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.other_cove_id,
+            "area_id": boot.other_area_id,
             "title": "system-source target",
             "sort": null,
             "cwd": target_cwd("-system"),
@@ -401,22 +401,22 @@ async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creati
     assert_eq!(status, StatusCode::CREATED, "system source body = {body}");
     assert_eq!(
         boot.repo
-            .waves_by_cove(&boot.other_cove_id)
+            .waves_by_area(&boot.other_area_id)
             .await
             .unwrap()
             .len(),
         1,
-        "a system-cove source may seed a wave in another cove"
+        "a system-area source may seed a wave in another area"
     );
 
-    let waves_before = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len();
+    let waves_before = boot.repo.waves_by_area(&boot.area_id).await.unwrap().len();
     let (status, body) = request_json(
         &boot.app,
         "POST",
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "missing-source target",
             "sort": null,
             "cwd": target_cwd("-missing"),
@@ -428,7 +428,7 @@ async fn fork_source_and_cove_checks_fail_with_four_hundred_and_roll_back_creati
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         waves_before,
         "failed fork must roll back the new wave row"
     );
@@ -513,7 +513,7 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
 }
 
 /// Counts every table the fork persistence path writes, so a "zero residue"
-/// assertion covers the whole surface: the wave row, the attached cove folder,
+/// assertion covers the whole surface: the wave row, the attached area folder,
 /// both cards (spec + reportcard), the overlays, and the `tasks` rows that
 /// `persist_fork_report_and_project_tasks_tx` projects out of the copied report.
 async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
@@ -522,7 +522,7 @@ async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
             let waves = sqlx::query_scalar("SELECT COUNT(*) FROM waves")
                 .fetch_one(&mut **tx)
                 .await?;
-            let folders = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+            let folders = sqlx::query_scalar("SELECT COUNT(*) FROM area_folders")
                 .fetch_one(&mut **tx)
                 .await?;
             let spec_cards = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='spec'")
@@ -575,7 +575,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "fork target",
             "sort": null,
             "cwd": target_cwd(""),
@@ -832,7 +832,7 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "legacy fork target",
             "sort": null,
             "cwd": target_cwd("-legacy"),
@@ -895,7 +895,7 @@ async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "canonical fresh source",
             "sort": null,
             "cwd": target_cwd("-canonical-source"),
@@ -941,7 +941,7 @@ async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "canonical fresh target",
             "sort": null,
             "cwd": target_cwd("-canonical-target"),
@@ -978,7 +978,7 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "empty source",
             "sort": null,
             "cwd": target_cwd("-empty-source"),
@@ -1044,7 +1044,7 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "empty target",
             "sort": null,
             "cwd": target_cwd("-empty-target"),
@@ -1121,7 +1121,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "invalid payload target",
             "sort": null,
             "cwd": target_cwd("-invalid-payload"),
@@ -1135,7 +1135,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert!(body.to_string().contains("src: required same-origin path"));
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a waves row");
-    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.1, before.1, "failed fork left a area_folders row");
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
@@ -1199,7 +1199,7 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "residual tombstoned_by target",
             "sort": null,
             "cwd": target_cwd("-residual-tombstoned-by"),
@@ -1217,7 +1217,7 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     );
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a waves row");
-    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.1, before.1, "failed fork left a area_folders row");
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
@@ -1268,7 +1268,7 @@ async fn fork_of_a_released_template_succeeds_and_drops_the_release() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "released template fork",
             "sort": null,
             "cwd": target_cwd("-released-template-fork"),
@@ -1377,7 +1377,7 @@ async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
             "/api/waves".into(),
             &boot.cookie,
             Some(json!({
-                "cove_id": boot.cove_id,
+                "area_id": boot.area_id,
                 "title": format!("unsafe fork {index}"),
                 "sort": null,
                 "cwd": target_cwd(&format!("-unsafe-{index}")),
@@ -1411,7 +1411,7 @@ async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "tombstone fork target",
             "sort": null,
             "cwd": target_cwd("-tombstone"),
@@ -1589,7 +1589,7 @@ async fn spec_tool_channel(
         provider: AgentProvider::Codex,
         session_id: FORKED_SPEC_SESSION_ID.to_string(),
         wave_id: Some(wave_id.to_string()),
-        cove_id: boot.cove_id.clone(),
+        area_id: boot.area_id.clone(),
         thread_id: "forked-spec-thread".to_string(),
     };
     (ctx, Arc::new(registry), identity)
@@ -1721,7 +1721,7 @@ async fn forked_task_does_not_inherit_the_source_users_release() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "release normalization target",
             "sort": null,
             "cwd": target_cwd("-released"),
@@ -1865,7 +1865,7 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "released tombstone target",
             "sort": null,
             "cwd": target_cwd("-released-tombstone"),
@@ -1883,7 +1883,7 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
     );
     let after = fork_row_counts(boot.repo.as_ref()).await;
     assert_eq!(after.0, before.0, "failed fork left a waves row");
-    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.1, before.1, "failed fork left a area_folders row");
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
@@ -1903,7 +1903,7 @@ async fn inv_1110_002_forked_wave_requires_report_startup_read() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "startup-read fork target",
             "sort": null,
             "cwd": target_cwd("-startup-read"),
@@ -1967,7 +1967,7 @@ async fn initial_wave_does_not_require_report_startup_read() {
         "/api/waves".into(),
         &boot.cookie,
         Some(json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "canonical initial source",
             "sort": null,
             "cwd": target_cwd("-initial-state"),

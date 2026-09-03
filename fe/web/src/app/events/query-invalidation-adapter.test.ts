@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { CoveWire } from '../../../../core/domain/cove.ts';
+import type { AreaWire } from '../../../../core/domain/area.ts';
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
@@ -10,9 +10,9 @@ import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './qu
 
 type Call = Readonly<{ op: 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
 
-function recordingClient(initialCoves?: readonly ReturnType<typeof import('../../../../core/domain/cove.ts').toCove>[]) {
+function recordingClient(initialAreas?: readonly ReturnType<typeof import('../../../../core/domain/area.ts').toArea>[]) {
   const calls: Call[] = [];
-  let coves = initialCoves;
+  let areas = initialAreas;
   const client: QueryCachePort = {
     invalidateQueries: (filters?: { queryKey?: readonly unknown[] }) => {
       calls.push({ op: 'invalidate', queryKey: filters?.queryKey });
@@ -20,20 +20,20 @@ function recordingClient(initialCoves?: readonly ReturnType<typeof import('../..
     removeQueries: (filters: { queryKey: readonly unknown[] }) => {
       calls.push({ op: 'remove', queryKey: filters.queryKey });
     },
-    getQueryData: <T,>(key: readonly unknown[]) => key[0] === 'coves' ? coves as T | undefined : undefined,
+    getQueryData: <T,>(key: readonly unknown[]) => key[0] === 'areas' ? areas as T | undefined : undefined,
     setQueryData: <T,>(key: readonly unknown[], value: T) => {
       calls.push({ op: 'set', queryKey: key });
-      if (key[0] === 'coves') coves = value as typeof coves;
+      if (key[0] === 'areas') areas = value as typeof areas;
     },
     clear: () => { calls.push({ op: 'clear' }); },
   };
-  return { calls, client, coves: () => coves };
+  return { calls, client, areas: () => areas };
 }
 
 describe('query invalidation adapter', () => {
   it('maps every planned key shape onto a queryKeys key and drops the rest', () => {
-    expect(mapPlannedQueryKey(['coves'])).toEqual(queryKeys.coves());
-    expect(mapPlannedQueryKey(['waves', 'cove', 'c1'])).toEqual(queryKeys.wavesInCove('c1'));
+    expect(mapPlannedQueryKey(['areas'])).toEqual(queryKeys.areas());
+    expect(mapPlannedQueryKey(['waves', 'area', 'c1'])).toEqual(queryKeys.wavesInArea('c1'));
     expect(mapPlannedQueryKey(['wave', 'w1'])).toEqual(queryKeys.waveDetail('w1'));
     expect(mapPlannedQueryKey(['overlays', 'wave'])).toEqual(queryKeys.overlaysByKind('wave'));
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
@@ -41,7 +41,7 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
     expect(mapPlannedQueryKey(['wave-report', 'w1'])).toEqual(queryKeys.waveReport('w1'));
     expect(mapPlannedQueryKey(['wave-report'])).toEqual(queryKeys.waveReportPrefix());
-    expect(mapPlannedQueryKey(['cove-conversations'])).toEqual(queryKeys.coveConversationsPrefix());
+    expect(mapPlannedQueryKey(['area-conversations'])).toEqual(queryKeys.areaConversationsPrefix());
     expect(mapPlannedQueryKey(['wave-conversations'])).toEqual(queryKeys.waveConversationsPrefix());
     expect(mapPlannedQueryKey(['wave-conversations', 'w1'])).toEqual(queryKeys.waveConversations('w1'));
     expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
@@ -106,17 +106,17 @@ describe('query invalidation adapter', () => {
   });
 
   it('never emits a key the built surface does not define', () => {
-    // The mapped cove-list key must be the very key the cove query registers,
+    // The mapped area-list key must be the very key the area query registers,
     // otherwise an invalidation silently refreshes nothing.
-    expect(mapPlannedQueryKey(['coves'])).toEqual(['coves']);
-    expect(mapPlannedQueryKey(['waves', 'cove', 'c1'])).toEqual(['waves', 'c1']);
+    expect(mapPlannedQueryKey(['areas'])).toEqual(['areas']);
+    expect(mapPlannedQueryKey(['waves', 'area', 'c1'])).toEqual(['waves', 'c1']);
   });
 
   it('invalidates each mapped key of an invalidate effect', () => {
     const { calls, client } = recordingClient();
-    applyEventEffects(client, [{ type: 'invalidate', keys: [['coves'], ['wave', 'w1'], ['wave-files', 'w1']] }]);
+    applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['wave', 'w1'], ['wave-files', 'w1']] }]);
     expect(calls).toEqual([
-      { op: 'invalidate', queryKey: ['coves'] },
+      { op: 'invalidate', queryKey: ['areas'] },
       { op: 'invalidate', queryKey: ['wave', 'w1'] },
     ]);
   });
@@ -149,30 +149,30 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([]);
   });
 
-  it('write-through replaces one existing cove and preserves every other row', () => {
-    expectTypeOf<CacheWrite['value']>().toEqualTypeOf<CoveWire>();
+  it('write-through replaces one existing area and preserves every other row', () => {
+    expectTypeOf<CacheWrite['value']>().toEqualTypeOf<AreaWire>();
     const old = { id: 'c1', name: 'old', color: '#111', sort: 1, kind: 'user', createdAt: 10, updatedAt: 20 } as const;
     const other = { id: 'c2', name: 'other', color: '#222', sort: 2, kind: 'user', createdAt: 11, updatedAt: 21 } as const;
-    const { calls, client, coves } = recordingClient([old, other]);
+    const { calls, client, areas } = recordingClient([old, other]);
     applyEventEffects(client, [{ type: 'write-through', writes: [{
-      key: ['coves'], mode: 'replace-existing-cove',
+      key: ['areas'], mode: 'replace-existing-area',
       value: { id: 'c1', name: 'new', color: '#abc', sort: 3, kind: 'user', created_at: 10, updated_at: 30 },
     }] }]);
-    expect(coves()).toEqual([
+    expect(areas()).toEqual([
       { id: 'c1', name: 'new', color: '#abc', sort: 3, kind: 'user', createdAt: 10, updatedAt: 30 },
       other,
     ]);
-    expect(calls).toEqual([{ op: 'set', queryKey: ['coves'] }]);
+    expect(calls).toEqual([{ op: 'set', queryKey: ['areas'] }]);
   });
 
-  it('write-through never creates a phantom cove when the row is absent', () => {
+  it('write-through never creates a phantom area when the row is absent', () => {
     const existing = { id: 'c2', name: 'other', color: '#222', sort: 2, kind: 'user', createdAt: 11, updatedAt: 21 } as const;
-    const { calls, client, coves } = recordingClient([existing]);
+    const { calls, client, areas } = recordingClient([existing]);
     applyEventEffects(client, [{ type: 'write-through', writes: [{
-      key: ['coves'], mode: 'replace-existing-cove',
+      key: ['areas'], mode: 'replace-existing-area',
       value: { id: 'missing', name: 'phantom', color: '#abc', sort: 3, kind: 'user', created_at: 10, updated_at: 30 },
     }] }]);
-    expect(coves()).toEqual([existing]);
+    expect(areas()).toEqual([existing]);
     expect(calls).toEqual([]);
   });
 
@@ -180,18 +180,18 @@ describe('query invalidation adapter', () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [
       { type: 'clear-cache' },
-      { type: 'invalidate', keys: [['coves']] },
+      { type: 'invalidate', keys: [['areas']] },
       { type: 'remove', keys: [['wave', 'w1']] },
     ]);
     expect(calls.map((call) => call.op)).toEqual(['clear', 'invalidate', 'remove']);
   });
 
-  it('turns a real cove.updated plan into a cove-list invalidation', () => {
-    const cove = { id: 'c1', name: 'Cove', color: '#fff', sort: 0, kind: 'user', created_at: 1, updated_at: 2 } as const;
-    const plan = invalidationPlanFor({ ev: 'cove.updated', data: cove });
+  it('turns a real area.updated plan into an area-list invalidation', () => {
+    const area = { id: 'c1', name: 'Area', color: '#fff', sort: 0, kind: 'user', created_at: 1, updated_at: 2 } as const;
+    const plan = invalidationPlanFor({ ev: 'area.updated', data: area });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
-    expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.coves() }]);
+    expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.areas() }]);
   });
 
   /*
@@ -214,7 +214,7 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.specRun('card-1'), queryKeys.coveConversationsPrefix(), queryKeys.waveConversations('wave-1')],
+        [queryKeys.specRun('card-1'), queryKeys.areaConversationsPrefix(), queryKeys.waveConversations('wave-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
@@ -225,7 +225,7 @@ describe('query invalidation adapter', () => {
         { ...base, char_count: 3 }, 'harness.user_message.enqueued',
         [
           queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1'),
-          queryKeys.coveConversationsPrefix(), queryKeys.waveConversations('wave-1'),
+          queryKeys.areaConversationsPrefix(), queryKeys.waveConversations('wave-1'),
         ],
       ],
     ] as const;
@@ -243,9 +243,9 @@ describe('query invalidation adapter', () => {
    *
    * The two set assertions in `invalidation-plan.test.ts` close the planner
    * from both sides, and they were green while this key reached no query at
-   * all: `mapPlannedQueryKey` had no `cove-conversations` arm, so
+   * all: `mapPlannedQueryKey` had no `area-conversations` arm, so
    * `applyEventEffects` dropped the planned key at its `mapped !== null` guard
-   * and every cove drawer's `state` dot sat still. A planner-only assertion
+   * and every area drawer's `state` dot sat still. A planner-only assertion
    * cannot see that seam, so these assert on what the *client* was told.
    *
    * Each case is asserted as an exact call list rather than a `toContainEqual`:
@@ -267,7 +267,7 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.waveDetail('wave-1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.waveReport('wave-1') },
-      { op: 'invalidate', queryKey: queryKeys.coveConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.waveConversations('wave-1') },
     ]);
   });
@@ -289,15 +289,15 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.waveReportPrefix() },
-      { op: 'invalidate', queryKey: queryKeys.coveConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.areaConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.waveConversationsPrefix() },
     ]);
   });
 
-  it('turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal', () => {
+  it('turns a real wave.deleted plan into area-list plus overlay invalidation and a detail removal', () => {
     const plan = invalidationPlanFor({
       ev: 'wave.deleted',
-      data: { id: 'w1', cove_id: 'c1' },
+      data: { id: 'w1', area_id: 'c1' },
     });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [
@@ -305,7 +305,7 @@ describe('query invalidation adapter', () => {
       { type: 'remove', keys: plan.remove },
     ]);
     expect(calls).toEqual([
-      { op: 'invalidate', queryKey: queryKeys.wavesInCove('c1') },
+      { op: 'invalidate', queryKey: queryKeys.wavesInArea('c1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('wave') },
       { op: 'remove', queryKey: queryKeys.waveDetail('w1') },
     ]);

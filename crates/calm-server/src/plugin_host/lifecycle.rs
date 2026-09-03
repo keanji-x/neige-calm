@@ -484,6 +484,24 @@ pub(crate) fn spawn_error_to_calm(e: HostError) -> CalmError {
         unavailable @ HostError::ConnectorUnavailable { .. } => {
             CalmError::ServiceUnavailable(unavailable.to_string())
         }
+        // #1284 §2.4 — same shape, same reasoning, one kind over: the request
+        // was well-formed and the kernel is healthy; the plugin's stored
+        // configuration is incomplete. 503 carries the missing keys verbatim
+        // and the row stays `enabled`, so filling them in and re-enabling is
+        // the whole recovery. A 500 would claim a kernel fault for something
+        // only the operator can fix.
+        missing @ HostError::MissingRequiredConfig { .. } => {
+            CalmError::ServiceUnavailable(missing.to_string())
+        }
+        // #1284 §2.3 (S2 review P2-1) — the stored configuration could not be
+        // read. 503 rather than the catch-all 500 for the same reason as the
+        // two arms above: the plugin is out of service and the row stays
+        // `enabled`, so a retry once the store recovers is the whole recovery.
+        // It also keeps the wire answer consistent with the live entry the
+        // spawn path publishes, which is `unavailable` either way.
+        unreadable @ HostError::ConfigUnreadable { .. } => {
+            CalmError::ServiceUnavailable(unreadable.to_string())
+        }
         unsupported @ HostError::UnsupportedForKind { .. } => {
             CalmError::BadRequest(unsupported.to_string())
         }

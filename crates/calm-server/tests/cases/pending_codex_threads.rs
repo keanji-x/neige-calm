@@ -6,7 +6,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, session_projection_by_id_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::{
     Operation, OperationCompletionBus, Phase, PhaseTag, ProviderAdapter, SpawnCtx,
@@ -22,7 +22,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::worker::WorkerSessionId;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -40,8 +40,8 @@ async fn runtime_by_id_tx_snapshot(
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "pending".into(),
             color: "#000".into(),
             sort: None,
@@ -51,7 +51,7 @@ async fn boot() -> (Arc<SqlxRepo>, EventBus, String) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "pending".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -1170,7 +1170,7 @@ async fn compensation_remove_uses_runtime_id_for_same_card_spawns() {
         registry.clone(),
         Arc::new(Mutex::new(())),
         Default::default(),
-        WaveCoveCache::default(),
+        WaveAreaCache::default(),
     );
     let mut output = TxOutput::new("runtime", Some(r2.clone()), json!({}));
     output.data = json!({

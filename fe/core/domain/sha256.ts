@@ -65,15 +65,15 @@ function rotateRight(value: number, bits: number): number {
  * guarantees valid UTF-8 and performs no such substitution.
  *
  * Nor does the question ever reach the server on this endpoint. What gets
- * hashed here is `cove-chat-conversation:{cove_id}:{idempotency_key}` — a
+ * hashed here is `area-chat-conversation:{area_id}:{idempotency_key}` — a
  * server-minted id and a client-minted UUID, neither of which holds a
  * surrogate. A lone surrogate in the message *text* is a different path
  * entirely: the draft counts it as one code point (`Array.from(text).length`
- * against `COVE_CONVERSATION_TEXT_MAX`) and then it dies on the wire —
+ * against `AREA_CONVERSATION_TEXT_MAX`) and then it dies on the wire —
  * `JSON.stringify` escapes it as `\ud800`, and `serde_json` refuses a lone
  * surrogate escape when deserialising into a `String`
  * (`LoneLeadingSurrogateInHexEscape`, classified as a syntax error, so axum's
- * `Json` extractor answers 400 before `create_cove_conversation` runs). The
+ * `Json` extractor answers 400 before `create_area_conversation` runs). The
  * server never sees one.
  */
 function utf8Bytes(text: string): Uint8Array {

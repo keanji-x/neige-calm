@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
+pub use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
 
@@ -57,77 +57,77 @@ impl TryFrom<String> for CardRole {
     }
 }
 
-// ---------------- CoveKind ----------------
+// ---------------- AreaKind ----------------
 
-/// Whether a cove is user-visible or kernel-owned storage scaffolding.
+/// Whether an area is user-visible or kernel-owned storage scaffolding.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
 )]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum CoveKind {
+pub enum AreaKind {
     #[default]
     User,
     System,
 }
 
-impl CoveKind {
+impl AreaKind {
     pub fn as_db_str(self) -> &'static str {
         match self {
-            CoveKind::User => "user",
-            CoveKind::System => "system",
+            AreaKind::User => "user",
+            AreaKind::System => "system",
         }
     }
 }
 
-impl TryFrom<String> for CoveKind {
+impl TryFrom<String> for AreaKind {
     type Error = String;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
-            "user" => Ok(CoveKind::User),
-            "system" => Ok(CoveKind::System),
-            other => Err(format!("unknown coves.kind value `{other}`")),
+            "user" => Ok(AreaKind::User),
+            "system" => Ok(AreaKind::System),
+            other => Err(format!("unknown areas.kind value `{other}`")),
         }
     }
 }
 
-// ---------------- Cove ----------------
+// ---------------- Area ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct Cove {
+pub struct Area {
     #[schema(value_type = String)]
-    pub id: CoveId,
+    pub id: AreaId,
     pub name: String,
     pub color: String,
     pub sort: f64,
     #[serde(default)]
-    pub kind: CoveKind,
+    pub kind: AreaKind,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-// ---------------- CoveFolder ----------------
+// ---------------- AreaFolder ----------------
 
 /// One row per claimed directory; `path` is absolute and globally
 /// unique across the table. A folder transparently covers every
-/// descendant path — the kernel resolves a `cwd` to its owning cove by
-/// finding the claim that covers it (see `GET /api/coves/resolve`).
+/// descendant path — the kernel resolves a `cwd` to its owning area by
+/// finding the claim that covers it (see `GET /api/areas/resolve`).
 /// The create endpoint rejects ancestor/descendant overlap with a 409,
 /// so at most one claim can cover any given path.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct CoveFolder {
+pub struct AreaFolder {
     pub id: i64,
     #[schema(value_type = String)]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub path: String,
     pub created_at: i64,
 }
 
 /// Issue #250 PR 1 — kind of overlap detected by the
-/// `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+/// `POST /api/areas/:area_id/folders` conflict check. Surfaces in the
 /// 409 response body so the frontend can render a precise message
 /// without re-parsing strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -154,19 +154,19 @@ pub enum FolderConflictKind {
 pub struct FolderConflict {
     pub folder_id: i64,
     #[schema(value_type = String)]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub conflict_path: String,
     pub conflict_kind: FolderConflictKind,
 }
 
-/// Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
+/// Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The
 /// resolve endpoint returns `null` (not 404) on miss; this struct is
 /// the `Some(_)` payload.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct CoveResolve {
+pub struct AreaResolve {
     #[schema(value_type = String)]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub folder_id: i64,
     pub folder_path: String,
 }
@@ -319,7 +319,7 @@ pub struct WaveWorkspace {
     /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
     /// again.
     ///
-    /// The system-cove launchpad remains unfrozen because it is repointed by
+    /// The system-area launchpad remains unfrozen because it is repointed by
     /// `today_launchpad_ensure_tx`.
     pub frozen_at: Option<i64>,
 }
@@ -342,7 +342,7 @@ pub struct Wave {
     #[schema(value_type = String)]
     pub id: WaveId,
     #[schema(value_type = String)]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub title: String,
     pub sort: f64,
     pub archived_at: Option<i64>,
@@ -457,9 +457,9 @@ pub struct CardRuntimeView {
 
 /// One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
 ///
-/// Its own type rather than a reuse of [`CoveConversationSummary`], which is
+/// Its own type rather than a reuse of [`AreaConversationSummary`], which is
 /// what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
-/// the cove type's contract says "`waveTitle` is absent because every row lives
+/// the area type's contract says "`waveTitle` is absent because every row lives
 /// on one hidden wave", and on a wave that reasoning is simply not true. Two
 /// lists with different contracts should not share one name just because their
 /// current fields coincide.
@@ -478,13 +478,13 @@ pub struct WaveConversationSummary {
     /// wave's title.
     pub title: Option<String>,
     /// Always `"wave-assistant"`, derived from the card's persisted marker.
-    /// A distinct value from the cove list's `"shared-chat"` on purpose: the
+    /// A distinct value from the area list's `"shared-chat"` on purpose: the
     /// frontend branches on it, and a shared value would route assistant rows
-    /// through the cove chat's presentation.
+    /// through the area chat's presentation.
     pub kind: String,
     /// The live session's state, or **null when the card has no session row**.
     ///
-    /// Nullable for the same reason as the cove list's: the query LEFT JOINs so
+    /// Nullable for the same reason as the area list's: the query LEFT JOINs so
     /// a card whose session is gone (failed start, superseded runtime, shut
     /// down harness) stays visible. Never fill it with an invented value.
     pub state: Option<WorkerSessionState>,
@@ -492,10 +492,10 @@ pub struct WaveConversationSummary {
     pub updated_at: i64,
 }
 
-/// One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+/// One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
 ///
 /// Deliberately absent:
-/// * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+/// * `waveTitle` — every row belongs to the same hidden area chat wave, so
 ///   returning its title would leak an object the user is never shown.
 /// * `turns` — the server cannot produce a turn count that agrees with the
 ///   drawer without re-parsing every `harness_items.params` blob; a number
@@ -503,7 +503,7 @@ pub struct WaveConversationSummary {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct CoveConversationSummary {
+pub struct AreaConversationSummary {
     /// The chat card's id. This is the conversation's identity everywhere.
     pub id: String,
     pub wave_id: String,
@@ -512,7 +512,7 @@ pub struct CoveConversationSummary {
     pub title: Option<String>,
     /// Always `"shared-chat"`, derived from the card's persisted marker rather
     /// than from the session kind (the session is an ordinary codex-card
-    /// session and says nothing about the conversation being a cove chat).
+    /// session and says nothing about the conversation being an area chat).
     pub kind: String,
     /// The live session's state, or **null when the card has no session row**.
     ///
@@ -665,8 +665,8 @@ mod card_role_tests {
 }
 
 #[cfg(test)]
-mod cove_kind_tests {
-    use super::CoveKind;
+mod area_kind_tests {
+    use super::AreaKind;
 
     #[test]
     fn serde_round_trip_pinned_lowercase() {
@@ -675,31 +675,31 @@ mod cove_kind_tests {
         // `'user'` / `'system'` strings; changing the rename strategy
         // here would silently desync code-vs-DB.
         for (kind, json) in [
-            (CoveKind::User, "\"user\""),
-            (CoveKind::System, "\"system\""),
+            (AreaKind::User, "\"user\""),
+            (AreaKind::System, "\"system\""),
         ] {
             let s = serde_json::to_string(&kind).expect("serialize");
             assert_eq!(s, json, "serialize mismatch for {kind:?}");
-            let back: CoveKind = serde_json::from_str(json).expect("deserialize");
+            let back: AreaKind = serde_json::from_str(json).expect("deserialize");
             assert_eq!(back, kind, "round-trip mismatch for {json}");
         }
     }
 
     #[test]
     fn default_is_user() {
-        assert_eq!(CoveKind::default(), CoveKind::User);
+        assert_eq!(AreaKind::default(), AreaKind::User);
     }
 
     #[test]
     fn db_str_matches_serde_wire_shape() {
         // See `card_role_tests::db_str_matches_serde_wire_shape`.
-        for kind in [CoveKind::User, CoveKind::System] {
+        for kind in [AreaKind::User, AreaKind::System] {
             let wire = serde_json::to_string(&kind).expect("serialize");
             assert_eq!(format!("\"{}\"", kind.as_db_str()), wire);
-            let back = CoveKind::try_from(kind.as_db_str().to_string()).expect("decode");
+            let back = AreaKind::try_from(kind.as_db_str().to_string()).expect("decode");
             assert_eq!(back, kind);
         }
-        assert!(CoveKind::try_from("bogus".to_string()).is_err());
+        assert!(AreaKind::try_from("bogus".to_string()).is_err());
     }
 }
 

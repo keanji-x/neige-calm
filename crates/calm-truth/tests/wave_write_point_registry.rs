@@ -88,10 +88,10 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
          again.",
     ),
     (
-        "update waves set workspace_frozen_at = ?1 where id = ?2 and workspace_frozen_at is null and (select c.kind from coves as c where c.id = waves.cove_id) <> 'system'",
+        "update waves set workspace_frozen_at = ?1 where id = ?2 and workspace_frozen_at is null and (select c.kind from areas as c where c.id = waves.area_id) <> 'system'",
         "`wave_workspace_freeze_tx` — closes the latch, addressed by wave. \
          Idempotent (never moves an existing stamp) and unable to clear one. \
-         The system-cove clause is the launchpad exception, expressed once here \
+         The system-area clause is the launchpad exception, expressed once here \
          rather than at each of the freeze points.",
     ),
 ];
@@ -109,13 +109,13 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          now `managed`/`NULL` — scrambling to the expected values would have \
          made the assertion vacuous. S3 flipped the STAMP back to NULL: the \
          latch makes a frozen launchpad un-repointable, and \
-         `wave_workspace_freeze_tx` excludes the system cove precisely so that \
+         `wave_workspace_freeze_tx` excludes the system area precisely so that \
          row never gets one, so scrambling to 99 would fake an unreachable \
          state and turn the adopt branch into a 409.",
     ),
     (
         "crates/calm-server/tests/scheduler.rs",
-        "insert into waves(id,cove_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) select ?1,cove_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 from waves where id=?3",
+        "insert into waves(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) select ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 from waves where id=?3",
         "Clones a wave row wholesale, workspace included.",
     ),
     (
@@ -460,7 +460,7 @@ fn detector_ignores_reads_and_near_misses() {
         ),
         (
             "column list constant",
-            "id, cove_id, workspace_kind, workspace_path, workspace_frozen_at, updated_at",
+            "id, area_id, workspace_kind, workspace_path, workspace_frozen_at, updated_at",
         ),
     ];
     for (label, sql) in benign {

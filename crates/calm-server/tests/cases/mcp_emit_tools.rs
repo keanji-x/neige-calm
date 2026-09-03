@@ -363,13 +363,13 @@ async fn task_completed_from_working_auto_promotes_wave_to_reviewing() {
     match &auto_changed.event {
         Event::WaveLifecycleChanged {
             id,
-            cove_id,
+            area_id,
             from,
             to,
             agent_message,
         } => {
             assert_eq!(id, &wave.id);
-            assert_eq!(cove_id, &wave.cove_id);
+            assert_eq!(area_id, &wave.area_id);
             assert_eq!(*from, WaveLifecycle::Working);
             assert_eq!(*to, WaveLifecycle::Reviewing);
             assert_eq!(agent_message.as_deref(), Some("[auto] first task report"));

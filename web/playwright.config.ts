@@ -78,7 +78,7 @@ export default defineConfig({
   // Two retries in CI helps with flaky animation timings; locally we fail
   // fast so the dev loop stays tight.
   retries: process.env.CI ? 2 : 0,
-  // One worker keeps cove/wave seed state predictable — multiple workers
+  // One worker keeps area/wave seed state predictable — multiple workers
   // would mutate the same MockRepo concurrently.
   workers: 1,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',

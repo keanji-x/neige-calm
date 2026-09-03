@@ -23,7 +23,7 @@ use calm_server::mcp_server::registry::{
 };
 use calm_server::mcp_server::tools::wave_state::TOOL_WAVE_STATE;
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -71,8 +71,8 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-request-meta-test".into(),
             color: "#000".into(),
             sort: None,
@@ -82,7 +82,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-request-meta-test".into(),
             sort: None,
             cwd: String::new(),
@@ -131,12 +131,12 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
     };
 
     let events = EventBus::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

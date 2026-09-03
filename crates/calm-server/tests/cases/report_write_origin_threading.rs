@@ -41,7 +41,7 @@ use calm_server::event::EventBus;
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_WRITE;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, WaveLifecycle};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::AgentProvider;
@@ -153,7 +153,7 @@ async fn mcp_assistant_write_keeps_its_own_recorder_probe() {
     assert_eq!(doc_rev(&boot).await, 1);
 }
 
-/// Mint a second wave in the fixture's cove with its own card in `role` and its
+/// Mint a second wave in the fixture's area with its own card in `role` and its
 /// own live session bound to that card, then re-seed the role cache the way
 /// `AppState::new` does at boot.
 ///
@@ -182,7 +182,7 @@ async fn seed_foreign_wave_session(
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: "foreign wave".into(),
             sort: None,
             cwd: String::new(),
@@ -278,7 +278,7 @@ async fn mcp_assistant_write_is_refused_when_the_recorder_gate_denies() {
         // …while the acting session belongs to the foreign wave.
         session_id: FOREIGN_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "foreign-assistant-thread".to_string(),
     };
 
@@ -410,7 +410,7 @@ async fn mcp_lifecycle_transition_consults_the_recorder_gate_on_its_own_leg() {
         // …while the acting session belongs to the foreign wave.
         session_id: FOREIGN_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "foreign-spec-thread".to_string(),
     };
 
@@ -503,14 +503,14 @@ async fn assert_ok(response: axum::response::Response) {
     );
 }
 
-/// Fresh in-memory server with one cove → one wave → one wave-report card and a
+/// Fresh in-memory server with one area → one wave → one wave-report card and a
 /// logged-in owner session, layered the way `main.rs` layers protected REST:
 /// `actor_middleware` inside `auth::require_session`, so the actor extractor and
 /// the handlers' `require_rest_user_actor` gate both run.
 async fn rest_boot() -> RestBoot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "origin-threading".into(),
             color: "#000".into(),
             sort: None,
@@ -520,7 +520,7 @@ async fn rest_boot() -> RestBoot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "report wave".into(),
             sort: None,
             cwd: String::new(),
@@ -554,7 +554,7 @@ async fn rest_boot() -> RestBoot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

@@ -18,8 +18,8 @@ type Snapshot = {
 const themes = ['light', 'dark'] as const;
 const transparentAllowlist = new Set([
   'wave-title-input',
-  'cove-title-input',
-  'cove-nav-edit-input',
+  'area-title-input',
+  'area-nav-edit-input',
 ]);
 
 test.describe.serial('color-system anchor', () => {

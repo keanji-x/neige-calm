@@ -16,7 +16,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import {
   dropServerPhaseFrames,
   forceSpecPhase,
@@ -32,8 +32,8 @@ test.describe('spec chat seed path (#676 pin)', () => {
     // Hermetic state — see `helpers/reset.ts`. The reset also shuts down
     // any harness a previous spec-chat test forced up.
     await resetReplayServer(request);
-    const cove = await createUserCove(request, 'AtlasSpecSeed');
-    const wave = await createWaveInCove(request, cove.id, 'Spec seed test');
+    const area = await createUserArea(request, 'AtlasSpecSeed');
+    const wave = await createWaveInArea(request, area.id, 'Spec seed test');
     waveId = wave.id;
     specCardId = await getSpecCardId(request, waveId);
   });

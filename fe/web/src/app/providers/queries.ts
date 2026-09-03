@@ -2,7 +2,7 @@
 // slice.
 //
 // It lives under app/providers rather than under any one consumer because the
-// router renders the shell and both need the same cove/wave reads: a queries
+// router renders the shell and both need the same area/wave reads: a queries
 // module owned by either side would close a cycle that the `no-circular`
 // dependency-cruiser rule rejects. Feature slices receive the resulting data
 // and callbacks as props — `features/**` must not import `app/**`.
@@ -16,10 +16,10 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  asFolderConflict, coveListOperation, createCoveOperation, deleteCoveOperation,
-  sortedCoves, toCove, updateCoveOperation, visibleCoves,
-  type Cove, type CovePatchBody, type FolderConflict, type NewCoveBody,
-} from '../../../../core/domain/cove.ts';
+  asFolderConflict, areaListOperation, createAreaOperation, deleteAreaOperation,
+  sortedAreas, toArea, updateAreaOperation, visibleAreas,
+  type Area, type AreaPatchBody, type FolderConflict, type NewAreaBody,
+} from '../../../../core/domain/area.ts';
 import {
   deriveReportTasks, hasLiveTaskRun, waveBacklinksOperation, waveTaskVerdictsOperation,
   type ReportBlock, type TaskVerdict, type WaveBacklinks,
@@ -37,13 +37,13 @@ import {
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
   deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
   type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
-  specRunOperation, coveConversationsOperation, createCoveConversationOperation,
+  specRunOperation, areaConversationsOperation, createAreaConversationOperation,
   createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
@@ -65,7 +65,7 @@ export class ApiError extends Error {
  * The structured folder clash inside a rejected mutation, or `null`.
  *
  * Lives beside `ApiError` because unwrapping it is the only step that needs to
- * know this class exists; the decode and the wording are `core/domain/cove.ts`.
+ * know this class exists; the decode and the wording are `core/domain/area.ts`.
  * `'body' in failure` is the narrowing: transport and decode failures never
  * carry one, and reading `.body` off the union without it does not compile.
  */
@@ -88,9 +88,9 @@ export async function runOperation<T>(
 // Key shapes match the legacy app so a cache dump reads the same in both.
 export const queryKeys = Object.freeze({
   serverVersion: () => ['server-version'] as const,
-  coves: () => ['coves'] as const,
-  coveFolders: (coveId: string) => ['cove-folders', coveId] as const,
-  wavesInCove: (coveId: string) => ['waves', coveId] as const,
+  areas: () => ['areas'] as const,
+  areaFolders: (areaId: string) => ['area-folders', areaId] as const,
+  wavesInArea: (areaId: string) => ['waves', areaId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   /* Exactly the shape `core/events/invalidation-plan` already plans for
@@ -142,29 +142,29 @@ export const queryKeys = Object.freeze({
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
-  /* The event bridge can only invalidate the `['cove-conversations']` prefix —
-     no event carries a cove id and no cached row can supply one — so this key
-     must keep the cove id in second position for that prefix to reach it. */
-  coveConversations: (coveId: string) => ['cove-conversations', coveId] as const,
+  /* The event bridge can only invalidate the `['area-conversations']` prefix —
+     no event carries an area id and no cached row can supply one — so this key
+     must keep the area id in second position for that prefix to reach it. */
+  areaConversations: (areaId: string) => ['area-conversations', areaId] as const,
   /**
-   * The prefix `coveConversations` extends — the only shape the event bridge
+   * The prefix `areaConversations` extends — the only shape the event bridge
    * can name, and therefore the only thing that keeps this list live.
    *
-   * `COVE_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
-   * construction: no conversation-writing event carries a `cove_id`, and a cove
+   * `AREA_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
+   * construction: no conversation-writing event carries a `area_id`, and an area
    * chat wave's detail is never fetched, so no cached row can supply one
    * either. Naming the prefix here is what lets the adapter map that plan key
-   * instead of dropping it — without this entry the cove drawer's `state` dots
+   * instead of dropping it — without this entry the area drawer's `state` dots
    * never move until something else refetches the list.
    *
-   * A prefix invalidation reaches whichever cove's list is cached — at most the
+   * A prefix invalidation reaches whichever area's list is cached — at most the
    * open drawer's — and costs nothing when none is.
    */
-  coveConversationsPrefix: () => ['cove-conversations'] as const,
+  areaConversationsPrefix: () => ['area-conversations'] as const,
   /**
    * One wave's conversation list (#1189 §4.1), keyed by its wave.
    *
-   * `GET /api/waves/{wave_id}/conversations` is per-wave, and unlike the cove
+   * `GET /api/waves/{wave_id}/conversations` is per-wave, and unlike the area
    * list the id *is* derivable from the events: the plan emits
    * `['wave-conversations', waveId]` whenever `derivedWaveId` resolves one.
    *
@@ -174,7 +174,7 @@ export const queryKeys = Object.freeze({
    * nothing — so the adapter may know a key before a query claims it. The
    * reverse order is the one that breaks: a query that mounts against a key no
    * adapter arm maps is silently never invalidated, which is exactly the defect
-   * this pair of entries fixes for the cove list.
+   * this pair of entries fixes for the area list.
    */
   waveConversations: (waveId: string) => ['wave-conversations', waveId] as const,
   /**
@@ -233,17 +233,17 @@ export function useSpecMutations(transport: ApiTransportPort, cardId: string, un
   };
 }
 
-export function coveConversationsQueryOptions(
-  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
+export function areaConversationsQueryOptions(
+  transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel,
 ) {
   return {
-    queryKey: queryKeys.coveConversations(coveId),
+    queryKey: queryKeys.areaConversations(areaId),
     queryFn: (): Promise<Conversation[]> =>
-      runOperation(transport, coveConversationsOperation(coveId), unauthorized),
+      runOperation(transport, areaConversationsOperation(areaId), unauthorized),
   };
 }
 
-export type CoveConversationMutations = Readonly<{
+export type AreaConversationMutations = Readonly<{
   /**
    * Mint a conversation and deliver its first message.
    *
@@ -256,31 +256,31 @@ export type CoveConversationMutations = Readonly<{
   refresh: () => Promise<Conversation[]>;
 }>;
 
-export function useCoveConversationMutations(
-  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
-): CoveConversationMutations {
+export function useAreaConversationMutations(
+  transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel,
+): AreaConversationMutations {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
-      runOperation(transport, createCoveConversationOperation(coveId, text, idempotencyKey), unauthorized),
+      runOperation(transport, createAreaConversationOperation(areaId, text, idempotencyKey), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row
          in the same tick, and a list that does not contain it yet would render
          the panel with no active row until the refetch lands. A replayed key
          answers with a row that is already there, so the write is by id. */
-      client.setQueryData<Conversation[]>(queryKeys.coveConversations(coveId), (current) => {
+      client.setQueryData<Conversation[]>(queryKeys.areaConversations(areaId), (current) => {
         const rows = current ?? [];
         return rows.some((candidate) => candidate.id === row.id)
           ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
           : [...rows, row];
       });
-      void client.invalidateQueries({ queryKey: queryKeys.coveConversations(coveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.areaConversations(areaId) });
     },
   });
   return {
     create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
     refresh: () => client.fetchQuery({
-      ...coveConversationsQueryOptions(transport, coveId, unauthorized),
+      ...areaConversationsQueryOptions(transport, areaId, unauthorized),
       staleTime: 0,
     }),
   };
@@ -304,10 +304,10 @@ export function waveConversationsQueryOptions(
 }
 
 /**
- * The wave twin of `useCoveConversationMutations`, with the same two doors and
+ * The wave twin of `useAreaConversationMutations`, with the same two doors and
  * the same reasons for them.
  *
- * Not shared with the cove version through a parameterised helper: the two
+ * Not shared with the area version through a parameterised helper: the two
  * endpoints have different paths, different derived namespaces and different
  * cache keys, and the only thing a shared helper would save is four lines of
  * plumbing at the cost of making "which list does a create write through to?"
@@ -315,13 +315,13 @@ export function waveConversationsQueryOptions(
  */
 export function useWaveConversationMutations(
   transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
-): CoveConversationMutations {
+): AreaConversationMutations {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
       runOperation(transport, createWaveConversationOperation(waveId, text, idempotencyKey), unauthorized),
     onSuccess: (row) => {
-      /* Written through as well as invalidated, for the same reason the cove
+      /* Written through as well as invalidated, for the same reason the area
          list is: the drawer switches to this row in the same tick and a list
          that does not hold it yet renders with no active row. */
       client.setQueryData<Conversation[]>(queryKeys.waveConversations(waveId), (current) => {
@@ -365,11 +365,11 @@ export function logoutOperation(): ApiOperation<undefined> {
 
 // ---------- reads ----------
 
-export function coveListQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+export function areaListQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.coves(),
-    queryFn: async (): Promise<Cove[]> =>
-      sortedCoves(visibleCoves((await runOperation(transport, coveListOperation(), unauthorized)).map(toCove))),
+    queryKey: queryKeys.areas(),
+    queryFn: async (): Promise<Area[]> =>
+      sortedAreas(visibleAreas((await runOperation(transport, areaListOperation(), unauthorized)).map(toArea))),
   };
 }
 
@@ -380,11 +380,11 @@ export function waveOverlaysQueryOptions(transport: ApiTransportPort, unauthoriz
   };
 }
 
-export function wavesInCoveQueryOptions(transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel) {
+export function wavesInAreaQueryOptions(transport: ApiTransportPort, areaId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.wavesInCove(coveId),
+    queryKey: queryKeys.wavesInArea(areaId),
     queryFn: async (): Promise<Wave[]> =>
-      (await runOperation(transport, wavesInCoveOperation(coveId), unauthorized)).map((wire) => toWave(wire)),
+      (await runOperation(transport, wavesInAreaOperation(areaId), unauthorized)).map((wire) => toWave(wire)),
   };
 }
 
@@ -655,72 +655,72 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
 }
 
 export type Workspace = Readonly<{
-  coves: Cove[];
-  wavesByCove: ReadonlyMap<string, Wave[]>;
+  areas: Area[];
+  wavesByArea: ReadonlyMap<string, Wave[]>;
   waves: Wave[];
-  covesLoading: boolean;
+  areasLoading: boolean;
   overlaysLoading: boolean;
-  covesError: Error | null;
+  areasError: Error | null;
   overlaysError: Error | null;
-  waveErrorsByCove: ReadonlyMap<string, Error>;
-  wavesLoadingByCove: ReadonlyMap<string, boolean>;
-  retryCoves: () => void;
+  waveErrorsByArea: ReadonlyMap<string, Error>;
+  wavesLoadingByArea: ReadonlyMap<string, boolean>;
+  retryAreas: () => void;
   retryOverlays: () => void;
-  retryWaves: (coveId: string) => void;
+  retryWaves: (areaId: string) => void;
 }>;
 
 /**
- * INV-APP-084 — the cove → waves fan-out is a page-level `useQueries`, never a
- * route loader await. One slow cove must not block the calendar; each cove's
- * list also stays its own cache entry, so a wave moving between coves
+ * INV-APP-084 — the area → waves fan-out is a page-level `useQueries`, never a
+ * route loader await. One slow area must not block the calendar; each area's
+ * list also stays its own cache entry, so a wave moving between areas
  * invalidates two lists instead of the whole workspace.
  *
  * The workspace-wide wave-overlay read is folded in here so every surface —
- * sidebar buckets, Today's counters, cove lists — sees the same
+ * sidebar buckets, Today's counters, area lists — sees the same
  * `anyCardNeedsInput` / progress / eta / now, rather than only the wave the
  * user happens to have open.
  */
 export function useWorkspace(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Workspace {
-  const covesQuery = useQuery(coveListQueryOptions(transport, unauthorized));
+  const areasQuery = useQuery(areaListQueryOptions(transport, unauthorized));
   const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport, unauthorized));
-  const coves = covesQuery.data ?? [];
+  const areas = areasQuery.data ?? [];
   const overlays = overlaysQuery.data ?? [];
   const waveQueries = useQueries({
-    queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id, unauthorized)),
+    queries: areas.map((area) => wavesInAreaQueryOptions(transport, area.id, unauthorized)),
   });
-  const wavesByCove = new Map<string, Wave[]>();
-  const waveErrorsByCove = new Map<string, Error>();
-  const wavesLoadingByCove = new Map<string, boolean>();
+  const wavesByArea = new Map<string, Wave[]>();
+  const waveErrorsByArea = new Map<string, Error>();
+  const wavesLoadingByArea = new Map<string, boolean>();
   const waves: Wave[] = [];
-  for (const [index, cove] of coves.entries()) {
+  for (const [index, area] of areas.entries()) {
     const query = waveQueries[index];
-    wavesLoadingByCove.set(cove.id, query?.isLoading ?? false);
-    if (query?.error instanceof Error) waveErrorsByCove.set(cove.id, query.error);
+    wavesLoadingByArea.set(area.id, query?.isLoading ?? false);
+    if (query?.error instanceof Error) waveErrorsByArea.set(area.id, query.error);
     if (query?.data !== undefined) {
       const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
-      wavesByCove.set(cove.id, rows);
+      wavesByArea.set(area.id, rows);
       waves.push(...rows);
     }
   }
   return {
-    coves, wavesByCove, waves, covesLoading: covesQuery.isLoading,
+    areas, wavesByArea, waves, areasLoading: areasQuery.isLoading,
     overlaysLoading: overlaysQuery.isLoading,
-    covesError: covesQuery.error instanceof Error ? covesQuery.error : null,
+    areasError: areasQuery.error instanceof Error ? areasQuery.error : null,
     overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
-    waveErrorsByCove,
-    wavesLoadingByCove,
-    retryCoves: () => { void covesQuery.refetch(); },
+    waveErrorsByArea,
+    wavesLoadingByArea,
+    retryAreas: () => { void areasQuery.refetch(); },
     retryOverlays: () => { void overlaysQuery.refetch(); },
-    retryWaves: (coveId) => {
-      const index = coves.findIndex((cove) => cove.id === coveId);
+    retryWaves: (areaId) => {
+      const index = areas.findIndex((area) => area.id === areaId);
       if (index >= 0) void waveQueries[index]?.refetch();
     },
   };
 }
 
 /** Route loaders prime only this one list; see INV-APP-084 above. */
-export function prefetchCoveList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<Cove[]> {
-  return client.ensureQueryData(coveListQueryOptions(transport, unauthorized));
+export function prefetchAreaList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<Area[]> {
+  return client.ensureQueryData(areaListQueryOptions(transport, unauthorized));
 }
 
 // ---------- mutations ----------
@@ -728,55 +728,55 @@ export function prefetchCoveList(client: QueryClient, transport: ApiTransportPor
 // Every mutation invalidates. A mutation may additionally write its response
 // through to the cache first, but only when that response *is* the new cache
 // value (an id-keyed row the server just returned) and the very next render
-// needs it — see `useCoveConversationMutations`, where the drawer switches to
+// needs it — see `useAreaConversationMutations`, where the drawer switches to
 // the new row in the same tick. The invalidation still follows and reconciles;
 // a write-through that guessed, or that stood in for one, would only widen the
 // window in which the cache and the server disagree.
 
-export type CoveMutations = Readonly<{
-  create: (body: NewCoveBody) => Promise<Cove>;
-  rename: (coveId: string, body: CovePatchBody) => Promise<Cove>;
-  remove: (coveId: string, signal?: AbortSignal) => Promise<void>;
+export type AreaMutations = Readonly<{
+  create: (body: NewAreaBody) => Promise<Area>;
+  rename: (areaId: string, body: AreaPatchBody) => Promise<Area>;
+  remove: (areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
-export function useCoveMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): CoveMutations {
+export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewCoveBody) => runOperation(transport, createCoveOperation(body), unauthorized),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
+    mutationFn: (body: NewAreaBody) => runOperation(transport, createAreaOperation(body), unauthorized),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   const rename = useMutation({
-    mutationFn: ({ coveId, body }: { coveId: string; body: CovePatchBody }) =>
-      runOperation(transport, updateCoveOperation(coveId, body), unauthorized),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
+    mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>
+      runOperation(transport, updateAreaOperation(areaId, body), unauthorized),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   const remove = useMutation({
-    mutationFn: ({ coveId, signal }: { coveId: string; signal?: AbortSignal }) =>
-      runOperation(transport, { ...deleteCoveOperation(coveId), signal }, unauthorized),
-    onSuccess: (_result, { coveId }) => {
-      // The cove is gone; its wave list can never resolve again, so drop it
+    mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
+    onSuccess: (_result, { areaId }) => {
+      // The area is gone; its wave list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
-      client.removeQueries({ queryKey: queryKeys.wavesInCove(coveId) });
+      client.removeQueries({ queryKey: queryKeys.wavesInArea(areaId) });
     },
     // Abort only ends the client wait: the server may already have committed.
-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   return {
-    create: async (body) => toCove(await create.mutateAsync(body)),
-    rename: async (coveId, body) => toCove(await rename.mutateAsync({ coveId, body })),
-    remove: async (coveId, signal) => { await remove.mutateAsync({ coveId, signal }); },
+    create: async (body) => toArea(await create.mutateAsync(body)),
+    rename: async (areaId, body) => toArea(await rename.mutateAsync({ areaId, body })),
+    remove: async (areaId, signal) => { await remove.mutateAsync({ areaId, signal }); },
   };
 }
 
 export type WaveMutations = Readonly<{
   create: (body: NewWaveBody) => Promise<Wave>;
-  patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
-  setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
+  patch: (waveId: string, areaId: string, body: WavePatchBody) => Promise<Wave>;
+  setPinned: (waveId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
   createTerminal: (waveId: string, body: NewTerminalCardBody) => Promise<CardWire>;
   createCodex: (waveId: string, body: NewCodexCardBody) => Promise<CardWire>;
   createCard: (waveId: string, body: NewCardBody) => Promise<CardWire>;
   removeCard: (waveId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
-  remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
+  remove: (waveId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
 export function useWaveMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveMutations {
@@ -784,35 +784,35 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
   const create = useMutation({
     mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body), unauthorized),
     onSuccess: (wave, body) => {
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
-      // Explicit `attach_folder` still mints a cove_folders row. Drop any
+      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
+      // Explicit `attach_folder` still mints a area_folders row. Drop any
       // cached list so a later folders read cannot serve a stale empty array.
       if (body.attach_folder) {
-        client.removeQueries({ queryKey: queryKeys.coveFolders(body.cove_id) });
+        client.removeQueries({ queryKey: queryKeys.areaFolders(body.area_id) });
       }
     },
   });
   const patch = useMutation({
-    mutationFn: ({ waveId, body }: { waveId: string; coveId: string; body: WavePatchBody }) =>
+    mutationFn: ({ waveId, body }: { waveId: string; areaId: string; body: WavePatchBody }) =>
       runOperation(transport, updateWaveOperation(waveId, body), unauthorized),
     onSuccess: (wave, variables) => {
-      // Prefer the cove the server just reported: a patch can move the wave.
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
-      if (wave.cove_id !== variables.coveId) {
-        void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(variables.coveId) });
+      // Prefer the area the server just reported: a patch can move the wave.
+      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
+      if (wave.area_id !== variables.areaId) {
+        void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(variables.areaId) });
       }
       void client.invalidateQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
     },
   });
   const remove = useMutation({
-    mutationFn: ({ waveId, signal }: { waveId: string; coveId: string; signal?: AbortSignal }) =>
+    mutationFn: ({ waveId, signal }: { waveId: string; areaId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteWaveOperation(waveId), signal }, unauthorized),
     onSuccess: (_result, variables) => {
       client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
     },
     // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
     onSettled: (_result, _error, variables) => {
-      void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(variables.coveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.wavesInArea(variables.areaId) });
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
@@ -870,8 +870,8 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
-  const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
-    toWave(await patch.mutateAsync({ waveId, coveId, body }));
+  const patchWave = async (waveId: string, areaId: string, body: WavePatchBody) =>
+    toWave(await patch.mutateAsync({ waveId, areaId, body }));
   return {
     create: async (body) => toWave(await create.mutateAsync(body)),
     patch: patchWave,
@@ -883,9 +883,9 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
     },
     // `pinned_at` is both the flag and the ordering key, so unpinning is a
     // null write rather than a delete of some separate row.
-    setPinned: (waveId, coveId, pinned, nowMs) =>
-      patchWave(waveId, coveId, { pinned_at: pinned ? nowMs : null }),
-    remove: async (waveId, coveId, signal) => { await remove.mutateAsync({ waveId, coveId, signal }); },
+    setPinned: (waveId, areaId, pinned, nowMs) =>
+      patchWave(waveId, areaId, { pinned_at: pinned ? nowMs : null }),
+    remove: async (waveId, areaId, signal) => { await remove.mutateAsync({ waveId, areaId, signal }); },
   };
 }
 

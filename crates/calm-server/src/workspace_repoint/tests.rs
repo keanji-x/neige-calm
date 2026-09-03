@@ -22,12 +22,12 @@ struct Fixture {
     wave_id: String,
 }
 
-/// A freshly materialized managed workspace at `<root>/<cove>/<wave>` — the
+/// A freshly materialized managed workspace at `<root>/<area>/<wave>` — the
 /// exact shape `POST /api/waves` produces.
 fn materialized() -> Fixture {
     let root = tempfile::TempDir::new().unwrap();
     let wave_id = format!("w{}", uuid::Uuid::new_v4().simple());
-    let workspace = root.path().join("cove-1").join(&wave_id);
+    let workspace = root.path().join("area-1").join(&wave_id);
     materialize_managed_workspace(root.path(), &workspace, &wave_id).unwrap();
     Fixture {
         root,

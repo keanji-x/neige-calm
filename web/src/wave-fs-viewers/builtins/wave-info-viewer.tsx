@@ -26,7 +26,7 @@ function WaveInfoViewerComponent({
       </h2>
       <div className="wave-fs-viewer-row">
         <span className="wave-fs-viewer-mono">{data.id}</span>
-        <span className="wave-fs-viewer-mono">{data.cove_id}</span>
+        <span className="wave-fs-viewer-mono">{data.area_id}</span>
         <ViewerChip
           label={data.lifecycle}
           tone={waveLifecycleTones[data.lifecycle]}

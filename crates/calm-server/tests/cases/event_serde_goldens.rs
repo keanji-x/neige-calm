@@ -28,9 +28,9 @@
 
 use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, WaveUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
-use calm_server::ids::{CardId, CoveId, WaveId};
+use calm_server::ids::{AreaId, CardId, WaveId};
 use calm_server::model::{
-    Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle, WaveWorkspace,
+    Area, AreaKind, Card, CardRuntimeView, Overlay, Wave, WaveLifecycle, WaveWorkspace,
     WaveWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
@@ -116,7 +116,7 @@ macro_rules! golden_test {
 fn wave_min() -> Wave {
     Wave {
         id: WaveId::from("wave-01"),
-        cove_id: CoveId::from("cove-01"),
+        area_id: AreaId::from("area-01"),
         title: "Golden Wave".into(),
         sort: 1.5,
         archived_at: None,
@@ -154,38 +154,38 @@ fn card_min() -> Card {
 // ---------------------------------------------------------------------------
 
 golden_test!(
-    cove_updated_full,
-    "cove_updated.full.json",
-    Event::CoveUpdated(Cove {
-        id: CoveId::from("cove-01"),
-        name: "Golden Cove".into(),
+    area_updated_full,
+    "area_updated.full.json",
+    Event::AreaUpdated(Area {
+        id: AreaId::from("area-01"),
+        name: "Golden Area".into(),
         color: "#aabbcc".into(),
         sort: 1.5,
-        kind: CoveKind::System,
+        kind: AreaKind::System,
         created_at: 1000,
         updated_at: 2000,
     })
 );
 
 golden_test!(
-    cove_updated_min,
-    "cove_updated.min.json",
-    Event::CoveUpdated(Cove {
-        id: CoveId::from("cove-01"),
-        name: "Golden Cove".into(),
+    area_updated_min,
+    "area_updated.min.json",
+    Event::AreaUpdated(Area {
+        id: AreaId::from("area-01"),
+        name: "Golden Area".into(),
         color: "#aabbcc".into(),
         sort: 1.5,
-        kind: CoveKind::User,
+        kind: AreaKind::User,
         created_at: 1000,
         updated_at: 2000,
     })
 );
 
 golden_test!(
-    cove_deleted,
-    "cove_deleted.json",
-    Event::CoveDeleted {
-        id: CoveId::from("cove-01"),
+    area_deleted,
+    "area_deleted.json",
+    Event::AreaDeleted {
+        id: AreaId::from("area-01"),
     }
 );
 
@@ -261,7 +261,7 @@ golden_test!(
     "wave_deleted.json",
     Event::WaveDeleted {
         id: WaveId::from("wave-01"),
-        cove_id: CoveId::from("cove-01"),
+        area_id: AreaId::from("area-01"),
     }
 );
 
@@ -270,7 +270,7 @@ golden_test!(
     "wave_lifecycle_changed.full.json",
     Event::WaveLifecycleChanged {
         id: WaveId::from("wave-01"),
-        cove_id: CoveId::from("cove-01"),
+        area_id: AreaId::from("area-01"),
         from: WaveLifecycle::Reviewing,
         to: WaveLifecycle::Done,
         agent_message: Some("review passed".into()),
@@ -282,7 +282,7 @@ golden_test!(
     "wave_lifecycle_changed.min.json",
     Event::WaveLifecycleChanged {
         id: WaveId::from("wave-01"),
-        cove_id: CoveId::from("cove-01"),
+        area_id: AreaId::from("area-01"),
         from: WaveLifecycle::Draft,
         to: WaveLifecycle::Planning,
         agent_message: None,
@@ -1158,8 +1158,8 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
 const ALL_KIND_TAGS: [&str; 49] = [
-    "cove.updated",
-    "cove.deleted",
+    "area.updated",
+    "area.deleted",
     "wave.updated",
     "wave.deleted",
     "wave.lifecycle_changed",
@@ -1262,8 +1262,8 @@ fn kind_tag_list_matches_enum() {
         // Exhaustive on purpose — no `_` arm. New variants must extend
         // ALL_KIND_TAGS and add goldens.
         match ev {
-            Event::CoveUpdated(_) => "cove.updated",
-            Event::CoveDeleted { .. } => "cove.deleted",
+            Event::AreaUpdated(_) => "area.updated",
+            Event::AreaDeleted { .. } => "area.deleted",
             Event::WaveUpdated(_) => "wave.updated",
             Event::WaveDeleted { .. } => "wave.deleted",
             Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
@@ -1313,8 +1313,8 @@ fn kind_tag_list_matches_enum() {
             Event::TaskGateResult { .. } => "task.gate_result",
         }
     }
-    let sample = Event::CoveDeleted {
-        id: CoveId::from("cove-01"),
+    let sample = Event::AreaDeleted {
+        id: AreaId::from("area-01"),
     };
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(

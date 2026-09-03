@@ -76,7 +76,7 @@ describe('NewCardForm', () => {
    * control must push `DirectoryBrowser` into that dialog through
    * `useDialogView` and must not open a second one: a nested dialog fights the
    * outer one's focus trap, which the outer dialog owns for its whole lifetime.
-   * (`features/cove/new-wave` is a route with no dialog above it and is
+   * (`features/area/new-wave` is a route with no dialog above it and is
    * deliberately the other case — see -003.)
    *
    * Driven through a real `Dialog`, not a stub: the branch under test *is*

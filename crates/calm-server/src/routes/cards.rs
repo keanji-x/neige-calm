@@ -52,11 +52,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use utoipa::{IntoParams, ToSchema};
 
-/// Resolve the (wave, cove) ancestor pair for a wave id, returning a
+/// Resolve the (wave, area) ancestor pair for a wave id, returning a
 /// pre-built [`EventScope::Card`] for the given card. PR2 of #136 needs
 /// this at every card-emit site so the event row's `scope_*` columns
 /// carry the full ancestor chain. Looking up the wave outside the txn
-/// is fine — wave rows are immutable wrt their parent cove.
+/// is fine — wave rows are immutable wrt their parent area.
 ///
 /// # ⚠️ Do not call this from inside a transaction that has written `waves`
 ///
@@ -78,7 +78,7 @@ pub(crate) async fn card_scope(
     Ok(EventScope::Card {
         card,
         wave: w.id,
-        cove: w.cove_id,
+        area: w.area_id,
     })
 }
 
@@ -126,15 +126,15 @@ pub(crate) async fn card_scope_tx(
     card: CardId,
     wave: WaveId,
 ) -> Result<EventScope> {
-    let cove: Option<(String,)> = sqlx::query_as("SELECT cove_id FROM waves WHERE id = ?1")
+    let area: Option<(String,)> = sqlx::query_as("SELECT area_id FROM waves WHERE id = ?1")
         .bind(wave.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    let (cove,) = cove.ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+    let (area,) = area.ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
     Ok(EventScope::Card {
         card,
         wave,
-        cove: cove.into(),
+        area: area.into(),
     })
 }
 
@@ -915,7 +915,7 @@ pub(crate) async fn send_spec_input(
     let scope = EventScope::Card {
         card: card.id.clone(),
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     // Migrate ONLY the AI-header path (empty placeholder card) to the live spec
     // session actor; the human web-UI path (`actor` == User) and any other actor
@@ -949,7 +949,7 @@ pub(crate) async fn send_spec_input(
             None,
             &s.events,
             s.write.role_cache(),
-            s.write.cove_cache(),
+            s.write.area_cache(),
             Event::HarnessUserMessageEnqueued {
                 runtime_id: runtime.id.clone(),
                 card_id: card.id.clone(),
@@ -1015,7 +1015,7 @@ pub(crate) async fn ratify_card(
     let actor_id = ActorId::User;
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let wave_id = wave.id.clone();
     let card_id = card.id.clone();
@@ -1363,7 +1363,7 @@ async fn ensure_live_spec_harness(
         w.repo.clone(),
         s.events.clone(),
         s.write.role_cache().clone(),
-        s.write.cove_cache().clone(),
+        s.write.area_cache().clone(),
         cs.shared_codex_appserver.clone(),
         &s.harness,
         runtime.clone(),
@@ -1425,9 +1425,9 @@ pub(crate) async fn reset_spec_card(
             .wave_get(card.wave_id.as_str())
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-        if wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
+        if wave.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
             return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for cove chat wave {}",
+                "spec harness is disabled for area chat wave {}",
                 wave.id
             )));
         }

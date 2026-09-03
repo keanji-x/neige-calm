@@ -1,6 +1,6 @@
 import type { APIRequestContext } from '@playwright/test';
 
-export type SeededCove = Readonly<{ id: string; name: string }>;
+export type SeededArea = Readonly<{ id: string; name: string }>;
 export type SeededWave = Readonly<{ id: string; title: string }>;
 
 async function requireOk(response: Awaited<ReturnType<APIRequestContext['post']>>, operation: string): Promise<void> {
@@ -9,22 +9,22 @@ async function requireOk(response: Awaited<ReturnType<APIRequestContext['post']>
   throw new Error(`${operation} → ${response.status()} ${response.statusText()}: ${body}`);
 }
 
-export async function createCove(
+export async function createArea(
   request: APIRequestContext,
-  name = `FE e2e cove ${Date.now()}`,
-): Promise<SeededCove> {
-  const response = await request.post('/api/coves', { data: { name, color: '#6a8' } });
-  await requireOk(response, 'createCove: POST /api/coves');
-  return await response.json() as SeededCove;
+  name = `FE e2e area ${Date.now()}`,
+): Promise<SeededArea> {
+  const response = await request.post('/api/areas', { data: { name, color: '#6a8' } });
+  await requireOk(response, 'createArea: POST /api/areas');
+  return await response.json() as SeededArea;
 }
 
 export async function createWave(
   request: APIRequestContext,
-  coveId: string,
+  areaId: string,
   title = `FE e2e wave ${Date.now()}`,
 ): Promise<SeededWave> {
   // #1147 S3 — no `cwd`. Omitting it is the *managed workspace* branch:
-  // the kernel derives `<workspace-root>/<cove>/<wave>` and creates the
+  // the kernel derives `<workspace-root>/<area>/<wave>` and creates the
   // git repository itself, so the seed works in every environment (docker
   // stack or native server) without the spec having to own a directory.
   // It is also exactly what the new FE's default create sends (see
@@ -36,7 +36,7 @@ export async function createWave(
   // it died in `git_repo_root_for_wave_cwd`.
   const response = await request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

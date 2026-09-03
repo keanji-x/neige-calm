@@ -8,7 +8,7 @@
 // **right element** (a `data-nc-row` on the title span instead of the `<li>`
 // would satisfy an "the attribute is somewhere" check and break the
 // projection's scoping), and that **omitting the prop leaves no attribute at
-// all**. The second is not symmetry for its own sake: `app/shell`'s cove and
+// all**. The second is not symmetry for its own sake: `app/shell`'s area and
 // page lists, and this page's Outline and Conversations drill-downs, render
 // through these same primitives and are not row modules — they must stay
 // unmarked, or a faithful painter's tree holds module and row markers a view
@@ -98,7 +98,7 @@ describe('MobileListItem hint', () => {
 /*
  * #1234 S1b-4a/4b did not change this rule — and that is exactly why it is
  * pinned here. `MobileListItem` has seven call sites: `app/shell`'s Pages list,
- * its Coves list and a cove's Waves list, the wave page's Outline rows (parent
+ * its Areas list and an area's Waves list, the wave page's Outline rows (parent
  * and child), and the Cards and Tasks rows the painter now composes. Five of the
  * seven pass a string meta, so the composed name is live behaviour, not a
  * corner. Those two slices reworked the primitive around them — `onSelect`

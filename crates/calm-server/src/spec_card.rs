@@ -118,7 +118,7 @@ writes are transactional.
      has a title the call returns \
      `{\"ok\": false, \"refused\": \"already_named\"}` and changes nothing — \
      that is not an error, leave the name alone and move on. Template waves \
-     and the per-cove chat wave refuse the same way. \
+     and the per-area chat wave refuse the same way. \
      Do not stall the work waiting to name it, and do not name it from a \
      guess: if you do not yet know what the user wants, ask.
    * Maintain task declarations as report `task` blocks. Read the report with \
@@ -143,13 +143,13 @@ writes are transactional.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the wave in the same write.
-   * Discover report structure across the cove with `calm.cove.outline`, \
+   * Discover report structure across the area with `calm.area.outline`, \
      and inspect incoming links to a report with \
      `calm.report.links.backlinks`.
    * Cross-reference as `[label](neige://wave/<wave_id>#<block_id>)`; omit \
-     `#<block_id>` for the whole report. Get block ids from `calm.cove.outline`, \
-     the single source for the whole cove, including your own wave. Links resolve \
-     only within the cove; missing anchors fall back to the whole report.
+     `#<block_id>` for the whole report. Get block ids from `calm.area.outline`, \
+     the single source for the whole area, including your own wave. Links resolve \
+     only within the area; missing anchors fall back to the whole report.
    * Keep the wave report current — see the Wave Report section below \
      for which write tool to use. Only `calm.report.write` and \
      `calm.report.edit` take `message` (required) and optional \
@@ -893,7 +893,7 @@ mod tests {
                 && p.contains("calm.plan.list")
                 && p.contains("calm.report.blocks.upsert")
                 && p.contains("calm.task.verdict")
-                && p.contains("calm.cove.outline")
+                && p.contains("calm.area.outline")
                 && p.contains("calm.report.links.backlinks")
                 // Signature-anchored: bare "calm.report.write" is now also a
                 // prefix of "calm.report.write_markdown", so the loose form
@@ -942,7 +942,7 @@ mod tests {
             "spec prompt must document report write/edit MCP tools"
         );
         assert!(
-            p.contains("calm.cove.outline")
+            p.contains("calm.area.outline")
                 && p.contains("calm.report.links.backlinks")
                 && !p.contains("calm.wave.cat")
                 && !p.contains("calm.wave.ls")
@@ -968,7 +968,7 @@ mod tests {
     /// Section vocabulary is policy: it belongs to the document, which carries
     /// it in a leading HTML comment that every read returns. A prompt that
     /// names sections re-imposes one template's shape on every document in the
-    /// cove, and the "rewrite anything unfamiliar" instruction that used to
+    /// area, and the "rewrite anything unfamiliar" instruction that used to
     /// accompany it flattened any report that arrived with its own structure.
     ///
     /// The negative loop at the bottom is this slice's main invariant.

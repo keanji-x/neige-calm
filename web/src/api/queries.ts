@@ -3,7 +3,7 @@
 //
 // Why hooks (and not a hand-rolled store):
 //   - Per-query loading/error state is automatic. No more "the page is
-//     stuck on a global spinner because one of N cove fetches is slow".
+//     stuck on a global spinner because one of N area fetches is slow".
 //   - Request deduplication. Two components asking for `['wave', id]` at
 //     the same time share one fetch.
 //   - Cache invalidation is declarative. WS events become
@@ -11,8 +11,8 @@
 //     place (see `app/eventBridge.tsx`) — Query handles the rest.
 //
 // Query keys are arrays — pick one shape and never deviate:
-//   ['coves']                     — list of all coves
-//   ['waves', coveId]             — list of waves in a cove
+//   ['areas']                     — list of all areas
+//   ['waves', areaId]             — list of waves in an area
 //   ['wave', waveId]              — full wave detail (cards + overlays)
 //
 // All queries call the existing `api/calm.ts` functions as their queryFn;
@@ -31,14 +31,14 @@ import * as api from './calm';
 import { taskBlockVerdictSchema } from './schemas';
 import type {
   CardPatchBody,
-  CovePatchBody,
+  AreaPatchBody,
   KernelCard,
-  KernelCove,
+  KernelArea,
   KernelOverlay,
   KernelWave,
   KernelWaveDetail,
   NewCardBody,
-  NewCoveBody,
+  NewAreaBody,
   NewWaveBody,
   SettingsBag,
   SettingsPutBody,
@@ -55,8 +55,8 @@ type WaveFileQueryOpts = {
 // key shape relative to the query call site. Importable by eventBridge.
 
 export const queryKeys = {
-  coves: () => ['coves'] as const,
-  wavesInCove: (coveId: string) => ['waves', coveId] as const,
+  areas: () => ['areas'] as const,
+  wavesInArea: (areaId: string) => ['waves', areaId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveReport: (waveId: string) => ['wave-report', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
@@ -77,8 +77,8 @@ export const queryKeys = {
    * Issue #250 PR 5 — calendar window query keyed on `[since, until]` in
    * unix ms. Each week (or any user-chosen window) gets its own cache
    * entry; advancing the week re-uses any cached neighbour windows
-   * directly. `cove_id` is intentionally NOT part of the key because the
-   * calendar page never filters by cove (issue Non-goals); if we add a
+   * directly. `area_id` is intentionally NOT part of the key because the
+   * calendar page never filters by area (issue Non-goals); if we add a
    * filter later it lands here as a third tuple element.
    */
   wavesRange: (since: number, until: number) =>
@@ -103,14 +103,14 @@ export const waveFileContentQueryKey = (
 // `useQuery` hook below which reads the already-cached data instantly,
 // eliminating the per-route spinner flash.
 
-export const covesQueryOptions = () => ({
-  queryKey: queryKeys.coves(),
-  queryFn: () => api.listCoves(),
+export const areasQueryOptions = () => ({
+  queryKey: queryKeys.areas(),
+  queryFn: () => api.listAreas(),
 });
 
-export const wavesByCoveQueryOptions = (coveId: string) => ({
-  queryKey: queryKeys.wavesInCove(coveId),
-  queryFn: () => api.wavesInCove(coveId),
+export const wavesByAreaQueryOptions = (areaId: string) => ({
+  queryKey: queryKeys.wavesInArea(areaId),
+  queryFn: () => api.wavesInArea(areaId),
 });
 
 export const waveDetailQueryOptions = (waveId: string) => ({
@@ -157,22 +157,22 @@ export const wavesRangeQueryOptions = (since: number, until: number) => ({
 
 // ---------------- Queries ----------------
 
-/** All coves. Used by Sidebar, Today calendar, and Cove routing. */
-export function useCovesQuery(opts?: Partial<UseQueryOptions<KernelCove[], Error>>) {
-  return useQuery<KernelCove[], Error>({
-    ...covesQueryOptions(),
+/** All areas. Used by Sidebar, Today calendar, and Area routing. */
+export function useAreasQuery(opts?: Partial<UseQueryOptions<KernelArea[], Error>>) {
+  return useQuery<KernelArea[], Error>({
+    ...areasQueryOptions(),
     ...opts,
   });
 }
 
-/** Waves inside a given cove. Empty `coveId` keeps the query disabled. */
-export function useWavesByCoveQuery(
-  coveId: string | undefined | null,
+/** Waves inside a given area. Empty `areaId` keeps the query disabled. */
+export function useWavesByAreaQuery(
+  areaId: string | undefined | null,
   opts?: Partial<UseQueryOptions<KernelWave[], Error>>,
 ) {
   return useQuery<KernelWave[], Error>({
-    ...wavesByCoveQueryOptions(coveId ?? ''),
-    enabled: !!coveId,
+    ...wavesByAreaQueryOptions(areaId ?? ''),
+    enabled: !!areaId,
     ...opts,
   });
 }
@@ -315,40 +315,40 @@ export function useWavesRangeQuery(
 // server-assigned ids and cascading invalidations, where rollback is much
 // more error-prone than the snappiness payoff.
 
-export function useCreateCoveMutation() {
+export function useCreateAreaMutation() {
   const qc = useQueryClient();
-  return useMutation<KernelCove, Error, NewCoveBody>({
-    mutationFn: (body) => api.createCove(body),
+  return useMutation<KernelArea, Error, NewAreaBody>({
+    mutationFn: (body) => api.createArea(body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+      void qc.invalidateQueries({ queryKey: queryKeys.areas() });
     },
   });
 }
 
 /**
- * Update a cove. Optimistic for `name` and `color` patches (the common
+ * Update an area. Optimistic for `name` and `color` patches (the common
  * rename / palette-swap path). If the patch carries any other field
  * (currently only `sort`), we fall through to the plain invalidate-on-
- * settle path — reorder rollback for coves is rare and would require
+ * settle path — reorder rollback for areas is rare and would require
  * snapshotting + replaying the full list re-sort.
  */
-export function useUpdateCoveMutation() {
+export function useUpdateAreaMutation() {
   const qc = useQueryClient();
-  type Vars = { id: string; body: CovePatchBody };
-  type Ctx = { previous: KernelCove[] | null };
-  return useMutation<KernelCove, Error, Vars, Ctx>({
-    mutationFn: ({ id, body }) => api.updateCove(id, body),
+  type Vars = { id: string; body: AreaPatchBody };
+  type Ctx = { previous: KernelArea[] | null };
+  return useMutation<KernelArea, Error, Vars, Ctx>({
+    mutationFn: ({ id, body }) => api.updateArea(id, body),
     onMutate: async ({ id, body }) => {
       const isOptimisticField =
         body.name !== undefined || body.color !== undefined;
       if (!isOptimisticField) return { previous: null };
 
-      const key = queryKeys.coves();
+      const key = queryKeys.areas();
       await qc.cancelQueries({ queryKey: key });
-      const previous = qc.getQueryData<KernelCove[]>(key) ?? null;
+      const previous = qc.getQueryData<KernelArea[]>(key) ?? null;
       if (previous) {
         const now = Date.now();
-        qc.setQueryData<KernelCove[]>(
+        qc.setQueryData<KernelArea[]>(
           key,
           previous.map((c) =>
             c.id === id
@@ -366,23 +366,23 @@ export function useUpdateCoveMutation() {
     },
     onError: (_err, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(queryKeys.coves(), context.previous);
+        qc.setQueryData(queryKeys.areas(), context.previous);
       }
     },
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+      void qc.invalidateQueries({ queryKey: queryKeys.areas() });
     },
   });
 }
 
-export function useDeleteCoveMutation() {
+export function useDeleteAreaMutation() {
   const qc = useQueryClient();
   return useMutation<void, Error, string>({
-    mutationFn: (id) => api.deleteCove(id),
+    mutationFn: (id) => api.deleteArea(id),
     onSuccess: (_v, id) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      // Drop the dead cove's wave list from cache.
-      qc.removeQueries({ queryKey: queryKeys.wavesInCove(id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.areas() });
+      // Drop the dead area's wave list from cache.
+      qc.removeQueries({ queryKey: queryKeys.wavesInArea(id) });
     },
   });
 }
@@ -392,18 +392,18 @@ export function useCreateWaveMutation() {
   return useMutation<KernelWave, Error, NewWaveBody>({
     mutationFn: (body) => api.createWave(body),
     onSuccess: (wave) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(wave.area_id) });
     },
   });
 }
 
 /**
  * Update a wave. Optimistic for `title` (rename) and `sort` (drag-reorder
- * within the cove's wave list). Other patch fields (e.g. `archived_at`)
+ * within the area's wave list). Other patch fields (e.g. `archived_at`)
  * stay non-optimistic — archive flips trigger cascading UI moves that are
  * cleaner to drive from the server-confirmed state.
  *
- * Two caches can hold a copy of the wave: the list `['waves', cove_id]`
+ * Two caches can hold a copy of the wave: the list `['waves', area_id]`
  * and the detail `['wave', id]`. We update whichever ones are populated,
  * and snapshot both so onError can restore them.
  */
@@ -411,7 +411,7 @@ export function useUpdateWaveMutation() {
   const qc = useQueryClient();
   type Vars = { id: string; body: WavePatchBody };
   type Ctx = {
-    previousList: { key: ReturnType<typeof queryKeys.wavesInCove>; value: KernelWave[] } | null;
+    previousList: { key: ReturnType<typeof queryKeys.wavesInArea>; value: KernelWave[] } | null;
     previousDetail: KernelWaveDetail | null;
     detailKey: ReturnType<typeof queryKeys.waveDetail>;
   };
@@ -424,18 +424,18 @@ export function useUpdateWaveMutation() {
         body.title !== undefined || body.sort !== undefined;
       if (!isOptimisticField) return empty;
 
-      // Locate the wave's cove via cached detail first, then fall back to
+      // Locate the wave's area via cached detail first, then fall back to
       // scanning cached wave lists. If neither cache is warm there's
       // nothing to optimistically mutate; we still let the request run.
       const cachedDetail = qc.getQueryData<KernelWaveDetail>(detailKey);
-      let listKey: ReturnType<typeof queryKeys.wavesInCove> | null = null;
+      let listKey: ReturnType<typeof queryKeys.wavesInArea> | null = null;
       if (cachedDetail) {
-        listKey = queryKeys.wavesInCove(cachedDetail.wave.cove_id);
+        listKey = queryKeys.wavesInArea(cachedDetail.wave.area_id);
       } else {
         const all = qc.getQueriesData<KernelWave[]>({ queryKey: ['waves'] });
         for (const [k, v] of all) {
           if (v && v.some((w) => w.id === id)) {
-            listKey = k as ReturnType<typeof queryKeys.wavesInCove>;
+            listKey = k as ReturnType<typeof queryKeys.wavesInArea>;
             break;
           }
         }
@@ -485,12 +485,12 @@ export function useUpdateWaveMutation() {
       }
     },
     onSettled: (wave, _err, vars, context) => {
-      // Prefer the server-confirmed cove_id; fall back to whatever list
+      // Prefer the server-confirmed area_id; fall back to whatever list
       // we touched optimistically. Either way we want the detail key
       // invalidated.
-      const coveId = wave?.cove_id ?? context?.previousList?.value[0]?.cove_id;
-      if (coveId) {
-        void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(coveId) });
+      const areaId = wave?.area_id ?? context?.previousList?.value[0]?.area_id;
+      if (areaId) {
+        void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(areaId) });
       }
       void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(vars.id) });
     },
@@ -499,12 +499,12 @@ export function useUpdateWaveMutation() {
 
 export function useDeleteWaveMutation() {
   const qc = useQueryClient();
-  // We need the cove id to invalidate the cove's wave list, so callers
-  // pass `{ id, coveId }` — same shape the WS event would carry.
-  return useMutation<void, Error, { id: string; coveId: string }>({
+  // We need the area id to invalidate the area's wave list, so callers
+  // pass `{ id, areaId }` — same shape the WS event would carry.
+  return useMutation<void, Error, { id: string; areaId: string }>({
     mutationFn: ({ id }) => api.deleteWave(id),
-    onSuccess: (_v, { id, coveId }) => {
-      void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(coveId) });
+    onSuccess: (_v, { id, areaId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(areaId) });
       qc.removeQueries({ queryKey: queryKeys.waveDetail(id) });
     },
   });

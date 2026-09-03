@@ -21,4 +21,4 @@
 - 不连接 WebSocket、不访问 storage、不调定时器；真实 transport、cursor batching 与持久化属于端侧，cursor key 继续复用 `core/keys` 的 `SYNC_CURSOR_KEY`。
 - 不检测已打开 socket 中途发生的服务端日志重置（INV-APP-043）；协议没有就地信号，只在新连接的 `_replay_complete` 检测，避免制造不可验证的猜测。
 - 不 debounce 或抑制 card invalidation（INV-APP-027）；card 创建已原子化，补回窗口会重新暴露陈旧状态。
-- `replace-existing-cove` 只描述“替换已存在项”；执行 adapter 必须拒绝借此创建 phantom cove，后续 `app/events` contract test 锁 INV-APP-031。
+- `replace-existing-area` 只描述“替换已存在项”；执行 adapter 必须拒绝借此创建 phantom area，后续 `app/events` contract test 锁 INV-APP-031。

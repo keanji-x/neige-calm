@@ -55,8 +55,8 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     // Report write channel — carries lifecycle, hence spec-only (§3.2).
     "calm.report.write",
     "calm.report.edit",
-    // Cross-wave / cross-cove report discovery reads.
-    "calm.cove.outline",
+    // Cross-wave / cross-area report discovery reads.
+    "calm.area.outline",
     "calm.report.links.backlinks",
     // Wave state + verdict.
     "calm.wave.state",
@@ -373,7 +373,7 @@ async fn seed_wave_report_card(boot: &support::mcp::CardBoot) -> String {
         .expect("home wave exists");
     let write = calm_server::state::WriteContext::new(
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
     );
     let body = format!(
         "# Goal\n\nship it\n\n{}",

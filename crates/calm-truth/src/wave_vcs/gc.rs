@@ -203,7 +203,7 @@ pub async fn prune_all_waves_once(pool: &SqlitePool, keep: usize) -> Result<u64>
 }
 
 /// Spawn the unreferenced-object sweeper. Content-addressed objects are not
-/// deleted by `wave_delete_tx` / `cove_delete_tx` because blobs can be shared
+/// deleted by `wave_delete_tx` / `area_delete_tx` because blobs can be shared
 /// across waves; this hourly fallback reclaims rows no live commit references.
 pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
     tokio::spawn(async move {

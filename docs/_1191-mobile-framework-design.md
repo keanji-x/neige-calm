@@ -20,12 +20,12 @@
 
 ⇒ 手机卡片详情 v1 **保持组件 state**，显式豁免。
 
-### 0.2 r1：「`/pages`、`/coves` 变成真路由」——错
+### 0.2 r1：「`/pages`、`/areas` 变成真路由」——错
 
 它们是有完整 a11y 契约的模态层（`shell/public.tsx:222-228` 的 `role="dialog"`/`aria-modal`，
 `:127-151` 的 focus trap + Escape + Tab 环绕，`:296` 的 `inert`，且 `responsive.contract.test.tsx:41-56` 正在断言）。
-路由化会额外产生：a11y 契约整套消失、`/cove/$coveId` 与手机二级列表不等价
-（`features/cove/page/public.tsx:76-166` 有文档空态/会话/重命名且无 compact 分支）、
+路由化会额外产生：a11y 契约整套消失、`/area/$areaId` 与手机二级列表不等价
+（`features/area/page/public.tsx:76-166` 有文档空态/会话/重命名且无 compact 分支）、
 桌面凭空多两个产品面、以及 `<div key={currentPath}>`（`shell/public.tsx:302`）导致
 `/wave/x → /pages → 回来` 整树重挂载丢滚动位置——**真实体验回退**。
 
@@ -41,9 +41,9 @@
 
 ### 0.4 r2：secondary 三元公式——逻辑错误
 
-r2 写成 `onWaveRoute ? (section === null) : (section === 'coves' && ...)`。
-从 `/wave/x` 点开 Coves 再选 cove 时 pathname 仍是 wave，第一分支返回 false 并**整个跳过 cove 分支**
-⇒ Coves 二级页会露出 dock。现行为本就是两个条件 OR（`shell/public.tsx:109-115`）。见 §2.1。
+r2 写成 `onWaveRoute ? (section === null) : (section === 'areas' && ...)`。
+从 `/wave/x` 点开 Areas 再选 area 时 pathname 仍是 wave，第一分支返回 false 并**整个跳过 area 分支**
+⇒ Areas 二级页会露出 dock。现行为本就是两个条件 OR（`shell/public.tsx:109-115`）。见 §2.1。
 
 ### 0.5 实现阶段：双路评审结论相反，靠**执行**裁决
 
@@ -53,7 +53,7 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'coves' && ...)`。
 1. **非法 card 回弹会吞掉 `panel`**（违反 §1.4）。
    `waveSearchFromLocation()` 在**解析原始 location 时**就执行 card/panel 互斥，
    把 `{card:bad, panel:tasks}` 归一成只剩 card；随后 patch `{card: undefined}` 时 panel 已无从恢复。
-   实测 `sameWaveSearch({searchStr:'?card=bad&panel=tasks&from=cove'},'w1',{card:undefined})` 返回 `{from:'cove'}`。
+   实测 `sameWaveSearch({searchStr:'?card=bad&panel=tasks&from=area'},'w1',{card:undefined})` 返回 `{from:'area'}`。
    **互斥必须在重建输出时执行，不能在解析阶段。**
    原有测试只覆盖「重复 card 被拒后保留 panel」与「设置 card 时清 panel」，恰好绕开这个交叉点。
 
@@ -95,11 +95,11 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'coves' && ...)`。
 
 | 层级 | 承载 | 状态 |
 |---|---|---|
-| Today / Cove / Wave / Settings | 既有路由 | 不动 |
+| Today / Area / Wave / Settings | 既有路由 | 不动 |
 | Report 二级面板 | `?panel=outline\|cards\|tasks\|conversations` | **新** |
-| Report 返回来源 | `?from=pages\|cove` | **新** |
+| Report 返回来源 | `?from=pages\|area` | **新** |
 | 块锚点 `#$blockId`、桌面 card overlay `?card=` | 既有 | 不动 |
-| 手机卡片详情 / Pages·Coves 覆盖层 / Pages 的 Pinned·Recent 分组 | 组件 state | **显式豁免** |
+| 手机卡片详情 / Pages·Areas 覆盖层 / Pages 的 Pinned·Recent 分组 | 组件 state | **显式豁免** |
 
 三项豁免**都要在代码注释里写明理由**，否则下一个人会以为是漏了。
 
@@ -124,13 +124,13 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'coves' && ...)`。
 ### 1.2 `?from=` 语义
 
 缺省（无 `from=`）回落 **`pages`**，即当前默认值（`shell/public.tsx:112`），避免行为回归。
-`from=cove` 返回时恢复到哪个 cove 由 `coveIdOf(waveId)` 从 workspace 派生（`shell/public.tsx:169-170` 已有映射）
-⇒ **`mobileCoveRestoreId` 直接删除，派生优于存储**。
+`from=area` 返回时恢复到哪个 area 由 `areaIdOf(waveId)` 从 workspace 派生（`shell/public.tsx:169-170` 已有映射）
+⇒ **`mobileAreaRestoreId` 直接删除，派生优于存储**。
 
 ### 1.3 两个出口，职责分开
 
 r2 只给了「保留」的出口，没有任何出口能**写入** `from`——而 `from` 的唯一写入点是跨 wave 导航
-（`shell/public.tsx:242` MobilePages、`:254` MobileCoves）。必须两件事分开：
+（`shell/public.tsx:242` MobilePages、`:254` MobileAreas）。必须两件事分开：
 
 1. **`NavTarget` 的 wave 分支增加 `panel?` / `from?`**，`useGo` 的 search 构造扩成三字段**显式构造**。
    纪律不变：未传即清空，防止参数跨 wave 泄漏（`navigation.ts:45-49` 的既有理由）。
@@ -158,7 +158,7 @@ r2 只给了「保留」的出口，没有任何出口能**写入** `from`——
 | `shell/public.tsx:214` 新建 wave 后跳转 | 清空 | 清空 | 清空 |
 
 `:1488` 与 `:1491` 现在是**两个分支同一句 `go()`**，改造时必须拆开。
-新增出口（4 个 `openPanel`、各 Back、Escape、shell 的 Pages/Coves 清 panel）同样逐个决策。
+新增出口（4 个 `openPanel`、各 Back、Escape、shell 的 Pages/Areas 清 panel）同样逐个决策。
 
 ### 1.5 解析器
 
@@ -175,7 +175,7 @@ r2 只给了「保留」的出口，没有任何出口能**写入** `from`——
 |---|---|---|
 | `mobile-page-root` 发布 | `shell/public.tsx:326,349` | shell 直接 `setMobileSection(...)` + `useGoSameWave({panel: undefined}, {replace:true})` |
 | `mobile-page-root` 订阅 | `wave/page/public.tsx:149-153` | 面板由 props 驱动，订阅消失 |
-| `mobile-secondary` 发布 | `ui/mobile-page:4-6`、`mobile-coves.tsx:25-26`、`wave/page/public.tsx:155-158` | shell 派生（见下） |
+| `mobile-secondary` 发布 | `ui/mobile-page:4-6`、`mobile-areas.tsx:25-26`、`wave/page/public.tsx:155-158` | shell 派生（见下） |
 | `mobile-secondary` 订阅 | `shell/public.tsx:153` | 同上 |
 
 **正确公式（两个条件 OR，不是三元）**：
@@ -183,39 +183,39 @@ r2 只给了「保留」的出口，没有任何出口能**写入** `from`——
 ```ts
 const secondary =
      (onWaveRoute(currentPath) && mobileSection === null)
-  || (mobileSection === 'coves' && selectedCoveId !== null);
+  || (mobileSection === 'areas' && selectedAreaId !== null);
 ```
 
 同时删掉 `shell/public.tsx:115` 的 `currentPath.includes('/wave/')`，改用 `routeParamFromPath`。
 
-### 2.2 `selectedCoveId` 上提到 shell：必须连同转移语义一起搬
+### 2.2 `selectedAreaId` 上提到 shell：必须连同转移语义一起搬
 
-`mobile-coves.tsx:21` 还有一个 `motion` state，`:30-33`/`:60-62` 与 `selectedCoveId` 的每次转移严格耦合。
+`mobile-areas.tsx:21` 还有一个 `motion` state，`:30-33`/`:60-62` 与 `selectedAreaId` 的每次转移严格耦合。
 **只上提 id 会把一次转移拆给两个所有者**，正是本设计要消灭的形状 ⇒ `motion` 改为由 id 变化派生，或一并上提。
 
 上提后**丢失了「组件卸载即重置」语义**。
-只有 `from=cove` 返回时才由 wave 自己的 `coveId` 设置。
-`mobile-coves.tsx:25-26` 的卸载清理可安全删除——新公式已把 `mobileSection === 'coves'` 作为合取项。
+只有 `from=area` 返回时才由 wave 自己的 `areaId` 设置。
+`mobile-areas.tsx:25-26` 的卸载清理可安全删除——新公式已把 `mobileSection === 'areas'` 作为合取项。
 
 > **实现更正（本节原文写错，勿照旧文档回退）**
 >
-> 原文要求「在六个出口显式清空 `selectedCoveId`」**并且**「dock 点 Coves 回到根列表」。
+> 原文要求「在六个出口显式清空 `selectedAreaId`」**并且**「dock 点 Areas 回到根列表」。
 > 两者叠加使后者**不可达**：出口都清空后，没有任何可达状态能让 dock 在 selection 尚存时被按下，
 > 于是守卫它的测试只能用 `fireEvent` 去点一个 `inert` 的 dock——**一条空断言**。
 >
 > 落地实现改为 **只在进入时重置**（`openMobileSection`，commit `93605565`），
 > 出口只 `setMobileSection(null)`、不清 selection。可证成立：`setMobileSection(非 null)` 的唯一写点就是
-> `openMobileSection`，且渲染与 secondary 公式都合取了 `mobileSection === 'coves'`，故残留 selection 不可观察。
+> `openMobileSection`，且渲染与 secondary 公式都合取了 `mobileSection === 'areas'`，故残留 selection 不可观察。
 > 这样那条产品规则重新变成**可达且可用 `userEvent` 验证**的。
 >
 > 教训与 §0.4 同类：**一条「此后 X 不得发生」的断言，必须能指出哪个可达状态会违反它。**
 >
-> 另：§1.2 的 `coveIdOf(waveId)` 也不必要——`WaveRouteBody` 手上就有 `wave.coveId`，
+> 另：§1.2 的 `areaIdOf(waveId)` 也不必要——`WaveRouteBody` 手上就有 `wave.areaId`，
 > 同一事实且不会在 workspace 加载中途查空。实现用了后者。
 
 ### 2.3 死掉的 state、context、死分支
 
-删：`mobileReportSource`、`mobileCoveRestoreId`、`mobileSecondaryOpen`、`MobileReportNavigationContext`。
+删：`mobileReportSource`、`mobileAreaRestoreId`、`mobileSecondaryOpen`、`MobileReportNavigationContext`。
 留：`mobileSection`、`mobileCardId`、`mobileCardMotion`（§0.1 豁免）。
 `wave/page/public.tsx` 的四个 setter 连写出现 9 次（`:167-202` 4 次、`:361-468` 5 次）收敛成 `openPanel(kind)` / `closePanel()`。
 删死分支 `shell/public.tsx:256,258`（`<Sidebar>` 只在 `narrowRail === false` 时渲染，两处恒真/永不执行）。
@@ -241,12 +241,12 @@ allowlist 按文件只有一项，理由本就是仍保留的 New-wave context�
 
 ## 3. 收敛与正确性
 
-### 3.1 `userVisibleWaves(waves, coves)` 下沉 core —— 动机更正
+### 3.1 `userVisibleWaves(waves, areas)` 下沉 core —— 动机更正
 
-**不是现网泄漏**：`coveListQueryOptions` 已在查询层 `visibleCoves`（`providers/queries.ts:220`），
-`useWorkspace` 只对这些 cove fan-out（`:414`）。真实问题是**组件边界的第二层防御 sidebar 有、Pages 没有**
-（`sidebar.tsx:106-108` vs `mobile-pages.tsx:23-24`），与 `cove.ts:55-63` 声明的意图不一致。
-收敛成 core 纯函数两处共用。测试构造 system cove + 其下 wave，断言不出现。
+**不是现网泄漏**：`areaListQueryOptions` 已在查询层 `visibleAreas`（`providers/queries.ts:220`），
+`useWorkspace` 只对这些 area fan-out（`:414`）。真实问题是**组件边界的第二层防御 sidebar 有、Pages 没有**
+（`sidebar.tsx:106-108` vs `mobile-pages.tsx:23-24`），与 `area.ts:55-63` 声明的意图不一致。
+收敛成 core 纯函数两处共用。测试构造 system area + 其下 wave，断言不出现。
 
 ### 3.2 `ui/viewport/public.ts` —— 唯一的 `useCompactViewport` + 收窄的门禁
 
@@ -271,7 +271,7 @@ duplication-manifest 登记**是空门禁**：`exportedNames()` 只识别导出�
 
 `Object.freeze` 必须**深冻**：数组内每个对象也要冻，否则 `no-module-runtime-state.mjs:91-112,185-210` 报错。
 
-`aria-controls` / `aria-expanded` **保留且正确**——Pages/Coves 确实控制着 `#mobile-workspace-navigation`，
+`aria-controls` / `aria-expanded` **保留且正确**——Pages/Areas 确实控制着 `#mobile-workspace-navigation`，
 Today/Me 是路由跳转本就不该有。用可选字段 `opensSection` 驱动这个差异。
 （r1 把「Today/Me 漏了 aria-controls」当缺陷要补齐，方向是反的，此处更正。）
 
@@ -320,7 +320,7 @@ v1 只做真 bug 修复：消费处一律 `var(--mobile-dock-h, 0px)` 兜底。
 2. `panel A → panel B` 的 `replace` 改 `push` → history 断言红。
 3. 关面板的 `back()` 分支改成无条件 `replace` → **重复条目断言红**（守卫 §0.3 的修复）。
 4. `useGoSameWave` 去掉同 wave 判据 → 跨 wave 参数泄漏测试红。
-5. `userVisibleWaves` 退化成 `visibleWaves` → system cove 测试红。
+5. `userVisibleWaves` 退化成 `visibleWaves` → system area 测试红。
 6. 删 `shell/public.tsx:296` 的**模态** `inert`（不是 dock 的 `:314`）→ contract 测试红。
 7. 去掉 `var(--mobile-dock-h, 0px)` 的 `, 0px` → drawer 几何断言红。
 
@@ -332,7 +332,7 @@ v1 只做真 bug 修复：消费处一律 `var(--mobile-dock-h, 0px)` 兜底。
 
 **v1 不做**：B2 Today 内容恢复（但**必须删掉** `today/mobile.browser.test.tsx:24-27` 的
 **4 条**反向断言：Waiting on you / Running / Recent / Terminal——把功能缺失固化成通过条件，是地雷）；
-S5 WavePage 双实现收敛（§0.1 证明 card 详情绕不过它）；`/pages`·`/coves` 真路由化（§0.2，前置条件是 CovePage 的 compact presentation）；
+S5 WavePage 双实现收敛（§0.1 证明 card 详情绕不过它）；`/pages`·`/areas` 真路由化（§0.2，前置条件是 AreaPage 的 compact presentation）；
 S6 响应式范式、S8 allowlist 粒度（§2.3 已说明无关）、S9 `.page > :first-child` seam、N1 `!important`、N2 `--touch-target`、N5 optimizeDeps。
 
 **预估规模**：~700–900 行。

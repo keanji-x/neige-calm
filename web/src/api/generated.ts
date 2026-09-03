@@ -4,6 +4,233 @@
  */
 
 export interface paths {
+    "/api/areas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_areas"];
+        put?: never;
+        post: operations["create_area"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["resolve_path"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue #175 — idempotent upsert for the singleton system area that
+         *     hosts the default Today terminal's wave + card. Returns 200 with the
+         *     existing row when one is present; otherwise mints a new row and
+         *     returns 201. The DB-level partial unique index on
+         *     `areas(kind) WHERE kind = 'system'` enforces the at-most-one
+         *     invariant as a backstop, so two tabs racing this endpoint can both
+         *     safely call it: the loser of the write race catches the unique
+         *     violation, re-reads the row the winner committed, and returns 200
+         *     to its own caller. From the frontend's perspective both racers see a
+         *     success and a populated `Area` body — the only observable difference
+         *     is the status code (201 vs 200), and `useTodayTerminal` treats both
+         *     as success.
+         * @description The endpoint exists so the frontend's `useTodayTerminal` hook can
+         *     bootstrap a default terminal without exposing the underlying system
+         *     area to the regular `POST /api/areas` surface (which the sidebar
+         *     "+ New area" affordance consumes and which would otherwise need a
+         *     reserved-name policy).
+         */
+        post: operations["get_or_create_system_area"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{area_id}/chat-wave/ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensure the area's single chat wave exists.
+         * @description The workspace is selected only while creating the wave. When the area has
+         *     folder claims it is the claimed path with the fewest path components,
+         *     breaking ties lexicographically (attached semantics: the user pointed at
+         *     that directory). Area folder claims cannot be equal, ancestors, or
+         *     descendants of one another, so "closest to the area root" is defined here as
+         *     this deterministic shallow path ordering rather than containment.
+         *
+         *     #1147 D10 — an area with **no** claim gets a managed default instead of the
+         *     409 this used to return. Since #1109 made areas pure namespaces, "no claim"
+         *     is the normal state of a new area, so that 409 made
+         *     `POST /api/areas/{id}/conversations` fail by definition for every new area.
+         *
+         *     Once created, later folder claims or changes deliberately do not update the
+         *     wave's workspace, so an existing conversation cannot drift between working
+         *     directories from one message to the next.
+         */
+        post: operations["ensure_area_chat_wave"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{area_id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_area_conversations"];
+        put?: never;
+        /**
+         * Mint a conversation and deliver its first message.
+         * @description # What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)
+         *
+         *     A standard idempotency key promises "same key ⇒ same recorded result,
+         *     forever". This endpoint deliberately promises something weaker and more
+         *     useful: **same key = the same retryable draft**. Slice 4 binds the key to
+         *     the draft the user keeps pressing send on, so replaying a failure forever
+         *     would turn one bad attempt into a permanently dead compose box.
+         *
+         *     The full contract, all four arms:
+         *
+         *     | same key, previous attempt … | answer |
+         *     |---|---|
+         *     | succeeded | replays the same conversation, **does not re-send** the first message (201) |
+         *     | terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |
+         *     | `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |
+         *     | failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |
+         *
+         *     # Same key, different `text`
+         *
+         *     The first message's SHA-256 travels in the operation payload
+         *     (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part
+         *     of `stable_payload_hash` and therefore part of what
+         *     `OperationRuntime::submit` compares before it does anything else. Reusing a
+         *     key with a different body is consequently a real 409 `conflict` — no card,
+         *     no message — rather than a silent 201 replaying whatever the key sent the
+         *     first time. Only the hash travels: the payload is persisted in
+         *     `operations.payload_json`, and the body has no business being copied there.
+         *
+         *     The one arm where a changed body is not rejected for the old hash is the
+         *     `Failed` row above: the retry submits under a fresh `#N` operation key,
+         *     which no prior payload hash is bound to. That is the intended behaviour, not
+         *     an oversight — arm (b) exists so an edited draft can be resent after a
+         *     failure. What it buys is a genuine re-execution, not a guaranteed 201: the
+         *     retry's final status is decided by that execution and can still be a failure
+         *     (a 409 `conflict` if the derived card already exists, say).
+         *
+         *     A concurrent laggard can also observe the 500 arm: if the predecessor it
+         *     shares an operation with ended terminally failed, the replayed failure is
+         *     what it gets while the leader's fresh attempt succeeds.
+         *
+         *     None of this can produce a second conversation: the **card id** is a pure
+         *     function of `(area_id, Idempotency-Key)` and the `#N` suffix touches only
+         *     the *operation* key (see `conversation_keys::derive_area_conversation_keys` and its golden test).
+         */
+        post: operations["create_area_conversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{area_id}/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_folders"];
+        put?: never;
+        post: operations["create_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{area_id}/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_folder"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{area_id}/waves": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_waves_by_area"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/areas/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_area"];
+        options?: never;
+        head?: never;
+        patch: operations["update_area"];
+        trace?: never;
+    };
     "/api/cards/{card_id}/terminal": {
         parameters: {
             query?: never;
@@ -187,233 +414,6 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
-        trace?: never;
-    };
-    "/api/coves": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_coves"];
-        put?: never;
-        post: operations["create_cove"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["resolve_path"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/system": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Issue #175 — idempotent upsert for the singleton system cove that
-         *     hosts the default Today terminal's wave + card. Returns 200 with the
-         *     existing row when one is present; otherwise mints a new row and
-         *     returns 201. The DB-level partial unique index on
-         *     `coves(kind) WHERE kind = 'system'` enforces the at-most-one
-         *     invariant as a backstop, so two tabs racing this endpoint can both
-         *     safely call it: the loser of the write race catches the unique
-         *     violation, re-reads the row the winner committed, and returns 200
-         *     to its own caller. From the frontend's perspective both racers see a
-         *     success and a populated `Cove` body — the only observable difference
-         *     is the status code (201 vs 200), and `useTodayTerminal` treats both
-         *     as success.
-         * @description The endpoint exists so the frontend's `useTodayTerminal` hook can
-         *     bootstrap a default terminal without exposing the underlying system
-         *     cove to the regular `POST /api/coves` surface (which the sidebar
-         *     "+ New cove" affordance consumes and which would otherwise need a
-         *     reserved-name policy).
-         */
-        post: operations["get_or_create_system_cove"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{cove_id}/chat-wave/ensure": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Ensure the cove's single chat wave exists.
-         * @description The workspace is selected only while creating the wave. When the cove has
-         *     folder claims it is the claimed path with the fewest path components,
-         *     breaking ties lexicographically (attached semantics: the user pointed at
-         *     that directory). Cove folder claims cannot be equal, ancestors, or
-         *     descendants of one another, so "closest to the cove root" is defined here as
-         *     this deterministic shallow path ordering rather than containment.
-         *
-         *     #1147 D10 — a cove with **no** claim gets a managed default instead of the
-         *     409 this used to return. Since #1109 made coves pure namespaces, "no claim"
-         *     is the normal state of a new cove, so that 409 made
-         *     `POST /api/coves/{id}/conversations` fail by definition for every new cove.
-         *
-         *     Once created, later folder claims or changes deliberately do not update the
-         *     wave's workspace, so an existing conversation cannot drift between working
-         *     directories from one message to the next.
-         */
-        post: operations["ensure_cove_chat_wave"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{cove_id}/conversations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_cove_conversations"];
-        put?: never;
-        /**
-         * Mint a conversation and deliver its first message.
-         * @description # What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)
-         *
-         *     A standard idempotency key promises "same key ⇒ same recorded result,
-         *     forever". This endpoint deliberately promises something weaker and more
-         *     useful: **same key = the same retryable draft**. Slice 4 binds the key to
-         *     the draft the user keeps pressing send on, so replaying a failure forever
-         *     would turn one bad attempt into a permanently dead compose box.
-         *
-         *     The full contract, all four arms:
-         *
-         *     | same key, previous attempt … | answer |
-         *     |---|---|
-         *     | succeeded | replays the same conversation, **does not re-send** the first message (201) |
-         *     | terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |
-         *     | `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |
-         *     | failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |
-         *
-         *     # Same key, different `text`
-         *
-         *     The first message's SHA-256 travels in the operation payload
-         *     (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part
-         *     of `stable_payload_hash` and therefore part of what
-         *     `OperationRuntime::submit` compares before it does anything else. Reusing a
-         *     key with a different body is consequently a real 409 `conflict` — no card,
-         *     no message — rather than a silent 201 replaying whatever the key sent the
-         *     first time. Only the hash travels: the payload is persisted in
-         *     `operations.payload_json`, and the body has no business being copied there.
-         *
-         *     The one arm where a changed body is not rejected for the old hash is the
-         *     `Failed` row above: the retry submits under a fresh `#N` operation key,
-         *     which no prior payload hash is bound to. That is the intended behaviour, not
-         *     an oversight — arm (b) exists so an edited draft can be resent after a
-         *     failure. What it buys is a genuine re-execution, not a guaranteed 201: the
-         *     retry's final status is decided by that execution and can still be a failure
-         *     (a 409 `conflict` if the derived card already exists, say).
-         *
-         *     A concurrent laggard can also observe the 500 arm: if the predecessor it
-         *     shares an operation with ended terminally failed, the replayed failure is
-         *     what it gets while the leader's fresh attempt succeeds.
-         *
-         *     None of this can produce a second conversation: the **card id** is a pure
-         *     function of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only
-         *     the *operation* key (see `conversation_keys::derive_cove_conversation_keys` and its golden test).
-         */
-        post: operations["create_cove_conversation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{cove_id}/folders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_folders"];
-        put?: never;
-        post: operations["create_folder"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{cove_id}/folders/{folder_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["delete_folder"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{cove_id}/waves": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_waves_by_cove"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/coves/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["delete_cove"];
-        options?: never;
-        head?: never;
-        patch: operations["update_cove"];
         trace?: never;
     };
     "/api/fs/gitdiff": {
@@ -1024,9 +1024,9 @@ export interface paths {
         };
         /**
          * Issue #250 PR 2 — calendar / dashboard window query.
-         * @description `GET /api/waves?since=<ms>&until=<ms>&cove_id=<id>` — every
+         * @description `GET /api/waves?since=<ms>&until=<ms>&area_id=<id>` — every
          *     parameter is optional. Returns the full wave row (so the frontend
-         *     can render lifecycle / cove / terminal-at without an N+1 detail
+         *     can render lifecycle / area / terminal-at without an N+1 detail
          *     fetch). Pre-#250 callers that hit `GET /api/waves` would 405 on
          *     the old `POST`-only route; this is an additive contract.
          */
@@ -1254,7 +1254,7 @@ export interface paths {
         /**
          * Mint a wave assistant conversation and deliver its first message.
          * @description The `Idempotency-Key` contract, the first-message claim and both of its
-         *     known gaps are identical to `create_cove_conversation`, whose doc comment is
+         *     known gaps are identical to `create_area_conversation`, whose doc comment is
          *     the long-form statement of all of them; this handler differs only in the
          *     profile it mints under and the namespace its ids come from. The gaps are
          *     restated in brief where they bite:
@@ -1300,6 +1300,89 @@ export interface components {
     schemas: {
         /** @enum {string} */
         AgentProvider: "codex" | "claude";
+        Area: {
+            color: string;
+            /** Format: int64 */
+            created_at: number;
+            id: string;
+            kind?: components["schemas"]["AreaKind"];
+            name: string;
+            /** Format: double */
+            sort: number;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        /**
+         * @description One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
+         *
+         *     Deliberately absent:
+         *     * `waveTitle` — every row belongs to the same hidden area chat wave, so
+         *       returning its title would leak an object the user is never shown.
+         *     * `turns` — the server cannot produce a turn count that agrees with the
+         *       drawer without re-parsing every `harness_items.params` blob; a number
+         *       that silently disagrees is worse than no number.
+         */
+        AreaConversationSummary: {
+            /** @description The chat card's id. This is the conversation's identity everywhere. */
+            id: string;
+            /**
+             * @description Always `"shared-chat"`, derived from the card's persisted marker rather
+             *     than from the session kind (the session is an ordinary codex-card
+             *     session and says nothing about the conversation being an area chat).
+             */
+            kind: string;
+            state?: null | components["schemas"]["WorkerSessionState"];
+            /**
+             * @description The conversation's own name, or null before it has one. Never the
+             *     wave's title.
+             */
+            title?: string | null;
+            /**
+             * Format: int64
+             * @description The session's last update, falling back to the card's own — a card
+             *     minted seconds ago with no session yet still sorts sensibly.
+             */
+            updatedAt: number;
+            waveId: string;
+        };
+        /**
+         * @description One row per claimed directory; `path` is absolute and globally
+         *     unique across the table. A folder transparently covers every
+         *     descendant path — the kernel resolves a `cwd` to its owning area by
+         *     finding the claim that covers it (see `GET /api/areas/resolve`).
+         *     The create endpoint rejects ancestor/descendant overlap with a 409,
+         *     so at most one claim can cover any given path.
+         */
+        AreaFolder: {
+            area_id: string;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            id: number;
+            path: string;
+        };
+        /**
+         * @description Whether an area is user-visible or kernel-owned storage scaffolding.
+         * @enum {string}
+         */
+        AreaKind: "user" | "system";
+        AreaPatch: {
+            color?: string | null;
+            name?: string | null;
+            /** Format: double */
+            sort?: number | null;
+        };
+        /**
+         * @description Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The
+         *     resolve endpoint returns `null` (not 404) on miss; this struct is
+         *     the `Some(_)` payload.
+         */
+        AreaResolve: {
+            area_id: string;
+            /** Format: int64 */
+            folder_id: number;
+            folder_path: string;
+        };
         BacklinkQuote: {
             after: string;
             before: string;
@@ -1413,89 +1496,6 @@ export interface components {
             thread_id?: string | null;
             thread_status?: string | null;
         };
-        Cove: {
-            color: string;
-            /** Format: int64 */
-            created_at: number;
-            id: string;
-            kind?: components["schemas"]["CoveKind"];
-            name: string;
-            /** Format: double */
-            sort: number;
-            /** Format: int64 */
-            updated_at: number;
-        };
-        /**
-         * @description One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
-         *
-         *     Deliberately absent:
-         *     * `waveTitle` — every row belongs to the same hidden cove chat wave, so
-         *       returning its title would leak an object the user is never shown.
-         *     * `turns` — the server cannot produce a turn count that agrees with the
-         *       drawer without re-parsing every `harness_items.params` blob; a number
-         *       that silently disagrees is worse than no number.
-         */
-        CoveConversationSummary: {
-            /** @description The chat card's id. This is the conversation's identity everywhere. */
-            id: string;
-            /**
-             * @description Always `"shared-chat"`, derived from the card's persisted marker rather
-             *     than from the session kind (the session is an ordinary codex-card
-             *     session and says nothing about the conversation being a cove chat).
-             */
-            kind: string;
-            state?: null | components["schemas"]["WorkerSessionState"];
-            /**
-             * @description The conversation's own name, or null before it has one. Never the
-             *     wave's title.
-             */
-            title?: string | null;
-            /**
-             * Format: int64
-             * @description The session's last update, falling back to the card's own — a card
-             *     minted seconds ago with no session yet still sorts sensibly.
-             */
-            updatedAt: number;
-            waveId: string;
-        };
-        /**
-         * @description One row per claimed directory; `path` is absolute and globally
-         *     unique across the table. A folder transparently covers every
-         *     descendant path — the kernel resolves a `cwd` to its owning cove by
-         *     finding the claim that covers it (see `GET /api/coves/resolve`).
-         *     The create endpoint rejects ancestor/descendant overlap with a 409,
-         *     so at most one claim can cover any given path.
-         */
-        CoveFolder: {
-            cove_id: string;
-            /** Format: int64 */
-            created_at: number;
-            /** Format: int64 */
-            id: number;
-            path: string;
-        };
-        /**
-         * @description Whether a cove is user-visible or kernel-owned storage scaffolding.
-         * @enum {string}
-         */
-        CoveKind: "user" | "system";
-        CovePatch: {
-            color?: string | null;
-            name?: string | null;
-            /** Format: double */
-            sort?: number | null;
-        };
-        /**
-         * @description Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
-         *     resolve endpoint returns `null` (not 404) on miss; this struct is
-         *     the `Some(_)` payload.
-         */
-        CoveResolve: {
-            cove_id: string;
-            /** Format: int64 */
-            folder_id: number;
-            folder_path: string;
-        };
         /**
          * @description Body payload accepted by `POST /api/waves/:wave_id/cards`.
          *
@@ -1532,16 +1532,16 @@ export interface components {
             position?: number | null;
         };
         CreateWaveRequest: {
+            area_id: string;
             /**
              * @description When true, upsert the kernel view/template overlay in the same create
              *     transaction as the layout overlay and do not start the spec harness.
              */
             as_template?: boolean;
             attach_folder?: boolean;
-            cove_id: string;
             /**
              * @description Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
-             *     process cwd) on the wave row and skip `cove_folders`. Present values
+             *     process cwd) on the wave row and skip `area_folders`. Present values
              *     (including the empty string) keep the pre-#1131 absolute-path + claim
              *     rules. The SQLite column stays NOT NULL; only the request field is
              *     optional.
@@ -1622,15 +1622,15 @@ export interface components {
          *     than the generic `{error, code}` envelope.
          */
         FolderConflict: {
+            area_id: string;
             conflict_kind: components["schemas"]["FolderConflictKind"];
             conflict_path: string;
-            cove_id: string;
             /** Format: int64 */
             folder_id: number;
         };
         /**
          * @description Issue #250 PR 1 — kind of overlap detected by the
-         *     `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+         *     `POST /api/areas/:area_id/folders` conflict check. Surfaces in the
          *     409 response body so the frontend can render a precise message
          *     without re-parsing strings.
          * @enum {string}
@@ -1747,6 +1747,32 @@ export interface components {
             ifDocRev: number;
             toIndex: number;
         };
+        NewArea: {
+            color: string;
+            name: string;
+            /**
+             * Format: double
+             * @description If absent, server appends to end.
+             */
+            sort?: number | null;
+        };
+        /** @description Body of `POST /api/areas/{area_id}/conversations`: the first message. */
+        NewAreaConversationBody: {
+            /**
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             *     (non-blank after trim, at most 32768 chars) and validated *before*
+             *     anything is minted, so a rejected message leaves no card behind.
+             */
+            text: string;
+        };
+        NewAreaFolder: {
+            /**
+             * @description Absolute filesystem path. Must start with `/`. The server trims
+             *     a trailing slash before insert (root `/` excepted) so equality
+             *     and prefix matching stay canonical.
+             */
+            path: string;
+        };
         NewCard: {
             kind: string;
             payload?: Record<string, never>;
@@ -1846,32 +1872,6 @@ export interface components {
             theme: components["schemas"]["RequestTheme"];
             title?: string | null;
         };
-        NewCove: {
-            color: string;
-            name: string;
-            /**
-             * Format: double
-             * @description If absent, server appends to end.
-             */
-            sort?: number | null;
-        };
-        /** @description Body of `POST /api/coves/{cove_id}/conversations`: the first message. */
-        NewCoveConversationBody: {
-            /**
-             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
-             *     (non-blank after trim, at most 32768 chars) and validated *before*
-             *     anything is minted, so a rejected message leaves no card behind.
-             */
-            text: string;
-        };
-        NewCoveFolder: {
-            /**
-             * @description Absolute filesystem path. Must start with `/`. The server trims
-             *     a trailing slash before insert (root `/` excepted) so equality
-             *     and prefix matching stay canonical.
-             */
-            path: string;
-        };
         NewOverlay: {
             entity_id: string;
             entity_kind: string;
@@ -1910,27 +1910,27 @@ export interface components {
             title?: string | null;
         };
         NewWave: {
+            area_id: string;
             /**
              * @description Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
-             *     `cove_id` as a new folder, in the same transaction as the
+             *     `area_id` as a new folder, in the same transaction as the
              *     wave-create write". Default `false`: the cwd must already be
-             *     covered by some existing folder under the same cove. Both the
+             *     covered by some existing folder under the same area. Both the
              *     covering scan and the claim insert run inside that one
              *     transaction (issue #275), through the same
-             *     [`crate::cove_folder_claim::find_owner`] rule
-             *     `GET /api/coves/resolve` uses. `true` adds a `cove_folder` row
+             *     [`crate::area_folder_claim::find_owner`] rule
+             *     `GET /api/areas/resolve` uses. `true` adds a `area_folder` row
              *     first and then the wave; folder-conflict rules
              *     (equal/ancestor/descendant of any existing claim) still apply and
              *     roll the whole tx back on conflict.
              */
             attach_folder?: boolean;
-            cove_id: string;
             /**
              * @description Issue #250 PR 2 — absolute filesystem path the spec daemon will
              *     spawn under. Required (no `Option`): every wave-creating path
              *     must declare a cwd or the spec daemon has no defensible
              *     working directory. The `POST /api/waves` route enforces
-             *     absolute-path shape and the cove-folder claim check; the
+             *     absolute-path shape and the area-folder claim check; the
              *     inner `wave_create_tx` writes whatever the route lands here
              *     verbatim.
              */
@@ -2081,8 +2081,9 @@ export interface components {
             last_error?: string | null;
             manifest: Record<string, never>;
             /**
-             * @description Same wire-name set as [`PluginListItem::state`], including the
-             *     connector-only `unavailable` — see that field's doc.
+             * @description Same wire-name set as [`PluginListItem::state`], including
+             *     `unavailable` — which is reachable for both connectors and `app`
+             *     plugins; see that field's doc for what the state asserts.
              */
             state: string;
             /** Format: int64 */
@@ -2127,12 +2128,26 @@ export interface components {
              *     `running | spawning | crashed | unavailable | disabled | installing |
              *     installed`.
              *
-             *     `unavailable` is the NORMAL terminal state of a connector
-             *     (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
-             *     upstream, rejected `secrets.json`, boot budget exhausted. It is not an
-             *     error state of the kernel, and unlike `crashed` there is no supervisor
-             *     that will retry it: it stands until an operator re-enables. `last_error`
-             *     carries the reason.
+             *     `unavailable` is a NORMAL terminal state, and what it states is
+             *     narrower than "something failed": **no process was started, nothing is
+             *     watching, and so nothing will retry.** Unlike `crashed` there is no
+             *     supervisor and no backoff behind it — it stands until an operator
+             *     intervenes, and `last_error` is their only diagnostic. It is not an
+             *     error state of the kernel.
+             *
+             *     Two families of plugin reach it, and the shared property above is why
+             *     they share the name rather than each getting one:
+             *
+             *       * a connector (`kind: mcp-http` / `cli-query`) whose bring-up failed
+             *         — unreachable upstream, rejected `secrets.json`, boot budget
+             *         exhausted (#1164 §2.2);
+             *       * an `app` the kernel refused to start because its stored
+             *         configuration is unusable — a `config_schema.required` key that
+             *         neither the operator nor a manifest default supplies, or a stored
+             *         configuration that could not be read at all (#1284 §2.4).
+             *
+             *     Recovery is the same operator action in every case: fix the cause,
+             *     then start the plugin again.
              */
             state: string;
             version: string;
@@ -2198,7 +2213,7 @@ export interface components {
         };
         ResolveQuery: {
             /**
-             * @description Absolute filesystem path to resolve against every cove's folder
+             * @description Absolute filesystem path to resolve against every area's folder
              *     claims. Returns the claim that covers it, or `null` if no claim
              *     covers the path. At most one claim can cover a path: the create
              *     endpoint rejects ancestor/descendant overlap with a 409.
@@ -2535,7 +2550,7 @@ export interface components {
              *     computed kernel-side so the frontend doesn't have to redo the join.
              */
             resource_uri: string;
-            /** @description `"card"` for M3 — wave/cove are banned per design §10. */
+            /** @description `"card"` for M3 — wave/area are banned per design §10. */
             scope: string;
             title: string;
         };
@@ -2552,7 +2567,7 @@ export interface components {
         Wave: {
             /** Format: int64 */
             archived_at?: number | null;
-            cove_id: string;
+            area_id: string;
             /** Format: int64 */
             created_at: number;
             /**
@@ -2631,9 +2646,9 @@ export interface components {
         /**
          * @description One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
          *
-         *     Its own type rather than a reuse of [`CoveConversationSummary`], which is
+         *     Its own type rather than a reuse of [`AreaConversationSummary`], which is
          *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
-         *     the cove type's contract says "`waveTitle` is absent because every row lives
+         *     the area type's contract says "`waveTitle` is absent because every row lives
          *     on one hidden wave", and on a wave that reasoning is simply not true. Two
          *     lists with different contracts should not share one name just because their
          *     current fields coincide.
@@ -2647,9 +2662,9 @@ export interface components {
             id: string;
             /**
              * @description Always `"wave-assistant"`, derived from the card's persisted marker.
-             *     A distinct value from the cove list's `"shared-chat"` on purpose: the
+             *     A distinct value from the area list's `"shared-chat"` on purpose: the
              *     frontend branches on it, and a shared value would route assistant rows
-             *     through the cove chat's presentation.
+             *     through the area chat's presentation.
              */
             kind: string;
             state?: null | components["schemas"]["WorkerSessionState"];
@@ -2971,7 +2986,7 @@ export interface components {
              * @description One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
              *     again.
              *
-             *     The system-cove launchpad remains unfrozen because it is repointed by
+             *     The system-area launchpad remains unfrozen because it is repointed by
              *     `today_launchpad_ensure_tx`.
              */
             frozen_at?: number | null;
@@ -2989,12 +3004,12 @@ export interface components {
          *
          *     The only transition this expresses is `managed → attached`. There is no
          *     `managed → managed`: a managed path is *derived*
-         *     (`<workspace-root>/<cove_id>/<wave_id>`, see
-         *     `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+         *     (`<workspace-root>/<area_id>/<wave_id>`, see
+         *     `workspace_materialize::managed_workspace_path`) from a wave's area and id,
          *     neither of which can change, so "re-allocate a managed workspace" would
          *     always re-derive the same path — an in-place reset, not a change. And a
          *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
-         *     requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+         *     requires exactly `<root>/<area>/<wave>` depth, so any other path produces a
          *     row whose directory can never be reclaimed.
          *
          *     `attached → *` stays refused (an attached repository belongs to the user;
@@ -3003,7 +3018,7 @@ export interface components {
          */
         WaveWorkspacePatch: {
             /**
-             * @description Claim `path` for this wave's cove in the same transaction, exactly as
+             * @description Claim `path` for this wave's area in the same transaction, exactly as
              *     `POST /api/waves`'s field of the same name does (issue #275 rules:
              *     equal / ancestor / descendant of any existing claim is a structured
              *     409). Default `false`: an unclaimed path is refused rather than
@@ -3042,10 +3057,10 @@ export interface components {
          */
         WavesWindowQuery: {
             /**
-             * @description Optional per-cove filter. Mirrors `list_waves_by_cove` for
-             *     callers that want one cove's window in a single endpoint.
+             * @description Optional per-area filter. Mirrors `list_waves_by_area` for
+             *     callers that want one area's window in a single endpoint.
              */
-            cove_id?: string | null;
+            area_id?: string | null;
             /**
              * Format: int64
              * @description Lower bound (inclusive) in unix milliseconds. Wave is included
@@ -3078,6 +3093,578 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_areas: {
+        parameters: {
+            query?: {
+                /**
+                 * @description When true, also include `kind='system'` areas in the response.
+                 *     Default false — the sidebar / Today UI consume the filtered list
+                 *     and never need the system area. Documented opt-in for debug surfaces
+                 *     and integration tests.
+                 */
+                include_system?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List all areas (filtered to `kind='user'` unless `include_system=true` is set) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Area"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_area: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewArea"];
+            };
+        };
+        responses: {
+            /** @description Area created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    resolve_path: {
+        parameters: {
+            query: {
+                /**
+                 * @description Absolute filesystem path to resolve against every area's folder
+                 *     claims. Returns the claim that covers it, or `null` if no claim
+                 *     covers the path. At most one claim can cover a path: the create
+                 *     endpoint rejects ancestor/descendant overlap with a 409.
+                 */
+                path: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The area + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["AreaResolve"];
+                };
+            };
+            /** @description Path is not absolute */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_or_create_system_area: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description System area already existed; returned the existing row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description System area minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    ensure_area_chat_wave: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing chat wave */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"];
+                };
+            };
+            /** @description Chat wave created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_area_conversations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Conversations on this area's chat wave, newest activity first. Empty when the area has no chat wave yet — this endpoint never creates one. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AreaConversationSummary"][];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_area_conversation: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400: INV-CHAT-013(b) has to hold unconditionally, not only for callers who remember to opt in.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft".** Precisely: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES (the failed attempt was fully compensated, so replaying its failure would make the key a dead end) and may therefore return a different result, e.g. 201 where the first call gave 500 — a standard idempotency key would replay the failure instead; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed: compensation did not finish, so the card may still exist); (d) after 64 failed attempts under one key the key is exhausted and answers 409 `idempotency_key_exhausted` forever — use a new key; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited draft is no longer rejected *for the old hash* — the attempt genuinely re-executes and its final status is whatever that execution produces (201 on success). The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewAreaConversationBody"];
+            };
+        };
+        responses: {
+            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AreaConversationSummary"];
+                };
+            };
+            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `conflict` — the area has no claimed folder (no cwd for the chat wave), or the derived card already exists.
+             *     * `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).
+             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as "server broke" rather than "this key is used up").
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. Note the conversation is not necessarily empty: if `harness.observe` succeeded and only the audit write failed, the message is already in the harness queue even though no audit event records it. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running — retry shortly */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_folders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folders claimed by this area, sorted by path */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AreaFolder"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewAreaFolder"];
+            };
+        };
+        responses: {
+            /** @description Folder claimed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AreaFolder"];
+                };
+            };
+            /** @description Path is not absolute */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Path overlaps with an existing claim */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderConflict"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+                /** @description Folder id */
+                folder_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder not found under this area */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_waves_by_area: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                area_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Waves under area */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_area: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Area deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Area is system-owned and cannot be deleted via REST */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_area: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Area id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AreaPatch"];
+            };
+        };
+        responses: {
+            /** @description Area updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_terminal_for_card: {
         parameters: {
             query?: never;
@@ -3621,578 +4208,6 @@ export interface operations {
                 };
             };
             /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_coves: {
-        parameters: {
-            query?: {
-                /**
-                 * @description When true, also include `kind='system'` coves in the response.
-                 *     Default false — the sidebar / Today UI consume the filtered list
-                 *     and never need the system cove. Documented opt-in for debug surfaces
-                 *     and integration tests.
-                 */
-                include_system?: boolean;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List all coves (filtered to `kind='user'` unless `include_system=true` is set) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Cove"][];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    create_cove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewCove"];
-            };
-        };
-        responses: {
-            /** @description Cove created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Cove"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    resolve_path: {
-        parameters: {
-            query: {
-                /**
-                 * @description Absolute filesystem path to resolve against every cove's folder
-                 *     claims. Returns the claim that covers it, or `null` if no claim
-                 *     covers the path. At most one claim can cover a path: the create
-                 *     endpoint rejects ancestor/descendant overlap with a 409.
-                 */
-                path: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": null | components["schemas"]["CoveResolve"];
-                };
-            };
-            /** @description Path is not absolute */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    get_or_create_system_cove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description System cove already existed; returned the existing row */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Cove"];
-                };
-            };
-            /** @description System cove minted */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Cove"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    ensure_cove_chat_wave: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Existing chat wave */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Wave"];
-                };
-            };
-            /** @description Chat wave created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Wave"];
-                };
-            };
-            /** @description Cove not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_cove_conversations: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Conversations on this cove's chat wave, newest activity first. Empty when the cove has no chat wave yet — this endpoint never creates one. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoveConversationSummary"][];
-                };
-            };
-            /** @description Cove not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    create_cove_conversation: {
-        parameters: {
-            query?: never;
-            header: {
-                /**
-                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400: INV-CHAT-013(b) has to hold unconditionally, not only for callers who remember to opt in.
-                 *
-                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft".** Precisely: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES (the failed attempt was fully compensated, so replaying its failure would make the key a dead end) and may therefore return a different result, e.g. 201 where the first call gave 500 — a standard idempotency key would replay the failure instead; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed: compensation did not finish, so the card may still exist); (d) after 64 failed attempts under one key the key is exhausted and answers 409 `idempotency_key_exhausted` forever — use a new key; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited draft is no longer rejected *for the old hash* — the attempt genuinely re-executes and its final status is whatever that execution produces (201 on success). The derived card id never carries the retry suffix, so none of this can mint a second conversation.
-                 */
-                "Idempotency-Key": string;
-            };
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewCoveConversationBody"];
-            };
-        };
-        responses: {
-            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoveConversationSummary"];
-                };
-            };
-            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Cove not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /**
-             * @description Distinguished by the body's `code`:
-             *     * `conflict` — the cove has no claimed folder (no cwd for the chat wave), or the derived card already exists.
-             *     * `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).
-             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as "server broke" rather than "this key is used up").
-             */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. Note the conversation is not necessarily empty: if `harness.observe` succeeded and only the audit write failed, the message is already in the harness queue even though no audit event records it. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Shared codex app-server not running — retry shortly */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_folders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Folders claimed by this cove, sorted by path */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoveFolder"][];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    create_folder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewCoveFolder"];
-            };
-        };
-        responses: {
-            /** @description Folder claimed */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CoveFolder"];
-                };
-            };
-            /** @description Path is not absolute */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Path overlaps with an existing claim */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FolderConflict"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    delete_folder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-                /** @description Folder id */
-                folder_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Folder removed */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Folder not found under this cove */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    list_waves_by_cove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                cove_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Waves under cove */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Wave"][];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    delete_cove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cove deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Cove is system-owned and cannot be deleted via REST */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Cove not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    update_cove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Cove id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CovePatch"];
-            };
-        };
-        responses: {
-            /** @description Cove updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Cove"];
-                };
-            };
-            /** @description Cove not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -5562,10 +5577,10 @@ export interface operations {
                  */
                 until?: number | null;
                 /**
-                 * @description Optional per-cove filter. Mirrors `list_waves_by_cove` for
-                 *     callers that want one cove's window in a single endpoint.
+                 * @description Optional per-area filter. Mirrors `list_waves_by_area` for
+                 *     callers that want one area's window in a single endpoint.
                  */
-                cove_id?: string | null;
+                area_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -5695,7 +5710,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Wave belongs to the system cove and cannot be deleted via REST */
+            /** @description Wave belongs to the system area and cannot be deleted via REST */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5767,7 +5782,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workspace change refused (system cove) */
+            /** @description Workspace change refused (system area) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5817,7 +5832,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Report links from waves in the same cove */
+            /** @description Report links from waves in the same area */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6658,7 +6673,7 @@ export interface operations {
                 /**
                  * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.
                  *
-                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, with the same four arms as `POST /api/coves/{cove_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, with the same four arms as `POST /api/areas/{area_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.
                  */
                 "Idempotency-Key": string;
             };
@@ -6692,7 +6707,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The wave is a cove chat wave; its conversations are created through the cove endpoint. */
+            /** @description The wave is an area chat wave; its conversations are created through the area endpoint. */
             403: {
                 headers: {
                     [name: string]: unknown;

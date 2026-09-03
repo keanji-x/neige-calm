@@ -4,7 +4,7 @@
     "ev": "wave.deleted",
     "data": {
       "id": "wave-01",
-      "cove_id": "cove-01"
+      "area_id": "area-01"
     }
   }
 }

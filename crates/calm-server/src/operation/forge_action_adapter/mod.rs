@@ -22,7 +22,7 @@ use crate::event::{
     BroadcastEnvelope, Event, EventBus, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject,
     SYNC_EVENT_VERSION,
 };
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
 };
@@ -139,7 +139,7 @@ pub struct ProbeSpec {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenForge {
     pub wave_id: String,
-    pub cove_id: String,
+    pub area_id: String,
     pub card_id: String,
     #[serde(default)]
     pub subject: Option<ForgeMergeSubject>,
@@ -168,12 +168,12 @@ impl FrozenForge {
             EventScope::Card {
                 card: CardId::from(self.card_id.clone()),
                 wave: WaveId::from(self.wave_id.clone()),
-                cove: CoveId::from(self.cove_id.clone()),
+                area: AreaId::from(self.area_id.clone()),
             }
         } else {
             EventScope::Wave {
                 wave: WaveId::from(self.wave_id.clone()),
-                cove: CoveId::from(self.cove_id.clone()),
+                area: AreaId::from(self.area_id.clone()),
             }
         }
     }
@@ -1272,7 +1272,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             ));
         }
 
-        let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id = ?1")
+        let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE id = ?1")
             .bind(&payload.wave_id)
             .fetch_optional(&mut **tx)
             .await?
@@ -1280,7 +1280,7 @@ impl ProviderAdapter for ForgeActionAdapter {
 
         let frozen = FrozenForge {
             wave_id: payload.wave_id,
-            cove_id,
+            area_id,
             card_id: payload.card_id,
             subject: payload.subject,
             argv: payload.argv,

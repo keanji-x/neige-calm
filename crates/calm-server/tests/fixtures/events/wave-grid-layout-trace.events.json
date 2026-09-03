@@ -1,12 +1,12 @@
 {
   "name": "wave-grid-layout-trace",
-  "description": "Session: create cove → create wave → add 3 cards → drop layout overlay → move card_2 (replace overlay). After replay the resulting `view/layout` overlay must reflect the most recent positions: card_1@(0,0,4x3), card_2@(8,0,4x3) (moved), card_3@(4,0,4x3).",
+  "description": "Session: create area → create wave → add 3 cards → drop layout overlay → move card_2 (replace overlay). After replay the resulting `view/layout` overlay must reflect the most recent positions: card_1@(0,0,4x3), card_2@(8,0,4x3) (moved), card_3@(4,0,4x3).",
   "events": [
     {
-      "kind": "cove.updated",
+      "kind": "area.updated",
       "actor": "user",
       "payload": {
-        "id": "cove-1",
+        "id": "area-1",
         "name": "demo",
         "color": "#abc",
         "sort": 0.0,
@@ -19,7 +19,7 @@
       "actor": "user",
       "payload": {
         "id": "wave-1",
-        "cove_id": "cove-1",
+        "area_id": "area-1",
         "title": "demo wave",
         "sort": 0.0,
         "archived_at": null,

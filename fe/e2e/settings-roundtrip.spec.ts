@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 let originalHttpProxy: string | null = null;
 
 function captureBrowserErrors(page: Page): string[] {
@@ -17,13 +17,13 @@ async function readHttpProxy(request: APIRequestContext): Promise<string | null>
 }
 
 test.beforeEach(async ({ request }) => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   originalHttpProxy = await readHttpProxy(request);
 });
 test.afterEach(async ({ request }) => {
   await request.put('/api/settings', { data: { settings: { http_proxy: originalHttpProxy } } });
-  for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
-  createdCoveIds.length = 0;
+  for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
+  createdAreaIds.length = 0;
 });
 
 test('persists network and appearance settings across reloads', async ({ page, request }) => {

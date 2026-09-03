@@ -1,24 +1,24 @@
-use super::{SqlxRepo, cove_create_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, wave_create_tx};
 use crate::db::RepoRead;
-use crate::model::{NewCove, NewWave, RequestTheme, now_ms};
+use crate::model::{NewArea, NewWave, RequestTheme, now_ms};
 
 async fn seed_wave(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "workspace lease lookup".into(),
             color: "#202020".into(),
             sort: None,
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "workspace lease lookup".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -29,7 +29,7 @@ async fn seed_wave(repo: &SqlxRepo) -> String {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");

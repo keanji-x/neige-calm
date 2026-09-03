@@ -1,12 +1,12 @@
 // ---------------- NewTaskForm ----------------
 //
 // Issue #250 PR 3 — the single creation surface for "task = description
-// + cwd + cove". Used by the cove page's `+ New wave` affordance today,
+// + cwd + area". Used by the area page's `+ New wave` affordance today,
 // the calendar's empty-cell click later (PR 6). Per the issue comment
 // "all creation entrypoints must go through the same configuration
 // card", this component is the only place that knows how to POST a
 // well-formed `NewWave` body — every other entrypoint must reuse it
-// (not re-implement the cwd/cove inference).
+// (not re-implement the cwd/area inference).
 //
 // Field semantics (decided across #255 + #250 PR 2, updated by #409):
 //   * task description (optional) → posted as `wave.title`. The kernel
@@ -19,45 +19,45 @@
 //     The form refuses to submit a non-`/`-prefixed value; the server
 //     would 400 anyway, but inline rejection is cheaper than a round
 //     trip + read of an error toast.
-//   * cove (required) → derived from cwd via `GET /api/coves/resolve`:
-//       - hit  → field locked to the auto-matched cove; submit goes
+//   * area (required) → derived from cwd via `GET /api/areas/resolve`:
+//       - hit  → field locked to the auto-matched area; submit goes
 //                straight through (no `attach_folder` opt-in needed,
-//                the cwd is already under that cove's folder claim).
+//                the cwd is already under that area's folder claim).
 //       - miss → field user-editable, two paths:
-//                  "existing": pick a cove from `useCovesQuery`, submit
+//                  "existing": pick an area from `useAreasQuery`, submit
 //                    with `attach_folder: true` so the kernel adds
-//                    `cwd` as a new folder under that cove inside the
+//                    `cwd` as a new folder under that area inside the
 //                    same tx as the wave-create. PR 3 implements this
 //                    as a two-step client-side flow for the "create
-//                    new cove + claim cwd" branch (see below) — the
-//                    "existing cove + attach cwd" branch is a single
+//                    new area + claim cwd" branch (see below) — the
+//                    "existing area + attach cwd" branch is a single
 //                    POST with `attach_folder: true`, which the kernel
 //                    handles atomically inside one tx.
-//                  "new":      mint a fresh cove (`POST /api/coves`),
+//                  "new":      mint a fresh area (`POST /api/areas`),
 //                    then POST the wave with the new id + the same
-//                    `attach_folder: true` flag. Two-step (cove +
+//                    `attach_folder: true` flag. Two-step (area +
 //                    wave) because the server doesn't yet expose an
-//                    atomic "create cove + first wave" endpoint; if
-//                    the wave POST fails (e.g. validation), the cove
+//                    atomic "create area + first wave" endpoint; if
+//                    the wave POST fails (e.g. validation), the area
 //                    is left in place and a retry reuses it. Followup
 //                    todo to collapse this into one atomic endpoint
-//                    if the leftover-cove cost ever bites.
+//                    if the leftover-area cost ever bites.
 //
 // 409 / FolderConflict handling: NewWave's `attach_folder: true` path
 // can land a structured 409 on this list of scenarios:
-//   - cwd is descendant of a folder owned by a *different* cove (the
+//   - cwd is descendant of a folder owned by a *different* area (the
 //     resolve would have warned us pre-submit, but a concurrent claim
 //     can still race here);
 //   - cwd is an ancestor of an existing narrower claim (widening, the
 //     server refuses for resolution ambiguity).
-// The form reads the `{cove_id, conflict_path, conflict_kind}` body
+// The form reads the `{area_id, conflict_path, conflict_kind}` body
 // and renders a one-line, user-readable diagnosis without leaking the
 // raw enum into the UI.
 //
 // A11y: every input has a real <label> (htmlFor + id); the wrapping
 // section is `role="form"` with a labelled heading so a Playwright
 // `getByRole('form', { name: 'New task' })` lookup is unambiguous in
-// dense pages (Cove page below + calendar later).
+// dense pages (Area page below + calendar later).
 
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
@@ -67,12 +67,12 @@ import * as api from '../../api/calm';
 import { CalmApiError } from '../../api/calm';
 import {
   queryKeys,
-  useCovesQuery,
-  useCreateCoveMutation,
+  useAreasQuery,
+  useCreateAreaMutation,
   useCreateWaveMutation,
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
-import type { CoveResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import type { AreaResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
 import { ChevronIcon } from './ChevronIcon';
 import { DirectoryBrowser } from './DirectoryPicker';
 import { parseGitHubIssueUrl } from './issueUrl';
@@ -82,11 +82,11 @@ import { useModalView } from '../../ui/Dialog/Dialog';
 export type NewTaskFormResult = KernelWave;
 
 export interface NewTaskFormProps {
-  /** Pre-selected cove. When the surrounding page already scopes itself
-   *  to a cove (cove page) we pass it here so the dropdown defaults to
+  /** Pre-selected area. When the surrounding page already scopes itself
+   *  to an area (area page) we pass it here so the dropdown defaults to
    *  it on first paint. The cwd-resolve auto-match still overrides this
-   *  if it lands a different cove. */
-  defaultCoveId?: string;
+   *  if it lands a different area. */
+  defaultAreaId?: string;
   /** Fired after the wave-create POST succeeds. Caller usually navigates
    *  to `/calm/wave/<id>`. */
   onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
@@ -109,7 +109,7 @@ export interface NewTaskFormProps {
   /** Issue #891 slice ③ — form variant. `'task'` (default) is the plain
    *  wave path, untouched. `'issue-dev'` binds the created wave to the
    *  shipped `issue-development` workflow: the user supplies a GitHub
-   *  issue URL (plus the same cwd/cove flow), the form derives
+   *  issue URL (plus the same cwd/area flow), the form derives
    *  `{repo, issue_number, issue_url}` client-side and POSTs them as
    *  `template_input` alongside `template_id: "issue-development"`. */
   variant?: 'task' | 'issue-dev';
@@ -134,18 +134,18 @@ type MergePolicy = 'hold-for-ratify' | 'auto-merge';
  *  "feels live" against "didn't fire a request after every keypress". */
 const RESOLVE_DEBOUNCE_MS = 300;
 
-/** Fallback palette for the "create new cove" branch — same set
- *  Sidebar's `NewCoveButton` draws from. Keep in lockstep; a real
+/** Fallback palette for the "create new area" branch — same set
+ *  Sidebar's `NewAreaButton` draws from. Keep in lockstep; a real
  *  color picker is a future enhancement. */
-const COVE_PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
+const AREA_PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
-type CoveChoice =
-  | { mode: 'auto'; resolve: CoveResolveBody }
-  | { mode: 'existing'; coveId: string }
+type AreaChoice =
+  | { mode: 'auto'; resolve: AreaResolveBody }
+  | { mode: 'existing'; areaId: string }
   | { mode: 'new'; name: string; color: string };
 
 export function NewTaskForm({
-  defaultCoveId,
+  defaultAreaId,
   onCreated,
   onCancel,
   initialFocusRef,
@@ -153,8 +153,8 @@ export function NewTaskForm({
 }: NewTaskFormProps) {
   const titleId = useId();
   const cwdId = useId();
-  const coveSelectId = useId();
-  const newCoveNameId = useId();
+  const areaSelectId = useId();
+  const newAreaNameId = useId();
   const headingId = useId();
   const issueUrlId = useId();
   const mergePolicyId = useId();
@@ -178,48 +178,48 @@ export function NewTaskForm({
   const [resolveState, setResolveState] = useState<
     | { kind: 'idle' }
     | { kind: 'resolving' }
-    | { kind: 'hit'; resolve: CoveResolveBody }
+    | { kind: 'hit'; resolve: AreaResolveBody }
     | { kind: 'miss' }
   >({ kind: 'idle' });
-  // When the resolve misses, the user picks between "existing cove" and
-  // "new cove". Default to "existing" if a `defaultCoveId` was passed
+  // When the resolve misses, the user picks between "existing area" and
+  // "new area". Default to "existing" if a `defaultAreaId` was passed
   // (caller already has one in mind); otherwise "new" — the user
-  // typed a cwd nobody owns, "create a cove for this" is the obvious
+  // typed a cwd nobody owns, "create an area for this" is the obvious
   // next step.
-  const covesQ = useCovesQuery();
-  const coves = useMemo(() => covesQ.data ?? [], [covesQ.data]);
+  const areasQ = useAreasQuery();
+  const areas = useMemo(() => areasQ.data ?? [], [areasQ.data]);
 
-  // Deterministic palette seed: cycle through COVE_PALETTE by the
-  // current cove count so the "Create new cove" branch picks a stable
+  // Deterministic palette seed: cycle through AREA_PALETTE by the
+  // current area count so the "Create new area" branch picks a stable
   // color for the same UI state (no Math.random flake in tests, no
   // jitter between renders for the same user state).
   const seededPaletteColor = useCallback(
-    () => pickPaletteColor(coves.length),
-    [coves.length],
+    () => pickPaletteColor(areas.length),
+    [areas.length],
   );
 
-  const [coveChoice, setCoveChoice] = useState<CoveChoice>(() =>
-    defaultCoveId
-      ? { mode: 'existing', coveId: defaultCoveId }
+  const [areaChoice, setAreaChoice] = useState<AreaChoice>(() =>
+    defaultAreaId
+      ? { mode: 'existing', areaId: defaultAreaId }
       : { mode: 'new', name: '', color: pickPaletteColor(0) },
   );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Tracks whether the user has explicitly overridden an auto-match. A
-  // hit lands → we set coveChoice to `{ mode: 'auto', ... }` AND clear
+  // hit lands → we set areaChoice to `{ mode: 'auto', ... }` AND clear
   // this flag so future resolves can also auto-match. Once the user
-  // clicks "Use a different cove", we set this flag; subsequent
+  // clicks "Use a different area", we set this flag; subsequent
   // resolves still update resolveState (so the banner can still
   // describe what the cwd matches), but they no longer overwrite the
-  // user's manual coveChoice.
+  // user's manual areaChoice.
   const userOverrodeAutoMatchRef = useRef(false);
 
   const createWave = useCreateWaveMutation();
-  const createCove = useCreateCoveMutation();
+  const createArea = useCreateAreaMutation();
   const qc = useQueryClient();
   // Browse… → always pushes a DirectoryBrowser view into the surrounding
   // Dialog's body via `useModalView()`. NewTaskForm is hosted exclusively
-  // inside a Dialog today (NewWaveCTA in Cove.tsx wraps it), so the
+  // inside a Dialog today (NewWaveCTA in Area.tsx wraps it), so the
   // modal-view context is always present in production. The dev-time
   // `console.warn` below catches accidental Dialog-less renderings during
   // refactors instead of silently breaking the Browse affordance.
@@ -234,7 +234,7 @@ export function NewTaskForm({
   // Callback refs bridge the typing (the shared ref is `HTMLElement`,
   // the elements are concrete input/textarea types — a plain ref-object
   // handoff would trip TS property variance). `isIssueDev` is fixed for
-  // the lifetime of a mount (Cove.tsx remounts the form via `key` on
+  // the lifetime of a mount (Area.tsx remounts the form via `key` on
   // variant switch), so each callback binds at most one element.
   const titleFieldRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
@@ -265,7 +265,7 @@ export function NewTaskForm({
   }, [initialFocusRef, isIssueDev]);
 
   // Latest cwd at commit-time. The resolve effect captures `cwd` via
-  // closure, but the in-flight `api.resolveCovePath` Promise may resolve
+  // closure, but the in-flight `api.resolveAreaPath` Promise may resolve
   // after the user has typed more characters — without this guard a
   // stale resolve would overwrite a fresher one (`Math.random`-ish
   // ordering of `fetch` completions across two debounce windows). The
@@ -295,7 +295,7 @@ export function NewTaskForm({
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const hit = await api.resolveCovePath(trimmed);
+          const hit = await api.resolveAreaPath(trimmed);
           // Race guard: drop the result if the user has typed past this
           // cwd since the request fired. Without this check, two
           // overlapping resolves can land out-of-order and the stale
@@ -303,22 +303,22 @@ export function NewTaskForm({
           if (latestResolveCwdRef.current !== trimmed) return;
           if (hit) {
             setResolveState({ kind: 'hit', resolve: hit });
-            // Once a hit lands, the cove choice is forced — unless the
+            // Once a hit lands, the area choice is forced — unless the
             // user has explicitly overridden a previous auto-match, in
             // which case the banner still updates (so the user sees
-            // what the cwd matches) but the manual coveChoice stands.
+            // what the cwd matches) but the manual areaChoice stands.
             if (!userOverrodeAutoMatchRef.current) {
-              setCoveChoice({ mode: 'auto', resolve: hit });
+              setAreaChoice({ mode: 'auto', resolve: hit });
             }
           } else {
             setResolveState({ kind: 'miss' });
-            // On miss, fall back to the default coveChoice that was
+            // On miss, fall back to the default areaChoice that was
             // seeded at mount — but only if we're currently in `auto`
             // (a previous hit). Otherwise the user's pick stands.
-            setCoveChoice((cur) =>
+            setAreaChoice((cur) =>
               cur.mode === 'auto'
-                ? defaultCoveId
-                  ? { mode: 'existing', coveId: defaultCoveId }
+                ? defaultAreaId
+                  ? { mode: 'existing', areaId: defaultAreaId }
                   : { mode: 'new', name: '', color: seededPaletteColor() }
                 : cur,
             );
@@ -329,11 +329,11 @@ export function NewTaskForm({
           // own the UI state.
           if (latestResolveCwdRef.current !== trimmed) return;
           // Resolve failure (network etc.) — surface as miss so the
-          // user can still pick / create a cove. The submit path will
+          // user can still pick / create an area. The submit path will
           // re-validate via the server.
           setResolveState({ kind: 'miss' });
           // Keep the inline error visible if the resolve failed mid-
-          // typing; the user can still proceed via manual cove pick.
+          // typing; the user can still proceed via manual area pick.
           if (e instanceof CalmApiError && e.status !== 400) {
             setErrorMsg(`Path lookup failed: ${e.message}`);
           }
@@ -341,7 +341,7 @@ export function NewTaskForm({
       })();
     }, RESOLVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [cwd, defaultCoveId, seededPaletteColor]);
+  }, [cwd, defaultAreaId, seededPaletteColor]);
 
   const cwdError = cwd.length > 0 && !isAbsolutePath(cwd.trim())
     ? 'Path must be absolute (start with `/`).'
@@ -398,7 +398,7 @@ export function NewTaskForm({
   const canSubmit = canSubmitForm({
     cwd,
     cwdError,
-    coveChoice,
+    areaChoice,
     submitting,
     issueDev: isIssueDev
       ? {
@@ -417,33 +417,33 @@ export function NewTaskForm({
       setErrorMsg(null);
       try {
         const finalCwd = cwd.trim();
-        // Resolve the cove_id + attach_folder flag from the form state:
+        // Resolve the area_id + attach_folder flag from the form state:
         //   * auto → cwd already covered; attach=false
         //   * existing → user-picked; attach=true so the cwd lands as a
-        //     folder under that cove inside the wave-create tx.
-        //   * new → mint the cove first, then submit the wave under it
+        //     folder under that area inside the wave-create tx.
+        //   * new → mint the area first, then submit the wave under it
         //     with attach=true.
-        let coveId: string;
+        let areaId: string;
         let attachFolder: boolean;
-        if (coveChoice.mode === 'auto') {
-          coveId = coveChoice.resolve.cove_id;
+        if (areaChoice.mode === 'auto') {
+          areaId = areaChoice.resolve.area_id;
           attachFolder = false;
-        } else if (coveChoice.mode === 'existing') {
-          coveId = coveChoice.coveId;
+        } else if (areaChoice.mode === 'existing') {
+          areaId = areaChoice.areaId;
           attachFolder = true;
         } else {
-          // Two-step: cove first, then wave. If the wave POST fails
-          // the cove is left in place — see file header for rationale.
-          // TODO(#250): atomic create-cove-and-wave endpoint to collapse
-          // this two-step and remove the leftover-cove risk on partial
-          // failure (current fallback: a retry reuses the orphan cove).
-          const cove = await createCove.mutateAsync({
-            name: coveChoice.name.trim(),
-            color: coveChoice.color,
+          // Two-step: area first, then wave. If the wave POST fails
+          // the area is left in place — see file header for rationale.
+          // TODO(#250): atomic create-area-and-wave endpoint to collapse
+          // this two-step and remove the leftover-area risk on partial
+          // failure (current fallback: a retry reuses the orphan area).
+          const area = await createArea.mutateAsync({
+            name: areaChoice.name.trim(),
+            color: areaChoice.color,
           });
-          coveId = cove.id;
+          areaId = area.id;
           attachFolder = true;
-          // The new cove is already in `useCovesQuery` cache via the
+          // The new area is already in `useAreasQuery` cache via the
           // mutation's onSuccess invalidate. No extra work here.
         }
 
@@ -461,7 +461,7 @@ export function NewTaskForm({
             }
           : {};
         const wave = await createWave.mutateAsync({
-          cove_id: coveId,
+          area_id: areaId,
           title: title.trim(),
           cwd: finalCwd,
           attach_folder: attachFolder,
@@ -469,13 +469,13 @@ export function NewTaskForm({
           ...templateFields,
         });
         // Belt-and-suspenders cache invalidate — useCreateWaveMutation
-        // already kicks ['waves', cove_id], but a brand-new cove also
-        // benefits from a coves-list refresh in case the WS event
+        // already kicks ['waves', area_id], but a brand-new area also
+        // benefits from a areas-list refresh in case the WS event
         // didn't land yet.
-        void qc.invalidateQueries({ queryKey: queryKeys.coves() });
+        void qc.invalidateQueries({ queryKey: queryKeys.areas() });
         await onCreated(wave);
       } catch (e) {
-        const formatted = formatSubmitError(e, coves);
+        const formatted = formatSubmitError(e, areas);
         setErrorMsg(formatted);
       } finally {
         setSubmitting(false);
@@ -483,9 +483,9 @@ export function NewTaskForm({
     },
     [
       canSubmit,
-      coveChoice,
-      coves,
-      createCove,
+      areaChoice,
+      areas,
+      createArea,
       createWave,
       cwd,
       derivedTemplateInput,
@@ -688,7 +688,7 @@ export function NewTaskForm({
           {/* Browse… opens the directory walker. Always pushes into the
               surrounding Dialog via `useModalView()` — NewTaskForm is
               hosted inside a Dialog in every in-app caller (NewWaveCTA
-              in Cove.tsx). The typed input above remains the source of
+              in Area.tsx). The typed input above remains the source of
               truth — Browse is just a shortcut that *sets* the cwd, it
               doesn't replace the field. Accessible name comes from the
               visible text ("Browse…") so
@@ -712,32 +712,32 @@ export function NewTaskForm({
           </p>
         )}
 
-        {/* Cove section — three render branches keyed on resolveState +
-            coveChoice. The label text stays "Cove" across all branches
+        {/* Area section — three render branches keyed on resolveState +
+            areaChoice. The label text stays "Area" across all branches
             so the visual structure doesn't jitter. */}
-        <CoveSection
-          coveSelectId={coveSelectId}
-          newCoveNameId={newCoveNameId}
+        <AreaSection
+          areaSelectId={areaSelectId}
+          newAreaNameId={newAreaNameId}
           resolveState={resolveState}
-          coveChoice={coveChoice}
-          setCoveChoice={setCoveChoice}
-          coves={coves}
-          defaultCoveId={defaultCoveId}
+          areaChoice={areaChoice}
+          setAreaChoice={setAreaChoice}
+          areas={areas}
+          defaultAreaId={defaultAreaId}
           seededPaletteColor={seededPaletteColor}
           onOverrideAutoMatch={() => {
             // User wants to override the auto-match. Switch back to the
-            // miss-mode picker (existing cove default → defaultCoveId,
-            // else first cove, else fall through to "new"), and latch
+            // miss-mode picker (existing area default → defaultAreaId,
+            // else first area, else fall through to "new"), and latch
             // the override flag so subsequent cwd resolves don't
             // clobber the manual pick (resolveState banner can still
-            // update, but coveChoice stays).
+            // update, but areaChoice stays).
             userOverrodeAutoMatchRef.current = true;
             const fallbackExistingId =
-              defaultCoveId ?? coves[0]?.id ?? '';
+              defaultAreaId ?? areas[0]?.id ?? '';
             if (fallbackExistingId) {
-              setCoveChoice({ mode: 'existing', coveId: fallbackExistingId });
+              setAreaChoice({ mode: 'existing', areaId: fallbackExistingId });
             } else {
-              setCoveChoice({
+              setAreaChoice({
                 mode: 'new',
                 name: '',
                 color: seededPaletteColor(),
@@ -837,55 +837,55 @@ export function NewTaskForm({
 }
 
 // ---------------------------------------------------------------------------
-// Cove section — branch on resolveState
+// Area section — branch on resolveState
 // ---------------------------------------------------------------------------
 
-function CoveSection({
-  coveSelectId,
-  newCoveNameId,
+function AreaSection({
+  areaSelectId,
+  newAreaNameId,
   resolveState,
-  coveChoice,
-  setCoveChoice,
-  coves,
-  defaultCoveId,
+  areaChoice,
+  setAreaChoice,
+  areas,
+  defaultAreaId,
   seededPaletteColor,
   onOverrideAutoMatch,
 }: {
-  coveSelectId: string;
-  newCoveNameId: string;
+  areaSelectId: string;
+  newAreaNameId: string;
   resolveState:
     | { kind: 'idle' }
     | { kind: 'resolving' }
-    | { kind: 'hit'; resolve: CoveResolveBody }
+    | { kind: 'hit'; resolve: AreaResolveBody }
     | { kind: 'miss' };
-  coveChoice: CoveChoice;
-  setCoveChoice: (next: CoveChoice) => void;
-  coves: { id: string; name: string }[];
-  defaultCoveId?: string;
+  areaChoice: AreaChoice;
+  setAreaChoice: (next: AreaChoice) => void;
+  areas: { id: string; name: string }[];
+  defaultAreaId?: string;
   seededPaletteColor: () => string;
   onOverrideAutoMatch: () => void;
 }) {
   // The "auto-matched" branch only renders when the parent's
-  // coveChoice is still in auto-mode AND the resolve hit. Once the
-  // user clicks "Use a different cove", coveChoice flips to
+  // areaChoice is still in auto-mode AND the resolve hit. Once the
+  // user clicks "Use a different area", areaChoice flips to
   // existing/new and we fall through to the radio picker below — the
   // banner still shows what the cwd matches via `resolveState.kind`
   // but it's no longer locked.
-  if (resolveState.kind === 'hit' && coveChoice.mode === 'auto') {
-    const matched = coves.find((c) => c.id === resolveState.resolve.cove_id);
+  if (resolveState.kind === 'hit' && areaChoice.mode === 'auto') {
+    const matched = areas.find((c) => c.id === resolveState.resolve.area_id);
     return (
-      <div className="new-task-form-cove">
-        <p className="new-task-form-label">Cove</p>
-        <p className="new-task-form-cove-auto" data-testid="cove-auto-match">
-          Auto-matched to cove{' '}
-          <strong>{matched?.name ?? resolveState.resolve.cove_id}</strong>{' '}
+      <div className="new-task-form-area">
+        <p className="new-task-form-label">Area</p>
+        <p className="new-task-form-area-auto" data-testid="area-auto-match">
+          Auto-matched to area{' '}
+          <strong>{matched?.name ?? resolveState.resolve.area_id}</strong>{' '}
           (via folder <code>{resolveState.resolve.folder_path}</code>).{' '}
           <button
             type="button"
-            className="new-task-form-cove-override"
+            className="new-task-form-area-override"
             onClick={onOverrideAutoMatch}
           >
-            Use a different cove
+            Use a different area
           </button>
         </p>
       </div>
@@ -893,9 +893,9 @@ function CoveSection({
   }
   if (resolveState.kind === 'resolving') {
     return (
-      <div className="new-task-form-cove">
-        <p className="new-task-form-label">Cove</p>
-        <p className="new-task-form-cove-resolving">Looking up cove…</p>
+      <div className="new-task-form-area">
+        <p className="new-task-form-label">Area</p>
+        <p className="new-task-form-area-resolving">Looking up area…</p>
       </div>
     );
   }
@@ -904,62 +904,62 @@ function CoveSection({
   // (and the cwd remains the source of truth for whether attach_folder
   // kicks in at submit time).
   const mode: 'existing' | 'new' =
-    coveChoice.mode === 'existing'
+    areaChoice.mode === 'existing'
       ? 'existing'
-      : coveChoice.mode === 'new'
+      : areaChoice.mode === 'new'
         ? 'new'
         : 'existing';
   return (
-    <div className="new-task-form-cove">
-      <label htmlFor={coveSelectId} className="new-task-form-label">
-        Cove<span className="new-task-form-required"> *</span>
+    <div className="new-task-form-area">
+      <label htmlFor={areaSelectId} className="new-task-form-label">
+        Area<span className="new-task-form-required"> *</span>
       </label>
       <div
         role="radiogroup"
-        aria-label="Cove selection"
-        className="new-task-form-cove-modes"
+        aria-label="Area selection"
+        className="new-task-form-area-modes"
       >
-        <label className="new-task-form-cove-mode">
+        <label className="new-task-form-area-mode">
           <input
             type="radio"
-            name="cove-mode"
+            name="area-mode"
             value="existing"
             checked={mode === 'existing'}
             onChange={() =>
-              setCoveChoice({
+              setAreaChoice({
                 mode: 'existing',
-                coveId:
-                  (coveChoice.mode === 'existing' && coveChoice.coveId) ||
-                  defaultCoveId ||
-                  coves[0]?.id ||
+                areaId:
+                  (areaChoice.mode === 'existing' && areaChoice.areaId) ||
+                  defaultAreaId ||
+                  areas[0]?.id ||
                   '',
               })
             }
-            disabled={coves.length === 0}
+            disabled={areas.length === 0}
           />
-          Existing cove
+          Existing area
         </label>
-        <label className="new-task-form-cove-mode">
+        <label className="new-task-form-area-mode">
           <input
             type="radio"
-            name="cove-mode"
+            name="area-mode"
             value="new"
             checked={mode === 'new'}
             onChange={() =>
-              setCoveChoice({
+              setAreaChoice({
                 mode: 'new',
-                name: coveChoice.mode === 'new' ? coveChoice.name : '',
+                name: areaChoice.mode === 'new' ? areaChoice.name : '',
                 color:
-                  coveChoice.mode === 'new'
-                    ? coveChoice.color
+                  areaChoice.mode === 'new'
+                    ? areaChoice.color
                     : seededPaletteColor(),
               })
             }
           />
-          Create new cove
+          Create new area
         </label>
       </div>
-      {mode === 'existing' && coves.length > 0 ? (
+      {mode === 'existing' && areas.length > 0 ? (
         /* .calm-select (#891): the themed base-select drawer, same
            treatment as the Workflow select in the New-wave dialog so
            the card has ONE popup system. The custom trigger button
@@ -972,17 +972,17 @@ function CoveSection({
            The trigger is intentionally a named-but-non-focusable
            button: the <select> owns focus + semantics (base-select).
            In Chromium the trigger still surfaces in the AX button tree
-           named by the cloned option content — i.e. the selected COVE
+           named by the cloned option content — i.e. the selected AREA
            NAME. We do NOT aria-hidden it (that risks stripping the
-           subtree Chrome announces as the selected value); the cove
+           subtree Chrome announces as the selected value); the area
            name in the button surface is why in-dialog button e2e
            locators must use exact names (a substring /browse/i once
-           collided with a cove named "E2E browse cove"). */
+           collided with an area named "E2E browse area"). */
         <select
-          id={coveSelectId}
+          id={areaSelectId}
           className="new-task-form-input calm-select"
-          value={coveChoice.mode === 'existing' ? coveChoice.coveId : ''}
-          onChange={(e) => setCoveChoice({ mode: 'existing', coveId: e.target.value })}
+          value={areaChoice.mode === 'existing' ? areaChoice.areaId : ''}
+          onChange={(e) => setAreaChoice({ mode: 'existing', areaId: e.target.value })}
         >
           <button className="calm-select-trigger">
             <selectedcontent className="calm-select-selected" />
@@ -990,34 +990,34 @@ function CoveSection({
               <ChevronIcon />
             </span>
           </button>
-          {coves.map((c) => (
+          {areas.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
             </option>
           ))}
         </select>
       ) : mode === 'existing' ? (
-        <p className="new-task-form-cove-resolving">
-          No coves yet — switch to “Create new cove” above.
+        <p className="new-task-form-area-resolving">
+          No areas yet — switch to “Create new area” above.
         </p>
       ) : (
         <input
-          id={newCoveNameId}
+          id={newAreaNameId}
           type="text"
           className="new-task-form-input"
-          value={coveChoice.mode === 'new' ? coveChoice.name : ''}
+          value={areaChoice.mode === 'new' ? areaChoice.name : ''}
           onChange={(e) =>
-            setCoveChoice({
+            setAreaChoice({
               mode: 'new',
               name: e.target.value,
               color:
-                coveChoice.mode === 'new'
-                  ? coveChoice.color
+                areaChoice.mode === 'new'
+                  ? areaChoice.color
                   : seededPaletteColor(),
             })
           }
-          placeholder="New cove name"
-          aria-label="New cove name"
+          placeholder="New area name"
+          aria-label="New area name"
         />
       )}
     </div>
@@ -1034,7 +1034,7 @@ function isAbsolutePath(p: string): boolean {
 
 /**
  * Pick a palette color deterministically by cycling through
- * `COVE_PALETTE` indexed by the caller's seed (current cove count is
+ * `AREA_PALETTE` indexed by the caller's seed (current area count is
  * the natural choice). Using `Math.random` here would (a) make tests
  * flaky and (b) jitter the color each render for the same UI state.
  * The seed value is opaque — any non-negative integer works. Negative
@@ -1042,21 +1042,21 @@ function isAbsolutePath(p: string): boolean {
  */
 function pickPaletteColor(seed: number): string {
   const idx = Number.isFinite(seed) && seed >= 0
-    ? Math.floor(seed) % COVE_PALETTE.length
+    ? Math.floor(seed) % AREA_PALETTE.length
     : 0;
-  return COVE_PALETTE[idx];
+  return AREA_PALETTE[idx];
 }
 
 function canSubmitForm({
   cwd,
   cwdError,
-  coveChoice,
+  areaChoice,
   submitting,
   issueDev,
 }: {
   cwd: string;
   cwdError: string | null;
-  coveChoice: CoveChoice;
+  areaChoice: AreaChoice;
   submitting: boolean;
   /** `null` in the plain 'task' variant. In 'issue-dev' (#891 ③) the
    *  template_input must be produceable: either the raw-JSON override
@@ -1069,8 +1069,8 @@ function canSubmitForm({
   if (submitting) return false;
   if (!isAbsolutePath(cwd.trim())) return false;
   if (cwdError) return false;
-  if (coveChoice.mode === 'existing' && !coveChoice.coveId) return false;
-  if (coveChoice.mode === 'new' && !coveChoice.name.trim()) return false;
+  if (areaChoice.mode === 'existing' && !areaChoice.areaId) return false;
+  if (areaChoice.mode === 'new' && !areaChoice.name.trim()) return false;
   if (issueDev) {
     if (issueDev.rawOverride) {
       if (!issueDev.rawValid) return false;
@@ -1094,17 +1094,17 @@ function readHostThemeRgb() {
  * say *what* collided and *where*; pre-CalmApiError-rewrite this was
  * just the raw string.
  *
- * `coves` is the current `useCovesQuery` snapshot — we look up the
- * conflicting cove's display name from `body.cove_id` so the user
- * sees "claimed by cove **Atlas**" instead of an opaque UUID. If the
- * cove isn't in our local cache (e.g. it was created in a sibling tab
- * and our coves-query hasn't refreshed, or it was deleted between the
+ * `areas` is the current `useAreasQuery` snapshot — we look up the
+ * conflicting area's display name from `body.area_id` so the user
+ * sees "claimed by area **Atlas**" instead of an opaque UUID. If the
+ * area isn't in our local cache (e.g. it was created in a sibling tab
+ * and our areas-query hasn't refreshed, or it was deleted between the
  * conflict-detect and our error render), we fall back to the generic
- * "another cove" phrasing.
+ * "another area" phrasing.
  */
 function formatSubmitError(
   err: unknown,
-  coves: { id: string; name: string }[],
+  areas: { id: string; name: string }[],
 ): string {
   if (!(err instanceof CalmApiError)) {
     if (err instanceof Error) return err.message;
@@ -1113,21 +1113,21 @@ function formatSubmitError(
   if (err.status === 409) {
     const body = asFolderConflict(err.body);
     if (body) {
-      const conflicting = coves.find((c) => c.id === body.cove_id);
-      // React's default text escaping handles the cove name when it
+      const conflicting = areas.find((c) => c.id === body.area_id);
+      // React's default text escaping handles the area name when it
       // renders, but the message is a plain string here — the caller
       // drops it into a <p> via `{errorMsg}`, which also escapes. No
       // raw HTML path.
-      const coveLabel = conflicting
-        ? `cove “${conflicting.name}”`
-        : 'another cove';
+      const areaLabel = conflicting
+        ? `area “${conflicting.name}”`
+        : 'another area';
       switch (body.conflict_kind) {
         case 'descendant':
-          return `That path is already claimed by ${coveLabel} (folder \`${body.conflict_path}\`). Pick that cove or choose a different path.`;
+          return `That path is already claimed by ${areaLabel} (folder \`${body.conflict_path}\`). Pick that area or choose a different path.`;
         case 'ancestor':
-          return `An existing narrower claim under \`${body.conflict_path}\` (owned by ${coveLabel}) blocks claiming this directory. Remove the inner claim first or pick a different path.`;
+          return `An existing narrower claim under \`${body.conflict_path}\` (owned by ${areaLabel}) blocks claiming this directory. Remove the inner claim first or pick a different path.`;
         case 'equal':
-          return `That exact path is already claimed by ${coveLabel} (folder \`${body.conflict_path}\`).`;
+          return `That exact path is already claimed by ${areaLabel} (folder \`${body.conflict_path}\`).`;
       }
     }
     return err.message || 'Path conflict.';
@@ -1154,8 +1154,8 @@ function asFolderConflict(body: unknown): FolderConflictBody | null {
     'conflict_path' in body &&
     typeof (body as { conflict_path: unknown }).conflict_path === 'string' &&
     'conflict_kind' in body &&
-    'cove_id' in body &&
-    typeof (body as { cove_id: unknown }).cove_id === 'string'
+    'area_id' in body &&
+    typeof (body as { area_id: unknown }).area_id === 'string'
   ) {
     const kind = (body as { conflict_kind: unknown }).conflict_kind;
     if (kind === 'descendant' || kind === 'ancestor' || kind === 'equal') {

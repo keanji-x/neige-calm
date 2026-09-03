@@ -1,29 +1,29 @@
 import { AxeBuilder } from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
-import { createCove, createWave } from './helpers/seed.js';
+import { createArea, createWave } from './helpers/seed.js';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
-test.beforeEach(() => { createdCoveIds.length = 0; });
+test.beforeEach(() => { createdAreaIds.length = 0; });
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
-  createdCoveIds.length = 0;
+  for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
+  createdAreaIds.length = 0;
 });
 
 test('the primary routes have no WCAG A or AA violations in light mode', async ({ page, request }) => {
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
-  const wave = await createWave(request, cove.id);
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  const wave = await createWave(request, area.id);
 
   const routes = [
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
-    { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-wave page. Added here rather than left to the create
        spec: this is a real route with its own heading, a `contenteditable` and
        two chips, and none of that is exercised for contrast or naming by a spec
        that only drives it. It is anchored on the composer because the page has
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
-    { path: `/next/cove/${cove.id}/new`, anchor: page.getByLabel('What this wave should do') },
+    { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this wave should do') },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
     { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
   ];

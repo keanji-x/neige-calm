@@ -271,7 +271,7 @@ mod tests {
                 repo,
                 events: crate::event::EventBus::new(),
                 card_role_cache: crate::card_role_cache::CardRoleCache::new(),
-                wave_cove_cache: crate::wave_cove_cache::WaveCoveCache::new(),
+                wave_area_cache: crate::wave_area_cache::WaveAreaCache::new(),
                 daemon,
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),

@@ -282,9 +282,9 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   //                          rejection at all; the word stays on this list for the general reason above.)
   //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
   //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
-  //   `cove` / `coves`     — 110/61 sources: the top-level container every wave hangs off.
+  //   `area` / `areas`     — 110/61 sources: the top-level container every wave hangs off.
   //   `report` / `reports` — 117 sources: a card kind, a page, a rail, an API noun.
-  'theme', 'themes', 'terminal', 'terminals', 'codex', 'cove', 'coves', 'report', 'reports',
+  'theme', 'themes', 'terminal', 'terminals', 'codex', 'area', 'areas', 'report', 'reports',
 ]);
 
 /** An anchor plus how it must be matched; see `codeAnchorLines` for why only display copy ignores case. */

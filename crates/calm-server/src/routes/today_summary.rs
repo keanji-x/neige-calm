@@ -218,12 +218,12 @@ pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-p
 /// and hoped would be green on a scheduler that serialises them — reporting
 /// success for a run in which the arm was never entered. Our box is not an
 /// environment that can falsify that; a CI runner is. The same reasoning, and
-/// the same shape, as `routes::today`'s [`SystemCoveMintRendezvous`], down to
+/// the same shape, as `routes::today`'s [`SystemAreaMintRendezvous`], down to
 /// living on [`AppState`] rather than in a `static`: a process-global is shared
 /// by every `AppState` in the process, which a threaded `cargo test` turns into
 /// cross-case interference.
 ///
-/// [`SystemCoveMintRendezvous`]: crate::routes::today::SystemCoveMintRendezvous
+/// [`SystemAreaMintRendezvous`]: crate::routes::today::SystemAreaMintRendezvous
 /// [`AppState`]: crate::state::AppState
 pub type TodaySummaryCreateRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
 
@@ -239,7 +239,7 @@ pub type TodaySummaryBootstrapRendezvous = Option<std::sync::Arc<tokio::sync::Ba
 ///
 /// **`attempts` is what makes the race deterministic rather than hoped for**,
 /// and it is incremented *before* the rendezvous for exactly the reason
-/// `SystemCoveMintCounters::attempts` is: it lets a test know a request has
+/// `SystemAreaMintCounters::attempts` is: it lets a test know a request has
 /// passed `card_get` and found nothing, which is the only moment at which
 /// planting a conflicting card is guaranteed to produce the 409 the fallback
 /// exists for. Without it the test would have to guess when to act, and
@@ -512,7 +512,7 @@ pub(crate) async fn write_today_summary(
     //
     // **Under the per-card first-message claim, and that is not optional.**
     // This is the same read-then-send `create_wave_conversation` and
-    // `create_cove_conversation` perform, and all three need the same claim for
+    // `create_area_conversation` perform, and all three need the same claim for
     // the same reason: two concurrent requests both read "no user message yet"
     // and both send, so the agent gets the same standing instruction twice.
     // Moving this step out of `create_wave_conversation` and into here moved it

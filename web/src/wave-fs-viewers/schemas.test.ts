@@ -106,7 +106,7 @@ describe('wave fs zod to generated type conformance', () => {
 describe('#1209 wave.json snapshots written before the template rename', () => {
   const legacySnapshot = {
     id: 'w1',
-    cove_id: 'c1',
+    area_id: 'c1',
     title: 't',
     sort: 0,
     archived_at: null,

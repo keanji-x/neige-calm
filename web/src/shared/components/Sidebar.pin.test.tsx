@@ -2,14 +2,14 @@
 //
 // Pinned waves appear in a dedicated "Pinned" section below "Waiting on you".
 // A pin/unpin button is revealed on row hover. Pinned waves that need
-// attention also appear in "Waiting on you" and increment cove warn badges.
+// attention also appear in "Waiting on you" and increment area warn badges.
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SessionContext } from '../../app/SessionProvider';
 import { Sidebar } from './Sidebar';
-import type { Cove, Wave } from '../../types';
+import type { Area, Wave } from '../../types';
 
 afterEach(cleanup);
 
@@ -28,14 +28,14 @@ function wrap(children: ReactNode) {
   );
 }
 
-function makeCove(id = 'c1'): Cove {
+function makeArea(id = 'c1'): Area {
   return { id, name: 'Atlas', subtitle: '', color: '#5a9' };
 }
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1',
-    coveId: 'c1',
+    areaId: 'c1',
     title: 'My wave',
     lifecycle: 'blocked',
     anyCardNeedsInput: false,
@@ -54,7 +54,7 @@ function sidebarProps(
   onPinWave?: (id: string, pin: boolean) => void,
 ) {
   return {
-    coves: [makeCove()],
+    areas: [makeArea()],
     waves,
     route: { name: 'today' } as const,
     onGo: () => {},
@@ -158,21 +158,21 @@ describe('Sidebar pinned section', () => {
   });
 });
 
-describe('Sidebar per-cove badge parity with Waiting section', () => {
-  it('pinned blocked wave increments the cove warn waiting badge', () => {
+describe('Sidebar per-area badge parity with Waiting section', () => {
+  it('pinned blocked wave increments the area warn waiting badge', () => {
     const wave = makeWave({ id: 'w-pinned-blocked', lifecycle: 'blocked', pinnedAt: 1000 });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
     expect(screen.getByRole('region', { name: 'Pinned' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Waiting on you' })).toBeTruthy();
-    const badge = document.querySelector('.cove-nav-badge.warn');
+    const badge = document.querySelector('.area-nav-badge.warn');
     expect(badge).toBeTruthy();
     expect(badge?.textContent).toBe('1');
   });
 
-  it('unpinned blocked wave increments the cove red waiting badge', () => {
+  it('unpinned blocked wave increments the area red waiting badge', () => {
     const wave = makeWave({ id: 'w-unblocked', lifecycle: 'blocked', pinnedAt: null });
     render(wrap(<Sidebar {...sidebarProps([wave])} />));
-    const badge = document.querySelector('.cove-nav-badge');
+    const badge = document.querySelector('.area-nav-badge');
     expect(badge).toBeTruthy();
     expect(badge?.classList.contains('warn')).toBe(true);
     expect(badge?.textContent).toBe('1');
@@ -196,12 +196,12 @@ describe('Sidebar per-cove badge parity with Waiting section', () => {
     expect(row?.querySelector('.side-wave-title')).toHaveTextContent('My wave');
   });
 
-  it('inline cove row carries the attention class for warn title styling', () => {
+  it('inline area row carries the attention class for warn title styling', () => {
     const onPinWave = vi.fn();
     const wave = makeWave({ id: 'w-inline-attention', lifecycle: 'blocked', pinnedAt: null });
     render(wrap(<Sidebar {...sidebarProps([wave], onPinWave)} />));
 
-    fireEvent.click(screen.getByRole('button', { name: /Expand cove Atlas/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Expand area Atlas/ }));
 
     const inline = screen.getByRole('group', { name: 'Waves in Atlas' });
     expect(within(inline).getByText('My wave')).toBeTruthy();
@@ -209,22 +209,22 @@ describe('Sidebar per-cove badge parity with Waiting section', () => {
   });
 });
 
-describe('Sidebar WaveRow cove-name span', () => {
-  it('wave with no matching cove renders without the cove text span', () => {
-    // coveId does not match any cove in the list → orphan wave
-    const wave = makeWave({ id: 'w-orphan', coveId: 'nonexistent', lifecycle: 'blocked', pinnedAt: null });
+describe('Sidebar WaveRow area-name span', () => {
+  it('wave with no matching area renders without the area text span', () => {
+    // areaId does not match any area in the list → orphan wave
+    const wave = makeWave({ id: 'w-orphan', areaId: 'nonexistent', lifecycle: 'blocked', pinnedAt: null });
     render(
       wrap(
         <Sidebar
-          coves={[makeCove('c1')]}
+          areas={[makeArea('c1')]}
           waves={[wave]}
           route={{ name: 'today' }}
           onGo={() => {}}
         />,
       ),
     );
-    // No .side-wave-cove span rendered when cove is not found.
-    expect(document.querySelector('.side-wave-cove')).toBeNull();
+    // No .side-wave-area span rendered when area is not found.
+    expect(document.querySelector('.side-wave-area')).toBeNull();
     // The wave nav button is still present.
     expect(screen.getByRole('button', { name: /My wave/i })).toBeTruthy();
   });

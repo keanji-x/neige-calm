@@ -1380,7 +1380,7 @@ describe('parseReportLink', () => {
 
   it.each([
     ['a plain http url', 'https://example.com'],
-    ['another neige noun', 'neige://cove/c-1'],
+    ['another neige noun', 'neige://area/c-1'],
     ['a javascript url', 'javascript:alert(1)'],
   ])('reads null for %s, which the renderer then shows as plain text', (_label, url) => {
     expect(parseReportLink(url)).toBeNull();

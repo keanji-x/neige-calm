@@ -51,7 +51,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -64,7 +64,7 @@ use crate::common;
 use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<dyn Repo>,
     card_role_cache: CardRoleCache,
     _tmp: TempDir,
@@ -77,8 +77,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "sync-daemon-test".into(),
             color: "#000".into(),
             sort: None,
@@ -92,13 +92,13 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    // #234 (rebase) — WaveCoveCache joined the AppState/PluginHost surface
+    // #234 (rebase) — WaveAreaCache joined the AppState/PluginHost surface
     // alongside CardRoleCache. Empty seed is fine here: no waves pre-exist
     // in the freshly-opened in-memory repo, and the wave we create through
     // `POST /api/waves` populates the cache write-through via
     // `wave_create_tx`.
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -110,7 +110,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-sync-daemon-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         // #293 cutover — `POST /api/waves` now boots a kernel-owned codex
         // app-server before returning 201. Point `codex_bin` at the
@@ -118,7 +118,7 @@ async fn boot() -> Boot {
         // without a real codex on PATH (see `tests/common/mod.rs`).
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -129,7 +129,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         card_role_cache,
         _tmp: tmp,
@@ -183,8 +183,8 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "broken-codex-tolerant-test".into(),
             color: "#000".into(),
             sort: None,
@@ -197,8 +197,8 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
         proc_supervisor_sock: None,
     });
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     // Deterministically-broken codex bin: absolute, absent. The route must
     // still commit an inert wave instead of surfacing the daemon failure as a
@@ -217,11 +217,11 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
             std::env::temp_dir().join("calm-plugins-data-broken-codex-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(codex),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     let pending_codex_threads = state.pending_codex_threads.clone();
 
@@ -231,11 +231,11 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
         ))
         .with_state(state);
 
-    let cove_id = cove.id.to_string();
+    let area_id = area.id.to_string();
     let (status, body) = post(
         app.clone(),
         "/api/waves",
-        json!({"cove_id": cove_id, "title": "inert wave", "cwd": attached_repo_fixture("issue-293-tolerant"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": area_id, "title": "inert wave", "cwd": attached_repo_fixture("issue-293-tolerant"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
 
@@ -247,7 +247,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     );
 
     // (2) The wave + spec card rows committed.
-    let waves = repo.waves_by_cove(&cove_id).await.unwrap();
+    let waves = repo.waves_by_area(&area_id).await.unwrap();
     assert_eq!(
         waves.len(),
         1,
@@ -312,13 +312,13 @@ async fn post_api_waves_does_not_stamp_prompt_on_spec_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": title, "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": title, "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
     // Find the Spec card the route minted.
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     let wave = waves.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
     let spec_card = cards
@@ -364,7 +364,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // The wave create may still 500 because the daemon child fails to
@@ -377,7 +377,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
         "expected 201 or 500 (daemon spawn may fail in CI without codex bin); got {status}",
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     let wave = waves.into_iter().next().unwrap();
     let cards = boot.repo.cards_by_wave(wave.id.as_str()).await.unwrap();
     let spec_card = cards
@@ -396,12 +396,12 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
 // ---------------------------------------------------------------------------
 
 /// PR 2 contract: wave create persists `wave.cwd` and uses the same
-/// path for the optional cove folder claim, not the pre-#250
+/// path for the optional area folder claim, not the pre-#250
 /// `routes::codex_cards::default_cwd()` fallback.
 ///
 /// Two rows must observe the same cwd at commit time:
 ///   1. `waves.cwd`        — the wave row's column.
-///   2. `cove_folders.path` — the attached folder claim.
+///   2. `area_folders.path` — the attached folder claim.
 #[tokio::test]
 async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
     let boot = boot().await;
@@ -411,7 +411,7 @@ async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "cwd-contract wave",
             "cwd": cwd,
             "attach_folder": true,
@@ -428,13 +428,13 @@ async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
     );
 
     // Wave row carries cwd.
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     let wave = waves.into_iter().next().unwrap();
     assert_eq!(wave.workspace.path, cwd);
 
     // Folder claim landed inside the same tx (attach_folder = true).
-    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].path, cwd);
 }
@@ -453,7 +453,7 @@ async fn post_api_waves_then_lifecycle_done_surfaces_terminal_at_in_get() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "wave-to-done",
             "cwd": attached_repo_fixture("issue-250-pr2-to-done"),
             "attach_folder": true,

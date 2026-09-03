@@ -15,7 +15,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::{CardId, WaveId};
 use calm_server::mcp_server::auth;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, Wave, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use calm_server::operation::spec_harness_start_adapter::{
@@ -29,7 +29,7 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -74,7 +74,7 @@ async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -86,11 +86,11 @@ async fn state_with_fake_daemon() -> (AppState, Arc<SqlxRepo>, CardRoleCache) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     (
@@ -108,7 +108,7 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin().to_string();
     let state = AppState::from_parts(
@@ -122,11 +122,11 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(codex),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
 
     let cfg = Config::parse_from([
@@ -164,8 +164,8 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
 }
 
 async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "adapter".into(),
             color: "#111111".into(),
             sort: None,
@@ -174,7 +174,7 @@ async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         .unwrap();
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: cove.id,
+        area_id: area.id,
         title: "adapter goal".into(),
         sort: None,
         cwd: "/tmp".into(),
@@ -1133,7 +1133,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         repo: repo_dyn,
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
-        wave_cove_cache: state.wave_cove_cache.clone(),
+        wave_area_cache: state.wave_area_cache.clone(),
         daemon: state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -1234,7 +1234,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
         repo: repo_dyn,
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
-        wave_cove_cache: state.wave_cove_cache.clone(),
+        wave_area_cache: state.wave_area_cache.clone(),
         daemon: state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -1758,7 +1758,7 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
 
 async fn chat_wave(repo: &SqlxRepo) -> Wave {
     let wave = seed_wave(repo).await;
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(wave.id.as_str())
         .execute(repo.pool())
         .await
@@ -1805,7 +1805,7 @@ async fn lazy_mint_requires_the_plain_chat_profile() {
 }
 
 #[tokio::test]
-async fn lazy_mint_refuses_a_wave_that_is_not_a_cove_chat_wave() {
+async fn lazy_mint_refuses_a_wave_that_is_not_a_area_chat_wave() {
     let (state, repo, _role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
     let error = state
@@ -1816,7 +1816,7 @@ async fn lazy_mint_refuses_a_wave_that_is_not_a_cove_chat_wave() {
             lazy_mint_payload(&wave, "conv-wave", HarnessProfile::PlainChat),
         )
         .await
-        .expect_err("chat cards may only be conjured onto a cove chat wave");
+        .expect_err("chat cards may only be conjured onto an area chat wave");
     assert!(
         matches!(error, calm_server::error::CalmError::Forbidden(_)),
         "unexpected error: {error:?}"
@@ -1960,7 +1960,7 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -1972,11 +1972,11 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
             std::env::temp_dir().join(format!("calm-plugins-data-down-{}", new_id())),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     )
     .with_shared_codex_appserver(SharedCodexAppServer::new_stub(repo.clone()));
     assert!(!state.shared_codex_appserver.is_running());

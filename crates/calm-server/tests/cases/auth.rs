@@ -27,11 +27,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -51,7 +51,7 @@ async fn fresh_state() -> AppState {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -130,8 +130,8 @@ struct HookBoot {
 
 async fn hook_boot() -> HookBoot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "hook-auth".into(),
             color: "#000".into(),
             sort: None,
@@ -141,7 +141,7 @@ async fn hook_boot() -> HookBoot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "hook auth wave".into(),
             sort: None,
             cwd: String::new(),
@@ -184,8 +184,8 @@ async fn hook_boot() -> HookBoot {
     card_role_cache.insert(claude_card.id.clone(), CardRole::Worker, wave.id.clone());
     card_role_cache.insert(codex_card.id.clone(), CardRole::Worker, wave.id.clone());
 
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -200,17 +200,17 @@ async fn hook_boot() -> HookBoot {
             std::env::temp_dir().join("calm-plugins-data-hook-auth"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     calm_server::card_fsm::spawn(
         repo_dyn.clone(),
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
     );
     tokio::task::yield_now().await;
 
@@ -414,7 +414,7 @@ async fn protected_route_without_session_returns_401() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -437,7 +437,7 @@ async fn internal_worker_hooks_bypass_session_gate_but_protected_rest_does_not()
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -646,7 +646,7 @@ async fn protected_route_with_valid_session_returns_200() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -775,7 +775,7 @@ async fn dev_autologin_lets_every_request_through() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .body(Body::empty())
                 .unwrap(),
         )

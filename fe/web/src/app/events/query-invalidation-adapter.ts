@@ -8,7 +8,7 @@
 // must never invent a key shape of its own, and a plan key with no query behind
 // it is dropped here rather than turned into a fabricated key.
 
-import { toCove } from '../../../../core/domain/cove.ts';
+import { toArea } from '../../../../core/domain/area.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
@@ -33,8 +33,8 @@ export interface QueryCachePort {
  */
 export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   const [head, first, second] = key;
-  if (head === 'coves' && key.length === 1) return queryKeys.coves();
-  if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);
+  if (head === 'areas' && key.length === 1) return queryKeys.areas();
+  if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);
   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);
   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
@@ -48,11 +48,11 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
      change it. */
   if (head === 'wave-report' && key.length === 1) return queryKeys.waveReportPrefix();
   if (head === 'wave-report' && typeof first === 'string' && key.length === 2) return queryKeys.waveReport(first);
-  /* The cove drawer's conversation list. Only the bare form exists: no
-     conversation-writing event carries a `cove_id` and no cached row can supply
-     one, so the plan emits the prefix and `queryKeys.coveConversations` keeps
-     the cove id in second position precisely so this prefix reaches it. */
-  if (head === 'cove-conversations' && key.length === 1) return queryKeys.coveConversationsPrefix();
+  /* The area drawer's conversation list. Only the bare form exists: no
+     conversation-writing event carries a `area_id` and no cached row can supply
+     one, so the plan emits the prefix and `queryKeys.areaConversations` keeps
+     the area id in second position precisely so this prefix reaches it. */
+  if (head === 'area-conversations' && key.length === 1) return queryKeys.areaConversationsPrefix();
   /* One wave's conversation list. Both arities are mapped, same as
      `wave-report` above: the plan names the wave whenever `derivedWaveId`
      resolves one and falls back to the prefix when a `runtime.*` event's card
@@ -78,7 +78,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
 /**
  * Applies the effects of one reduction. `persist-cursor` and `reconnect` are
  * stream lifecycle, not cache work, so the bridge handles them. Write-through
- * updates only an existing cached cove; a missing row remains absent until the
+ * updates only an existing cached area; a missing row remains absent until the
  * accompanying invalidation refetches authoritative data.
  */
 export function applyEventEffects(client: QueryCachePort, effects: readonly EventEffect[]): void {
@@ -102,13 +102,13 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     }
     if (effect.type === 'write-through') {
       for (const write of effect.writes) {
-        if (write.mode !== 'replace-existing-cove') continue;
+        if (write.mode !== 'replace-existing-area') continue;
         const mapped = mapPlannedQueryKey(write.key);
         if (mapped === null) continue;
-        const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);
-        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;
-        const updated = toCove(write.value);
-        client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));
+        const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);
+        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;
+        const updated = toArea(write.value);
+        client.setQueryData(mapped, existing.map((area) => area.id === updated.id ? updated : area));
       }
       continue;
     }

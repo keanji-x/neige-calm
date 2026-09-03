@@ -1,4 +1,4 @@
-// The report document — the main column on a wave and a cove.
+// The report document — the main column on a wave and an area.
 //
 // **A report is a sequence of typed blocks, not one Markdown string** (§8.3).
 // `prose` blocks render through `core/markdown`'s sanitized AST; `table`,
@@ -20,7 +20,7 @@
 //
 // It lives in `features/` and not `ui/`: it reads `core/domain` and
 // `core/markdown`, and `ui/**` may import `core` *types* from three files only.
-// The cove and wave pages therefore receive it by injection from `app/router`,
+// The area and wave pages therefore receive it by injection from `app/router`,
 // the same way they receive the wave list.
 
 import { useEffect, type ReactNode } from 'react';

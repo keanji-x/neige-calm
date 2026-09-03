@@ -17,8 +17,8 @@ export function useGo() {
       case 'today':
         void navigate({ to: '/' });
         return;
-      case 'cove':
-        void navigate({ to: '/cove/$coveId', params: { coveId: r.coveId } });
+      case 'area':
+        void navigate({ to: '/area/$areaId', params: { areaId: r.areaId } });
         return;
       case 'wave':
         void navigate({ to: '/wave/$waveId', params: { waveId: r.id } });

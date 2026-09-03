@@ -21,7 +21,7 @@ use calm_truth::session_repo::SessionRepo;
 use calm_truth::state::WriteContext;
 use calm_truth::{test_helpers, wave_lifecycle};
 use calm_types::error::CoreError;
-use calm_types::ids::{CoveId, WaveId};
+use calm_types::ids::{AreaId, WaveId};
 use calm_types::model::WaveLifecycle;
 use calm_types::observation::Observation;
 use calm_types::runtime::TimestampMs;
@@ -197,16 +197,16 @@ impl ObsMatcher {
 pub struct FakeRoot {
     session_id: WorkerSessionId,
     wave_id: WaveId,
-    cove_id: CoveId,
+    area_id: AreaId,
     script: Vec<(ObsMatcher, Vec<DecisionIntent>)>,
 }
 
 impl FakeRoot {
-    pub fn for_wave(session_id: WorkerSessionId, wave_id: WaveId, cove_id: CoveId) -> Self {
+    pub fn for_wave(session_id: WorkerSessionId, wave_id: WaveId, area_id: AreaId) -> Self {
         Self {
             session_id,
             wave_id,
-            cove_id,
+            area_id,
             script: Vec::new(),
         }
     }
@@ -226,7 +226,7 @@ impl AgentReactor for FakeRoot {
         Principal::Agent {
             session_id: self.session_id.clone(),
             wave_id: self.wave_id.clone(),
-            cove_id: self.cove_id.clone(),
+            area_id: self.area_id.clone(),
         }
     }
 
@@ -312,7 +312,7 @@ where
         let from = wave.lifecycle;
         let event = Event::WaveLifecycleChanged {
             id: wave_id.clone(),
-            cove_id: wave.cove_id.clone(),
+            area_id: wave.area_id.clone(),
             from,
             to,
             agent_message: agent_message.clone(),
@@ -321,7 +321,7 @@ where
         let transition_actor = actor.clone();
         let scope = EventScope::Wave {
             wave: wave_id.clone(),
-            cove: wave.cove_id,
+            area: wave.area_id,
         };
         let wave_id_for_tx = wave_id.clone();
 
@@ -476,7 +476,7 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
         .await
         .expect("wave get")
         .expect("wave exists");
-    let cove_id = wave.cove_id;
+    let area_id = wave.area_id;
     let root_sid = WorkerSessionId::from("ws-full-loop-root");
     let root_session = crate::session(root_sid.as_str(), wave_id.clone());
 
@@ -510,7 +510,7 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
             evidence: exit_evidence.clone(),
         },
     ]);
-    let root = FakeRoot::for_wave(root_sid.clone(), wave_id.clone(), cove_id.clone()).on(
+    let root = FakeRoot::for_wave(root_sid.clone(), wave_id.clone(), area_id.clone()).on(
         ObsMatcher::TaskCompleted,
         [DecisionIntent::LifecycleTransition {
             wave_id: wave_id.clone(),
@@ -593,7 +593,7 @@ pub async fn full_loop_cross_principal_denied() {
         .await
         .expect("wave get")
         .expect("wave exists");
-    let cove_id = wave.cove_id;
+    let area_id = wave.area_id;
     let root_sid = WorkerSessionId::from("ws-cross-principal-root");
     let non_root_sid = WorkerSessionId::from("ws-cross-principal-not-root");
     let root_session = crate::session(root_sid.as_str(), wave_id.clone());
@@ -625,7 +625,7 @@ pub async fn full_loop_cross_principal_denied() {
     let non_root = Principal::Agent {
         session_id: non_root_sid,
         wave_id: wave_id.clone(),
-        cove_id,
+        area_id,
     };
 
     let denied = sink
@@ -739,7 +739,7 @@ pub async fn fake_provider_contract() {
 
 pub async fn fake_root_contract() {
     let wave_id = WaveId::from("fake-root-wave");
-    let cove_id = CoveId::from("fake-root-cove");
+    let area_id = AreaId::from("fake-root-area");
     let session_id = WorkerSessionId::from("fake-root-session");
     let done = DecisionIntent::LifecycleTransition {
         wave_id: wave_id.clone(),
@@ -751,7 +751,7 @@ pub async fn fake_root_contract() {
         to: WaveLifecycle::Failed,
         agent_message: Some("fallback".into()),
     };
-    let root = FakeRoot::for_wave(session_id.clone(), wave_id.clone(), cove_id.clone())
+    let root = FakeRoot::for_wave(session_id.clone(), wave_id.clone(), area_id.clone())
         .on(ObsMatcher::TaskCompleted, [done.clone()])
         .on(ObsMatcher::Any, [fallback]);
 
@@ -760,7 +760,7 @@ pub async fn fake_root_contract() {
         Principal::Agent {
             session_id,
             wave_id,
-            cove_id,
+            area_id,
         }
     );
     assert_eq!(
@@ -777,7 +777,7 @@ pub async fn fake_root_contract() {
     let empty = FakeRoot::for_wave(
         WorkerSessionId::from("empty-root-session"),
         WaveId::from("empty-wave"),
-        CoveId::from("empty-cove"),
+        AreaId::from("empty-area"),
     );
     assert!(
         empty
@@ -849,16 +849,16 @@ mod tests {
     #[test]
     fn actor_for_principal_maps_principal_identity() {
         let wave_id = WaveId::from("actor-map-wave");
-        let cove_id = CoveId::from("actor-map-cove");
+        let area_id = AreaId::from("actor-map-area");
         let root = Principal::Agent {
             session_id: WorkerSessionId::from("actor-map-root"),
             wave_id: wave_id.clone(),
-            cove_id: cove_id.clone(),
+            area_id: area_id.clone(),
         };
         let non_root = Principal::Agent {
             session_id: WorkerSessionId::from("actor-map-non-root"),
             wave_id,
-            cove_id,
+            area_id,
         };
 
         assert_eq!(

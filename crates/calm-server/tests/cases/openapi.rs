@@ -13,11 +13,11 @@ use utoipa::OpenApi;
 fn document_contains_every_annotated_path() {
     let doc = ApiDoc::openapi();
     let expected_paths = [
-        "/api/coves",
-        "/api/coves/{id}",
-        "/api/coves/{cove_id}/waves",
-        "/api/coves/{cove_id}/chat-wave/ensure",
-        "/api/coves/{cove_id}/conversations",
+        "/api/areas",
+        "/api/areas/{id}",
+        "/api/areas/{area_id}/waves",
+        "/api/areas/{area_id}/chat-wave/ensure",
+        "/api/areas/{area_id}/conversations",
         "/api/waves",
         "/api/waves/{id}",
         "/api/waves/{wave_id}/cards",
@@ -61,9 +61,9 @@ fn document_contains_every_wire_model() {
     let schemas: Vec<&String> = components.schemas.keys().collect();
     let expected_schemas = [
         // domain models
-        "Cove",
-        "NewCove",
-        "CovePatch",
+        "Area",
+        "NewArea",
+        "AreaPatch",
         "Wave",
         "NewWave",
         "CreateWaveRequest",
@@ -83,8 +83,8 @@ fn document_contains_every_wire_model() {
         "CreateCardBody",
         "ViaToolCall",
         "NewTerminalCardBody",
-        "CoveConversationSummary",
-        "NewCoveConversationBody",
+        "AreaConversationSummary",
+        "NewAreaConversationBody",
         "NewCodexCardBody",
         "OverlayQuery",
         "OverlayDeleteBody",

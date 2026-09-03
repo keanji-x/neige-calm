@@ -5,9 +5,9 @@ use calm_exec as _;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+pub mod area_folder_claim;
 pub mod card_kind;
 pub mod card_role_cache;
-pub mod cove_folder_claim;
 pub mod db;
 pub mod decision_gate;
 pub mod event_bus;
@@ -23,7 +23,7 @@ pub mod state;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 pub mod validation;
-pub mod wave_cove_cache;
+pub mod wave_area_cache;
 pub mod wave_fs_view;
 pub mod wave_vcs;
 pub mod wave_vcs_repo;

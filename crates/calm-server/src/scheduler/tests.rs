@@ -71,7 +71,7 @@ fn keys(tasks: &[Task]) -> Vec<&str> {
 fn design_claim_resolution_failure_scope_is_consistent() {
     let design = include_str!("../../../../docs/architecture/985-doc-as-plan.md");
     assert!(design.contains("claim 前定位失败一律不下判决"));
-    assert!(!design.contains("越 cove、超预算、确定性定位失败一律直接判"));
+    assert!(!design.contains("越 area、超预算、确定性定位失败一律直接判"));
 }
 
 #[test]
@@ -467,18 +467,18 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     );
     let repo: Arc<dyn Repo> = concrete.clone();
     let route_repo: Arc<dyn crate::db::RouteRepo> = concrete.clone();
-    let cove = repo
-        .cove_create(crate::model::NewCove {
+    let area = repo
+        .area_create(crate::model::NewArea {
             name: "claude-timeout".into(),
             color: "#101010".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "claude-timeout".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -559,7 +559,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     let events = EventBus::new();
     let write = WriteContext::new(
         concrete.card_role_cache().clone(),
-        concrete.wave_cove_cache().clone(),
+        concrete.wave_area_cache().clone(),
     );
     let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(pool.clone()));
     let completion = crate::operation::OperationCompletionBus::new();
@@ -630,18 +630,18 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
             .expect("open repo"),
     );
     let repo: Arc<dyn Repo> = concrete.clone();
-    let cove = repo
-        .cove_create(crate::model::NewCove {
+    let area = repo
+        .area_create(crate::model::NewArea {
             name: "timeout-race".into(),
             color: "#101010".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "timeout-race".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -701,7 +701,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     let events = EventBus::new();
     let write = WriteContext::new(
         concrete.card_role_cache().clone(),
-        concrete.wave_cove_cache().clone(),
+        concrete.wave_area_cache().clone(),
     );
     let scheduler = Scheduler::new(
         repo,

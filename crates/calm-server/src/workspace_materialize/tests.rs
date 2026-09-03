@@ -85,11 +85,11 @@ impl Drop for GitEnv {
 const WAVE: &str = "wave0000000000000000000000000001";
 
 /// `(root, repo_root)` for a fresh sandbox. The repository lives at
-/// `<root>/<cove>/<wave>` like production's `managed_workspace_path`.
+/// `<root>/<area>/<wave>` like production's `managed_workspace_path`.
 fn sandbox(tmp: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let root = tmp.path().join("root");
     std::fs::create_dir_all(&root).unwrap();
-    let repo_root = super::managed_workspace_path(&root, "cove0000000000000000000000000001", WAVE);
+    let repo_root = super::managed_workspace_path(&root, "area0000000000000000000000000001", WAVE);
     (root, repo_root)
 }
 
@@ -424,12 +424,12 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     );
 }
 
-/// D2: the layout is `<root>/<cove_id>/<wave_id>`, ids only.
+/// D2: the layout is `<root>/<area_id>/<wave_id>`, ids only.
 #[test]
-fn managed_path_is_root_cove_wave() {
+fn managed_path_is_root_area_wave() {
     let _env = GitEnv::c_locale();
-    let path = super::managed_workspace_path(Path::new("/srv/ws"), "cove1", "wave1");
-    assert_eq!(path, Path::new("/srv/ws/cove1/wave1"));
+    let path = super::managed_workspace_path(Path::new("/srv/ws"), "area1", "wave1");
+    assert_eq!(path, Path::new("/srv/ws/area1/wave1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +664,7 @@ fn a_marker_for_another_wave_is_refused() {
 
 /// **B3** — a symlink out of the workspace root must be refused.
 ///
-/// `create_dir_all` follows symlinks, so `<root>/<cove>` pointing elsewhere
+/// `create_dir_all` follows symlinks, so `<root>/<area>` pointing elsewhere
 /// yields a stored path that satisfies every *lexical* `starts_with` while the
 /// repository — and all worker output in it — lives outside the tree S5
 /// believes it owns.
@@ -676,8 +676,8 @@ fn a_symlink_out_of_the_root_is_refused() {
     let (root, repo_root) = sandbox(&tmp);
     let elsewhere = tmp.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let cove_dir = repo_root.parent().unwrap();
-    std::os::unix::fs::symlink(&elsewhere, cove_dir).unwrap();
+    let area_dir = repo_root.parent().unwrap();
+    std::os::unix::fs::symlink(&elsewhere, area_dir).unwrap();
 
     // The stored path is lexically inside the root — this is the check that
     // the invariant test and D8's prefix assertion would both be making.

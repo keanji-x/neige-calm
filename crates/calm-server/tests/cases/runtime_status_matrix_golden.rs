@@ -41,7 +41,7 @@ use calm_server::db::sqlite::{
     session_complete_for_terminal_tx, session_complete_tx, session_projection_active_for_card_tx,
     session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError, WorkerSessionState,
 };
@@ -70,17 +70,17 @@ async fn fresh_repo() -> SqlxRepo {
 }
 
 async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "exit-matrix".into(),
             color: "#101010".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: cove.id,
+        area_id: area.id,
         title: "exit matrix".into(),
         sort: None,
         cwd: String::new(),

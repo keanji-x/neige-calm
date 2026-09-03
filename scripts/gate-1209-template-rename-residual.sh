@@ -124,6 +124,13 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 10  crates/calm-truth/migrations/0076_waves_plugin_scope.sql
 # --- 2. The rename migration itself has to name what it renames.
 5   crates/calm-truth/migrations/0079_waves_rename_workflow_id_to_template_id.sql
+# --- 2b. #1316 S1's migration cites this one as its precedent, by the exact
+#         column names 0079 renamed. Naming them is the point: the comment
+#         tells a reader which prior migration to read for the shape it copies
+#         (value-preserving DDL + explicit string rewrites + a breaking
+#         release gate), and "the same shape as #1209 PR-2" without the column
+#         names sends them to a 400-line design doc instead of one file.
+1   crates/calm-truth/migrations/0080_cove_to_area.sql
 # --- 3. Migration fixtures pinned to a historical schema. These build rows
 #        through a migrator truncated BEFORE the rename, so the old column names
 #        (and, for 0076, the old manifest key) are the correct ones there;
@@ -211,6 +218,11 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #         buys a 17-shard mutation sweep.
 1   fe/tools/mutation/runner.ts
 1   docker-compose.yml
+# --- 14. GitHub Actions' manual-dispatch event name. `workflow_dispatch` is a
+#         platform-owned schema key and event value, not the retired neige
+#         template vocabulary. One line declares the trigger; two expressions
+#         route manual runs to the durable full-mutation scope/concurrency group.
+3   .github/workflows/ci.yml
 EOF
 
 # This script names the pattern it scans for and quotes several allowlisted

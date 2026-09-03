@@ -1,6 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
-import type { KernelCove, WireEvent } from '../api/wire';
+import type { KernelArea, WireEvent } from '../api/wire';
 
 export type EventKind = WireEvent['ev'];
 export type EventOf<K extends EventKind> = Extract<WireEvent, { ev: K }>;
@@ -109,7 +109,7 @@ function runtimeContextKeys(
 }
 
 const waveMutationKeys = (ev: EventOf<'wave.updated'> | EventOf<'wave.lifecycle_changed'>) => [
-  queryKeys.wavesInCove(ev.data.cove_id),
+  queryKeys.wavesInArea(ev.data.area_id),
   queryKeys.waveDetail(ev.data.id),
   waveFilesKey(ev.data.id),
   ['waves-range'],
@@ -120,10 +120,10 @@ const cardMutationKeys = (
 ) => [queryKeys.waveDetail(ev.data.wave_id), waveFilesKey(ev.data.wave_id)];
 
 export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } = definePolicies({
-  'cove.updated': {
+  'area.updated': {
     apply: (ev, { qc }) => {
       const updated = ev.data;
-      qc.setQueryData<KernelCove[]>(queryKeys.coves(), (prev) => {
+      qc.setQueryData<KernelArea[]>(queryKeys.areas(), (prev) => {
         if (!prev) return prev;
         const idx = prev.findIndex((c) => c.id === updated.id);
         if (idx === -1) return prev;
@@ -132,17 +132,17 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
         return next;
       });
     },
-    keys: () => [queryKeys.coves()],
+    keys: () => [queryKeys.areas()],
   },
-  'cove.deleted': {
-    keys: () => [queryKeys.coves(), queryKeys.overlaysByKind('wave')],
+  'area.deleted': {
+    keys: () => [queryKeys.areas(), queryKeys.overlaysByKind('wave')],
   },
   'wave.updated': {
     keys: waveMutationKeys,
   },
   'wave.deleted': {
     keys: (ev) => [
-      queryKeys.wavesInCove(ev.data.cove_id),
+      queryKeys.wavesInArea(ev.data.area_id),
       queryKeys.overlaysByKind('wave'),
       ['waves-range'],
     ],

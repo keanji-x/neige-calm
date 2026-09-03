@@ -171,7 +171,7 @@ per-template editor writing through `PUT /api/wave-templates/{id}` — and #1300
 removed both.
 
 The editor had no storage of its own. A template was a hidden wave in the system
-cove, so "save a template" was an ordinary wave-report write, and #1300 removes
+area, so "save a template" was an ordinary wave-report write, and #1300 removes
 that hidden wave because it is the last production path on which the kernel
 writes a report as `EditAuthor::User`. The editor went with its storage.
 

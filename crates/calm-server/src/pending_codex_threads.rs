@@ -36,7 +36,7 @@ use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
 };
 use crate::state::WriteContext;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 
 pub struct PendingThreadStartRegistry {
     queue: Mutex<VecDeque<PendingEntry>>,
@@ -372,8 +372,8 @@ impl PendingThreadStartRegistry {
         let thread_id_for_tx = thread_id.to_string();
         let card_for_event = card;
         let card_role_cache = CardRoleCache::default();
-        let wave_cove_cache = WaveCoveCache::default();
-        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+        let wave_area_cache = WaveAreaCache::default();
+        let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
         let result = write_with_events_typed(
             self.repo.as_ref(),
             ActorId::Kernel,
@@ -520,8 +520,8 @@ pub(crate) async fn card_payload_clear_pending_status(
     let runtime_id_for_tx = runtime_id.to_string();
     let card_for_event = card;
     let card_role_cache = CardRoleCache::default();
-    let wave_cove_cache = WaveCoveCache::default();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let wave_area_cache = WaveAreaCache::default();
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let (_updated, _id) = write_with_event_typed(
         repo,
         ActorId::Kernel,
@@ -578,13 +578,13 @@ mod tests {
     use super::*;
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
-    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::model::{NewArea, NewCard, NewWave};
     use serde_json::json;
 
     async fn seed_card_without_runtime() -> (Arc<SqlxRepo>, EventBus, String) {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "pending".into(),
                 color: "#000".into(),
                 sort: None,
@@ -594,7 +594,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "pending".into(),
                 sort: None,
                 cwd: "/workspace".into(),

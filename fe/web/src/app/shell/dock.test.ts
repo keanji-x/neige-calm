@@ -14,15 +14,15 @@ describe('dockSelection', () => {
     [null, '/settings', 'me'],
     [null, '/settings/appearance', 'me'],
     [null, '/wave/w1', 'pages'],
-    [null, '/cove/c1', 'pages'],
+    [null, '/area/c1', 'pages'],
     // A path the dock has no tab for still lights exactly one: Pages is the
     // index the reader is inside, not a fifth "nothing" state.
     [null, '/anything-else', 'pages'],
     // An open sheet is what the reader is looking at, so it wins over the route
     // underneath it — including over Today and Settings.
     ['pages', '/', 'pages'],
-    ['coves', '/', 'coves'],
-    ['coves', '/settings', 'coves'],
+    ['areas', '/', 'areas'],
+    ['areas', '/settings', 'areas'],
     ['pages', '/wave/w1', 'pages'],
   ];
   for (const [section, path, expected] of cases) {
@@ -47,7 +47,7 @@ describe('dockSelection', () => {
 describe('DOCK_ITEMS', () => {
   it('gives aria-controls only to the two items that open the sheet', () => {
     expect(DOCK_ITEMS.filter((item) => item.opensSection !== undefined).map((item) => item.key))
-      .toEqual(['pages', 'coves']);
+      .toEqual(['pages', 'areas']);
     // Today and Me navigate; claiming to control the sheet region would be a
     // lie to a screen reader, not a missing attribute (§3.3).
     expect(DOCK_ITEMS.filter((item) => item.opensSection === undefined).map((item) => item.key))

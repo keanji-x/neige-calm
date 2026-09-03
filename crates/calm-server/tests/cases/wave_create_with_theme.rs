@@ -26,7 +26,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -38,7 +38,7 @@ use tower::ServiceExt;
 use crate::common;
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     _daemon_data_dir: PathBuf,
     _tmp: TempDir,
 }
@@ -50,8 +50,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "wave-theme-test".into(),
             color: "#000".into(),
             sort: None,
@@ -66,7 +66,7 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -78,7 +78,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-wave-theme-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         // #293 cutover — `POST /api/waves` now boots a kernel-owned codex
         // app-server before returning 201. Point `codex_bin` at the
@@ -86,7 +86,7 @@ async fn boot() -> Boot {
         // without a real codex on PATH (see `tests/common/mod.rs`).
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -97,7 +97,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         _daemon_data_dir: daemon_data_dir,
         _tmp: tmp,
     }
@@ -155,7 +155,7 @@ async fn wave_create_without_theme_is_rejected() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "no theme wave",
             "cwd": "/tmp/issue-250-pr2-test",
             "attach_folder": true,

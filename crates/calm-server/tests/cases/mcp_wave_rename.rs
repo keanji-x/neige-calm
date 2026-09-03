@@ -17,7 +17,7 @@
 //!   3. Role gate — Worker / Assistant / ReportCard identities are refused by
 //!      `require_role` before any write.
 //!   4. Template waves refuse (`template_wave`).
-//!   5. Cove-chat waves refuse (`chat_wave`).
+//!   5. Area-chat waves refuse (`chat_wave`).
 //!   6. Whitespace-only / missing titles are argument errors, and a title is
 //!      stored trimmed.
 
@@ -31,11 +31,11 @@ use calm_server::db::sqlite::{
 };
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_rename::TOOL_WAVE_RENAME;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewOverlay, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewOverlay, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::validation::{
@@ -55,7 +55,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
     sqlx_repo: Arc<SqlxRepo>,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     other_card_id: CardId,
@@ -122,7 +122,7 @@ async fn seed_wave_root_session(
 }
 
 /// `title` is a parameter because the whole contract turns on whether the wave
-/// is already named; `purpose` is one because the cove-chat wave is created
+/// is already named; `purpose` is one because the area-chat wave is created
 /// through `wave_create_tx`'s purpose argument in production
 /// (`routes::waves`), not by patching the column afterwards.
 async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
@@ -132,18 +132,18 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-wave-rename".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
         .unwrap();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let new_wave = NewWave {
         template_input: None,
-        cove_id: cove.id.clone(),
+        area_id: area.id.clone(),
         title: title.into(),
         sort: None,
         cwd: String::new(),
@@ -153,7 +153,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     };
     let wave = {
-        let cache = wave_cove_cache.clone();
+        let cache = wave_area_cache.clone();
         let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
         let wave = wave_create_tx(
             &mut tx,
@@ -199,14 +199,14 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
     )
     .await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         wave_vcs: repo
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -221,7 +221,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         registry: Arc::new(registry),
         repo,
         sqlx_repo,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         other_card_id: other_card.id,
@@ -252,7 +252,7 @@ fn identity_for(boot: &Boot, card_id: &CardId, role: CardRole, session: &str) ->
         provider: AgentProvider::Codex,
         session_id: session.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: format!("{session}-thread"),
     }
 }
@@ -494,11 +494,11 @@ async fn template_wave_refuses_rename() {
     assert_eq!(wave_title(&boot).await, "");
 }
 
-/// The per-cove chat wave's name is kernel-owned — the same reason its
+/// The per-area chat wave's name is kernel-owned — the same reason its
 /// lifecycle is not user-drivable (`routes::waves::update_wave`).
 #[tokio::test]
-async fn cove_chat_wave_refuses_rename() {
-    let boot = boot_with("", Some(calm_server::COVE_CHAT_PURPOSE)).await;
+async fn area_chat_wave_refuses_rename() {
+    let boot = boot_with("", Some(calm_server::AREA_CHAT_PURPOSE)).await;
     let out = call_tool(
         &boot,
         TOOL_WAVE_RENAME,

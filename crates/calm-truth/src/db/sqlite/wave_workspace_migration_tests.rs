@@ -39,23 +39,23 @@ async fn migration_0077_backfills_existing_waves_as_frozen_attached() {
 
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&pool)
     .await
-    .expect("seed cove");
-    // The kernel-owned system cove (#175) and the legacy `Today` wave that
+    .expect("seed area");
+    // The kernel-owned system area (#175) and the legacy `Today` wave that
     // `today_launchpad_ensure_tx` adopts and re-points.
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
-         VALUES ('cove-system', 'system', '#000', -1, 'system', 1, 1)",
+         VALUES ('area-system', 'system', '#000', -1, 'system', 1, 1)",
     )
     .execute(&pool)
     .await
-    .expect("seed system cove");
+    .expect("seed system area");
     sqlx::query(
         "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, created_at, updated_at)
-         VALUES ('w-today', 'cove-system', 'Today', 0, 'draft', '/home/kenji', 6000, 6000)",
+         VALUES ('w-today', 'area-system', 'Today', 0, 'draft', '/home/kenji', 6000, 6000)",
     )
     .execute(&pool)
     .await
@@ -73,7 +73,7 @@ async fn migration_0077_backfills_existing_waves_as_frozen_attached() {
     for (id, cwd, created_at) in seeds {
         sqlx::query(
             "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, created_at, updated_at)
-             VALUES (?1, 'cove-1', 't', 0, 'draft', ?2, ?3, ?3)",
+             VALUES (?1, 'area-1', 't', 0, 'draft', ?2, ?3, ?3)",
         )
         .bind(id)
         .bind(cwd)
@@ -106,7 +106,7 @@ async fn migration_0077_backfills_existing_waves_as_frozen_attached() {
         );
     }
 
-    // D9's exception. The system cove's wave stays re-pointable, because
+    // D9's exception. The system area's wave stays re-pointable, because
     // `today_launchpad_ensure_tx` re-points it. Freezing it here would put the
     // adopt branch in the position of either violating the latch or clearing a
     // stamp — the second is the subtler one, and it is what a blanket
@@ -122,10 +122,10 @@ async fn migration_0077_backfills_existing_waves_as_frozen_attached() {
     assert_eq!(today.1, "/home/kenji", "path still backfills from cwd");
     assert_eq!(
         today.2, None,
-        "the system cove's wave must stay unfrozen (design D9 exception)"
+        "the system area's wave must stay unfrozen (design D9 exception)"
     );
 
-    // …and the exception is scoped: nothing outside the system cove escaped
+    // …and the exception is scoped: nothing outside the system area escaped
     // the freeze.
     let unfrozen_outside_system: Vec<(String,)> = sqlx::query_as(
         "SELECT w.id FROM waves w JOIN coves c ON c.id = w.cove_id \
@@ -136,7 +136,7 @@ async fn migration_0077_backfills_existing_waves_as_frozen_attached() {
     .expect("scan unfrozen");
     assert!(
         unfrozen_outside_system.is_empty(),
-        "waves outside the system cove must all be frozen, found {unfrozen_outside_system:?}"
+        "waves outside the system area must all be frozen, found {unfrozen_outside_system:?}"
     );
 }
 
@@ -150,18 +150,18 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         .await
         .expect("open repo");
     sqlx::query(
-        "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+        "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&repo.pool)
     .await
-    .expect("seed cove");
+    .expect("seed area");
 
     let mut tx = repo.pool.begin().await.expect("begin");
     let wave = super::wave_create_tx(
         &mut tx,
         crate::model::NewWave {
-            cove_id: "cove-1".to_string().into(),
+            area_id: "area-1".to_string().into(),
             title: "w".into(),
             sort: None,
             cwd: "/home/kenji/neige-calm".into(),
@@ -173,20 +173,20 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");
     tx.commit().await.expect("commit");
 
-    // S1: waves minted here (user coves) are attached and frozen at creation.
+    // S1: waves minted here (user areas) are attached and frozen at creation.
     // The launchpad wave is the D9 exception and is not created through this path.
     assert_eq!(wave.workspace.kind, WaveWorkspaceKind::Attached);
     assert_eq!(wave.workspace.path, "/home/kenji/neige-calm");
     assert_eq!(
         wave.workspace.frozen_at,
         Some(wave.created_at),
-        "user-cove waves are minted already frozen (design D9 + D6: attached never re-points)"
+        "user-area waves are minted already frozen (design D9 + D6: attached never re-points)"
     );
     // The wire alias is computed from the one stored column, not read from a
     // second one — `waves.cwd` no longer exists.
@@ -213,7 +213,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         wave.id.as_str(),
         &WaveWorkspace {
             kind: WaveWorkspaceKind::Managed,
-            path: "/srv/neige-workspaces/cove-1/w".into(),
+            path: "/srv/neige-workspaces/area-1/w".into(),
             frozen_at: None,
         },
     )
@@ -243,7 +243,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         wave.id.as_str(),
         &WaveWorkspace {
             kind: WaveWorkspaceKind::Managed,
-            path: "/srv/neige-workspaces/cove-1/w".into(),
+            path: "/srv/neige-workspaces/area-1/w".into(),
             frozen_at: None,
         },
     )
@@ -259,7 +259,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     .await
     .expect("read back");
     assert_eq!(row.0, "managed");
-    assert_eq!(row.1, "/srv/neige-workspaces/cove-1/w");
+    assert_eq!(row.1, "/srv/neige-workspaces/area-1/w");
     assert_eq!(row.2, None);
 
     // A read through the repo must surface the same thing — this is the
@@ -270,7 +270,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         .expect("wave_get")
         .expect("wave exists");
     assert_eq!(read.workspace.kind, WaveWorkspaceKind::Managed);
-    assert_eq!(read.workspace.path, "/srv/neige-workspaces/cove-1/w");
+    assert_eq!(read.workspace.path, "/srv/neige-workspaces/area-1/w");
     assert_eq!(read.workspace.frozen_at, None);
     assert_eq!(read.cwd_wire_alias, read.workspace.path);
 }
@@ -285,18 +285,18 @@ async fn wave_update_tx_leaves_the_workspace_alone() {
         .await
         .expect("open repo");
     sqlx::query(
-        "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+        "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&repo.pool)
     .await
-    .expect("seed cove");
+    .expect("seed area");
 
     let mut tx = repo.pool.begin().await.expect("begin");
     let wave = super::wave_create_tx(
         &mut tx,
         crate::model::NewWave {
-            cove_id: "cove-1".to_string().into(),
+            area_id: "area-1".to_string().into(),
             title: "before".into(),
             sort: None,
             cwd: "/home/kenji/proj".into(),
@@ -308,7 +308,7 @@ async fn wave_update_tx_leaves_the_workspace_alone() {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");
@@ -356,19 +356,19 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         .await
         .expect("open repo");
     sqlx::query(
-        "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+        "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&repo.pool)
     .await
-    .expect("seed cove");
+    .expect("seed area");
 
     const PATH: &str = "/home/kenji/neige-calm";
     let mut tx = repo.pool.begin().await.expect("begin");
     let created = super::wave_create_tx(
         &mut tx,
         crate::model::NewWave {
-            cove_id: "cove-1".to_string().into(),
+            area_id: "area-1".to_string().into(),
             title: "w".into(),
             sort: None,
             cwd: PATH.into(),
@@ -380,7 +380,7 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");

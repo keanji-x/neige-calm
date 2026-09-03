@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   activeWavesOn, isRunning, needsUserAttention, visibleWaves, type Wave,
 } from '../../../../core/domain/wave.ts';
-import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
+import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -53,12 +53,12 @@ export type ScheduledEvent = Readonly<{ wave: Wave; date: Date; hour: number }>;
 /**
  * How Today draws one wave. It is injected rather than imported because the row
  * belongs to `features/wave` and a feature domain may not import a sibling;
- * `app/router` supplies it, the same way it composes the cove page's list. The
+ * `app/router` supplies it, the same way it composes the area page's list. The
  * variant vocabulary is §6.3's, so every surface still renders the one row.
  */
 export type WaveRowRenderer = (
   wave: Wave,
-  options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; coveName?: string }>,
+  options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
 ) => ReactNode;
 
 /** The copy for "the day has no document yet". */
@@ -84,7 +84,7 @@ const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
 
 export type TodayPageProps = Readonly<{
   waves: readonly Wave[];
-  coves: readonly Cove[];
+  areas: readonly Area[];
   /**
    * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
    *
@@ -164,12 +164,12 @@ export type TodayPageProps = Readonly<{
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
 /**
- * An agenda row spans coves, so it always names one. When the id resolves to
- * nothing the row says so rather than going silent: a row with the cove phrase
+ * An agenda row spans areas, so it always names one. When the id resolves to
+ * nothing the row says so rather than going silent: a row with the area phrase
  * simply missing is indistinguishable from a row that belongs nowhere, and the
  * unresolvable case is exactly the one worth seeing.
  */
-const UNKNOWN_COVE = 'Unknown cove';
+const UNKNOWN_AREA = 'Unknown area';
 
 /** It answers "what happened while I was away", not "browse the archive". */
 const RECENT_LIMIT = 12;
@@ -181,7 +181,7 @@ const RECENT_LIMIT = 12;
  * and that is the whole load-bearing reason for the order: a bar that grew with
  * the workspace would push the document off the first screen, which is the one
  * thing the layout exists to prevent. `waiting` has no natural bound — every
- * blocked wave in every cove lands in it — so without a cap that property is
+ * blocked wave in every area lands in it — so without a cap that property is
  * simply false, and a review found it false with 100 blocked waves.
  *
  * The overflow is not dropped. It sits behind one inert-until-clicked control,
@@ -222,7 +222,7 @@ function isoDate(day: Date): ISODateString {
 }
 
 export function TodayPage({
-  waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
+  waves, areas, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
   onWriteSummary, summaryPending, summaryNotice,
 }: TodayPageProps) {
@@ -274,14 +274,14 @@ export function TodayPage({
   /*
    * A brand-new workspace: one hero line, and *still the document*.
    *
-   * `coves` is the user-visible list — #175 filters the system cove out of
-   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
-   * "no coves and no waves" does NOT mean "no Today report": a workspace whose
+   * `areas` is the user-visible list — #175 filters the system area out of
+   * `GET /api/areas`, and the launchpad wave lives in the system area. So
+   * "no areas and no waves" does NOT mean "no Today report": a workspace whose
    * only content is the day's report lands exactly here, and returning early
    * with just the hero made that report invisible and swallowed a failed
    * resolve along with it.
    */
-  if (waves.length === 0 && coves.length === 0) {
+  if (waves.length === 0 && areas.length === 0) {
     return (
       <div className={styles.page}>
         <TodayHeader
@@ -345,7 +345,7 @@ export function TodayPage({
             Module class is not nameable from the shell's stylesheet, so the
             marker is the seam.
 
-            Today needs it more than the cove and wave pages do, not less. Their
+            Today needs it more than the area and wave pages do, not less. Their
             panels are sticky at the same offset the drawer starts at, so they
             stay behind it; this column is not sticky, so it scrolls up out from
             under the drawer's top edge and would surface above it. */}
@@ -355,7 +355,7 @@ export function TodayPage({
               <Calendar
                 today={today}
                 waves={shownWaves}
-                coves={coves}
+                areas={areas}
                 scheduledEvents={scheduledEvents}
                 renderWaveRow={renderWaveRow}
                 nowMs={now.getTime()}
@@ -575,10 +575,10 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }: {
+function Calendar({ today, waves, areas, scheduledEvents, renderWaveRow, nowMs }: {
   today: Date;
   waves: readonly Wave[];
-  coves: readonly Cove[];
+  areas: readonly Area[];
   scheduledEvents: readonly ScheduledEvent[];
   renderWaveRow: WaveRowRenderer;
   nowMs?: number;
@@ -670,7 +670,7 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
                   A count, in hint tone, not a coloured dot.
 
                   The dot was one mark for any number of waves, coloured by
-                  whichever cove happened to sort first — so it answered "whose
+                  whichever area happened to sort first — so it answered "whose
                   is the first one?", which nobody asks, while the question you
                   scan a week for ("how much is on Thursday?") went unanswered.
                   Seven coloured dots across a 244px week were also the densest
@@ -718,13 +718,13 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
               {renderWaveRow(event.wave, {
                 variant: 'panel',
                 hourLabel: formatHour(event.hour),
-                coveName: coveOf(event.wave.coveId, coves)?.name ?? UNKNOWN_COVE,
+                areaName: areaOf(event.wave.areaId, areas)?.name ?? UNKNOWN_AREA,
               })}
             </span>
           ))}
           {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
             <span key={`wave-${wave.id}`}>
-              {renderWaveRow(wave, { variant: 'panel', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
+              {renderWaveRow(wave, { variant: 'panel', areaName: areaOf(wave.areaId, areas)?.name ?? UNKNOWN_AREA })}
             </span>
           ))}
         </div>

@@ -2,7 +2,7 @@
 //!
 //! Design `docs/1147-workspace-design.md` D2/D3. A managed wave workspace is a
 //! server-created, server-owned git repository at
-//! `<workspace-root>/<cove_id>/<wave_id>`. Every step below is load-bearing and
+//! `<workspace-root>/<area_id>/<wave_id>`. Every step below is load-bearing and
 //! was measured, not guessed — see the per-step comments.
 
 use std::collections::HashMap;
@@ -95,13 +95,13 @@ pub(crate) fn neige_git_command() -> Command {
     command
 }
 
-/// `<workspace-root>/<cove_id>/<wave_id>`.
+/// `<workspace-root>/<area_id>/<wave_id>`.
 ///
 /// Directory names are ids, never slugs: D2 also fixes "renaming a wave does
 /// not move its directory", so a title-derived name would start lying the
 /// first time the wave is renamed.
-pub fn managed_workspace_path(workspace_root: &Path, cove_id: &str, wave_id: &str) -> PathBuf {
-    workspace_root.join(cove_id).join(wave_id)
+pub fn managed_workspace_path(workspace_root: &Path, area_id: &str, wave_id: &str) -> PathBuf {
+    workspace_root.join(area_id).join(wave_id)
 }
 
 /// Short, stable digest of a workspace path, for use inside an idempotency key
@@ -141,8 +141,8 @@ pub(crate) fn workspace_key_digest(path: &str) -> String {
 /// So validation lives at the two entry points where a **user** names a
 /// directory — `POST /api/waves`'s attached branch and
 /// `PATCH /api/waves/{id}` — and those are the two this slice opens. The
-/// kernel-derived attached paths (a cove chat wave adopting an existing
-/// `cove_folders` claim, a child wave inheriting an attached parent) are NOT
+/// kernel-derived attached paths (an area chat wave adopting an existing
+/// `area_folders` claim, a child wave inheriting an attached parent) are NOT
 /// validated; see the design's 已知缺口 N18.
 pub fn materialize_workspace(
     workspace: &WaveWorkspace,
@@ -447,7 +447,7 @@ fn materialize_managed_workspace_inner(
 /// Red-team B3 — the realised directory must be inside the root *after*
 /// symlinks are resolved, not just lexically.
 ///
-/// `create_dir_all` happily walks a symlink, so `<root>/<cove>` being a link to
+/// `create_dir_all` happily walks a symlink, so `<root>/<area>` being a link to
 /// `/somewhere/else` yields a stored path that passes every `starts_with`
 /// check while the repository — and everything a worker writes into it — lives
 /// outside the tree S5 believes it owns. Checked after materialization so the

@@ -13,7 +13,7 @@ registerBuiltins();
 
 // Issue #189 — `SessionProvider` runs the whoami probe BEFORE mounting
 // `RouterProvider`. Until whoami resolves, no router loader runs — that's
-// the load-bearing invariant: a logged-out tab landing on `/coves/c-1`
+// the load-bearing invariant: a logged-out tab landing on `/areas/c-1`
 // must not stamp a 401 onto the first paint. On 401 the gate renders
 // `<LoginPage />`; on 200 it renders the router; on transport error it
 // renders a tight retry stub. SessionProvider also subscribes to the

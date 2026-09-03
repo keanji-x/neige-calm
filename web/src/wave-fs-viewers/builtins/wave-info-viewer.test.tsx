@@ -27,7 +27,7 @@ describe('WaveInfoViewer', () => {
         data={{
           title: 'Spec wave',
           id: 'wave_1',
-          cove_id: 'cove_1',
+          area_id: 'area_1',
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
           workspace: { kind: 'attached', path: '/repo/neige-calm', frozen_at: 1000 },
@@ -49,7 +49,7 @@ describe('WaveInfoViewer', () => {
       'wave-fs-viewer-primary',
     );
     expect(screen.getByText('wave_1')).toHaveClass('wave-fs-viewer-mono');
-    expect(screen.getByText('cove_1')).toHaveClass('wave-fs-viewer-mono');
+    expect(screen.getByText('area_1')).toHaveClass('wave-fs-viewer-mono');
     expect(screen.getByText('working')).toHaveAttribute('data-tone', 'accent');
     expect(screen.getByText('/repo/neige-calm')).toHaveClass(
       'wave-fs-viewer-break',
@@ -67,7 +67,7 @@ describe('WaveInfoViewer', () => {
         data={{
           title: 'Bare wave',
           id: 'wave_min',
-          cove_id: 'cove_min',
+          area_id: 'area_min',
           lifecycle: 'draft',
           cwd: '',
           workspace: { kind: 'attached', path: '', frozen_at: null },
@@ -96,7 +96,7 @@ describe('WaveInfoViewer', () => {
     const raw = JSON.stringify({
       title: '',
       id: 'wave_untitled',
-      cove_id: 'cove_untitled',
+      area_id: 'area_untitled',
       lifecycle: 'working',
       cwd: '/repo/neige-calm',
       template_id: null,
@@ -123,7 +123,7 @@ describe('WaveInfoViewer', () => {
     const raw = JSON.stringify({
       title: 'Legacy wave',
       id: 'wave_legacy',
-      cove_id: 'cove_legacy',
+      area_id: 'area_legacy',
       lifecycle: 'working',
       cwd: '/repo/neige-calm',
       sort: 0,
@@ -146,7 +146,7 @@ describe('WaveInfoViewer', () => {
     const raw = JSON.stringify({
       title: 'Legacy wave',
       id: 'wave_legacy',
-      cove_id: 'cove_legacy',
+      area_id: 'area_legacy',
       cwd: '/repo/neige-calm',
       sort: 0,
       archived_at: null,

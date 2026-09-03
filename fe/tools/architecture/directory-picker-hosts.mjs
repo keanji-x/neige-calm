@@ -56,7 +56,7 @@ import { extname, resolve } from 'node:path';
 export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/ui/schema-form/fields/DirectoryField/public.tsx': 'component',
   'web/src/features/wave/new-card/public.tsx': 'pushes-into-host-dialog',
-  'web/src/features/cove/new-wave/public.tsx': 'owns-its-modal',
+  'web/src/features/area/new-wave/public.tsx': 'owns-its-modal',
 });
 
 /** The two components whose presence makes a file a picker host. */

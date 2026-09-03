@@ -1,4 +1,4 @@
-//! HTTP route registry. Each sub-module (`coves`, `waves`, ...) returns its
+//! HTTP route registry. Each sub-module (`areas`, `waves`, ...) returns its
 //! own `Router<AppState>`; this file merges them.
 
 use crate::openapi::ApiDoc;
@@ -6,15 +6,15 @@ use crate::state::AppState;
 use axum::{Json, Router, routing::get};
 use utoipa::OpenApi;
 
+pub mod area_conversations;
+pub mod area_folders;
+pub mod areas;
 pub mod cards;
 pub mod claude;
 pub mod claude_cards;
 pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
-pub mod cove_conversations;
-pub mod cove_folders;
-pub mod coves;
 pub mod fs;
 pub mod overlays;
 pub mod plugins;
@@ -56,9 +56,9 @@ pub fn router() -> Router<AppState> {
 /// the spec without logging in).
 pub fn protected_router() -> Router<AppState> {
     Router::new()
-        .merge(coves::router())
-        .merge(cove_conversations::router())
-        .merge(cove_folders::router())
+        .merge(areas::router())
+        .merge(area_conversations::router())
+        .merge(area_folders::router())
         .merge(waves::router())
         .merge(wave_conversations::router())
         .merge(wave_report_blocks::router())

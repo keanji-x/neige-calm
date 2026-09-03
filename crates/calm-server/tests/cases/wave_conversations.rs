@@ -3,7 +3,7 @@
 //! Owns the three gates the design assigns to this slice:
 //!
 //! * **G1** — the same `Idempotency-Key` retried lands on the same card, and the
-//!   wave namespace is separate from the cove one.
+//!   wave namespace is separate from the area one.
 //! * **G2** — a `spec_card_id` the adapter did not derive itself is refused,
 //!   including one derived for a different wave.
 //! * **G3** — the list returns assistant conversations and nothing else, on a
@@ -23,13 +23,13 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, card_with_codex_create_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCove, RequestTheme};
+use calm_server::model::{CardRole, NewArea, RequestTheme};
 use calm_server::operation::OperationKey;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -38,7 +38,7 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     state: AppState,
-    cove_id: String,
+    area_id: String,
     repo: Arc<SqlxRepo>,
     card_role_cache: CardRoleCache,
     _tmp: TempDir,
@@ -47,22 +47,22 @@ struct Boot {
 async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "wave-conversations".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
         .unwrap();
-    repo.cove_folder_create(cove.id.as_str(), "/workspace")
+    repo.area_folder_create(area.id.as_str(), "/workspace")
         .await
         .unwrap();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    let waves = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&waves).await.unwrap();
     let state = AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
@@ -101,7 +101,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         state,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         card_role_cache: roles,
         _tmp: tmp,
@@ -120,7 +120,7 @@ impl Boot {
                 "/api/waves",
                 None,
                 Some(json!({
-                    "cove_id": self.cove_id,
+                    "area_id": self.area_id,
                     "title": title,
                     "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
                 })),
@@ -765,8 +765,8 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
     b.shutdown_harnesses().await;
 }
 
-/// The endpoint's own boundaries: an unknown wave is 404, a cove chat wave is
-/// 403 (its conversations belong to the cove endpoint), and the header is
+/// The endpoint's own boundaries: an unknown wave is 404, an area chat wave is
+/// 403 (its conversations belong to the area endpoint), and the header is
 /// genuinely required rather than defaulted.
 #[tokio::test]
 async fn the_endpoint_refuses_unknown_waves_chat_waves_and_a_missing_key() {
@@ -802,11 +802,11 @@ async fn the_endpoint_refuses_unknown_waves_chat_waves_and_a_missing_key() {
         "a rejected first message must leave no card behind"
     );
 
-    // The cove's hidden chat wave.
+    // The area's hidden chat wave.
     let (status, chat_wave) = b
         .request(
             "POST",
-            &format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+            &format!("/api/areas/{}/chat-wave/ensure", b.area_id),
             None,
             None,
         )

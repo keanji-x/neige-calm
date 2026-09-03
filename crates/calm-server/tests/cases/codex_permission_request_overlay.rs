@@ -38,11 +38,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -66,8 +66,8 @@ const OVERLAY_POLL: Duration = Duration::from_millis(50);
 /// decision the production path would make.
 async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -77,7 +77,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -106,13 +106,13 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     // `card_with_codex_create_tx` would have written.
     cache.insert(card.id.clone(), role, wave.id.clone());
 
-    let wave_cove_cache = WaveCoveCache::new();
-    // The wave-cove cache is write-through populated in `wave_create_tx`,
+    let wave_area_cache = WaveAreaCache::new();
+    // The wave-area cache is write-through populated in `wave_create_tx`,
     // but our SqlxRepo instance holds its own cache; we re-seed the one
     // we'll thread through `AppState` and the FSM so the role gate's
     // worker-scope cross-check (and our wave-scoped overlay aggregate)
-    // can both resolve `wave -> cove` without going to the DB.
-    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    // can both resolve `wave -> area` without going to the DB.
+    wave_area_cache.insert(wave.id.clone(), area.id.clone());
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -126,11 +126,11 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
             std::env::temp_dir().join("calm-plugins-data-perm-req-overlay"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     // Spawn the FSM projector *before* we POST the hook, so it's
@@ -140,7 +140,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     calm_server::card_fsm::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache),
+        calm_server::state::WriteContext::new(cache.clone(), wave_area_cache),
     );
     // Give the spawn a tick to subscribe — matches the unit-test pattern
     // in `card_fsm::tests`.

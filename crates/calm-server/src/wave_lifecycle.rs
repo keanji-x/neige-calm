@@ -70,7 +70,7 @@ pub async fn apply_requested_transition_in_tx(
     Ok(Some(vec![
         Event::WaveLifecycleChanged {
             id: updated.id.clone(),
-            cove_id: updated.cove_id.clone(),
+            area_id: updated.area_id.clone(),
             from: current.lifecycle,
             to,
             agent_message: Some(agent_message.clone()),
@@ -117,7 +117,7 @@ pub async fn auto_transition_if_current_in_tx(
     Ok(Some(vec![
         Event::WaveLifecycleChanged {
             id: updated.id.clone(),
-            cove_id: updated.cove_id.clone(),
+            area_id: updated.area_id.clone(),
             from: current.lifecycle,
             to,
             agent_message: agent_message.clone(),

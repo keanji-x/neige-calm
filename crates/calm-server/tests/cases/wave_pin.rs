@@ -13,20 +13,20 @@ async fn fresh_repo() -> SqlxRepo {
         .expect("open in-memory sqlite repo")
 }
 
-async fn make_cove(repo: &SqlxRepo, name: &str) -> Cove {
-    repo.cove_create(NewCove {
+async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
+    repo.area_create(NewArea {
         name: name.into(),
         color: "#abcdef".into(),
         sort: None,
     })
     .await
-    .expect("create cove")
+    .expect("create area")
 }
 
-async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
+async fn make_wave(repo: &SqlxRepo, area_id: &str, title: &str) -> Wave {
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: cove_id.into(),
+        area_id: area_id.into(),
         title: title.into(),
         sort: None,
         cwd: String::new(),
@@ -42,7 +42,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
 #[tokio::test]
 async fn pinned_at_round_trips_through_patch() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "pin-test").await;
 
     assert!(w.pinned_at.is_none(), "new wave has no pin");
@@ -81,7 +81,7 @@ async fn pinned_at_round_trips_through_patch() {
 #[tokio::test]
 async fn omitting_pinned_at_from_patch_leaves_it_alone() {
     let repo = fresh_repo().await;
-    let c = make_cove(&repo, "C").await;
+    let c = make_area(&repo, "C").await;
     let w = make_wave(&repo, c.id.as_str(), "leave-alone").await;
 
     let pinned = repo

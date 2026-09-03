@@ -3,21 +3,21 @@
 #   family 数: 31 ；intentional_omission=true 的条目: 87 ；authoritative_test=NONE: 76
 #   「重复实现」对: 10 条（family: duplication）
 #     1. Settings 手写 schema-form markup  ↔  SchemaForm 组件
-#     2. .calm-select base-select 结构      ↔  NewTaskForm cove 下拉 / Cove.tsx Workflow 下拉
-#     3. .new-task-form-* 类被 Cove.tsx 借用 ↔  NewTaskForm 内部用法
+#     2. .calm-select base-select 结构      ↔  NewTaskForm area 下拉 / Area.tsx Workflow 下拉
+#     3. .new-task-form-* 类被 Area.tsx 借用 ↔  NewTaskForm 内部用法
 #     4. react-markdown 管线 4 处（其中 SpecConversation 缺 urlTransform/ReportLink，行为已发散）
 #     5. TOC 抽取两套（report-outline.ts mdast ↔ file-viewer-markdown-toc.tsx 手写正则）
-#     6. cove 调色板 6 色（NewTaskForm ↔ Sidebar，取色策略刻意不同）
+#     6. area 调色板 6 色（NewTaskForm ↔ Sidebar，取色策略刻意不同）
 #     7. readHostThemeRgb()（NewTaskForm ↔ useTodayTerminal）
-#     8. 可编辑标题（Cove EditableTitle ↔ Wave 行内重命名；#288 抑制器只在 Cove 侧）
+#     8. 可编辑标题（Area EditableTitle ↔ Wave 行内重命名；#288 抑制器只在 Area 侧）
 #     9. pin 按钮（Sidebar 内部 WaveRow ↔ shared/components/WaveRow）
-#    10. "Delete wave?" 确认文案（Cove.tsx ↔ Sidebar.tsx）
+#    10. "Delete wave?" 确认文案（Area.tsx ↔ Sidebar.tsx）
 #   死代码（标注「不迁移」）: WaveContext、useSpecCurrentRun.latestTool、isCompletedMessageItem 的未用参数
 #
 # 覆盖文件:
 #   pages/: WaveReportPage, report-blocks/{index,candles,table,app,task}, report-outline,
 #           report-link-ids, SpecConversation, specChatItems, useSpecChatHistory,
-#           useSpecCurrentRun, Today, Cove, Wave, Settings, _shared
+#           useSpecCurrentRun, Today, Area, Wave, Settings, _shared
 #   shared/components/: Sidebar, NewTaskForm, DirectoryPicker, SchemaForm, AddPanel, WaveRow,
 #           WaveCard, WaveGlyph, WaveLifecycleBadge, CardStatusDot, CardExitBadge, ProgressBar,
 #           Crumbs, ConnectionIndicator, TitleBar, WaveContext, helpers, issueUrl, 图标组件
@@ -1962,7 +1962,7 @@
     议程行有两种布局变体:排程事件(有 hourLabel)保留 40px 时间槽;wave 行(无 hourLabel)去掉时间槽、
     加 `cal-event--wave` 修饰,并在标题下方显示 lifecycleLabel,两行都单行省略号截断。
   why: >
-    源码注释:"waves are day-level, not hour-bucketed; the empty 40px column made the cove bar look stranded"
+    源码注释:"waves are day-level, not hour-bucketed; the empty 40px column made the area bar look stranded"
     + "Both lines clamp … so a long title / status string can't reflow the rail."
   source: web/src/pages/Today.tsx:181-282
   authoritative_test: web/src/pages/Today.test.tsx:248,343
@@ -1978,7 +1978,7 @@
   family: today-calendar
   statement: >
     议程行右侧的 waiting/running 小圆点是纯视觉冗余(aria-hidden),完整的 lifecycle 短语必须同时折进
-    按钮的 aria-label,格式为 "Wave <title>[, waiting on you][, running], <lifecycle>, in cove <cove>"。
+    按钮的 aria-label,格式为 "Wave <title>[, waiting on you][, running], <lifecycle>, in area <area>"。
   why: >
     源码注释:"it's redundant with the lifecycle text but lets a colorblind / fast-scanning eye spot
     blocked / running rows … The full lifecycle phrase is still folded into `aria-label` so screen readers
@@ -1999,7 +1999,7 @@
     日历的 lifecycle 文案必须复用 `lifecycleLabel()`,不得另建映射表。
   why: >
     源码注释:"Reuse the canonical lifecycle phrase so the calendar agrees with <WaveLifecycleBadge> /
-    Cove buckets — no parallel mapping table."
+    Area buckets — no parallel mapping table."
   source: web/src/pages/Today.tsx:222-224
   authoritative_test: web/src/shared/components/WaveLifecycleBadge.test.tsx:35
   owner_slice: features/today/page
@@ -2122,10 +2122,10 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    引导链必须幂等复用同一套资源:system cove(内核单例,#175)→ 标题为 'Today' 的内部 wave → 该 wave 下
+    引导链必须幂等复用同一套资源:system area(内核单例,#175)→ 标题为 'Today' 的内部 wave → 该 wave 下
     第一张带 terminal_id 的终端卡;只有这三步都落空才创建新卡。
   why: >
-    源码注释:"so the kernel doesn't accumulate orphan cards";system cove 被 `GET /api/coves` 过滤掉,
+    源码注释:"so the kernel doesn't accumulate orphan cards";system area 被 `GET /api/areas` 过滤掉,
     用户看不见,所以按标题查 wave 没有命名冲突风险。
   source: web/src/hooks/useTodayTerminal.ts:86-137,165-197
   authoritative_test: NONE
@@ -2142,7 +2142,7 @@
   statement: >
     inFlightRef 必须保证同一时刻只有一次解析在跑;整条链只在一个 async resolver 里完成,不拆成多个 mutation。
   why: >
-    源码注释:"the 'ensureSystemCove → ensure TodayWave → ensureTerminalCard' chain is read-then-write three
+    源码注释:"the 'ensureSystemArea → ensure TodayWave → ensureTerminalCard' chain is read-then-write three
     times over, and modeling it as a single async resolver keeps the idempotency invariants in one place."
   source: web/src/hooks/useTodayTerminal.ts:18-24,58,62-63,140-142
   authoritative_test: NONE
@@ -2175,11 +2175,11 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    `createWave` 的 body 只有 `cove_id`、`title`、`theme` 三个键 —— **没有 cwd，也没有
+    `createWave` 的 body 只有 `area_id`、`title`、`theme` 三个键 —— **没有 cwd，也没有
     attach_folder**，于是走内核的 managed 分支：由内核分配并初始化一个真能被 worker 取租约的目录。
     这条不变量说的是「缺席」，所以按「在场的恰好是哪几个键」来陈述，否则 source-anchor 无从锚定。
   why: >
-    #1147 S3 把这条反了过来。原文是「cwd 固定传 '/'，system cove 被豁免出 cove_folders 认领命名空间」，
+    #1147 S3 把这条反了过来。原文是「cwd 固定传 '/'，system area 被豁免出 area_folders 认领命名空间」，
     豁免那半仍然成立，但 '/' 从来就不是一个工作区:该 wave 上任何 `kind: codex` 任务都会在
     `git_repo_root_for_wave_cwd` 里死掉、只留一句 `spawn-failed`,正是 #1147 开的那个 bug。
     S3 之后显式 cwd 的含义是「attach 这个已存在的仓库」并且会被校验,'/' 会直接 400。
@@ -2210,154 +2210,154 @@
   migration: pending
 
 # ============================================================
-# §11 Cove 页
+# §11 Area 页
 # ============================================================
 
-- id: INV-COVE-001
+- id: INV-AREA-001
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
-    Cove 页是单一排序列表,不分 Waiting/Running/Idle 分节;排序用 `sortByLifecycleRank`
+    Area 页是单一排序列表,不分 Waiting/Running/Idle 分节;排序用 `sortByLifecycleRank`
     (waiting → running → other),桶内保持调用方传入的顺序。
   why: >
     源码注释:"Each row encodes its own status … so we don't need Waiting / Running / Idle section headings"
     + "A stable bucket sort expresses status without forking the layout into separate sections."
-  source: web/src/pages/Cove.tsx:15-30,91-99
+  source: web/src/pages/Area.tsx:15-30,91-99
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-002
+- id: INV-AREA-002
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
-    cove 名称在页面上只出现一次(作为 h1),不得加 eyebrow 行、色块或 wave 计数。
+    area 名称在页面上只出现一次(作为 h1),不得加 eyebrow 行、色块或 wave 计数。
   why: >
-    源码注释:"the sidebar already carries the cove's color swatch + wave count, so reprinting either here
+    源码注释:"the sidebar already carries the area's color swatch + wave count, so reprinting either here
     is redundant noise. 'Less is more' — the page opens directly on the title."
-  source: web/src/pages/Cove.tsx:23-30
+  source: web/src/pages/Area.tsx:23-30
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-003
+- id: INV-AREA-003
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
-    删 cove 与删 wave 用两种不同的确认模式:cove 走 DeleteButton 的 Pattern A(stay-open-while-pending,
+    删 area 与删 wave 用两种不同的确认模式:area 走 DeleteButton 的 Pattern A(stay-open-while-pending,
     Confirm 在 await 期间禁用),wave 行走 Pattern B(close-then-await,不做 pending 门控)。
   why: >
     源码注释:"The wave row already vanishes from the list on completion … which acts as its own 'succeeded'
     signal — gating the dialog with `confirmDisabled` would duplicate that affordance."
     测试用例名直接写了 (Pattern A)/(Pattern B)。
-  source: web/src/pages/Cove.tsx:67-85,131-141,191-208 + web/src/pages/_shared.tsx:60-136
-  authoritative_test: web/src/pages/Cove.test.tsx:249,323
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:67-85,131-141,191-208 + web/src/pages/_shared.tsx:60-136
+  authoritative_test: web/src/pages/Area.test.tsx:249,323
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-004
+- id: INV-AREA-004
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     页面级的删 wave ConfirmDialog 必须无条件挂载、用 `open={pendingDeleteWave !== null}` 驱动,
     每次重开都要指向"最近一次点击"的那个 wave。
   why: >
     源码注释:"Mounted unconditionally with `open` driven by the pending state so Dialog's focus restore on
     close lands us back where we were." 测试 "reopening after Cancel targets the most recently clicked wave"。
-  source: web/src/pages/Cove.tsx:191-208
-  authoritative_test: web/src/pages/Cove.test.tsx:344
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:191-208
+  authoritative_test: web/src/pages/Area.test.tsx:344
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: CAP-COVE-005
+- id: CAP-AREA-005
   kind: capability
-  family: cove-page
+  family: area-page
   statement: >
     wave 列表必须包在 `<section aria-label="Waves">` 地标里。
   why: >
     源码注释:"role-scoped locators (axe scans + Playwright getByRole('region', { name: 'Waves' })) can
     disambiguate WaveRow buttons from the sidebar's 'Today' nav button."
-  source: web/src/pages/Cove.tsx:168-189
+  source: web/src/pages/Area.tsx:168-189
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: CAP-COVE-006
+- id: CAP-AREA-006
   kind: capability
-  family: cove-page
+  family: area-page
   statement: >
-    cove 为空时显示 "This Cove is quiet. Start a Wave below." 空态。
+    area 为空时显示 "This Area is quiet. Start a Wave below." 空态。
   why: >
-    没有 wave 的 cove 页会是一片空白;这行文案同时指向底部/标题栏的创建入口。
-  source: web/src/pages/Cove.tsx:157-166
+    没有 wave 的 area 页会是一片空白;这行文案同时指向底部/标题栏的创建入口。
+  source: web/src/pages/Area.tsx:157-166
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-EDITTITLE-007
+- id: INV-AREA-EDITTITLE-007
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     可编辑标题必须渲染为 <h1> 包 <button>:role 天然可交互(Enter/Space 免费),另加 F2 支持 Windows 重命名习惯,
     两者都 preventDefault;Escape 取消,Enter/blur 提交(空或未变更则 no-op)。
   why: >
     源码注释:"rendered as a real <button> so the role is intrinsic … The <h1> wraps the button so
     heading-level navigation still lands on 'the title' without sacrificing the interactive semantics."
-  source: web/src/pages/Cove.tsx:349-416
-  authoritative_test: web/src/pages/Cove.test.tsx:80,98,114,138
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:349-416
+  authoritative_test: web/src/pages/Area.test.tsx:80,98,114,138
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-EDITTITLE-008
+- id: INV-AREA-EDITTITLE-008
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     标题按钮的 aria-label 必须只是名字本身;"Rename …" 动词放在 <h1> 之外的 sr-only span 里,
     通过 aria-describedby 引用。
   why: >
     源码注释(#56 followup):"heading-nav (`H` in screen readers) announces e.g. 'Atlas, heading level 1'
-    — not 'Rename cove name: Atlas, heading level 1'… the helper text lives *outside* the <h1> so the
+    — not 'Rename area name: Atlas, heading level 1'… the helper text lives *outside* the <h1> so the
     heading's own accessible-name computation isn't polluted."
-  source: web/src/pages/Cove.tsx:383-415
-  authoritative_test: web/src/pages/Cove.test.tsx:41
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:383-415
+  authoritative_test: web/src/pages/Area.test.tsx:41
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-EDITTITLE-009
+- id: INV-AREA-EDITTITLE-009
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     键盘 Enter 提交重命名时必须武装一次性的 `suppressNextDisplayActivation`,吃掉浏览器在焦点回到显示按钮后
     由 Enter keyup 合成的那次 click;武装点必须在"无变更早退"之后,且 enter() 每次真正进入编辑态时清标记。
@@ -2365,87 +2365,87 @@
     源码注释(#288)完整复现了这个 5 步竞态:合成 click 会用旧 value 重进编辑态,随后的 blur 会把旧名字
     PATCH 回内核,侧栏出现"闪新名再变回旧名"。武装点放在早退之后是因为 no-op 提交不会触发
     unmount→remount→合成 click,提前武装会泄漏到用户下一次真实点击。
-  source: web/src/pages/Cove.tsx:239-347
-  authoritative_test: web/src/pages/Cove.test.tsx:138
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:239-347
+  authoritative_test: web/src/pages/Area.test.tsx:138
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-EDITTITLE-010
+- id: INV-AREA-EDITTITLE-010
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     外部 value 变化(如另一标签页的 WS 事件)只在非编辑态时同步进 draft;退出编辑态时若 restoreDisplayFocus
     被置位则把焦点还给显示按钮。
   why: >
     源码注释:"External value changes … should not clobber an in-flight edit";不还焦点则键盘用户丢位置。
-  source: web/src/pages/Cove.tsx:292-302,325-347
-  authoritative_test: web/src/pages/Cove.test.tsx:114
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:292-302,325-347
+  authoritative_test: web/src/pages/Area.test.tsx:114
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-EDITTITLE-011
+- id: INV-AREA-EDITTITLE-011
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
-    标题末尾的句点(`cove.name + '.'`)由渲染层拼接,不得存进数据;编辑框编辑的是原始名字。
+    标题末尾的句点(`area.name + '.'`)由渲染层拼接,不得存进数据;编辑框编辑的是原始名字。
   why: >
     源码注释:"The trailing period in the design … is rendered by the parent, not stored — the editor edits
     the raw name." 存进去会在每次重命名后越滚越多。
-  source: web/src/pages/Cove.tsx:213-221,409
+  source: web/src/pages/Area.tsx:213-221,409
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-NEWWAVE-012
+- id: INV-AREA-NEWWAVE-012
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
-    NewWaveDialog 必须是受控 Dialog(open 由 CovePage 持有),触发它的标题栏 `+` 按钮在打开期间保持挂载。
+    NewWaveDialog 必须是受控 Dialog(open 由 AreaPage 持有),触发它的标题栏 `+` 按钮在打开期间保持挂载。
   why: >
     源码注释:"the title-row `+` button is the visible trigger, and it stays mounted while the Dialog is open
     so Dialog's focus-restore lands keyboard users back on the `+` button after close."
-  source: web/src/pages/Cove.tsx:419-443
+  source: web/src/pages/Area.tsx:419-443
   authoritative_test: NONE
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-NEWWAVE-013
+- id: INV-AREA-NEWWAVE-013
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     NewWaveDialog 用 `title="New wave" hideTitleRow` —— 有可访问名但不渲染可见标题行;关闭方式是表单
     Cancel、Esc、遮罩点击。
   why: >
     源码注释(#891 signoff round 2):"the owner wants the dialog to read as one cohesive card … the visible
     'New wave' head is gone but the accessible name stays."
-  source: web/src/pages/Cove.tsx:479-491
-  authoritative_test: web/src/pages/Cove.test.tsx:493
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:479-491
+  authoritative_test: web/src/pages/Area.test.tsx:493
+  owner_slice: features/area/page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-NEWWAVE-014
+- id: INV-AREA-NEWWAVE-014
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     切换 Workflow 下拉必须通过 `key={variant}` 重挂 NewTaskForm(每个变体的状态从零开始),并在
     `[open, variant]` effect 里重新聚焦到该变体的第一个字段。
@@ -2453,34 +2453,34 @@
     源码注释(#891 review):"Dialog's initial-focus pass only runs when `open` flips true, so switching the
     workflow … would otherwise leave focus on the type radio while the new variant's first field sits
     unfocused." 依赖"refs attach before effects run"这一 React 顺序保证。
-  source: web/src/pages/Cove.tsx:470-473,549-555
-  authoritative_test: web/src/pages/Cove.test.tsx:530,557
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:470-473,549-555
+  authoritative_test: web/src/pages/Area.test.tsx:530,557
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: browser
   migration: pending
 
-- id: INV-COVE-NEWWAVE-015
+- id: INV-AREA-NEWWAVE-015
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     Dialog 关闭时必须把 variant 重置为 'task'。
   why: >
     源码注释:"Reset to 'task' whenever the dialog closes so every open starts from the familiar default."
-  source: web/src/pages/Cove.tsx:463-465
-  authoritative_test: web/src/pages/Cove.test.tsx:516
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:463-465
+  authoritative_test: web/src/pages/Area.test.tsx:516
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: INV-COVE-NEWWAVE-016
+- id: INV-AREA-NEWWAVE-016
   kind: invariant
-  family: cove-page
+  family: area-page
   statement: >
     `.calm-select` 的自定义触发按钮是"有名但不可聚焦"的 —— 绝不能加 aria-hidden。
   why: >
@@ -2488,7 +2488,7 @@
     In Chromium it still surfaces in the AX button tree NAMED BY the cloned option content — do NOT
     aria-hidden it (that risks stripping the subtree Chrome announces as the selected value); instead,
     in-dialog button locators must be specific (exact names)."
-  source: web/src/pages/Cove.tsx:517-539 + web/src/shared/components/NewTaskForm.tsx:962-998
+  source: web/src/pages/Area.tsx:517-539 + web/src/shared/components/NewTaskForm.tsx:962-998
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -2497,35 +2497,35 @@
   test_tier: browser
   migration: pending
 
-- id: CAP-COVE-NEWWAVE-017
+- id: CAP-AREA-NEWWAVE-017
   kind: capability
-  family: cove-page
+  family: area-page
   statement: >
     Workflow 选择器提供两项:"None / plain wave" 与 "Issue dev / issue → PR autoflow";每项是"名称 +
     静音描述"两段内容,中间靠一个 `{' '}` 文本节点保证降级引擎与 AT 读出来是 "None plain wave"。
   why: >
     源码注释:"rich option content is a base-select capability; fallback popups flatten it to inline text,
     which is why the description is kept short"。
-  source: web/src/pages/Cove.tsx:540-552
-  authoritative_test: web/src/pages/Cove.test.tsx:493,516
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:540-552
+  authoritative_test: web/src/pages/Area.test.tsx:493,516
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: pending
 
-- id: CAP-COVE-018
+- id: CAP-AREA-018
   kind: capability
-  family: cove-page
+  family: area-page
   statement: >
     每个 wave 行(在 onPinWave 提供时)渲染 hover 显形的 pin 按钮,label 在 "Pin wave"/"Unpin wave" 间切换;
     未提供 onPinWave 时完全不渲染。
   why: >
     与 Sidebar 的 onPinWave 契约镜像("Mirrors the sidebar's onPinWave contract"),两处必须行为一致。
-  source: web/src/pages/Cove.tsx:62-65,184 + web/src/shared/components/WaveRow.tsx:120-132
-  authoritative_test: web/src/pages/Cove.test.tsx:380,392,404,416,431
-  owner_slice: features/cove/page
+  source: web/src/pages/Area.tsx:62-65,184 + web/src/shared/components/WaveRow.tsx:120-132
+  authoritative_test: web/src/pages/Area.test.tsx:380,392,404,416,431
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2704,7 +2704,7 @@
     Enter/blur 提交;退出编辑时把焦点还给 display span。aria-label 只是标题,"Rename wave" 在 sr-only
     兄弟 span 里通过 aria-describedby 引用。
   why: >
-    与 CovePage 的 EditableTitle 同一套 #56 followup 可访问名拆分("parity with CovePage's heading");
+    与 AreaPage 的 EditableTitle 同一套 #56 followup 可访问名拆分("parity with AreaPage's heading");
     "drops the keyboard affordance entirely when onRenameWave is absent" 锁定无回调时不加任何 role/tabIndex。
   source: web/src/pages/Wave.tsx:196-243,378-431
   authoritative_test: web/src/pages/Wave.test.tsx:214,253,272,299,319,350
@@ -2937,10 +2937,10 @@
   kind: capability
   family: sidebar
   statement: >
-    cove 默认折叠;展开状态持久化在 `calm:sidebar:expandedCoves`(只接受值为 true 的键);
+    area 默认折叠;展开状态持久化在 `calm:sidebar:expandedAreas`(只接受值为 true 的键);
     localStorage 写抛异常时切换仍必须生效。
   why: >
-    "defaults coves to collapsed" / "persists expanded coves in localStorage across remounts" /
+    "defaults areas to collapsed" / "persists expanded areas in localStorage across remounts" /
     "still toggles when localStorage writes throw" —— 持久化失败不能瘫痪交互。
   source: web/src/shared/components/Sidebar.tsx:42-102
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:146,228,241
@@ -2955,10 +2955,10 @@
   kind: invariant
   family: sidebar
   statement: >
-    cove 行是 `role="group"` 容器内的三个兄弟按钮:chevron(展开/折叠)、cove-nav(导航)、delete(×)。
-    chevron 点击必须 stopPropagation 且只改展开态、不导航;cove-nav 点击只导航、不改展开态。
+    area 行是 `role="group"` 容器内的三个兄弟按钮:chevron(展开/折叠)、area-nav(导航)、delete(×)。
+    chevron 点击必须 stopPropagation 且只改展开态、不导航;area-nav 点击只导航、不改展开态。
   why: >
-    "keeps cove row navigation on the nav button without changing expansion" +
+    "keeps area row navigation on the nav button without changing expansion" +
     "does not navigate when the chevron is clicked";嵌套 button 是 a11y 硬错误,所以拆成兄弟。
   source: web/src/shared/components/Sidebar.tsx:352-400
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:187,199
@@ -2973,12 +2973,12 @@
   kind: invariant
   family: sidebar
   statement: >
-    路由到某个 wave 时必须自动展开它所属的 cove(effect 依赖 activeWaveId + activeCoveId);
+    路由到某个 wave 时必须自动展开它所属的 area(effect 依赖 activeWaveId + activeAreaId);
     但同一 wave 上的重渲染不得覆盖用户手动折叠的结果,离开 wave 路由时不得改动任何展开态。
   why: >
-    四条测试组成完整语义:auto-expands on navigation / keeps a manually collapsed active cove collapsed on
+    四条测试组成完整语义:auto-expands on navigation / keeps a manually collapsed active area collapsed on
     same-wave rerender / re-expands when navigating to another wave in it / does not touch expansion state
-    when leaving a wave route。expandCove(而非 toggle)+ 依赖 activeWaveId 是实现这套语义的关键。
+    when leaving a wave route。expandArea(而非 toggle)+ 依赖 activeWaveId 是实现这套语义的关键。
   source: web/src/shared/components/Sidebar.tsx:93-100,161-179
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:273,290,309,330,363
   owner_slice: app/shell/sidebar
@@ -2992,7 +2992,7 @@
   kind: invariant
   family: sidebar
   statement: >
-    活动 wave 数据晚于路由到达时也必须触发自动展开(activeCoveId 从 waves 里现算,且是 effect 依赖)。
+    活动 wave 数据晚于路由到达时也必须触发自动展开(activeAreaId 从 waves 里现算,且是 effect 依赖)。
   why: >
     "auto-expands when the active wave arrives after the route" —— 首屏路由先到、waves 后到是常态。
   source: web/src/shared/components/Sidebar.tsx:162-179
@@ -3011,7 +3011,7 @@
     活动 wave 行必须 scrollIntoView({block:'nearest', behavior:'smooth'});ref 用 state 回调
     (setActiveWaveRowEl)以便节点挂载后触发 effect。
   why: >
-    "scrolls the active wave row into view" —— 长 cove 列表里活动行常在视口外;用 ref-as-state 是因为
+    "scrolls the active wave row into view" —— 长 area 列表里活动行常在视口外;用 ref-as-state 是因为
     普通 ref 变化不会触发 effect。
   source: web/src/shared/components/Sidebar.tsx:154-156,170-185
   authoritative_test: web/src/shared/components/Sidebar.expand.test.tsx:417
@@ -3026,11 +3026,11 @@
   kind: invariant
   family: sidebar
   statement: >
-    pin 不是"搬家":pinned wave 必须同时出现在 Pinned 区和它所属 cove 的展开列表里;若同时需要关注,
-    也同时出现在 "Waiting on you" 区。三个区的渲染顺序必须是 Waiting on you → Pinned → Coves。
+    pin 不是"搬家":pinned wave 必须同时出现在 Pinned 区和它所属 area 的展开列表里;若同时需要关注,
+    也同时出现在 "Waiting on you" 区。三个区的渲染顺序必须是 Waiting on you → Pinned → Areas。
   why: >
-    源码注释:"Pinned waves intentionally appear in both the quick-access Pinned section and their cove's
-    inline list; pinning is not relocation, and the wave still belongs to this cove." +
+    源码注释:"Pinned waves intentionally appear in both the quick-access Pinned section and their area's
+    inline list; pinning is not relocation, and the wave still belongs to this area." +
     "Waiting includes pinned attention waves intentionally"。
   source: web/src/shared/components/Sidebar.tsx:211-230,272-330
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:90,101 + web/src/shared/components/Sidebar.expand.test.tsx:208
@@ -3061,7 +3061,7 @@
   kind: invariant
   family: sidebar
   statement: >
-    "Waiting on you" 与每个 cove 的 warn 徽标必须用同一个 `waveNeedsUserAttention` 谓词(lifecycle ∪
+    "Waiting on you" 与每个 area 的 warn 徽标必须用同一个 `waveNeedsUserAttention` 谓词(lifecycle ∪
     kernel-card-FSM 的 OR),包括 pinned 的关注 wave。
   why: >
     源码注释(#254):"Catches both 'Spec Agent said blocked/reviewing/failed' AND 'a worker card hit an
@@ -3080,11 +3080,11 @@
   kind: invariant
   family: sidebar
   statement: >
-    cove 行右边缘只有一个徽标位:waiting>0 时显示 warn 红计数,否则显示 muted 总数,无 wave 时不显示;
+    area 行右边缘只有一个徽标位:waiting>0 时显示 warn 红计数,否则显示 muted 总数,无 wave 时不显示;
     徽标 aria-hidden。
   why: >
     源码注释:"Single right-edge badge slot: warn-red waiting count beats muted total count."
-    数字被 aria-hidden 是因为它在 cove 名之后重复出现会污染导航朗读。
+    数字被 aria-hidden 是因为它在 area 名之后重复出现会污染导航朗读。
   source: web/src/shared/components/Sidebar.tsx:338-345,376-384
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:162,172
   owner_slice: app/shell/sidebar
@@ -3115,8 +3115,8 @@
   kind: capability
   family: sidebar
   statement: >
-    Sidebar 用两个共享 ConfirmDialog(一个删 cove、一个删 wave),由 pendingDelete/pendingDeleteWave
-    驱动文案;删 wave 走 close-then-await,删 cove 走 await-then-close。
+    Sidebar 用两个共享 ConfirmDialog(一个删 area、一个删 wave),由 pendingDelete/pendingDeleteWave
+    驱动文案;删 wave 走 close-then-await,删 area 走 await-then-close。
   why: >
     "Per-row × on a sidebar WaveRow shows a confirm dialog and calls onDeleteWave on confirm" /
     "Cancel closes the dialog without invoking onDeleteWave";单例对话框保证焦点还原落点稳定。
@@ -3134,8 +3134,8 @@
   family: sidebar
   statement: >
     Sidebar 必须有四个具唯一可访问名的地标:aside "Navigation" 内含 nav "Sidebar navigation"、
-    section "Waiting on you"、section "Pinned"、nav "Coves";cove 展开列表另有
-    `role="group" aria-label="Waves in <cove>"`。
+    section "Waiting on you"、section "Pinned"、nav "Areas";area 展开列表另有
+    `role="group" aria-label="Waves in <area>"`。
   why: >
     源码注释:"Both landmarks have unique accessible names so the `landmark-unique` axe rule stays green" +
     "Scoping role queries by these landmarks disambiguates buttons that share an accessible name across
@@ -3155,7 +3155,7 @@
   statement: >
     chevron 的 `aria-controls` 只在实际渲染了内联 wave 列表时才设置(展开 且 有 wave)。
   why: >
-    指向不存在元素的 aria-controls 是 a11y 错误;空 cove 展开时不渲染列表容器。
+    指向不存在元素的 aria-controls 是 a11y 错误;空 area 展开时不渲染列表容器。
   source: web/src/shared/components/Sidebar.tsx:335-337,353-365,401-407
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
@@ -3169,11 +3169,11 @@
   kind: capability
   family: sidebar
   statement: >
-    "Coves" 分区标题右侧的 `+` 展开一个内联新建输入框(Enter 提交、Escape 取消、blur 也提交;空名视为取消),
-    颜色从 6 色 PALETTE 随机取;未提供 onCreateCove 时整个 `+` 与输入框都不渲染。
+    "Areas" 分区标题右侧的 `+` 展开一个内联新建输入框(Enter 提交、Escape 取消、blur 也提交;空名视为取消),
+    颜色从 6 色 PALETTE 随机取;未提供 onCreateArea 时整个 `+` 与输入框都不渲染。
   why: >
-    源码注释:"creating the *first* cove has no other home"(所以入口在 Sidebar 而不是 CovePage);
-    `+` 放在标题行是"so the trigger stays in view even when the cove list overflows"。
+    源码注释:"creating the *first* area has no other home"(所以入口在 Sidebar 而不是 AreaPage);
+    `+` 放在标题行是"so the trigger stays in view even when the area list overflows"。
   source: web/src/shared/components/Sidebar.tsx:531-606
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
@@ -3205,11 +3205,11 @@
   kind: capability
   family: sidebar
   statement: >
-    cove 色块在该 cove 有 running wave 时加 `pulse` 类;wave 行在 needsAttention 时加 `attention` 类
+    area 色块在该 area 有 running wave 时加 `pulse` 类;wave 行在 needsAttention 时加 `attention` 类
     (供 warn 色标题样式)。
   why: >
     "pinned attention row carries the attention class for warn title styling" 等三条测试对
-    Pinned / Waiting / 内联 cove 三个位置分别锁定 —— 三处必须一致。
+    Pinned / Waiting / 内联 area 三个位置分别锁定 —— 三处必须一致。
   source: web/src/shared/components/Sidebar.tsx:370-375,636-643
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:181,190,199
   owner_slice: app/shell/sidebar
@@ -3223,10 +3223,10 @@
   kind: capability
   family: sidebar
   statement: >
-    Waiting/Pinned 区的行显示 "cove名 · wave标题" 作为 title 提示并渲染 cove 名副标签;内联 cove 列表里
-    的行不重复 cove 名(cove 传 null)。找不到 cove 的 wave 必须不渲染 cove 文本 span。
+    Waiting/Pinned 区的行显示 "area名 · wave标题" 作为 title 提示并渲染 area 名副标签;内联 area 列表里
+    的行不重复 area 名(area 传 null)。找不到 area 的 wave 必须不渲染 area 文本 span。
   why: >
-    "wave with no matching cove renders without the cove text span" —— 渲染空 span 会留下一个孤立的分隔符。
+    "wave with no matching area renders without the area text span" —— 渲染空 span 会留下一个孤立的分隔符。
   source: web/src/shared/components/Sidebar.tsx:277-320,408-424,657-664
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:213
   owner_slice: app/shell/sidebar
@@ -3245,7 +3245,7 @@
   family: new-task-form
   statement: >
     NewTaskForm 是全应用唯一知道如何 POST 一个格式正确 `NewWave` body 的地方;任何新建入口都必须复用它,
-    不得重实现 cwd/cove 推断。
+    不得重实现 cwd/area 推断。
   why: >
     文件头引 issue #250 原话:"all creation entrypoints must go through the same configuration card"。
   source: web/src/shared/components/NewTaskForm.tsx:1-9
@@ -3296,7 +3296,7 @@
   kind: invariant
   family: new-task-form
   statement: >
-    cwd → cove 解析必须防抖 300ms,并且每次结果落地前比对 `latestResolveCwdRef` —— 用户已经继续输入的话丢弃
+    cwd → area 解析必须防抖 300ms,并且每次结果落地前比对 `latestResolveCwdRef` —— 用户已经继续输入的话丢弃
     该结果(成功与失败路径都要判);非绝对路径时把 ref 清空。
   why: >
     源码注释:"two overlapping resolves can land out-of-order and the stale one wins";专门有
@@ -3330,10 +3330,10 @@
   kind: invariant
   family: new-task-form
   statement: >
-    用户点过 "Use a different cove" 之后(userOverrodeAutoMatchRef 置位),后续 cwd 解析仍要更新横幅
-    (让用户看到 cwd 匹配到什么),但不得再覆盖用户手选的 coveChoice。
+    用户点过 "Use a different area" 之后(userOverrodeAutoMatchRef 置位),后续 cwd 解析仍要更新横幅
+    (让用户看到 cwd 匹配到什么),但不得再覆盖用户手选的 areaChoice。
   why: >
-    源码注释逐字写明这个分工;测试 "respects the manual cove choice after a subsequent cwd re-resolves to
+    源码注释逐字写明这个分工;测试 "respects the manual area choice after a subsequent cwd re-resolves to
     another hit"。
   source: web/src/shared/components/NewTaskForm.tsx:206-215,304-312,727-746
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:358,425
@@ -3348,11 +3348,11 @@
   kind: invariant
   family: new-task-form
   statement: >
-    三种 coveChoice 对应三条提交路径:auto → attach_folder=false;existing → 单次 POST + attach_folder=true
-    (内核在同一 tx 里认领文件夹);new → 先 POST /api/coves 再 POST wave(两步)。
+    三种 areaChoice 对应三条提交路径:auto → attach_folder=false;existing → 单次 POST + attach_folder=true
+    (内核在同一 tx 里认领文件夹);new → 先 POST /api/areas 再 POST wave(两步)。
   why: >
-    源码注释:"the server doesn't yet expose an atomic 'create cove + first wave' endpoint; if the wave POST
-    fails … the cove is left in place and a retry reuses it"(带 TODO(#250) 收敛为原子端点)。
+    源码注释:"the server doesn't yet expose an atomic 'create area + first wave' endpoint; if the wave POST
+    fails … the area is left in place and a retry reuses it"(带 TODO(#250) 收敛为原子端点)。
   source: web/src/shared/components/NewTaskForm.tsx:22-44,420-448
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158,236
   owner_slice: features/wave/create
@@ -3367,10 +3367,10 @@
   family: new-task-form
   statement: >
     409 FolderConflict 必须按 conflict_kind(descendant/ancestor/equal)渲染三种不同的可行动文案,并把
-    body.cove_id 用本地 coves 缓存翻成 cove 名;查不到时退回 "another cove"。
+    body.area_id 用本地 areas 缓存翻成 area 名;查不到时退回 "another area"。
   why: >
-    文件头列出两种能触发 409 的场景;源码注释:"the user sees 'claimed by cove Atlas' instead of an opaque
-    UUID … If the cove isn't in our local cache … we fall back to the generic phrasing."
+    文件头列出两种能触发 409 的场景;源码注释:"the user sees 'claimed by area Atlas' instead of an opaque
+    UUID … If the area isn't in our local cache … we fall back to the generic phrasing."
   source: web/src/shared/components/NewTaskForm.tsx:46-55,1091-1142
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:284,316
   owner_slice: features/wave/create
@@ -3384,7 +3384,7 @@
   kind: gate
   family: new-task-form
   statement: >
-    asFolderConflict 必须逐字段窄化 `CalmApiError.body`(conflict_path 是 string、cove_id 是 string、
+    asFolderConflict 必须逐字段窄化 `CalmApiError.body`(conflict_path 是 string、area_id 是 string、
     conflict_kind 属于三值枚举),任一不符返回 null 走通用 message 兜底。
   why: >
     body 是 unknown(刻意不让 wire 类型泄漏到处都是);盲信形状会在服务端换 body 时崩掉错误提示本身。
@@ -3406,7 +3406,7 @@
     源码注释:"the Dialog's own rAF-deferred focus pass would race against this microtask and sometimes win
     (landing on the Dialog Close button), so the contract is 'Dialog focuses for us, we don't double-focus'."
   source: web/src/shared/components/NewTaskForm.tsx:96-108,254-265
-  authoritative_test: web/src/pages/Cove.test.tsx:530
+  authoritative_test: web/src/pages/Area.test.tsx:530
   owner_slice: features/wave/create
   intentional_omission: true
   runtime_layer: features
@@ -3423,9 +3423,9 @@
   why: >
     源码注释(#891 review):"initial focus must be variant-appropriate";callback ref 是因为
     "a plain ref-object handoff would trip TS property variance"。isIssueDev 在一次挂载内固定
-    (Cove.tsx 用 key 重挂),所以每个 callback 最多绑一个元素。
+    (Area.tsx 用 key 重挂),所以每个 callback 最多绑一个元素。
   source: web/src/shared/components/NewTaskForm.tsx:228-252
-  authoritative_test: web/src/pages/Cove.test.tsx:530
+  authoritative_test: web/src/pages/Area.test.tsx:530
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -3455,7 +3455,7 @@
   kind: invariant
   family: new-task-form
   statement: >
-    新建 cove 的调色板颜色必须用"当前 cove 数量"作种子确定性取模,不得用 Math.random;负数/非整数种子 clamp 到 0。
+    新建 area 的调色板颜色必须用"当前 area 数量"作种子确定性取模,不得用 Math.random;负数/非整数种子 clamp 到 0。
   why: >
     源码注释:"Using `Math.random` here would (a) make tests flaky and (b) jitter the color each render for
     the same UI state."
@@ -3524,11 +3524,11 @@
   kind: capability
   family: new-task-form
   statement: >
-    cove 区有四种渲染分支:auto(命中且未被覆盖,显示"Auto-matched to cove X (via folder …)" + 覆盖按钮)、
-    resolving("Looking up cove…")、existing(calm-select 下拉;无 cove 时提示切到"Create new cove")、
-    new(名称输入框);label 文案在所有分支里恒为 "Cove"。
+    area 区有四种渲染分支:auto(命中且未被覆盖,显示"Auto-matched to area X (via folder …)" + 覆盖按钮)、
+    resolving("Looking up area…")、existing(calm-select 下拉;无 area 时提示切到"Create new area")、
+    new(名称输入框);label 文案在所有分支里恒为 "Area"。
   why: >
-    源码注释:"The label text stays 'Cove' across all branches so the visual structure doesn't jitter."
+    源码注释:"The label text stays 'Area' across all branches so the visual structure doesn't jitter."
   source: web/src/shared/components/NewTaskForm.tsx:715-747,843-1025
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:115,137
   owner_slice: features/wave/create
@@ -3747,9 +3747,9 @@
   kind: capability
   family: new-task-form
   statement: >
-    创建成功后必须额外 invalidate coves 查询键(在 useCreateWaveMutation 自带的 waves 失效之外)。
+    创建成功后必须额外 invalidate areas 查询键(在 useCreateWaveMutation 自带的 waves 失效之外)。
   why: >
-    源码注释:"a brand-new cove also benefits from a coves-list refresh in case the WS event didn't land yet."
+    源码注释:"a brand-new area also benefits from a areas-list refresh in case the WS event didn't land yet."
   source: web/src/shared/components/NewTaskForm.tsx:471-476
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:236
   owner_slice: features/wave/create
@@ -4232,8 +4232,8 @@
   kind: invariant
   family: shared-atoms
   statement: >
-    `·` 分隔符只在 cove 标签与 now 文本同时存在时才输出;lifecycle 药丸用 compact 变体(省去前导圆点),
-    且无论有没有 now/cove 都必须渲染。
+    `·` 分隔符只在 area 标签与 now 文本同时存在时才输出;lifecycle 药丸用 compact 变体(省去前导圆点),
+    且无论有没有 now/area 都必须渲染。
   why: >
     源码注释:"Avoid the 'double-bullet' effect" + "`compact` skips the leading dot so we don't double up
     with the row's own status glyph" + "the badge shows up regardless … (the only 'always present'
@@ -4469,7 +4469,7 @@
     ConfirmDialog 默认聚焦 Cancel。finally 复位是为了 "an erroring onDelete doesn't strand the dialog open
     with a disabled Confirm"。
   source: web/src/pages/_shared.tsx:60-136
-  authoritative_test: web/src/pages/Cove.test.tsx:249
+  authoritative_test: web/src/pages/Area.test.tsx:249
   owner_slice: app/shell/page-actions
   intentional_omission: true
   runtime_layer: app
@@ -4522,13 +4522,13 @@
   family: duplication
   statement: >
     【重复对 2/5】`.calm-select` 的 base-select 结构(自定义 trigger button + `<selectedcontent>` +
-    stroke chevron)在 NewTaskForm 的 cove 下拉与 Cove.tsx 的 Workflow 下拉各写了一份,两份必须逐字保持一致 ——
+    stroke chevron)在 NewTaskForm 的 area 下拉与 Area.tsx 的 Workflow 下拉各写了一份,两份必须逐字保持一致 ——
     包括"trigger 是有名但不可聚焦、且绝不能 aria-hidden"这条。
   why: >
     两处注释几乎逐字重复,并共同要求"in-dialog button locators must use exact names"
-    (一个 substring /browse/i 曾与名为 "E2E browse cove" 的 cove 撞名)。**新架构应抽成一个 Select 原语。**
-  source: web/src/shared/components/NewTaskForm.tsx:962-998 + web/src/pages/Cove.tsx:507-553
-  authoritative_test: web/src/pages/Cove.test.tsx:493
+    (一个 substring /browse/i 曾与名为 "E2E browse area" 的 area 撞名)。**新架构应抽成一个 Select 原语。**
+  source: web/src/shared/components/NewTaskForm.tsx:962-998 + web/src/pages/Area.tsx:507-553
+  authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: ui/calm-select
   intentional_omission: false
   runtime_layer: ui
@@ -4540,13 +4540,13 @@
   kind: invariant
   family: duplication
   statement: >
-    【重复对 3/5】`.new-task-form-label` / `.new-task-form-input` 两个类被 Cove.tsx 的 Workflow 字段
+    【重复对 3/5】`.new-task-form-label` / `.new-task-form-input` 两个类被 Area.tsx 的 Workflow 字段
     直接借用,与 NewTaskForm 内部用法必须保持一致。
   why: >
     Workflow 选择器不在 NewTaskForm 内部却穿它的皮,是为了让对话框读起来像一张卡;改类名会同时打断两处。
     **新架构应把 Workflow 字段并进表单本体或抽出共享字段原语。**
-  source: web/src/pages/Cove.tsx:507-513 + web/src/shared/components/NewTaskForm.tsx:574-582,666-687
-  authoritative_test: web/src/pages/Cove.test.tsx:493
+  source: web/src/pages/Area.tsx:507-513 + web/src/shared/components/NewTaskForm.tsx:574-582,666-687
+  authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: ui/schema-form
   intentional_omission: false
   runtime_layer: ui
@@ -4605,14 +4605,14 @@
   kind: invariant
   family: duplication
   statement: >
-    【附加重复对】cove 调色板 6 色数组在 NewTaskForm(COVE_PALETTE)与 Sidebar(PALETTE)各写一份,
-    值必须一致;取色策略故意不同 —— NewTaskForm 按 cove 数量确定性取模,Sidebar 用 Math.random。
+    【附加重复对】area 调色板 6 色数组在 NewTaskForm(AREA_PALETTE)与 Sidebar(PALETTE)各写一份,
+    值必须一致;取色策略故意不同 —— NewTaskForm 按 area 数量确定性取模,Sidebar 用 Math.random。
   why: >
-    NewTaskForm 注释显式写 "same set Sidebar's `NewCoveButton` draws from. Keep in lockstep";
+    NewTaskForm 注释显式写 "same set Sidebar's `NewAreaButton` draws from. Keep in lockstep";
     取色策略差异是因为 NewTaskForm 要测试可确定性。**新架构合并调色板时不要顺手统一取色策略。**
   source: web/src/shared/components/NewTaskForm.tsx:136-140 + web/src/shared/components/Sidebar.tsx:538,561-570
   authoritative_test: NONE
-  owner_slice: features/cove/palette
+  owner_slice: features/area/palette
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -4642,13 +4642,13 @@
   family: duplication
   statement: >
     【附加重复对】可编辑标题(点击/Enter/F2 进入、Escape 取消、Enter/blur 提交、焦点还原、aria-label 只放名字 +
-    sr-only 动词 describedby)在 Cove.tsx 的 EditableTitle 与 Wave.tsx 的行内重命名各实现一份。
-    差异必须保留:Cove 版有 #288 的合成 click 抑制器,Wave 版没有。
+    sr-only 动词 describedby)在 Area.tsx 的 EditableTitle 与 Wave.tsx 的行内重命名各实现一份。
+    差异必须保留:Area 版有 #288 的合成 click 抑制器,Wave 版没有。
   why: >
-    Wave.tsx 注释自称 "Same accessible-name split as CovePage's EditableTitle (#56 followup)" —— 两处刻意
-    对齐;但 #288 的 re-entry 竞态只在 Cove 版被修过。**新架构合并时必须把抑制器带进统一实现,而不是删掉。**
-  source: web/src/pages/Cove.tsx:213-417 + web/src/pages/Wave.tsx:196-243,378-431
-  authoritative_test: web/src/pages/Cove.test.tsx:138 + web/src/pages/Wave.test.tsx:350
+    Wave.tsx 注释自称 "Same accessible-name split as AreaPage's EditableTitle (#56 followup)" —— 两处刻意
+    对齐;但 #288 的 re-entry 竞态只在 Area 版被修过。**新架构合并时必须把抑制器带进统一实现,而不是删掉。**
+  source: web/src/pages/Area.tsx:213-417 + web/src/pages/Wave.tsx:196-243,378-431
+  authoritative_test: web/src/pages/Area.test.tsx:138 + web/src/pages/Wave.test.tsx:350
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -4664,10 +4664,10 @@
     间切换、点击 stopPropagation)在 Sidebar 内部 WaveRow 与 shared/components/WaveRow 各写一份,
     两份必须行为一致。
   why: >
-    WaveRow 注释:"Mirrors the sidebar's WaveRow pin button";Cove 页与 Sidebar 的 pin 测试分别锁定同一组
+    WaveRow 注释:"Mirrors the sidebar's WaveRow pin button";Area 页与 Sidebar 的 pin 测试分别锁定同一组
     label。**新架构应只留一个 WaveRow。**
   source: web/src/shared/components/Sidebar.tsx:644-656 + web/src/shared/components/WaveRow.tsx:120-132
-  authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:125 + web/src/pages/Cove.test.tsx:416
+  authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:125 + web/src/pages/Area.test.tsx:416
   owner_slice: features/wave/row
   intentional_omission: false
   runtime_layer: features
@@ -4679,12 +4679,12 @@
   kind: invariant
   family: duplication
   statement: >
-    【附加重复对】"Delete wave?" 确认对话框的标题/正文/按钮文案在 Cove.tsx 与 Sidebar.tsx 各写一份,
+    【附加重复对】"Delete wave?" 确认对话框的标题/正文/按钮文案在 Area.tsx 与 Sidebar.tsx 各写一份,
     必须逐字一致(含 "Its cards (including any terminals) go too. This cannot be undone.")。
   why: >
     同一个破坏性操作在两个入口给出不同措辞会让用户怀疑二者语义不同;两处的确认模式也刻意相同(close-then-await)。
-  source: web/src/pages/Cove.tsx:196-208 + web/src/shared/components/Sidebar.tsx:447-459
-  authoritative_test: web/src/pages/Cove.test.tsx:286 + web/src/shared/components/Sidebar.test.tsx:85
+  source: web/src/pages/Area.tsx:196-208 + web/src/shared/components/Sidebar.tsx:447-459
+  authoritative_test: web/src/pages/Area.test.tsx:286 + web/src/shared/components/Sidebar.test.tsx:85
   owner_slice: ui/confirm-dialog/copy
   intentional_omission: false
   runtime_layer: ui

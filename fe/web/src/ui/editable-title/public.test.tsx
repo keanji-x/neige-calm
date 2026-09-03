@@ -106,16 +106,16 @@ it('shows the placeholder for a blank name and still opens an empty box', async 
 
 /*
  * #1211 — the two answers to "what does an empty commit mean", pinned as a
- * pair. `'cancel'` is the default and the cove's; `'clear'` is the wave's,
+ * pair. `'cancel'` is the default and the area's; `'clear'` is the wave's,
  * where the spec agent can take the name back once the title is empty.
  */
 it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
   const cancels = vi.fn();
-  render(<EditableTitle value="Old" editLabel="Rename cove" inputLabel="Cove name" onCommit={cancels} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Rename cove' }));
-  await userEvent.clear(screen.getByRole('textbox', { name: 'Cove name' }));
-  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Cove name' }), { key: 'Enter' });
-  await screen.findByRole('button', { name: 'Rename cove' });
+  render(<EditableTitle value="Old" editLabel="Rename area" inputLabel="Area name" onCommit={cancels} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Rename area' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Area name' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Area name' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename area' });
   expect(cancels).not.toHaveBeenCalled();
   cleanup();
 

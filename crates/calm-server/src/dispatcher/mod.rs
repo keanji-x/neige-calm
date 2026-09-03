@@ -126,8 +126,8 @@ pub(crate) fn event_warrants_spec_push_with_role(
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
             is_turn_end && is_worker
         }
-        Event::CoveUpdated(_)
-        | Event::CoveDeleted { .. }
+        Event::AreaUpdated(_)
+        | Event::AreaDeleted { .. }
         | Event::WaveUpdated(_)
         | Event::WaveDeleted { .. }
         | Event::WaveLifecycleChanged { .. }
@@ -268,12 +268,12 @@ fn dispatcher_operation_runtime(
     let terminal_adapter = Arc::new(TerminalAdapter::new(
         route_repo.clone(),
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let terminal_worker_adapter = Arc::new(TerminalWorkerAdapter::new(
         route_repo.clone(),
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let codex_adapter = Arc::new(CodexAdapter::new(
         route_repo.clone(),
@@ -282,7 +282,7 @@ fn dispatcher_operation_runtime(
         pending_codex_threads.clone(),
         pending_codex_threads_spawn_serial,
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let mcp_socket_path = mcp_server
         .as_ref()
@@ -293,27 +293,27 @@ fn dispatcher_operation_runtime(
         shared_codex_appserver.clone(),
         mcp_server.clone(),
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
         workspace_root.clone(),
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new(
         route_repo.clone(),
         codex.clone(),
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let claude_worker_adapter = Arc::new(ClaudeWorkerAdapter::new(
         route_repo.clone(),
         codex.clone(),
         mcp_server.clone(),
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
         route_repo.clone(),
         codex,
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
     ));
     let spec_harness_start_adapter = Arc::new(SpecHarnessStartAdapter::new(
         repo.clone(),
@@ -321,7 +321,7 @@ fn dispatcher_operation_runtime(
         harness.clone(),
         plugin,
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
         mcp_socket_path,
     ));
     let spec_harness_interrupt_adapter =
@@ -340,7 +340,7 @@ fn dispatcher_operation_runtime(
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
     let child_wave_adapter = Arc::new(ChildWaveAdapter::new(
         write.role_cache().clone(),
-        write.cove_cache().clone(),
+        write.area_cache().clone(),
         workspace_root.clone(),
     ));
     let completion = OperationCompletionBus::new();
@@ -790,7 +790,7 @@ impl Dispatcher {
             "task.gate_result".into(),
             "wave.report_edited".into(),
             "wave.deleted".into(),
-            "cove.deleted".into(),
+            "area.deleted".into(),
             "workspace.leased".into(),
             "workspace.released".into(),
             "forge.scan.completed".into(),
@@ -1100,9 +1100,9 @@ impl Inner {
                     }
                 });
             }
-            Event::CoveDeleted { .. } => {
+            Event::AreaDeleted { .. } => {
                 // Payloads intentionally stay unchanged. The tasks-based
-                // sweep discovers vanished waves/coves fail-closed.
+                // sweep discovers vanished waves/areas fail-closed.
                 let context_monitor = Arc::clone(&self.context_monitor);
                 tokio::spawn(async move {
                     if let Err(error) = context_monitor.sweep().await {
@@ -1162,7 +1162,7 @@ impl Inner {
                     );
                 }
             }
-            Event::CoveUpdated(_)
+            Event::AreaUpdated(_)
             | Event::CardAdded(_)
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }
@@ -1542,8 +1542,8 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: hook_idempotency_key.clone(),
         }),
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
-        Event::CoveUpdated(_)
-        | Event::CoveDeleted { .. }
+        Event::AreaUpdated(_)
+        | Event::AreaDeleted { .. }
         | Event::WaveUpdated(_)
         | Event::WaveDeleted { .. }
         | Event::WaveLifecycleChanged { .. }

@@ -39,13 +39,13 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{
     TOOL_REPORT_EDIT, TOOL_REPORT_READ, TOOL_REPORT_WRITE,
 };
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::wave_report::WaveReportPayload;
@@ -68,7 +68,7 @@ pub(crate) const ASSISTANT_SESSION_ID: &str = "assistant-session";
 pub(crate) const ASSISTANT_B_SESSION_ID: &str = "assistant-b-session";
 pub(crate) const WORKER_SESSION_ID: &str = "worker-session";
 
-/// In-memory fixture: one cove → one wave → one spec card + one
+/// In-memory fixture: one area → one wave → one spec card + one
 /// wave-report card + one worker card. Mirrors the post-`create_wave`
 /// shape (spec + wave-report kernel-owned) plus a worker for the
 /// cross-role tests.
@@ -76,7 +76,7 @@ pub(crate) struct Boot {
     pub(crate) ctx: Arc<AppContext>,
     pub(crate) registry: Arc<ToolRegistry>,
     pub(crate) repo: Arc<dyn Repo>,
-    pub(crate) cove_id: CoveId,
+    pub(crate) area_id: AreaId,
     pub(crate) wave_id: WaveId,
     pub(crate) spec_card_id: CardId,
     pub(crate) report_card_id: CardId,
@@ -218,8 +218,8 @@ pub(crate) async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "report-test".into(),
             color: "#000".into(),
             sort: None,
@@ -229,7 +229,7 @@ pub(crate) async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "report wave".into(),
             sort: None,
             cwd: String::new(),
@@ -364,15 +364,15 @@ pub(crate) async fn boot() -> Boot {
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         wave_vcs: repo
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -387,7 +387,7 @@ pub(crate) async fn boot() -> Boot {
         ctx,
         registry,
         repo,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
@@ -428,7 +428,7 @@ pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -442,7 +442,7 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: ASSISTANT_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "assistant-thread".to_string(),
     }
 }
@@ -450,7 +450,7 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
 /// #1189 S6 — the *other* assistant conversation on this same wave: a
 /// distinct `CardRole::Assistant` card with the production `harness_profile`
 /// marker, a distinct live non-root `worker_sessions` row bound to it, same
-/// wave and cove.
+/// wave and area.
 ///
 /// **What this is not**: it is not minted by the production route. A real
 /// second conversation is born inside the harness-start operation
@@ -476,7 +476,7 @@ pub(crate) fn assistant_b_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: ASSISTANT_B_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "assistant-b-thread".to_string(),
     }
 }
@@ -488,7 +488,7 @@ pub(crate) fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: WORKER_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -1237,10 +1237,10 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
     );
     let (_id, _ver, scope, ev) = edited_rows[0];
     match scope {
-        EventScope::Card { card, wave, cove } => {
+        EventScope::Card { card, wave, area } => {
             assert_eq!(card, &boot.report_card_id, "scope_card");
             assert_eq!(wave, &boot.wave_id, "scope_wave");
-            assert!(!cove.as_str().is_empty(), "scope_cove populated");
+            assert!(!area.as_str().is_empty(), "scope_area populated");
         }
         other => panic!("expected Card-scoped row, got {other:?}"),
     }
@@ -1895,9 +1895,9 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     // so the write lands on wave 2's report — *not* wave 1's. We
     // confirm wave 1's body is untouched.
 
-    let cove2 = boot
+    let area2 = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "wave-b".into(),
             color: "#0f0".into(),
             sort: None,
@@ -1908,7 +1908,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove2.id.clone(),
+            area_id: area2.id.clone(),
             title: "wave 2".into(),
             sort: None,
             cwd: String::new(),
@@ -1955,7 +1955,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         provider: AgentProvider::Codex,
         session_id: "spec2-session".to_string(),
         wave_id: Some(wave2.id.as_str().to_string()),
-        cove_id: cove2.id.as_str().to_string(),
+        area_id: area2.id.as_str().to_string(),
         thread_id: "spec2-thread".to_string(),
     };
     call_tool(

@@ -1822,7 +1822,7 @@ async fn seed_prior_impl_review_round(
 ) {
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
-        cove: fx.cove_id.clone(),
+        area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
@@ -1831,7 +1831,7 @@ async fn seed_prior_impl_review_round(
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_cove_cache,
+            &fx.wave_area_cache,
             Event::ReviewRound {
                 wave_id: fx.wave_id.clone(),
                 subject: ReviewSubject {
@@ -2969,7 +2969,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     let task_id = task_id(fx, key);
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
-        cove: fx.cove_id.clone(),
+        area: fx.area_id.clone(),
     };
     let dispatch_message = format!("[codex-forge-e2e] seed task {key}");
     calm_server::db::write_with_actor_events_typed::<(), _>(
@@ -3027,7 +3027,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
     let card_scope = EventScope::Card {
         card: fx.spec_card_id.clone(),
         wave: fx.wave_id.clone(),
-        cove: fx.cove_id.clone(),
+        area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
@@ -3036,7 +3036,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_cove_cache,
+            &fx.wave_area_cache,
             Event::TaskCompleted {
                 idempotency_key: task_id.clone(),
                 result,
@@ -3224,7 +3224,7 @@ async fn inject_design_review_round_observation(
 async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
-        cove: fx.cove_id.clone(),
+        area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
@@ -3233,7 +3233,7 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_cove_cache,
+            &fx.wave_area_cache,
             Event::ReviewRound {
                 wave_id: fx.wave_id.clone(),
                 subject: ReviewSubject {
@@ -3427,7 +3427,7 @@ async fn wave_lifecycle_row(fx: &Fixture) -> String {
 
 /// The production HTTP grant seam (design D4): the real `routes::router()`
 /// behind `actor_middleware`, over the fixture's LIVE parts (repo, event bus,
-/// role/wave-cove caches), driven in-process via `tower::ServiceExt::oneshot`
+/// role/wave-area caches), driven in-process via `tower::ServiceExt::oneshot`
 /// — exact precedent tests/review_ratify.rs.
 fn fixture_router(fx: &Fixture) -> axum::Router {
     let state = AppState::from_parts(
@@ -3437,7 +3437,7 @@ fn fixture_router(fx: &Fixture) -> axum::Router {
         fx.plugin_host.clone(),
         fx.codex.clone(),
         Some(fx.cache.clone()),
-        Some(fx.wave_cove_cache.clone()),
+        Some(fx.wave_area_cache.clone()),
     );
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -3783,7 +3783,7 @@ async fn seed_converged_impl_review_round(
 ) {
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
-        cove: fx.cove_id.clone(),
+        area: fx.area_id.clone(),
     };
     fx.repo
         .log_pure_event(
@@ -3792,7 +3792,7 @@ async fn seed_converged_impl_review_round(
             None,
             &fx.events,
             &fx.cache,
-            &fx.wave_cove_cache,
+            &fx.wave_area_cache,
             Event::ReviewRound {
                 wave_id: fx.wave_id.clone(),
                 subject: ReviewSubject {

@@ -11,7 +11,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, new_id, now_ms};
 use calm_server::operation::claude_adapter::ClaudeAdapter;
 use calm_server::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use calm_server::operation::codex_adapter::CodexAdapter;
@@ -83,8 +83,8 @@ where
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "claude-endpoint".into(),
             color: "#000".into(),
             sort: None,
@@ -94,7 +94,7 @@ where
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "claude-endpoint".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -127,7 +127,7 @@ where
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -149,7 +149,7 @@ where
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -159,21 +159,21 @@ where
         state.pending_codex_threads.clone(),
         state.pending_codex_threads_spawn_serial.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         hook.clone(),
     ));
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex,
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();

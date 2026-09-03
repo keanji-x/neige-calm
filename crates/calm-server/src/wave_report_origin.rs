@@ -206,7 +206,7 @@
 use std::sync::Arc;
 
 use calm_types::event::EditAuthor;
-use calm_types::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_types::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_types::model::CardRole;
 use calm_types::runtime::AgentProvider;
 use calm_types::worker::WorkerSessionId;
@@ -283,7 +283,7 @@ pub struct AgentOrigin {
     /// `report_write_origin_threading::mcp_recorder_probe_gates_on_the_wave_being_written`
     /// exists to detect.
     pub wave_id: WaveId,
-    /// The cove the acting agent is connected to, as
+    /// The area the acting agent is connected to, as
     /// `ToolCallIdentity::to_principal` reads it.
     ///
     /// Carried for one reason: the recorder probe's `Principal::Agent` cannot
@@ -292,10 +292,10 @@ pub struct AgentOrigin {
     /// has to hold every input the probe needs. Today's recorder gate does not
     /// *read* it — `decide_recorder` destructures
     /// `Principal::Agent { session_id, .. }` — so no test can tell a wrong
-    /// `cove_id` from a right one. It is here because the alternative is
+    /// `area_id` from a right one. It is here because the alternative is
     /// inventing one inside the constructor, which would be a lie the day some
     /// gate does read it.
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
 }
 
 /// The actual initiator of a fork, as the server derived it — never a
@@ -434,12 +434,12 @@ pub enum WriteAttribution {
 /// away from the origin.
 ///
 /// That construction needs every input `Principal::Agent` has —
-/// `session_id`, `wave_id`, `cove_id` (`calm-types/src/worker.rs`) — which is
+/// `session_id`, `wave_id`, `area_id` (`calm-types/src/worker.rs`) — which is
 /// why [`AgentOrigin`] carries all three. What the *gate* reads back out is
 /// narrower: `decide_recorder` destructures
 /// `Principal::Agent { session_id, .. }` and takes the target wave as a
 /// separate argument (`calm-truth/src/decision_gate.rs`), which the probe
-/// supplies from [`AgentOrigin::wave_id`]. So `cove_id` is carried and not
+/// supplies from [`AgentOrigin::wave_id`]. So `area_id` is carried and not
 /// read; see its field docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecorderRequirement {
@@ -751,7 +751,7 @@ mod tests {
             provider,
             session_id: WorkerSessionId::from("sess_1".to_string()),
             wave_id: WaveId::from("w_1".to_string()),
-            cove_id: CoveId::from("cv_1".to_string()),
+            area_id: AreaId::from("ar_1".to_string()),
         })
     }
 

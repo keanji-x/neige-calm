@@ -32,8 +32,8 @@ use crate::operation::workspace_lease::{
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
-    await_shared_initial_turn_lifecycle, default_cwd, normalize_optional_css_color,
-    shell_single_quote,
+    INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
+    normalize_optional_css_color, shell_single_quote,
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
@@ -43,7 +43,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -77,7 +77,8 @@ pub struct CodexAdapter {
     pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
+    initial_turn_lifecycle_timeout: Duration,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -89,7 +90,7 @@ pub struct CodexWorkerAdapter {
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     /// #1147 D2 — the managed workspace root, needed because taking a lease
     /// re-runs materialization for a managed wave (red-team B5). Boot-frozen
     /// config, threaded rather than read from a global.
@@ -105,7 +106,7 @@ impl CodexAdapter {
         pending_codex_threads: Arc<PendingThreadStartRegistry>,
         pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
     ) -> Self {
         Self {
             repo,
@@ -114,7 +115,8 @@ impl CodexAdapter {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
+            initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -129,7 +131,7 @@ impl CodexAdapter {
         pending_codex_threads: Arc<PendingThreadStartRegistry>,
         pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
@@ -139,9 +141,16 @@ impl CodexAdapter {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
+            initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             spawn_hook: Some(spawn_hook),
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_initial_turn_lifecycle_timeout(mut self, timeout: Duration) -> Self {
+        self.initial_turn_lifecycle_timeout = timeout;
+        self
     }
 }
 
@@ -153,7 +162,7 @@ impl CodexWorkerAdapter {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
@@ -162,7 +171,7 @@ impl CodexWorkerAdapter {
             shared_codex_appserver,
             mcp_server,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             workspace_root,
         }
     }
@@ -361,7 +370,7 @@ impl ProviderAdapter for CodexAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -370,7 +379,7 @@ impl ProviderAdapter for CodexAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -473,7 +482,7 @@ impl ProviderAdapter for CodexAdapter {
             let updated = persist_prompt_thread(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 op,
                 output,
                 payload.actor.clone(),
@@ -490,7 +499,13 @@ impl ProviderAdapter for CodexAdapter {
                 output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
                 checkpoint_prompt_turn_started(ctx, op, output, &thread_id).await?;
             }
-            match await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
+            match await_shared_initial_turn_lifecycle(
+                &mut notifs,
+                &thread_id,
+                self.initial_turn_lifecycle_timeout,
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(err) => return Err(err),
             }
@@ -503,7 +518,7 @@ impl ProviderAdapter for CodexAdapter {
             let updated = persist_pending_thread_status(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 op,
                 output,
                 payload.actor,
@@ -889,7 +904,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         provision_codex_worker_workspace(
             ctx,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
             op,
             output,
         )
@@ -927,7 +942,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             log_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &wave_id,
             )
@@ -973,7 +988,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         log_worker_card_added(
             ctx,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
             &card_id,
             &wave_id,
         )
@@ -1312,7 +1327,7 @@ async fn mint_card_mcp_token(ctx: &SpawnCtx, card_id: &str, runtime_id: &str) ->
 async fn log_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     card_id: &str,
     wave_id: &WaveId,
 ) -> Result<()> {
@@ -1334,7 +1349,7 @@ async fn log_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             Event::CardAdded(card),
         )
         .await?;
@@ -1530,7 +1545,7 @@ async fn build_codex_env(
 async fn provision_codex_worker_workspace(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     op: &Operation,
     output: &mut TxOutput,
 ) -> Result<()> {
@@ -1594,7 +1609,7 @@ async fn provision_codex_worker_workspace(
     let cwd_for_tx = cwd.clone();
     let op_for_tx = op.clone();
     let output_for_tx = checkpoint_output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     write_with_events_typed(
         ctx.repo.as_ref(),
         ActorId::KernelDispatcher,
@@ -1648,7 +1663,7 @@ async fn provision_codex_worker_workspace(
 async fn persist_prompt_thread(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     op: &Operation,
     output: &TxOutput,
     actor: ActorId,
@@ -1667,7 +1682,7 @@ async fn persist_prompt_thread(
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,
@@ -1766,7 +1781,7 @@ async fn checkpoint_prompt_turn_started(
 async fn persist_pending_thread_status(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     op: &Operation,
     output: &TxOutput,
     actor: ActorId,
@@ -1783,7 +1798,7 @@ async fn persist_pending_thread_status(
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
         actor,

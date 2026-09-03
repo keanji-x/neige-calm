@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use sqlx::Row;
 
 use super::{
-    SqlxRepo, begin_immediate_tx, card_create_tx, card_create_with_id_tx, card_delete_tx,
-    card_update_tx, cove_create_tx, cove_delete_tx, cove_update_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_delete_subtree_by_cove_tx, overlay_delete_tx,
+    SqlxRepo, area_create_tx, area_delete_tx, area_update_tx, begin_immediate_tx, card_create_tx,
+    card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_wave_tx, overlay_delete_subtree_by_area_tx, overlay_delete_tx,
     overlay_upsert_tx, session_commit_exit_tx, session_insert_tx,
     session_record_activity_by_thread_tx, session_record_activity_tx, session_set_liveness_tx,
     session_state_transition_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
@@ -12,7 +12,7 @@ use super::{
 };
 use crate::db::RepoSyncDomainRaw;
 use crate::error::{CalmError, Result};
-use crate::ids::{CoveId, WaveId};
+use crate::ids::{AreaId, WaveId};
 use crate::model::*;
 use crate::session_repo::{CommitExitOutcome, DeadRootCandidate, SessionRepo, Tx as SessionTx};
 use calm_types::worker::{Liveness, WorkerSession, WorkerSessionId, WorkerSessionState};
@@ -208,11 +208,11 @@ impl SessionRepo for SqlxRepo {
                  AND ws.state IN {active})"
         );
         let sql = format!(
-            r#"SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
+            r#"SELECT w.id AS wave_id, w.area_id AS area_id, w.lifecycle AS lifecycle
                 FROM waves w
                WHERE w.lifecycle = 'draft'
-                  -- Keep in sync with calm_server::COVE_CHAT_PURPOSE.
-                  AND (w.purpose IS NULL OR w.purpose <> 'cove-chat')
+                  -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
+                  AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
                   AND EXISTS (
                       SELECT 1 FROM operations o
                        WHERE o.kind = 'spec-harness-start'
@@ -237,11 +237,11 @@ impl SessionRepo for SqlxRepo {
                   )
                   AND {no_active_planner}
                UNION ALL
-               SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
+               SELECT w.id AS wave_id, w.area_id AS area_id, w.lifecycle AS lifecycle
                  FROM waves w
                 WHERE w.lifecycle = 'planning'
-                  -- Keep in sync with calm_server::COVE_CHAT_PURPOSE.
-                  AND (w.purpose IS NULL OR w.purpose <> 'cove-chat')
+                  -- Keep in sync with calm_server::AREA_CHAT_PURPOSE.
+                  AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
                   AND (
                       w.root_session_id IS NULL
                       OR NOT EXISTS (
@@ -257,7 +257,7 @@ impl SessionRepo for SqlxRepo {
         rows.into_iter()
             .map(|row| {
                 let wave_id: String = row.try_get("wave_id")?;
-                let cove_id: String = row.try_get("cove_id")?;
+                let area_id: String = row.try_get("area_id")?;
                 let lifecycle_raw: String = row.try_get("lifecycle")?;
                 let lifecycle = WaveLifecycle::try_from(lifecycle_raw.clone()).map_err(|e| {
                     CalmError::Internal(format!(
@@ -266,7 +266,7 @@ impl SessionRepo for SqlxRepo {
                 })?;
                 Ok(DeadRootCandidate {
                     wave_id: WaveId::from(wave_id),
-                    cove_id: CoveId::from(cove_id),
+                    area_id: AreaId::from(area_id),
                     lifecycle,
                 })
             })
@@ -289,26 +289,26 @@ impl SessionRepo for SqlxRepo {
 
 #[async_trait]
 impl RepoSyncDomainRaw for SqlxRepo {
-    // ---------------------------------------------------------------- coves
-    async fn cove_create(&self, p: NewCove) -> Result<Cove> {
+    // ---------------------------------------------------------------- areas
+    async fn area_create(&self, p: NewArea) -> Result<Area> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = cove_create_tx(&mut tx, p).await?;
+        let out = area_create_tx(&mut tx, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
+    async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = cove_update_tx(&mut tx, id, p).await?;
+        let out = area_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
-    async fn cove_delete(&self, id: &str) -> Result<()> {
+    async fn area_delete(&self, id: &str) -> Result<()> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        overlay_delete_subtree_by_cove_tx(&mut tx, id).await?;
-        overlay_delete_by_entity_tx(&mut tx, "cove", id).await?;
-        cove_delete_tx(&mut tx, id).await?;
+        overlay_delete_subtree_by_area_tx(&mut tx, id).await?;
+        overlay_delete_by_entity_tx(&mut tx, "area", id).await?;
+        area_delete_tx(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -321,7 +321,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             p,
             None,
             &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         )
         .await?;
         tx.commit().await?;
@@ -340,7 +340,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
         overlay_delete_card_overlays_by_wave_tx(&mut tx, id).await?;
         overlay_delete_by_entity_tx(&mut tx, "wave", id).await?;
         overlay_delete_by_entity_tx(&mut tx, "view", id).await?;
-        wave_delete_tx(&mut tx, id, &self.wave_cove_cache).await?;
+        wave_delete_tx(&mut tx, id, &self.wave_area_cache).await?;
         tx.commit().await?;
         Ok(())
     }

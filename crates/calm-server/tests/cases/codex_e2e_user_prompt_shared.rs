@@ -11,7 +11,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -50,8 +50,8 @@ async fn user_prompt_card_first_turn_true_binary() {
 
     let tmp = tempfile::tempdir().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "e2e-user-prompt".into(),
             color: "#000".into(),
             sort: None,
@@ -61,7 +61,7 @@ async fn user_prompt_card_first_turn_true_binary() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "e2e-user-prompt".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -100,7 +100,7 @@ async fn user_prompt_card_first_turn_true_binary() {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

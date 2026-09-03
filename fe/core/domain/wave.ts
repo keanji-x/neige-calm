@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
-import { visibleCoves, type Cove } from './cove.js';
+import { visibleAreas, type Area } from './area.js';
 
 export const waveLifecycleSchema = z.enum([
   'draft', 'planning', 'dispatching', 'working',
@@ -21,7 +21,7 @@ export type WaveLifecycle = z.infer<typeof waveLifecycleSchema>;
  */
 export const waveWireSchema = z.object({
   id: z.string(),
-  cove_id: z.string(),
+  area_id: z.string(),
   title: z.string(),
   sort: z.number(),
   lifecycle: waveLifecycleSchema.default('draft'),
@@ -53,7 +53,7 @@ export const NEUTRAL_ACTIVITY: WaveActivity = Object.freeze({
 
 export type Wave = Readonly<{
   id: string;
-  coveId: string;
+  areaId: string;
   title: string;
   sort: number;
   lifecycle: WaveLifecycle;
@@ -68,7 +68,7 @@ export type Wave = Readonly<{
 export function toWave(wire: WaveWire, activity: WaveActivity = NEUTRAL_ACTIVITY): Wave {
   return {
     id: wire.id,
-    coveId: wire.cove_id,
+    areaId: wire.area_id,
     title: wire.title,
     sort: wire.sort,
     lifecycle: wire.lifecycle,
@@ -144,7 +144,7 @@ export type WaveDetailWire = z.infer<typeof waveDetailSchema>;
 export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: readonly [number, number, number] }>;
 
 export type NewWaveBody = Readonly<{
-  cove_id: string;
+  area_id: string;
   /**
    * Issue #1211 — optional. The title is no longer the wave's intent: omit it
    * and the kernel stores the **empty string** — it has no default name of its
@@ -157,15 +157,15 @@ export type NewWaveBody = Readonly<{
   title?: string;
   /**
    * Issue #1131 — optional. The new FE omits it; the kernel then stores
-   * `$HOME` and does not insert a `cove_folders` row. Present values
+   * `$HOME` and does not insert a `area_folders` row. Present values
    * (including `""`) keep the pre-#1131 absolute-path + claim rules.
    * `null` matches OpenAPI (`string | null`) and is the same omitted branch.
    */
   cwd?: string | null;
   theme: ThemeRgb;
   /**
-   * `false` requires `cwd` to already sit under a folder claimed by some cove;
-   * the route answers 409 `conflict` naming the cove to claim it for. `true`
+   * `false` requires `cwd` to already sit under a folder claimed by some area;
+   * the route answers 409 `conflict` naming the area to claim it for. `true`
    * claims it in the same transaction. Omitting `cwd` forces this to `false`
    * on the kernel regardless of the field. When `cwd` is present, omitting
    * `attach_folder` is `false`.
@@ -232,10 +232,10 @@ export type WavePatchBody = Readonly<{
   archived_at?: number | null;
 }>;
 
-export function wavesInCoveOperation(coveId: string): ApiOperation<WaveWire[]> {
+export function wavesInAreaOperation(areaId: string): ApiOperation<WaveWire[]> {
   return {
     method: 'GET',
-    path: `/api/coves/${encodeURIComponent(coveId)}/waves`,
+    path: `/api/areas/${encodeURIComponent(areaId)}/waves`,
     responseSchema: z.array(waveWireSchema),
   };
 }
@@ -361,7 +361,7 @@ export function isWaitingForUser(lifecycle: WaveLifecycle): boolean {
  * This stays separate from `isWaitingForUser` on purpose: the two signals have
  * different owners (Spec Agent vs kernel) and different storage (column vs
  * overlay), and places that genuinely want the pure lifecycle bucket — the
- * lifecycle badge, cove bucket sort — must keep getting it.
+ * lifecycle badge, area bucket sort — must keep getting it.
  */
 export function needsUserAttention(wave: Wave): boolean {
   return isWaitingForUser(wave.lifecycle) || wave.anyCardNeedsInput;
@@ -384,20 +384,20 @@ export function visibleWaves(waves: readonly Wave[]): Wave[] {
 }
 
 /**
- * The waves a person may see: not archived, and hosted by a cove they may see.
+ * The waves a person may see: not archived, and hosted by an area they may see.
  *
- * This is **not** a fix for a live leak — `coveListQueryOptions` already applies
- * `visibleCoves` in the query layer, and the workspace only fans out over what
- * that returned. It is the *second* layer of defence `visibleCoves` announces
+ * This is **not** a fix for a live leak — `areaListQueryOptions` already applies
+ * `visibleAreas` in the query layer, and the workspace only fans out over what
+ * that returned. It is the *second* layer of defence `visibleAreas` announces
  * (E2E-INV-SHELL-003), and it existed on exactly one of the two list surfaces:
- * the sidebar intersected coves and waves by hand while mobile Pages filtered
+ * the sidebar intersected areas and waves by hand while mobile Pages filtered
  * waves alone. One function, used by both, is what makes the stated intent true
  * at the component boundary rather than only in the query that happens to feed
  * it today (#1191 §3.1).
  */
-export function userVisibleWaves(waves: readonly Wave[], coves: readonly Cove[]): Wave[] {
-  const userCoveIds = new Set(visibleCoves(coves).map((cove) => cove.id));
-  return visibleWaves(waves).filter((wave) => userCoveIds.has(wave.coveId));
+export function userVisibleWaves(waves: readonly Wave[], areas: readonly Area[]): Wave[] {
+  const userAreaIds = new Set(visibleAreas(areas).map((area) => area.id));
+  return visibleWaves(waves).filter((wave) => userAreaIds.has(wave.areaId));
 }
 
 /** The wave has work in flight. `done` / `draft` / `canceled` are neither. */

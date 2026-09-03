@@ -21,9 +21,9 @@
 //! ## Scope construction
 //!
 //! Every emitted event's `EventScope` is anchored on the *caller's*
-//! card — the kernel pulls `wave_id` + `cove_id` by looking up the
+//! card — the kernel pulls `wave_id` + `area_id` by looking up the
 //! card row + the wave row, so the spec card's emissions land under
-//! `EventScope::Card { card, wave, cove }`. Worker cards emit under
+//! `EventScope::Card { card, wave, area }`. Worker cards emit under
 //! their own card scope; the role gate enforces that they can't
 //! escape it.
 
@@ -209,8 +209,8 @@ async fn submit_worker_success_commit(
         .await
         .map_err(|e| format!("worker success commit wave lookup: {e}"))?
         .ok_or_else(|| format!("unknown wave `{wave_id}`"))?;
-    if wave.cove_id.as_str() != identity.cove_id.as_str() {
-        return Err("worker success commit wave belongs to a different cove".into());
+    if wave.area_id.as_str() != identity.area_id.as_str() {
+        return Err("worker success commit wave belongs to a different area".into());
     }
 
     let card_id = identity.card_id.clone();
@@ -442,7 +442,7 @@ mod tests {
     use crate::db::{RepoSyncDomainRaw, RouteRepo};
     use crate::event::EventBus;
     use crate::ids::WaveId;
-    use crate::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+    use crate::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
     use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
     use crate::operation::workspace_lease::{
         acquire_plain_workspace_lease_tx, release_workspace_lease_for_card_repo,
@@ -455,7 +455,7 @@ mod tests {
     };
     use crate::state::{DaemonClient, WriteContext};
     use crate::terminal_renderer::TerminalRendererRegistry;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use std::fs;
     use tempfile::TempDir;
     use tokio::sync::OnceCell;
@@ -465,7 +465,7 @@ mod tests {
         repo: Arc<SqlxRepo>,
         ctx: Arc<AppContext>,
         wave_id: String,
-        cove_id: String,
+        area_id: String,
         repo_root: PathBuf,
     }
 
@@ -656,7 +656,7 @@ mod tests {
                 provider: identity_provider,
                 session_id: runtime_id,
                 wave_id: Some(self.wave_id.clone()),
-                cove_id: self.cove_id.clone(),
+                area_id: self.area_id.clone(),
                 thread_id: format!("thread-{}", card.id),
             }
         }
@@ -722,18 +722,18 @@ mod tests {
                 .await
                 .expect("open in-memory repo"),
         );
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "commit guard".into(),
                 color: "#123456".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "commit guard".into(),
                 sort: None,
                 cwd: repo_root.display().to_string(),
@@ -771,7 +771,7 @@ mod tests {
             repo: route_repo,
             wave_vcs: None,
             events,
-            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: tmp.path().join("gate-logs"),
             plugin_host,
@@ -783,7 +783,7 @@ mod tests {
             repo,
             ctx,
             wave_id: wave.id.to_string(),
-            cove_id: cove.id.to_string(),
+            area_id: area.id.to_string(),
             repo_root,
         }
     }

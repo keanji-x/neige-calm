@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Cove } from '../../../../core/domain/cove.ts';
+import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
@@ -16,13 +16,13 @@ function memoryStorage() {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
 
-function cove(overrides: Partial<Cove> = {}): Cove {
+function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -34,13 +34,13 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   return render(
     <ThemeProvider storage={memoryStorage()}>
       <Sidebar
-        coves={props.coves ?? [cove()]}
-        wavesByCove={props.wavesByCove ?? new Map([['c1', waves]])}
+        areas={props.areas ?? [area()]}
+        wavesByArea={props.wavesByArea ?? new Map([['c1', waves]])}
         waves={waves}
         currentPath={props.currentPath ?? '/'}
         onGo={props.onGo ?? vi.fn()}
-        onCreateCove={props.onCreateCove ?? vi.fn()}
-        onDeleteCove={props.onDeleteCove ?? vi.fn()}
+        onCreateArea={props.onCreateArea ?? vi.fn()}
+        onDeleteArea={props.onDeleteArea ?? vi.fn()}
         onNewWave={props.onNewWave ?? vi.fn()}
         onSetPinned={props.onSetPinned ?? vi.fn()}
         onDeleteWave={props.onDeleteWave ?? vi.fn()}
@@ -57,15 +57,15 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => {
   const pinnedAndBlocked = wave({ id: 'both', title: 'Both', lifecycle: 'blocked', pinnedAt: 10 });
 
-  it('renders Waiting on you, then Pinned, then Coves', () => {
+  it('renders Waiting on you, then Pinned, then Areas', () => {
     renderSidebar({ waves: [pinnedAndBlocked] });
     const headings = screen.getAllByRole('heading').map((node) => node.textContent);
-    expect(headings).toEqual(['Waiting on you', 'Pinned', 'Coves']);
+    expect(headings).toEqual(['Waiting on you', 'Pinned', 'Areas']);
   });
 
-  it('keeps a pinned wave in its cove list as well as in the Pinned section', () => {
+  it('keeps a pinned wave in its area list as well as in the Pinned section', () => {
     renderSidebar({ waves: [wave({ id: 'p', title: 'Pinned task', pinnedAt: 10 })] });
-    // One row under Pinned (carries the cove name) and one inside the cove list.
+    // One row under Pinned (carries the area name) and one inside the area list.
     expect(screen.getAllByRole('button', { name: /^Wave Pinned task/ })).toHaveLength(2);
   });
 
@@ -76,7 +76,7 @@ describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => 
 
   it('drops a section entirely when it is empty rather than reordering the rest', () => {
     renderSidebar({ waves: [wave()] });
-    expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Coves']);
+    expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Areas']);
   });
 });
 
@@ -92,28 +92,28 @@ describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', (
     });
     const unpinned = screen.getByRole('button', { name: 'Pin Loose' });
     expect(unpinned.getAttribute('aria-pressed')).toBe('false');
-    // The pinned wave renders twice (Pinned section + cove list); both carry it.
+    // The pinned wave renders twice (Pinned section + area list); both carry it.
     const pinned = screen.getAllByRole('button', { name: 'Unpin Stuck' });
     expect(pinned).toHaveLength(2);
     for (const node of pinned) expect(node.getAttribute('aria-pressed')).toBe('true');
   });
 });
 
-describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', () => {
-  const coves = [cove(), cove({ id: 'c2', name: 'Reading', sort: 2 })];
-  const wavesByCove = new Map([['c1', []], ['c2', []]]);
+describe('INV-SIDEBAR-013 every area row carries a permanent New wave control', () => {
+  const areas = [area(), area({ id: 'c2', name: 'Reading', sort: 2 })];
+  const wavesByArea = new Map([['c1', []], ['c2', []]]);
 
   /*
-   * The rail now has one of these per cove, so `"New wave"` alone would be N
+   * The rail now has one of these per area, so `"New wave"` alone would be N
    * identically-named controls — a list a screen-reader user cannot choose
    * from. §4.4 also forbids the tooltip standing in for the accessible name, so
-   * both are asserted: the name identifies the cove, the title is the sighted
+   * both are asserted: the name identifies the area, the title is the sighted
    * hover label.
    */
-  it('names each one for its own cove and still carries a tooltip', () => {
-    renderSidebar({ coves, wavesByCove });
-    for (const coveName of ['Work', 'Reading']) {
-      const button = screen.getByRole('button', { name: `New wave in ${coveName}` });
+  it('names each one for its own area and still carries a tooltip', () => {
+    renderSidebar({ areas, wavesByArea });
+    for (const areaName of ['Work', 'Reading']) {
+      const button = screen.getByRole('button', { name: `New wave in ${areaName}` });
       expect(button.getAttribute('title')).toBe('New wave');
       expect(button.tagName).toBe('BUTTON');
     }
@@ -123,42 +123,42 @@ describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', 
   /*
    * Permanently visible, unlike the `×` beside it. jsdom applies no CSS Module,
    * so "visible" cannot be read off a computed style here; what this pins is
-   * the fact the reveal is *built* on — `.coveDelete` carries the opacity rule
-   * and `.coveNew` does not, so the two controls cannot silently converge on
+   * the fact the reveal is *built* on — `.areaDelete` carries the opacity rule
+   * and `.areaNew` does not, so the two controls cannot silently converge on
    * one behaviour. The `browser` tier owns the rendered opacity.
    */
   it('leaves the New wave control out of the hover-revealed class the delete uses', () => {
-    renderSidebar({ coves, wavesByCove });
+    renderSidebar({ areas, wavesByArea });
     const create = screen.getByRole('button', { name: 'New wave in Work' });
-    const remove = screen.getByRole('button', { name: 'Delete cove Work' });
+    const remove = screen.getByRole('button', { name: 'Delete area Work' });
     expect(create.className).not.toBe(remove.className);
     expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
       .toBe(false);
   });
 
-  /** The collapsed rail gets none: it has room for one glyph per cove, and that
-   *  glyph is the cove. */
+  /** The collapsed rail gets none: it has room for one glyph per area, and that
+   *  glyph is the area. */
   it('offers no New wave control in the collapsed icon strip', () => {
-    renderSidebar({ coves, wavesByCove, collapsed: true });
+    renderSidebar({ areas, wavesByArea, collapsed: true });
     expect(screen.queryByRole('button', { name: /^New wave/ })).toBeNull();
   });
 });
 
-describe('E2E-INV-SHELL-003 the kernel system cove never reaches the rail', () => {
-  it('renders zero cove rows for a workspace whose only cove is a system cove', () => {
+describe('E2E-INV-SHELL-003 the kernel system area never reaches the rail', () => {
+  it('renders zero area rows for a workspace whose only area is a system area', () => {
     renderSidebar({
-      coves: [cove({ id: 'sys', name: 'System', kind: 'system' })],
-      waves: [wave({ id: 'k', coveId: 'sys', title: 'Kernel' })],
-      wavesByCove: new Map([['sys', [wave({ id: 'k', coveId: 'sys', title: 'Kernel' })]]]),
+      areas: [area({ id: 'sys', name: 'System', kind: 'system' })],
+      waves: [wave({ id: 'k', areaId: 'sys', title: 'Kernel' })],
+      wavesByArea: new Map([['sys', [wave({ id: 'k', areaId: 'sys', title: 'Kernel' })]]]),
     });
     expect(screen.queryByRole('button', { name: /^System/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Wave Kernel/ })).toBeNull();
     // §5.3's strongest rule: when a region's emptiness has exactly one remedy,
     // render that remedy's own interface where the content would have been. So
-    // there is no "No coves yet." sentence pointing at a button elsewhere —
+    // there is no "No areas yet." sentence pointing at a button elsewhere —
     // the create field is already open in the first row's place.
-    expect(screen.queryByText(/no coves/i)).toBeNull();
-    expect(screen.getByRole('textbox', { name: 'Cove name' })).toBeTruthy();
+    expect(screen.queryByText(/no areas/i)).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Area name' })).toBeTruthy();
   });
 });
 
@@ -179,21 +179,21 @@ describe('INV-A11Y-061 navigation shape', () => {
     for (const node of screen.getAllByRole('button')) expect(node.tagName).toBe('BUTTON');
   });
 
-  it('routes cove and wave rows through onGo with structured targets', async () => {
+  it('routes area and wave rows through onGo with structured targets', async () => {
     const onGo = vi.fn();
     renderSidebar({ waves: [wave({ id: 'w9', title: 'Row' })], onGo });
     await userEvent.click(screen.getByRole('button', { name: /^Work/ }));
     await userEvent.click(screen.getByRole('button', { name: /^Wave Row/ }));
     const targets: unknown[] = onGo.mock.calls.map((call) => (call as unknown[])[0]);
     expect(targets).toEqual([
-      { name: 'cove', coveId: 'c1' },
+      { name: 'area', areaId: 'c1' },
       { name: 'wave', waveId: 'w9' },
     ]);
   });
 });
 
 describe('active row', () => {
-  it('marks the open cove and the open wave with aria-current', () => {
+  it('marks the open area and the open wave with aria-current', () => {
     renderSidebar({ waves: [wave({ id: 'w9', title: 'Row' })], currentPath: '/wave/w9' });
     expect(screen.getByRole('button', { name: /^Wave Row/ }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: /^Work/ }).getAttribute('aria-current')).toBeNull();
@@ -201,12 +201,12 @@ describe('active row', () => {
 
   /*
    * The open wave is marked in **one** place, however many sections it appears
-   * in. "Waiting on you" and "Pinned" are shortcuts into the tree; the cove
+   * in. "Waiting on you" and "Pinned" are shortcuts into the tree; the area
    * list is the tree, and a location is shown where the thing lives. A wave
    * that is open, pinned and blocked renders three rows here — this pins that
    * exactly one of them claims to be the current page.
    */
-  it('marks the open wave once, in its cove, not in the shortcut sections', () => {
+  it('marks the open wave once, in its area, not in the shortcut sections', () => {
     const open = wave({ id: 'w9', title: 'Row', lifecycle: 'blocked', pinnedAt: 10 });
     renderSidebar({ waves: [open], currentPath: '/wave/w9' });
     const rows = screen.getAllByRole('button', { name: /^Wave Row/ });

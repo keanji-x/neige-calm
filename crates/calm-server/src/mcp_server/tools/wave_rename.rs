@@ -44,8 +44,8 @@
 //! * `already_named` — the wave has a non-empty title.
 //! * `template_wave` — template waves are a catalogue the user curates; the
 //!   names ARE the catalogue entries.
-//! * `chat_wave` — the per-cove chat wave's name is kernel-owned
-//!   (`purpose = "cove-chat"`), the same reason its lifecycle is not
+//! * `chat_wave` — the per-area chat wave's name is kernel-owned
+//!   (`purpose = "area-chat"`), the same reason its lifecycle is not
 //!   user-drivable.
 //!
 //! ## Actor
@@ -109,7 +109,7 @@ fn wave_rename_descriptor() -> ToolDescriptor {
              it), the call returns `{\"ok\": false, \"refused\": \
              \"already_named\", \"title\": <current title>}` and changes \
              nothing — that is not an error, just leave the name alone. \
-             Template waves and the per-cove chat wave refuse the same way \
+             Template waves and the per-area chat wave refuse the same way \
              (`template_wave` / `chat_wave`). Optional `message` is a short \
              human-readable rationale persisted on the event."
             .into(),
@@ -189,7 +189,7 @@ async fn wave_rename(
 
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let actor = identity.to_actor_id();
     let wave_id = wave.id.clone();
@@ -217,7 +217,7 @@ async fn wave_rename(
                 if !current.title.trim().is_empty() {
                     return Err(refusal("already_named", &current.title));
                 }
-                if current.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
+                if current.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
                     return Err(refusal("chat_wave", &current.title));
                 }
                 if wave_has_template_overlay_tx(tx, wave_id.as_str()).await? {

@@ -36,7 +36,7 @@ describe('EventStream behavior', () => {
         sink.connectionState('connecting');
         sink.frame({
           type: 'event',
-          event: { ev: 'cove.deleted', data: { id: 'c1' } },
+          event: { ev: 'area.deleted', data: { id: 'c1' } },
           meta: { id: 1, eventVersion: 2 },
         });
         sink.connectionState('connected');
@@ -49,7 +49,7 @@ describe('EventStream behavior', () => {
 
     stream.configure({ syncEventVersion: 2, topics: ['*'] }).start();
 
-    expect(events).toEqual(['cove.deleted:1']);
+    expect(events).toEqual(['area.deleted:1']);
     expect(states).toEqual(['disconnected', 'connecting', 'connected']);
   });
 
@@ -73,7 +73,7 @@ describe('EventStream behavior', () => {
     });
     sink?.frame({
       type: 'event',
-      event: { ev: 'cove.deleted', data: { id: 'c1' } },
+      event: { ev: 'area.deleted', data: { id: 'c1' } },
       meta: { id: 6, eventVersion: 2 },
     });
 
@@ -226,7 +226,7 @@ describe('EventStream behavior', () => {
         sink = value;
         value.frame({
           type: 'event',
-          event: { ev: 'cove.deleted', data: { id: 'c1' } },
+          event: { ev: 'area.deleted', data: { id: 'c1' } },
           meta: { id: 1, eventVersion: 2 },
         });
       },

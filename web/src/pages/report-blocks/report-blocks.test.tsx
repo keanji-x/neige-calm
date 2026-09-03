@@ -835,7 +835,7 @@ describe('degraded blocks', () => {
     ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1 }, /settings to at least 1 before allowing AI tasks/],
     ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
     ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
-    ['reference_cross_cove', { reference: 'neige:\/\/wave\/other#b' }, /another cove/],
+    ['reference_cross_area', { reference: 'neige:\/\/wave\/other#b' }, /another area/],
     ['reference_chain_too_large', {}, /fewer blocks/],
     ['tombstone_blocks_redeclaration', {}, /keeps the rejection record/],
     ['declare_and_wait', {}, /Allow this task/],

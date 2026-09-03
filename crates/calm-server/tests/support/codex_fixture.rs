@@ -13,11 +13,11 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
 use calm_server::harness::HarnessRegistry;
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolRegistry, auth, build_default_registry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewPlugin, NewWave, now_ms};
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
@@ -33,7 +33,7 @@ use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonStat
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_report::WaveReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
@@ -101,8 +101,8 @@ pub struct Fixture {
     pub events: EventBus,
     pub write: WriteContext,
     pub cache: CardRoleCache,
-    pub wave_cove_cache: WaveCoveCache,
-    pub cove_id: CoveId,
+    pub wave_area_cache: WaveAreaCache,
+    pub area_id: AreaId,
     pub wave_id: WaveId,
     pub spec_card_id: CardId,
     pub report_card_id: CardId,
@@ -242,8 +242,8 @@ pub async fn boot_forge_e2e_fixture(
     let repo_dyn: Arc<dyn Repo> = sqlx_repo.clone();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    let write = WriteContext::new(cache.clone(), wave_cove_cache.clone());
+    let wave_area_cache = WaveAreaCache::new();
+    let write = WriteContext::new(cache.clone(), wave_area_cache.clone());
     let proxy = active_proxy_value();
     if let Some(proxy) = proxy.as_deref() {
         repo_dyn
@@ -256,18 +256,18 @@ pub async fn boot_forge_e2e_fixture(
             .expect("seed https proxy setting");
     }
 
-    let cove = repo_dyn
-        .cove_create(NewCove {
+    let area = repo_dyn
+        .area_create(NewArea {
             name: "codex-forge-e2e".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo_dyn
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
@@ -286,9 +286,9 @@ pub async fn boot_forge_e2e_fixture(
             .expect("disable task gates for fixture wave");
     }
     repo_dyn
-        .seed_wave_cove_cache(&wave_cove_cache)
+        .seed_wave_area_cache(&wave_area_cache)
         .await
-        .expect("seed wave/cove cache");
+        .expect("seed wave/area cache");
     repo_dyn
         .seed_card_role_cache(&cache)
         .await
@@ -468,7 +468,7 @@ pub async fn boot_forge_e2e_fixture(
                     shared.clone(),
                     Some(server.clone()),
                     cache.clone(),
-                    wave_cove_cache.clone(),
+                    wave_area_cache.clone(),
                     std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
                 )) as Arc<dyn ProviderAdapter>,
                 Arc::new(SpecHarnessStartAdapter::new(
@@ -477,7 +477,7 @@ pub async fn boot_forge_e2e_fixture(
                     harness.clone(),
                     plugin_host.clone(),
                     cache.clone(),
-                    wave_cove_cache.clone(),
+                    wave_area_cache.clone(),
                     Some(server.shim_config.socket_path.clone()),
                 )) as Arc<dyn ProviderAdapter>,
             ],
@@ -521,8 +521,8 @@ pub async fn boot_forge_e2e_fixture(
         events,
         write,
         cache,
-        wave_cove_cache,
-        cove_id: cove.id,
+        wave_area_cache,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,

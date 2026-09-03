@@ -2,7 +2,7 @@
 // INV-DUP-009's one row, tested directly.
 //
 // Three surfaces render it and none of them can test it: the rail composes it
-// through `app/shell`, the cove page and Today receive it by injection because
+// through `app/shell`, the area page and Today receive it by injection because
 // `features/**` may not import a sibling domain. Their suites therefore use
 // stand-ins, and a stand-in cannot prove the row is a button, carries a
 // composed accessible name, or keeps its pin reachable. This file is where
@@ -20,7 +20,7 @@ const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -47,13 +47,13 @@ describe('accessible name', () => {
   // carry lifecycle and attention, on every variant, including the rail where
   // the dot is the only thing a sighted user sees.
   it('names the lifecycle, and the attention state when there is one', () => {
-    render(<WaveRow wave={wave({ lifecycle: 'blocked' })} coveName="Work" onOpen={vi.fn()} nowMs={NOW} />);
+    render(<WaveRow wave={wave({ lifecycle: 'blocked' })} areaName="Work" onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', {
-      name: 'Wave Open wave, waiting on you, Blocked, in cove Work',
+      name: 'Wave Open wave, waiting on you, Blocked, in area Work',
     })).toBeTruthy();
   });
 
-  it('names the cove only when the surface supplies one', () => {
+  it('names the area only when the surface supplies one', () => {
     render(<WaveRow wave={wave()} onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', { name: 'Wave Open wave, running, Working' })).toBeTruthy();
   });

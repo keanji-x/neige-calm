@@ -1,12 +1,12 @@
 # `ui/editable-title`
 
-INV-DUP-008 — the single click-or-F2-to-rename title, used by the cove header
+INV-DUP-008 — the single click-or-F2-to-rename title, used by the area header
 and the wave header.
 
 ## Accessibility contract
 
 Read mode is a `<button>` whose accessible name is the caller-supplied
-`editLabel` ("Rename cove"), so a screen reader hears the action, not just the
+`editLabel` ("Rename area"), so a screen reader hears the action, not just the
 current name. Edit mode is an `<input>` labelled by `inputLabel`. F2 enters
 edit mode; Enter commits, Escape cancels, blur commits.
 
@@ -25,7 +25,7 @@ reader deleted it before typing. It was never *stored* — resubmitting it hit t
 ## What an empty commit means is the caller's to say
 
 `emptyCommit` is `'cancel'` by default: clearing the field and pressing Enter
-leaves edit mode and writes nothing. That is right for the cove header, where
+leaves edit mode and writes nothing. That is right for the area header, where
 the owner is the only namer there will ever be.
 
 The wave header passes `'clear'`, because a wave has a second namer: the spec

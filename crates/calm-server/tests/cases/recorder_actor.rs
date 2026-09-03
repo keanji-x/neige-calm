@@ -13,11 +13,11 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, area_create_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use calm_server::replay::spawn_session_recorder;
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
@@ -27,7 +27,7 @@ async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
     CardRoleCache,
-    calm_server::wave_cove_cache::WaveCoveCache,
+    calm_server::wave_area_cache::WaveAreaCache,
     NamedTempFile,
 ) {
     let repo: Arc<dyn Repo> = Arc::new(
@@ -37,7 +37,7 @@ async fn boot() -> (
     );
     let bus = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
     let tmp = NamedTempFile::new().expect("tempfile");
     spawn_session_recorder(&bus, tmp.path().to_path_buf());
     // Recorder subscribes inside `tokio::spawn` — give it a tick to land
@@ -47,21 +47,21 @@ async fn boot() -> (
     (repo, bus, cache, wcc, tmp)
 }
 
-/// Drive one `write_with_event_typed` cove create with the supplied actor.
-async fn create_cove_as(
+/// Drive one `write_with_event_typed` area create with the supplied actor.
+async fn create_area_as(
     repo: &dyn Repo,
     bus: &EventBus,
     cache: &CardRoleCache,
-    wcc: &calm_server::wave_cove_cache::WaveCoveCache,
+    wcc: &calm_server::wave_area_cache::WaveAreaCache,
     actor: ActorId,
     name: &str,
 ) -> i64 {
-    let p = NewCove {
+    let p = NewArea {
         name: name.to_string(),
         color: "#000".into(),
         sort: None,
     };
-    let (_cove, event_id) = write_with_event_typed(
+    let (_area, event_id) = write_with_event_typed(
         repo,
         actor,
         EventScope::System,
@@ -70,8 +70,8 @@ async fn create_cove_as(
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
-                let c = cove_create_tx(tx, p).await?;
-                Ok((c.clone(), Event::CoveUpdated(c)))
+                let c = area_create_tx(tx, p).await?;
+                Ok((c.clone(), Event::AreaUpdated(c)))
             })
         },
     )
@@ -101,8 +101,8 @@ async fn recorder_captures_real_actor_per_envelope() {
     // #136 typed the actor field; the recorder now writes the JSON form
     // of [`ActorId`] (`{"kind":"User"}`, etc.) — round-trippable into
     // the new typed surface without ambiguity.
-    let _id_user = create_cove_as(&*repo, &bus, &cache, &wcc, ActorId::User, "u").await;
-    let _id_plugin = create_cove_as(
+    let _id_user = create_area_as(&*repo, &bus, &cache, &wcc, ActorId::User, "u").await;
+    let _id_plugin = create_area_as(
         &*repo,
         &bus,
         &cache,
@@ -166,7 +166,7 @@ async fn envelope_carries_actor_alongside_event() {
     // future subscriber (not just the recorder) can read it directly.
     let (repo, bus, cache, wcc, _tmp) = boot().await;
     let mut sub = bus.subscribe();
-    let event_id = create_cove_as(
+    let event_id = create_area_as(
         &*repo,
         &bus,
         &cache,
@@ -179,7 +179,7 @@ async fn envelope_carries_actor_alongside_event() {
     assert_eq!(env.id, event_id);
     assert_eq!(env.actor, ActorId::Plugin("plugin-1".into()));
     match env.event {
-        Event::CoveUpdated(_) => {}
-        other => panic!("expected CoveUpdated, got {other:?}"),
+        Event::AreaUpdated(_) => {}
+        other => panic!("expected AreaUpdated, got {other:?}"),
     }
 }

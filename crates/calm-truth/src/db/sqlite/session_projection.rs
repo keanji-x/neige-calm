@@ -502,7 +502,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                WHERE ws.provider = ?1
                  AND (
                        ws.contract = ?2
-                       -- #1098 — a cove chat. Executor contract, worker role,
+                       -- #1098 — an area chat. Executor contract, worker role,
                        -- `plain_chat` marker.
                        OR (ws.contract = 'executor'
                            AND c.role = 'worker'

@@ -47,9 +47,9 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, SpecHarness,
     SpecHarnessParams,
 };
-use calm_server::ids::{ActorId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, WaveId};
 use calm_server::model::{
-    Card, CardRole, NewCard, NewCove, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
+    Card, CardRole, NewArea, NewCard, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
     WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
@@ -65,7 +65,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::worker::{
     ExitEvidence, ExitSource, Liveness, LivenessTag, SessionMode, WorkerContract,
@@ -83,9 +83,9 @@ struct LoopFixture {
     /// Live bus the dispatcher subscribes to.
     events: EventBus,
     role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     wave_id: WaveId,
-    cove_id: CoveId,
+    area_id: AreaId,
     spec_card: Card,
     worker_card: Card,
     harness: SpecHarness,
@@ -98,8 +98,8 @@ struct LoopFixture {
 
 async fn loop_fixture(tag: &str) -> LoopFixture {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: tag.into(),
             color: "#111111".into(),
             sort: None,
@@ -109,7 +109,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: tag.into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -121,8 +121,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    let wave_area_cache = WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id.clone());
 
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
@@ -206,7 +206,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             repo: repo_dyn.clone(),
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
-            wave_cove_cache: WaveCoveCache::new(),
+            wave_area_cache: WaveAreaCache::new(),
             daemon: daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
@@ -217,7 +217,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn,
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
             data_dir: std::env::temp_dir().join(format!("neige-loop-pin-{tag}")),
@@ -236,9 +236,9 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         repo,
         events,
         role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         wave_id: wave.id,
-        cove_id: cove.id,
+        area_id: area.id,
         spec_card,
         worker_card,
         harness,
@@ -252,14 +252,14 @@ impl LoopFixture {
         EventScope::Card {
             card: self.worker_card.id.clone(),
             wave: self.wave_id.clone(),
-            cove: self.cove_id.clone(),
+            area: self.area_id.clone(),
         }
     }
 
     fn wave_scope(&self) -> EventScope {
         EventScope::Wave {
             wave: self.wave_id.clone(),
-            cove: self.cove_id.clone(),
+            area: self.area_id.clone(),
         }
     }
 
@@ -274,7 +274,7 @@ impl LoopFixture {
                 None,
                 &cold_bus,
                 &self.role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 event,
             )
             .await
@@ -290,7 +290,7 @@ impl LoopFixture {
                 None,
                 &self.events,
                 &self.role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 event,
             )
             .await
@@ -647,8 +647,8 @@ impl ProviderAdapter for SilentSpawnAdapter {
 #[tokio::test]
 async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "dead-worker".into(),
             color: "#000".into(),
             sort: None,
@@ -658,7 +658,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "dead-worker".into(),
             sort: None,
             cwd: String::new(),
@@ -672,8 +672,8 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let events = EventBus::new();
     let role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&role_cache).await.unwrap();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     repo.wave_update(
         wave.id.as_str(),
@@ -766,7 +766,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let dispatcher = Dispatcher::spawn_with_operation_runtime(
         repo.clone(),
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
             data_dir: PathBuf::from("/tmp/neige-loop-pin-dead-worker"),
@@ -875,7 +875,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         repo.clone(),
         registry,
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
     );
     reaper_on_boot();
     reaper.sweep_all().await;

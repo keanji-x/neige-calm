@@ -52,7 +52,7 @@ const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 ///   group anyway; a member still alive after that has ignored both TERM and
 ///   HUP and would not have used the remaining ~195 ms either;
 /// * keeping the common case at single-digit ms is what makes the serial batch
-///   teardown loops (wave delete, sweeper, cove delete) cheap.
+///   teardown loops (wave delete, sweeper, area delete) cheap.
 ///
 /// The unconditional SIGKILL to the *group* after this window is what
 /// guarantees those survivors are still reaped
@@ -419,7 +419,7 @@ impl TerminalRendererRegistry {
     ///   `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE` = **1.2 s**.
     ///
     /// The batch teardown paths — `routes::waves` wave-delete,
-    /// `terminal_sweeper::sweep`, `routes::coves` — call this serially, once
+    /// `terminal_sweeper::sweep`, `routes::areas` — call this serially, once
     /// per terminal, so a wave of N terminals costs up to `N * 1.2 s` in the
     /// worst case. That is accepted deliberately rather than fanned out: those
     /// loops interleave per-card repo writes and event emission whose ordering

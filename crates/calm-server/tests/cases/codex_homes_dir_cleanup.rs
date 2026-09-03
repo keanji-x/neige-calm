@@ -138,7 +138,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
 
     let daemon = Arc::new(DaemonClient::new_stub());
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
 
     let plugin_data_root = tempfile::tempdir().expect("plugin data tempdir");
     let plugin = Arc::new(PluginHost::new_full(
@@ -148,7 +148,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
 
     let state = AppState::from_parts(
@@ -158,7 +158,7 @@ async fn codex_homes_dir_cleanup_appstate_wave_create_subdir_is_under_per_test_t
         plugin,
         codex,
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
 
     // Simulate a wave-create that mints a per-card codex home — exactly
@@ -254,7 +254,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
 
     let daemon = Arc::new(DaemonClient::new_stub());
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let plugin_data_root = tempfile::tempdir().expect("plugin data tempdir");
     let plugin = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
@@ -263,7 +263,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         plugin_data_root.path().to_path_buf(),
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
 
     // Construction-shape mirrors the integration tests that triggered
@@ -278,7 +278,7 @@ async fn codex_homes_dir_cleanup_appstate_drop_removes_codex_homes_dir_on_disk()
         plugin,
         codex, // moved into state.codex
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
 
     // Seed a per-card subdir + file so the assertion has bytes on disk

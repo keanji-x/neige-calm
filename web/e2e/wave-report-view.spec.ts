@@ -1,21 +1,21 @@
 import { test, expect, type APIResponse, type Page } from '@playwright/test';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} -> ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 async function expectOk(res: APIResponse, label: string): Promise<void> {
@@ -35,30 +35,30 @@ async function login(page: Page): Promise<void> {
   await expectOk(res, 'POST /api/auth/login');
 }
 
-async function createCove(page: Page, ts: number): Promise<{ id: string }> {
-  const res = await page.request.post('/api/coves', {
+async function createArea(page: Page, ts: number): Promise<{ id: string }> {
+  const res = await page.request.post('/api/areas', {
     data: { name: `E2E report view ${ts}`, color: '#4a8' },
     headers: { 'content-type': 'application/json' },
   });
-  await expectOk(res, 'POST /api/coves');
-  const cove = (await res.json()) as { id: string };
-  createdCoveIds.push(cove.id);
-  return cove;
+  await expectOk(res, 'POST /api/areas');
+  const area = (await res.json()) as { id: string };
+  createdAreaIds.push(area.id);
+  return area;
 }
 
 async function createWave(
   page: Page,
-  coveId: string,
+  areaId: string,
   ts: number,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E report view wave ${ts}`;
   const res = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about the report view, not working directories. See
-      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-report-view-<ts>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
@@ -108,8 +108,8 @@ test('wave report view renders real report data and report rail controls', async
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   const body = 'Report smoke body with **markdown** content.';
   await writeReport(page, wave.id, body);
 
@@ -145,8 +145,8 @@ test('report activity panel floats, scrolls internally, and disables with the dr
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(page, wave.id, 'Activity panel geometry report.');
   await page.route('**/api/cards/*/harness/items*', async (route) => {
     await route.fulfill({
@@ -256,8 +256,8 @@ test('narrow conversation drawer stays docked to the viewport', async ({
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(
     page,
     wave.id,
@@ -341,8 +341,8 @@ test('report H2 counters match the outline sequence across prose blocks', async 
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(
     page,
     wave.id,
@@ -402,8 +402,8 @@ test('pure H1 report counters match the outline sequence', async ({ page }) => {
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(
     page,
     wave.id,
@@ -461,8 +461,8 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(
     page,
     wave.id,
@@ -537,8 +537,8 @@ test('collapsed report rail opener stays inside the report shell', async ({
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(page, wave.id, 'Report body');
   await page.goto(`/calm/wave/${wave.id}`);
   await page.getByRole('button', { name: 'Collapse report rail' }).click();
@@ -642,8 +642,8 @@ test('narrow expanded report rail keeps its close control clear of Outline', asy
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page);
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(page, wave.id, 'Narrow rail report');
   await page.goto(`/calm/wave/${wave.id}`);
 

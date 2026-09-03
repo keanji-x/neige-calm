@@ -2,21 +2,21 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ page }) => {
-  for (const id of createdCoveIds) {
+  for (const id of createdAreaIds) {
     try {
-      await page.request.delete(`/api/coves/${id}`);
+      await page.request.delete(`/api/areas/${id}`);
     } catch {
-      // best-effort cleanup; don't fail the test on a stale cove
+      // best-effort cleanup; don't fail the test on a stale area
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 async function login(page: Page): Promise<void> {
@@ -29,29 +29,29 @@ async function login(page: Page): Promise<void> {
   if (!res.ok()) throw new Error(`login failed: ${res.status()} ${await res.text()}`);
 }
 
-async function createCove(page: Page): Promise<string> {
+async function createArea(page: Page): Promise<string> {
   const suffix = Date.now();
-  const res = await page.request.post('/api/coves', {
-    data: { name: `E2E wheel routing cove ${suffix}`, color: '#6a8' },
+  const res = await page.request.post('/api/areas', {
+    data: { name: `E2E wheel routing area ${suffix}`, color: '#6a8' },
     headers: { 'content-type': 'application/json' },
   });
-  if (!res.ok()) throw new Error(`POST /api/coves failed: ${res.status()}`);
+  if (!res.ok()) throw new Error(`POST /api/areas failed: ${res.status()}`);
   return ((await res.json()) as { id: string }).id;
 }
 
 async function createWave(
   page: Page,
-  coveId: string,
+  areaId: string,
   suffix: string,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E wheel routing ${suffix}`;
   const res = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about wheel routing, not working directories. See
-      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-wheel-routing-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
@@ -98,10 +98,10 @@ test('terminal wheel routes to restored xterm scrollback after wave switch', asy
   console.log('ok routing booted');
 
   const runId = Date.now();
-  const coveId = await createCove(page);
-  createdCoveIds.push(coveId);
-  const waveA = await createWave(page, coveId, `A ${runId}`);
-  const waveB = await createWave(page, coveId, `B ${runId}`);
+  const areaId = await createArea(page);
+  createdAreaIds.push(areaId);
+  const waveA = await createWave(page, areaId, `A ${runId}`);
+  const waveB = await createWave(page, areaId, `B ${runId}`);
   console.log('ok routing created waves');
 
   await page.goto(`/calm/wave/${waveA.id}?testMounts=1`, {

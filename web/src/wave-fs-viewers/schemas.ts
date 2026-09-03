@@ -178,7 +178,7 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
 
 const waveFsWaveObjectSchema = z.object({
   id: z.string(),
-  cove_id: z.string(),
+  area_id: z.string(),
   title: z.string(),
   sort: z.number(),
   archived_at: z.number().nullable(),

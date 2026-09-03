@@ -87,7 +87,7 @@ const taskDiagnosticCopy = Object.freeze({
   },
   reference_needs_block: (d: Diagnostic) => `“${textArg(d, 'reference')}” points to a wave, not a block. Link the exact block this task needs.`,
   reference_missing: (d: Diagnostic) => `“${textArg(d, 'reference')}” no longer resolves. Open the destination and link an existing block.`,
-  reference_cross_cove: (d: Diagnostic) => `“${textArg(d, 'reference')}” crosses into another cove. Copy the needed context here or link a block in this cove.`,
+  reference_cross_area: (d: Diagnostic) => `“${textArg(d, 'reference')}” crosses into another area. Copy the needed context here or link a block in this area.`,
   reference_chain_too_large: () => 'The reference chain is too deep or wide, so this task is treated as invalid to stay safe. Gather the needed context into fewer blocks.',
   tombstone_blocks_redeclaration: (d: Diagnostic) => `A “do not do” record left by ${textArg(d, 'tombstoned_by') === 'user' ? 'you' : 'the AI'} blocks this task key. Remove that record to allow this key again; restoring automatic AI tasks is separate and keeps the rejection record.`,
   declare_and_wait: () => 'AI-proposed tasks in this wave wait for you. Use “Allow this task” below, or restore automatic AI tasks for the wave.',

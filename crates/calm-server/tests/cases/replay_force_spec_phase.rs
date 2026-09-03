@@ -26,7 +26,7 @@ use calm_server::db::prelude::*;
 use calm_server::error::CalmError;
 use calm_server::event::Event;
 use calm_server::harness::HarnessPhaseTag;
-use calm_server::model::{CardRole, NewCard, NewCove};
+use calm_server::model::{CardRole, NewArea, NewCard};
 use calm_server::replay;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -76,7 +76,7 @@ struct Boot {
     state: calm_server::state::AppState,
     repo: Arc<calm_server::db::sqlite::SqlxRepo>,
     bus: calm_server::event::EventBus,
-    cove_id: String,
+    area_id: String,
 }
 
 impl Boot {
@@ -87,8 +87,8 @@ impl Boot {
 
 async fn boot() -> Boot {
     let (repo, bus, state) = replay::boot_in_memory().await.expect("boot_in_memory");
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "force-spec-phase-test".into(),
             color: "#000".into(),
             sort: None,
@@ -105,7 +105,7 @@ async fn boot() -> Boot {
         state,
         repo,
         bus,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
     }
 }
 
@@ -114,7 +114,7 @@ async fn create_wave(boot: &Boot) -> (String, String) {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "probe wave",
             "cwd": attached_repo_fixture("issue-682-force-spec-phase"),
             "attach_folder": true,
@@ -167,10 +167,10 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
 }
 
 #[tokio::test]
-async fn cove_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
+async fn area_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
     let boot = boot().await;
     let (wave_id, spec_card_id) = create_wave(&boot).await;
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(&wave_id)
         .execute(boot.repo.pool())
         .await
@@ -197,7 +197,7 @@ async fn cove_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
         HarnessPhaseTag::Idle,
     )
     .await
-    .expect_err("the fixtures endpoint engine must reject cove-chat spec cards");
+    .expect_err("the fixtures endpoint engine must reject area-chat spec cards");
     assert_eq!(force_error.status(), StatusCode::FORBIDDEN);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
         .bind(&spec_card_id)
@@ -208,10 +208,10 @@ async fn cove_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
 }
 
 #[tokio::test]
-async fn cove_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
+async fn area_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
     let boot = boot().await;
     let (wave_id, _) = create_wave(&boot).await;
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(&wave_id)
         .execute(boot.repo.pool())
         .await
@@ -238,7 +238,7 @@ async fn cove_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
         HarnessPhaseTag::Idle,
     )
     .await
-    .expect("Worker plain-chat card must pass the replay cove-chat fence");
+    .expect("Worker plain-chat card must pass the replay area-chat fence");
     let runtime = boot
         .repo
         .session_projection_active_for_card(&chat.id.to_string())

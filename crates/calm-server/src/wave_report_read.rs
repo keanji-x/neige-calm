@@ -137,17 +137,17 @@ mod tests {
     use crate::db::{RepoSyncDomainRaw, ServerRepoReadExt};
     use crate::event::{EditAuthor, EventBus};
     use crate::ids::ActorId;
-    use crate::model::{NewCove, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewWave, RequestTheme};
     use crate::state::WriteContext;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use crate::wave_report::{WaveReportPayload, persist_report};
     use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
     use serde_json::json;
 
     async fn fixture(legacy_crdt: bool) -> (SqlxRepo, crate::model::Wave, crate::model::Card) {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "read-id-stability".into(),
                 color: "#123456".into(),
                 sort: None,
@@ -156,7 +156,7 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "report".into(),
                 sort: None,
                 cwd: "/tmp".into(),
@@ -202,7 +202,7 @@ mod tests {
         let current: WaveReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
         let next = WaveReportPayload::new(current.summary.clone(), current.body.clone());
         let events = EventBus::new();
-        let write = WriteContext::new(CardRoleCache::new(), WaveCoveCache::new());
+        let write = WriteContext::new(CardRoleCache::new(), WaveAreaCache::new());
         let persisted = persist_report(
             &repo,
             &events,

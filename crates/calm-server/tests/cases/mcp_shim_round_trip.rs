@@ -19,7 +19,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -80,8 +80,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-shim-round-trip".into(),
             color: "#000".into(),
             sort: None,
@@ -91,7 +91,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-shim-round-trip".into(),
             sort: None,
             cwd: String::new(),
@@ -134,12 +134,12 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

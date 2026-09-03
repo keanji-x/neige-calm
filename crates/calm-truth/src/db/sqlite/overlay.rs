@@ -78,7 +78,7 @@ pub async fn overlay_delete_tx(
 }
 
 /// Drop every overlay row addressed at the given `(entity_kind, entity_id)`,
-/// across all `plugin_id`s and all `kind`s. Used by the card / wave / cove
+/// across all `plugin_id`s and all `kind`s. Used by the card / wave / area
 /// delete paths to keep the table from growing orphans; the `overlays`
 /// schema has no FK because SQLite can't express polymorphic ones.
 pub async fn overlay_delete_by_entity_tx(
@@ -116,13 +116,13 @@ pub async fn overlay_delete_card_overlays_by_wave_tx(
 }
 
 /// Drop every card-scoped and wave-scoped (`'wave'` + `'view'`) overlay
-/// under the cove, in the caller's transaction. Same race-safe shape as
+/// under the area, in the caller's transaction. Same race-safe shape as
 /// `overlay_delete_card_overlays_by_wave_tx`. Caller still needs to
-/// sweep `('cove', cove_id)` separately — plugins may address overlays
-/// at the cove kind.
-pub async fn overlay_delete_subtree_by_cove_tx(
+/// sweep `('area', area_id)` separately — plugins may address overlays
+/// at the area kind.
+pub async fn overlay_delete_subtree_by_area_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    cove_id: &str,
+    area_id: &str,
 ) -> Result<u64> {
     // Three statements, accumulated count. Could be one nested query but
     // splitting keeps each delete legible and individually optimizable.
@@ -132,19 +132,19 @@ pub async fn overlay_delete_subtree_by_cove_tx(
              AND entity_id IN (
                SELECT c.id FROM cards c
                JOIN waves w ON w.id = c.wave_id
-               WHERE w.cove_id = ?1
+               WHERE w.area_id = ?1
              )"#,
     )
-    .bind(cove_id)
+    .bind(area_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
     let waves = sqlx::query(
         r#"DELETE FROM overlays
            WHERE entity_kind IN ('wave', 'view')
-             AND entity_id IN (SELECT id FROM waves WHERE cove_id = ?1)"#,
+             AND entity_id IN (SELECT id FROM waves WHERE area_id = ?1)"#,
     )
-    .bind(cove_id)
+    .bind(area_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();

@@ -1,7 +1,7 @@
-//! `/api/waves`, `/api/coves/:id/waves` — Wave CRUD. **Owned by Track B.**
+//! `/api/waves`, `/api/areas/:id/waves` — Wave CRUD. **Owned by Track B.**
 //!
 //! Writes go through `Repo::write_with_event` (via the
-//! `write_with_event_typed` ergonomic wrapper). See `routes/coves.rs` for
+//! `write_with_event_typed` ergonomic wrapper). See `routes/areas.rs` for
 //! the migration pattern; this file follows the same shape.
 //!
 //! ## PR6 (#136) — atomic spec-card binding
@@ -28,12 +28,12 @@
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
-use crate::COVE_CHAT_PURPOSE;
+use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, WaveWorkspacePlan, card_create_with_id_tx,
-    card_update_with_crdt_tx, cove_folder_create_tx, cove_folders_list_all_tx,
+    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, WaveWorkspacePlan, area_folder_create_tx,
+    area_folders_list_all_tx, card_create_with_id_tx, card_update_with_crdt_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
     project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
@@ -43,7 +43,7 @@ use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{
-    Card, CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
+    AreaKind, Card, CardPatch, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewWave, RequestTheme, Wave, WaveDetail, WavePatch, WaveWorkspace, WaveWorkspaceKind,
     WaveWorkspacePatch, new_id,
 };
@@ -56,9 +56,9 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
 use crate::plugin_host::template_input::validate_template_input;
 use crate::report_backlinks;
+use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
-use crate::routes::cove_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -111,30 +111,30 @@ fn chat_wave_ensure_barriers()
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn install_chat_wave_ensure_barrier_for_test(
-    cove_id: &str,
+    area_id: &str,
     barrier: std::sync::Arc<tokio::sync::Barrier>,
 ) {
     chat_wave_ensure_barriers()
         .lock()
         .expect("chat-wave ensure barrier lock poisoned")
-        .insert(cove_id.to_string(), barrier);
+        .insert(area_id.to_string(), barrier);
 }
 
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
-pub fn remove_chat_wave_ensure_barrier_for_test(cove_id: &str) {
+pub fn remove_chat_wave_ensure_barrier_for_test(area_id: &str) {
     chat_wave_ensure_barriers()
         .lock()
         .expect("chat-wave ensure barrier lock poisoned")
-        .remove(cove_id);
+        .remove(area_id);
 }
 
 #[cfg(feature = "fixtures")]
-async fn wait_at_chat_wave_ensure_barrier(cove_id: &str) {
+async fn wait_at_chat_wave_ensure_barrier(area_id: &str) {
     let barrier = chat_wave_ensure_barriers()
         .lock()
         .expect("chat-wave ensure barrier lock poisoned")
-        .get(cove_id)
+        .get(area_id)
         .cloned();
     if let Some(barrier) = barrier {
         barrier.wait().await;
@@ -148,7 +148,7 @@ use fork_guard::guard_forked_blocks;
 #[derive(Clone)]
 struct WaveDeletePlan {
     wave_id: WaveId,
-    cove_id: crate::ids::CoveId,
+    area_id: crate::ids::AreaId,
     cards: Vec<Card>,
     terminals: Vec<crate::model::Terminal>,
     active_runtime_ids: Vec<String>,
@@ -196,7 +196,7 @@ async fn wait_at_wave_delete_teardown_hook(wave_id: &str) {
 #[serde(deny_unknown_fields)]
 pub struct CreateWaveRequest {
     #[schema(value_type = String)]
-    pub cove_id: crate::ids::CoveId,
+    pub area_id: crate::ids::AreaId,
     /// Issue #1211 — on this user-driven create path the title is no longer
     /// the wave's intent, so the client may omit it entirely. Omitting it
     /// stores the **empty string** — there is no server-side default; the
@@ -211,7 +211,7 @@ pub struct CreateWaveRequest {
     pub title: String,
     pub sort: Option<f64>,
     /// Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
-    /// process cwd) on the wave row and skip `cove_folders`. Present values
+    /// process cwd) on the wave row and skip `area_folders`. Present values
     /// (including the empty string) keep the pre-#1131 absolute-path + claim
     /// rules. The SQLite column stays NOT NULL; only the request field is
     /// optional.
@@ -243,7 +243,7 @@ impl CreateWaveRequest {
         let cwd_omitted = self.cwd.is_none();
         (
             NewWave {
-                cove_id: self.cove_id,
+                area_id: self.area_id,
                 title: self.title,
                 sort: self.sort,
                 cwd: self.cwd.unwrap_or_else(default_cwd),
@@ -284,10 +284,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/waves/{id}/backlinks", get(get_wave_backlinks))
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
-        .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
+        .route("/api/areas/{area_id}/waves", get(list_waves_by_area))
         .route(
-            "/api/coves/{cove_id}/chat-wave/ensure",
-            axum::routing::post(ensure_cove_chat_wave),
+            "/api/areas/{area_id}/chat-wave/ensure",
+            axum::routing::post(ensure_area_chat_wave),
         )
 }
 
@@ -397,37 +397,37 @@ pub(crate) async fn cat_wave_file(
 
 #[utoipa::path(
     get,
-    path = "/api/coves/{cove_id}/waves",
+    path = "/api/areas/{area_id}/waves",
     tag = "waves",
-    params(("cove_id" = String, Path, description = "Cove id")),
+    params(("area_id" = String, Path, description = "Area id")),
     responses(
-        (status = 200, description = "Waves under cove", body = Vec<Wave>),
+        (status = 200, description = "Waves under area", body = Vec<Wave>),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn list_waves_by_cove(
+pub(crate) async fn list_waves_by_area(
     State(s): State<RouteState>,
-    Path(cove_id): Path<String>,
+    Path(area_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
-    let mut waves = s.repo.waves_by_cove(&cove_id).await?;
+    let mut waves = s.repo.waves_by_area(&area_id).await?;
     retain_user_visible_waves(s.repo.as_ref(), &mut waves).await?;
     Ok(Json(waves))
 }
 
-/// Public wave lists hide the cove conversation container and template waves
+/// Public wave lists hide the area conversation container and template waves
 /// (#1110 S1). Keep this at the route boundary: repository readers such as
-/// cove deletion and backlink resolution require the complete set.
+/// area deletion and backlink resolution require the complete set.
 ///
-/// The `match` is spelled out rather than written `!= Some(COVE_CHAT_PURPOSE)`
+/// The `match` is spelled out rather than written `!= Some(AREA_CHAT_PURPOSE)`
 /// purely for readability — both forms already keep NULL-purpose waves
 /// visible, because Rust comparison against `Option` is total. The three-valued
 /// logic trap this must not be confused with lives in SQL, where
-/// `purpose <> 'cove-chat'` drops NULL rows; the two hand-written predicates
+/// `purpose <> 'area-chat'` drops NULL rows; the two hand-written predicates
 /// that must spell out `purpose IS NULL OR ...` are in `session_repo_impl.rs`.
 fn user_visible_wave(wave: &Wave) -> bool {
     match wave.purpose.as_deref() {
         None => true,
-        Some(purpose) => purpose != COVE_CHAT_PURPOSE,
+        Some(purpose) => purpose != AREA_CHAT_PURPOSE,
     }
 }
 
@@ -451,7 +451,7 @@ async fn template_wave_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
 ///
 /// #1300 — this replaces `ensure_templates` / `lookup_template_wave` /
 /// `seed_template_wave` / `restamp_template_report_if_placeholder`. Those
-/// lazily minted three hidden system-cove waves and `POST /api/waves` then
+/// lazily minted three hidden system-area waves and `POST /api/waves` then
 /// forked one of them, which made a template a kind of wave. It is a read-only
 /// recipe: instantiating it is structural initialization of a new wave, and it
 /// reads nothing.
@@ -556,16 +556,16 @@ pub struct WavesWindowQuery {
     /// when `created_at <= until`. Omitting disables the upper-bound
     /// filter.
     pub until: Option<i64>,
-    /// Optional per-cove filter. Mirrors `list_waves_by_cove` for
-    /// callers that want one cove's window in a single endpoint.
-    pub cove_id: Option<String>,
+    /// Optional per-area filter. Mirrors `list_waves_by_area` for
+    /// callers that want one area's window in a single endpoint.
+    pub area_id: Option<String>,
 }
 
 /// Issue #250 PR 2 — calendar / dashboard window query.
 ///
-/// `GET /api/waves?since=<ms>&until=<ms>&cove_id=<id>` — every
+/// `GET /api/waves?since=<ms>&until=<ms>&area_id=<id>` — every
 /// parameter is optional. Returns the full wave row (so the frontend
-/// can render lifecycle / cove / terminal-at without an N+1 detail
+/// can render lifecycle / area / terminal-at without an N+1 detail
 /// fetch). Pre-#250 callers that hit `GET /api/waves` would 405 on
 /// the old `POST`-only route; this is an additive contract.
 #[utoipa::path(
@@ -592,7 +592,7 @@ pub(crate) async fn list_waves_window(
     }
     let mut waves = state
         .repo
-        .waves_window(q.cove_id.as_deref(), q.since, q.until)
+        .waves_window(q.area_id.as_deref(), q.since, q.until)
         .await?;
     retain_user_visible_waves(state.repo.as_ref(), &mut waves).await?;
     Ok(Json(waves))
@@ -659,9 +659,9 @@ pub(crate) async fn create_wave(
     // Issue #250 PR 2 — the body may carry `cwd` (the wave's working
     // directory) and `attach_folder`. When `cwd` is present, it is the
     // source of truth for the spec daemon's working directory and must
-    // either resolve to the body's `cove_id` via the existing folder
+    // either resolve to the body's `area_id` via the existing folder
     // claims, or — when `attach_folder = true` — get atomically claimed
-    // as a new folder under that cove inside the same tx that mints the
+    // as a new folder under that area inside the same tx that mints the
     // wave row.
     //
     // Issue #1131 — when the client omits `cwd` (new FE title-only
@@ -669,14 +669,14 @@ pub(crate) async fn create_wave(
     // Legacy clients that still send `cwd` keep the #250 rules.
 
     // 0. Validate cwd up front before opening the tx. The route owns
-    //    every cross-cove correctness check so the inner writer
+    //    every cross-area correctness check so the inner writer
     //    (`wave_create_tx`) stays a pure mechanical row insert. Order:
     //    omitted-cwd default → absolute-path shape → normalize →
     //    existing-claim resolution → optional folder attach.
     //
     //    #1209 — what "short-circuits before any DB write" actually covers.
     //    Every 4xx this handler can decide *before opening the transaction*
-    //    (cwd shape, attached-workspace validation, cove 404, unknown
+    //    (cwd shape, attached-workspace validation, area 404, unknown
     //    template, the `template_input` binding matrix) lands before any DB
     //    write.
     //
@@ -686,7 +686,7 @@ pub(crate) async fn create_wave(
     //    the create transaction (`WaveInit::Template` →
     //    `prepare_template_report`, in the closure `create_wave_structure`
     //    runs). So the folder-claim 409, the in-transaction 400s for an
-    //    explicit `fork_report_from` (source missing / cross-cove) and the
+    //    explicit `fork_report_from` (source missing / cross-area) and the
     //    in-transaction 500s now all roll the *whole* create back, template
     //    report included — there is nothing left behind for them to leave.
     //
@@ -723,10 +723,10 @@ pub(crate) async fn create_wave(
     p.plugin_scope = bound_plugin.map(|manifest| manifest.id.clone());
 
     // Issue #1131 — omitted / null cwd is a new branch *before* the
-    // user-cove claim scan (same spirit as the system-cove exemption
+    // user-area claim scan (same spirit as the system-area exemption
     // below): store HOME, force attach_folder=false, do not insert a
-    // cove_folders row. Never claim `$HOME` — longest-prefix would
-    // poison every other cove. An *explicit* `cwd: "$HOME"` with
+    // area_folders row. Never claim `$HOME` — longest-prefix would
+    // poison every other area. An *explicit* `cwd: "$HOME"` with
     // `attach_folder: false` still 409s when unclaimed; only omission
     // takes this branch.
     if !cwd_omitted && !p.cwd.starts_with('/') {
@@ -755,48 +755,48 @@ pub(crate) async fn create_wave(
         ))?;
     }
     // Stamp the normalized cwd back onto the body before the wave row
-    // is minted — the `cove_folder.path` we may attach below is also
+    // is minted — the `area_folder.path` we may attach below is also
     // the normalized form, so storing them in the same shape keeps
     // future "resolve by exact cwd" lookups simple.
     p.cwd = normalized_cwd.clone();
 
-    // Issue #250 PR 2 fix — system cove (kernel-internal scaffolding,
+    // Issue #250 PR 2 fix — system area (kernel-internal scaffolding,
     // hosts the default Today terminal's wave) is exempt from the
-    // cove_folders claim namespace. The user can't reach it through
+    // area_folders claim namespace. The user can't reach it through
     // any user-facing surface, and claiming a path under it (e.g. the
     // initial `/` placeholder useTodayTerminal used) would poison
-    // every real cove's descendant check. Look up the kind once here;
+    // every real area's descendant check. Look up the kind once here;
     // if System, skip both the pre-tx folder validation and the
     // in-tx attach. The cwd is still recorded on the wave row (the
-    // spec daemon chdirs into it) but no `cove_folders` row is minted.
-    let cove = s
+    // spec daemon chdirs into it) but no `area_folders` row is minted.
+    let area = s
         .repo
-        .cove_get(p.cove_id.as_str())
+        .area_get(p.area_id.as_str())
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("cove `{}`", p.cove_id)))?;
-    let is_system_cove = cove.kind == CoveKind::System;
-    if is_system_cove {
+        .ok_or_else(|| CalmError::NotFound(format!("area `{}`", p.area_id)))?;
+    let is_system_area = area.kind == AreaKind::System;
+    if is_system_area {
         p.attach_folder = false;
     }
 
     let attach_folder = p.attach_folder;
-    let body_cove_id = p.cove_id.as_str().to_string();
+    let body_area_id = p.area_id.as_str().to_string();
 
     // Issue #275 — the whole cwd-vs-claim decision (covering-folder scan,
     // reverse-overlap check, and the INSERT when `attach_folder`) now runs
     // inside the wave-create transaction. It used to be a pre-tx scan on a
     // separate pooled connection, which let two concurrent creates for
     // `/a` and `/a/b` both pass an empty-table scan and commit overlapping
-    // claims — `UNIQUE(cove_folders.path)` only rejects *equal* paths.
+    // claims — `UNIQUE(area_folders.path)` only rejects *equal* paths.
     // Overlapping rows made the two resolvers disagree, and the wave
-    // create then 409'd on a cove the UI had just been told to use.
+    // create then 409'd on an area the UI had just been told to use.
     //
     // The tx is already `BEGIN IMMEDIATE` (see
     // `SqlxRepo::write_with_actor_events`), so this adds one SELECT under
     // a writer lock the create was taking anyway — it does not widen the
     // lock window with any new I/O.
     let conflict = FolderConflictSlot::default();
-    let folder_claim = if is_system_cove || cwd_omitted {
+    let folder_claim = if is_system_area || cwd_omitted {
         FolderClaim::Skip
     } else {
         FolderClaim::Enforce {
@@ -811,13 +811,13 @@ pub(crate) async fn create_wave(
     // priority is unchanged and pinned by
     // `explicit_fork_report_from_is_not_overwritten`. What changed is what the
     // losing branch costs: before #1300 a `template_id` unconditionally seeded
-    // three hidden system-cove waves *first* (`ensure_templates`) and only then
+    // three hidden system-area waves *first* (`ensure_templates`) and only then
     // consulted `fork_report_from`, so the combination wrote rows it then did
     // not use. Instantiating a recipe reads nothing and writes nothing outside
     // the create transaction.
     //
     // #1209 placed the seed here — after the cwd shape check, the
-    // attached-workspace check and the cove 404 — so none of those 4xx left
+    // attached-workspace check and the area 404 — so none of those 4xx left
     // freshly minted waves behind. Nothing is minted here any more, so that
     // ordering constraint is gone with the seeding it constrained.
     let init = match (&admission, fork_report_from) {
@@ -833,7 +833,7 @@ pub(crate) async fn create_wave(
         p,
         CreateWaveOptions {
             folder_claim,
-            body_cove_id,
+            body_area_id,
             normalized_cwd,
             init,
             as_template,
@@ -865,7 +865,7 @@ pub(crate) async fn create_wave(
 /// does the template look like". The authority for the latter is
 /// `templates::template_report`, a Rust constant — which is why there is no
 /// `title` and no report here. (#1300: before S2 the authority was a seeded
-/// system-cove template wave found by a database lookup, and this sentence
+/// system-area template wave found by a database lookup, and this sentence
 /// named it. Both the wave and the lookup are gone.)
 pub(crate) struct TemplateAdmission {
     /// The roster's own `&'static` key, not the caller's string.
@@ -987,8 +987,8 @@ impl FolderConflictSlot {
     /// the slot first and never surfaces this string.
     fn park(&self, body: FolderConflict) -> CalmError {
         let message = format!(
-            "wave create: cwd conflicts with folder claim `{}` (cove `{}`)",
-            body.conflict_path, body.cove_id
+            "wave create: cwd conflicts with folder claim `{}` (area `{}`)",
+            body.conflict_path, body.area_id
         );
         *self.0.lock().expect("folder conflict slot poisoned") = Some(body);
         CalmError::Conflict(message)
@@ -999,17 +999,17 @@ impl FolderConflictSlot {
     }
 }
 
-/// Issue #275 — what the wave-create transaction does about `cove_folders`.
+/// Issue #275 — what the wave-create transaction does about `area_folders`.
 #[derive(Clone)]
 enum FolderClaim {
-    /// Don't scan, don't insert. The system cove is exempt from the claim
-    /// namespace entirely, and `ensure_cove_chat_wave_inner` derives its
+    /// Don't scan, don't insert. The system area is exempt from the claim
+    /// namespace entirely, and `ensure_area_chat_wave_inner` derives its
     /// cwd from claims that already exist.
     Skip,
     /// Scan inside the wave tx (`BEGIN IMMEDIATE`, so scan and insert are
     /// atomic against a concurrent claim) and act on the result:
     /// `attach` mints the claim when nothing covers the cwd; without it a
-    /// cwd no cove claims is refused rather than making a homeless wave.
+    /// cwd no area claims is refused rather than making a homeless wave.
     Enforce {
         attach: bool,
         conflict: FolderConflictSlot,
@@ -1035,7 +1035,7 @@ impl FolderClaimIntent {
     }
 }
 
-/// #1147 S3 — whether this pass may actually mint a `cove_folders` row.
+/// #1147 S3 — whether this pass may actually mint a `area_folders` row.
 ///
 /// The re-point runs the claim rules **twice**, and the first pass must not
 /// write. Its transaction commits (it is also the fence), so a claim minted
@@ -1069,7 +1069,7 @@ enum FolderClaimPass {
 async fn enforce_folder_claim_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     claim: &FolderClaim,
-    cove_id: &str,
+    area_id: &str,
     normalized_cwd: &str,
     intent: FolderClaimIntent,
     pass: FolderClaimPass,
@@ -1077,22 +1077,22 @@ async fn enforce_folder_claim_tx(
     let FolderClaim::Enforce { attach, conflict } = claim else {
         return Ok(());
     };
-    let existing = cove_folders_list_all_tx(tx).await?;
+    let existing = area_folders_list_all_tx(tx).await?;
     match find_owner(&existing, normalized_cwd) {
-        // Some other cove already covers this cwd. `Descendant` is the right
+        // Some other area already covers this cwd. `Descendant` is the right
         // label from the cwd's point of view: the cwd is a descendant of an
-        // existing folder owned by another cove.
-        Some(f) if f.cove_id.as_str() != cove_id => Err(conflict.park(FolderConflict {
+        // existing folder owned by another area.
+        Some(f) if f.area_id.as_str() != area_id => Err(conflict.park(FolderConflict {
             folder_id: f.id,
-            cove_id: f.cove_id.clone(),
+            area_id: f.area_id.clone(),
             conflict_path: f.path.clone(),
             conflict_kind: FolderConflictKind::Descendant,
         })),
-        // Same cove already covers it — `attach_folder` is a no-op.
+        // Same area already covers it — `attach_folder` is a no-op.
         //
         // #275 behavior change. Before that fix the insert ran unconditionally
         // on the scan result, so this arm fell through into
-        // `cove_folder_create_tx`:
+        // `area_folder_create_tx`:
         //   - cwd == the existing claim → UNIQUE(path) → 409 for re-claiming
         //     your own folder;
         //   - cwd under the existing claim → a second, overlapping row, minted
@@ -1106,7 +1106,7 @@ async fn enforce_folder_claim_tx(
             // No claim covers the cwd and the caller wants to mint one. Check
             // the *reverse* overlap first: an existing folder that is a
             // descendant of the proposed cwd (`/a/b` exists, claim `/a`).
-            // Refused for the same reason the cove_folders route refuses it —
+            // Refused for the same reason the area_folders route refuses it —
             // silently widening a narrower claim would make resolution
             // ambiguous.
             if let Some(f) = existing
@@ -1115,13 +1115,13 @@ async fn enforce_folder_claim_tx(
             {
                 return Err(conflict.park(FolderConflict {
                     folder_id: f.id,
-                    cove_id: f.cove_id.clone(),
+                    area_id: f.area_id.clone(),
                     conflict_path: f.path.clone(),
                     conflict_kind: FolderConflictKind::Ancestor,
                 }));
             }
             if pass == FolderClaimPass::Authoritative {
-                cove_folder_create_tx(tx, cove_id, normalized_cwd).await?;
+                area_folder_create_tx(tx, area_id, normalized_cwd).await?;
             }
             Ok(())
         }
@@ -1129,8 +1129,8 @@ async fn enforce_folder_claim_tx(
         // Refuse so accidentally typing a stray path doesn't create a
         // "homeless" wave.
         None => Err(CalmError::Conflict(format!(
-            "{}: cwd `{normalized_cwd}` is not claimed by any cove. Set \
-             `attach_folder: true` to claim it for cove `{cove_id}`.",
+            "{}: cwd `{normalized_cwd}` is not claimed by any area. Set \
+             `attach_folder: true` to claim it for area `{area_id}`.",
             intent.label()
         ))),
     }
@@ -1140,7 +1140,7 @@ async fn enforce_folder_claim_tx(
 ///
 /// #1300 — this used to be `fork_report_from: Option<String>`, and "create from
 /// a template" was expressed *through* it: the route lazily seeded three hidden
-/// system-cove waves and then forked one of them. That made a template a kind
+/// system-area waves and then forked one of them. That made a template a kind
 /// of wave, which is the thing #1300 removes. A template is a read-only recipe;
 /// instantiating it is structural initialization of a new wave, not a copy of
 /// an existing one.
@@ -1163,7 +1163,7 @@ enum WaveInit {
 
 struct CreateWaveOptions {
     folder_claim: FolderClaim,
-    body_cove_id: String,
+    body_area_id: String,
     normalized_cwd: String,
     init: WaveInit,
     as_template: bool,
@@ -1190,45 +1190,45 @@ async fn create_wave_with_spec_harness(
     Ok((StatusCode::CREATED, Json(wave)).into_response())
 }
 
-/// Ensure the cove's single chat wave exists.
+/// Ensure the area's single chat wave exists.
 ///
-/// The workspace is selected only while creating the wave. When the cove has
+/// The workspace is selected only while creating the wave. When the area has
 /// folder claims it is the claimed path with the fewest path components,
 /// breaking ties lexicographically (attached semantics: the user pointed at
-/// that directory). Cove folder claims cannot be equal, ancestors, or
-/// descendants of one another, so "closest to the cove root" is defined here as
+/// that directory). Area folder claims cannot be equal, ancestors, or
+/// descendants of one another, so "closest to the area root" is defined here as
 /// this deterministic shallow path ordering rather than containment.
 ///
-/// #1147 D10 — a cove with **no** claim gets a managed default instead of the
-/// 409 this used to return. Since #1109 made coves pure namespaces, "no claim"
-/// is the normal state of a new cove, so that 409 made
-/// `POST /api/coves/{id}/conversations` fail by definition for every new cove.
+/// #1147 D10 — an area with **no** claim gets a managed default instead of the
+/// 409 this used to return. Since #1109 made areas pure namespaces, "no claim"
+/// is the normal state of a new area, so that 409 made
+/// `POST /api/areas/{id}/conversations` fail by definition for every new area.
 ///
 /// Once created, later folder claims or changes deliberately do not update the
 /// wave's workspace, so an existing conversation cannot drift between working
 /// directories from one message to the next.
 #[utoipa::path(
     post,
-    path = "/api/coves/{cove_id}/chat-wave/ensure",
+    path = "/api/areas/{area_id}/chat-wave/ensure",
     tag = "waves",
-    params(("cove_id" = String, Path, description = "Cove id")),
+    params(("area_id" = String, Path, description = "Area id")),
     responses(
         (status = 200, description = "Existing chat wave", body = Wave),
         (status = 201, description = "Chat wave created", body = Wave),
-        // #1147 D10 removed the "cove has no claimed folder" 409: a claimless
-        // cove now gets a managed default. Do not re-add a 409 here without a
+        // #1147 D10 removed the "area has no claimed folder" 409: a claimless
+        // area now gets a managed default. Do not re-add a 409 here without a
         // branch that can actually produce one.
 
-        (status = 404, description = "Cove not found", body = ErrorBody),
+        (status = 404, description = "Area not found", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
-pub(crate) async fn ensure_cove_chat_wave(
+pub(crate) async fn ensure_area_chat_wave(
     State(s): State<RouteState>,
     actor: Actor,
-    Path(cove_id): Path<String>,
+    Path(area_id): Path<String>,
 ) -> Result<Response> {
-    let (wave, created) = ensure_cove_chat_wave_inner(&s, actor, &cove_id).await?;
+    let (wave, created) = ensure_area_chat_wave_inner(&s, actor, &area_id).await?;
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -1237,49 +1237,49 @@ pub(crate) async fn ensure_cove_chat_wave(
     Ok((status, Json(wave)).into_response())
 }
 
-/// The body of [`ensure_cove_chat_wave`], shared with
-/// `POST /api/coves/{cove_id}/conversations` (#1098 slice 3). Returns the
+/// The body of [`ensure_area_chat_wave`], shared with
+/// `POST /api/areas/{area_id}/conversations` (#1098 slice 3). Returns the
 /// wave and whether this call is the one that created it.
 ///
 /// Both callers must agree byte-for-byte on the cwd rule and the concurrent
 /// ensure race resolution, so there is exactly one implementation of them.
 #[allow(deprecated)]
-pub(crate) async fn ensure_cove_chat_wave_inner(
+pub(crate) async fn ensure_area_chat_wave_inner(
     s: &RouteState,
     actor: Actor,
-    cove_id: &str,
+    area_id: &str,
 ) -> Result<(Wave, bool)> {
-    let cove_id = cove_id.to_string();
-    if s.repo.cove_get(&cove_id).await?.is_none() {
-        return Err(CalmError::NotFound(format!("cove {cove_id}")));
+    let area_id = area_id.to_string();
+    if s.repo.area_get(&area_id).await?.is_none() {
+        return Err(CalmError::NotFound(format!("area {area_id}")));
     }
     // Preserve the existing wave (and therefore its cwd) before consulting
     // current folder claims. The partial unique index closes the concurrent
     // ensure race; the loser reads and returns the winner below.
     if let Some(wave) = s
         .repo
-        .waves_by_cove(&cove_id)
+        .waves_by_area(&area_id)
         .await?
         .into_iter()
-        .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+        .find(|wave| wave.purpose.as_deref() == Some(AREA_CHAT_PURPOSE))
     {
         return Ok((wave, false));
     }
 
     #[cfg(feature = "fixtures")]
-    wait_at_chat_wave_ensure_barrier(&cove_id).await;
+    wait_at_chat_wave_ensure_barrier(&area_id).await;
 
-    // #1147 D10 — a cove with a `cove_folders` claim still gets that folder
+    // #1147 D10 — an area with a `area_folders` claim still gets that folder
     // (attached semantics preserved: the user pointed at it, the server never
-    // touches it). A cove *without* a claim used to 409 here, which since
-    // #1109 made coves pure namespaces means **every new cove's conversation
-    // entry point fails by definition** — `POST /api/coves/{id}/conversations`
+    // touches it). An area *without* a claim used to 409 here, which since
+    // #1109 made areas pure namespaces means **every new area's conversation
+    // entry point fails by definition** — `POST /api/areas/{id}/conversations`
     // calls this unconditionally. It now falls back to a managed default,
     // which is what "the workspace is a default, not a question we ask the
     // user" means (design §2.3).
     let claimed_cwd = s
         .repo
-        .cove_folders_by_cove(&cove_id)
+        .area_folders_by_area(&area_id)
         .await?
         .into_iter()
         .min_by(|left, right| {
@@ -1300,8 +1300,8 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
         ),
     };
     let p = NewWave {
-        cove_id: cove_id.clone().into(),
-        title: "Cove chat".into(),
+        area_id: area_id.clone().into(),
+        title: "Area chat".into(),
         sort: None,
         cwd: cwd.clone(),
         template_id: None,
@@ -1315,27 +1315,27 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
         actor,
         p,
         CreateWaveOptions {
-            // The cwd was just picked from this cove's own existing
+            // The cwd was just picked from this area's own existing
             // claims, so there is nothing to scan and nothing to mint.
             folder_claim: FolderClaim::Skip,
-            body_cove_id: cove_id.clone(),
+            body_area_id: area_id.clone(),
             normalized_cwd: cwd,
             init: WaveInit::Blank,
             as_template: false,
             workspace_plan,
         },
-        Some(COVE_CHAT_PURPOSE),
+        Some(AREA_CHAT_PURPOSE),
     )
     .await;
     let (wave, created) = match attempt {
         Ok((wave, _, _, _)) => (wave, true),
-        Err(error) if is_unique_constraint(&error, "waves.cove_id") => {
+        Err(error) if is_unique_constraint(&error, "waves.area_id") => {
             let wave = s
                 .repo
-                .waves_by_cove(&cove_id)
+                .waves_by_area(&area_id)
                 .await?
                 .into_iter()
-                .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+                .find(|wave| wave.purpose.as_deref() == Some(AREA_CHAT_PURPOSE))
                 .ok_or_else(|| CalmError::Internal("chat wave ensure race had no winner".into()))?;
             (wave, false)
         }
@@ -1354,7 +1354,7 @@ async fn create_wave_structure(
 ) -> Result<(Wave, bool, String, String)> {
     let CreateWaveOptions {
         folder_claim,
-        body_cove_id,
+        body_area_id,
         normalized_cwd,
         init,
         as_template,
@@ -1370,7 +1370,7 @@ async fn create_wave_structure(
     let write_for_tx = s.write.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
-    let cove_id_for_attach = body_cove_id;
+    let area_id_for_attach = body_area_id;
     let normalized_cwd_for_tx = normalized_cwd;
     // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
     // (`User` when no `X-Calm-Actor` header was present, `Spec` otherwise) and
@@ -1392,7 +1392,7 @@ async fn create_wave_structure(
                 enforce_folder_claim_tx(
                     tx,
                     &folder_claim,
-                    &cove_id_for_attach,
+                    &area_id_for_attach,
                     &normalized_cwd_for_tx,
                     FolderClaimIntent::Create,
                     FolderClaimPass::Authoritative,
@@ -1400,10 +1400,10 @@ async fn create_wave_structure(
                 .await?;
 
                 let wave =
-                    wave_create_tx(tx, p, purpose, &workspace_plan, write_for_tx.cove_cache())
+                    wave_create_tx(tx, p, purpose, &workspace_plan, write_for_tx.area_cache())
                         .await?;
                 let wave_id = wave.id.clone();
-                let cove_id = wave.cove_id.clone();
+                let area_id = wave.area_id.clone();
 
                 // #1300 — three initialization sources, one persistence
                 // mechanism. `Template` builds from a constant and needs no
@@ -1424,16 +1424,16 @@ async fn create_wave_structure(
                             error
                         }
                     })?;
-                    let source_cove_kind: String =
-                        sqlx::query_scalar("SELECT kind FROM coves WHERE id=?1")
-                            .bind(source_wave.cove_id.as_str())
+                    let source_area_kind: String =
+                        sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
+                            .bind(source_wave.area_id.as_str())
                             .fetch_one(&mut **tx)
                             .await?;
-                    if source_wave.cove_id != cove_id
-                        && source_cove_kind != CoveKind::System.as_db_str()
+                    if source_wave.area_id != area_id
+                        && source_area_kind != AreaKind::System.as_db_str()
                     {
                         return Err(CalmError::BadRequest(format!(
-                            "wave create: fork source wave `{source_wave_id}` must be in the target cove or the system cove"
+                            "wave create: fork source wave `{source_wave_id}` must be in the target area or the system area"
                         )));
                     }
                     let (summary, blocks) =
@@ -1517,17 +1517,17 @@ async fn create_wave_structure(
 
                 let wave_scope = EventScope::Wave {
                     wave: wave_id.clone(),
-                    cove: cove_id.clone(),
+                    area: area_id.clone(),
                 };
                 let spec_card_scope = EventScope::Card {
                     card: spec_card.id.clone(),
                     wave: wave_id.clone(),
-                    cove: cove_id.clone(),
+                    area: area_id.clone(),
                 };
                 let report_card_scope = EventScope::Card {
                     card: report_card.id.clone(),
                     wave: wave_id.clone(),
-                    cove: cove_id.clone(),
+                    area: area_id.clone(),
                 };
                 let layout_overlay = overlay_upsert_tx(
                     tx,
@@ -1628,7 +1628,7 @@ async fn create_wave_structure(
                         actor_id_for_tx.clone(),
                         EventScope::Wave {
                             wave: wave_id.clone(),
-                            cove: cove_id.clone(),
+                            area: area_id.clone(),
                         },
                         Event::OverlaySet(template_overlay),
                     ));
@@ -1639,7 +1639,7 @@ async fn create_wave_structure(
                             actor_id_for_tx.clone(),
                             EventScope::Wave {
                                 wave: wave_id.clone(),
-                                cove: cove_id.clone(),
+                                area: area_id.clone(),
                             },
                             Event::PlanUpdated {
                                 wave_id,
@@ -2227,7 +2227,7 @@ struct RepointFence {
 ///    goes through S5's [`workspace_recycle::recycle_wave_workspace`] — the
 ///    single controlled entry point — which re-checks `kind == Managed`,
 ///    canonical containment in the workspace root, the exact
-///    `<root>/<cove>/<wave>` depth, and our ownership marker, and renames into
+///    `<root>/<area>/<wave>` depth, and our ownership marker, and renames into
 ///    `.trash` rather than deleting. The `WaveWorkspace` handed to it is the
 ///    OLD value, read inside the fence transaction, so it describes the
 ///    directory being reclaimed rather than the row's new state.
@@ -2237,7 +2237,7 @@ struct RepointFence {
 /// The opposite order is what S5 chose for `DELETE`, and for the opposite
 /// reason. There, a failure after the move would leave a wave row whose
 /// directory is unreachable. Here the failure that actually happens is a
-/// **claim conflict**: `cove_folders` is scanned twice — once in the fence
+/// **claim conflict**: `area_folders` is scanned twice — once in the fence
 /// transaction to fail fast, once authoritatively in the write transaction —
 /// and a claim minted by a concurrent request in between must be able to abort
 /// this whole request cleanly. Moving first would make that abort leave the
@@ -2248,7 +2248,7 @@ struct RepointFence {
 /// The price, stated: a crash between the commit and the rename leaves the old
 /// managed directory on disk with no row naming it. That is a leak, not a
 /// loss, and unlike S5's it is a **derivable** one —
-/// `managed_workspace_path(root, cove_id, wave_id)` still names it — so a
+/// `managed_workspace_path(root, area_id, wave_id)` still names it — so a
 /// future sweep can find it without any new bookkeeping.
 ///
 /// # What a refusal leaves behind
@@ -2291,7 +2291,7 @@ async fn repoint_wave_workspace(
 
     // Scope (design §更换与冻结). `managed → attached` is the transition; there
     // is no `managed → managed` because a managed path is derived from the
-    // cove and wave ids, so "re-allocate" would always re-derive the same
+    // area and wave ids, so "re-allocate" would always re-derive the same
     // directory. Answered explicitly rather than accepted as a no-op, so a
     // client that asks for it learns that instead of believing it worked.
     if requested.kind != WaveWorkspaceKind::Attached {
@@ -2303,15 +2303,15 @@ async fn repoint_wave_workspace(
         ));
     }
 
-    // The system cove's launchpad path is kernel-maintained
+    // The system area's launchpad path is kernel-maintained
     // (`today_launchpad_ensure_tx` re-derives it on every `ensure`) and is the
     // documented exception to the freeze latch. A user PATCH must not touch
     // it. Same scope decision as S5's row-layer 403 on DELETE: the whole
-    // system cove, not a `purpose = launchpad` carve-out.
-    let cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
-    if cove.as_ref().is_none_or(|c| c.kind == CoveKind::System) {
+    // system area, not a `purpose = launchpad` carve-out.
+    let area = s.repo.area_get(wave.area_id.as_str()).await?;
+    if area.as_ref().is_none_or(|c| c.kind == AreaKind::System) {
         return Err(CalmError::Forbidden(format!(
-            "wave {} belongs to the system cove; its workspace is kernel-maintained",
+            "wave {} belongs to the system area; its workspace is kernel-maintained",
             wave.id
         )));
     }
@@ -2325,12 +2325,12 @@ async fn repoint_wave_workspace(
 
     let workspace_root = s.workspace_root.clone();
     let wave_id = wave.id.to_string();
-    let cove_id = wave.cove_id.as_str().to_string();
+    let area_id = wave.area_id.as_str().to_string();
 
     // ---- Step 1: criteria + fence, in one BEGIN IMMEDIATE -----------------
     let fence_conflict = FolderConflictSlot::default();
     let fence_wave_id = wave_id.clone();
-    let fence_cove_id = cove_id.clone();
+    let fence_area_id = area_id.clone();
     let fence_path = new_path.clone();
     let fence_claim = FolderClaim::Enforce {
         attach: requested.attach_folder,
@@ -2338,7 +2338,7 @@ async fn repoint_wave_workspace(
     };
     let fence = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
         let wave_id = fence_wave_id.clone();
-        let cove_id = fence_cove_id.clone();
+        let area_id = fence_area_id.clone();
         let new_path = fence_path.clone();
         let claim = fence_claim.clone();
         Box::pin(async move {
@@ -2377,7 +2377,7 @@ async fn repoint_wave_workspace(
             enforce_folder_claim_tx(
                 tx,
                 &claim,
-                &cove_id,
+                &area_id,
                 &new_path,
                 FolderClaimIntent::Repoint,
                 FolderClaimPass::ScanOnly,
@@ -2484,7 +2484,7 @@ async fn repoint_wave_workspace(
     };
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let actor_id = actor.to_actor_id();
     let write_conflict = FolderConflictSlot::default();
@@ -2493,13 +2493,13 @@ async fn repoint_wave_workspace(
         conflict: write_conflict.clone(),
     };
     let write_wave_id = wave_id.clone();
-    let write_cove_id = cove_id.clone();
+    let write_area_id = area_id.clone();
     let write_workspace = new_workspace.clone();
     let written =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             let wave_id = write_wave_id.clone();
-            let cove_id = write_cove_id.clone();
+            let area_id = write_area_id.clone();
             let workspace = write_workspace.clone();
             let claim = write_claim.clone();
             let actor_id = actor_id.clone();
@@ -2509,7 +2509,7 @@ async fn repoint_wave_workspace(
                 enforce_folder_claim_tx(
                     tx,
                     &claim,
-                    &cove_id,
+                    &area_id,
                     &workspace.path,
                     FolderClaimIntent::Repoint,
                     FolderClaimPass::Authoritative,
@@ -2539,7 +2539,7 @@ async fn repoint_wave_workspace(
     // ---- Step 3: the old managed directory goes to the trash --------------
     let decision = workspace_recycle::recycle_wave_workspace(
         &workspace_root,
-        cove.as_ref().map(|c| c.kind),
+        area.as_ref().map(|c| c.kind),
         &wave_id,
         // The OLD workspace value, read inside the fence transaction. The row
         // now says `attached`, so re-reading it here would make guard 1 refuse
@@ -2612,8 +2612,8 @@ pub async fn repoint_wave_workspace_for_test(
 ///
 /// `FolderConflictSlot::park` stashes the body and returns a plain `Conflict`
 /// whose message is only a fallback; without this the caller would get the bare
-/// string and lose `folder_id` / `cove_id` / `conflict_kind` — which is exactly
-/// what the FE needs to say *which* cove already owns the directory.
+/// string and lose `folder_id` / `area_id` / `conflict_kind` — which is exactly
+/// what the FE needs to say *which* area already owns the directory.
 fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Result<Response> {
     match slot.take() {
         Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
@@ -2731,7 +2731,7 @@ async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, wave: &Wave, cwd
     responses(
         (status = 200, description = "Wave updated", body = Wave),
         (status = 400, description = "Unsupported workspace change", body = ErrorBody),
-        (status = 403, description = "Workspace change refused (system cove)", body = ErrorBody),
+        (status = 403, description = "Workspace change refused (system area)", body = ErrorBody),
         (status = 404, description = "Wave not found", body = ErrorBody),
         (status = 409, description = "Workspace is frozen, attached, or no longer empty", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -2744,8 +2744,8 @@ pub(crate) async fn update_wave(
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
 ) -> Result<Response> {
-    // Need cove_id for the scope. Wave rows are immutable wrt their
-    // parent cove, so reading outside the txn is safe (same rationale as
+    // Need area_id for the scope. Wave rows are immutable wrt their
+    // parent area, so reading outside the txn is safe (same rationale as
     // the delete path below).
     let existing = s
         .repo
@@ -2805,14 +2805,14 @@ pub(crate) async fn update_wave(
     // deliberate — the chat wave has no lifecycle the user may drive, so
     // accepting a no-op write would advertise an editable field, and the FSM
     // would then have to be trusted to keep every such write a no-op forever.
-    if existing.purpose.as_deref() == Some(COVE_CHAT_PURPOSE) && p.lifecycle.is_some() {
+    if existing.purpose.as_deref() == Some(AREA_CHAT_PURPOSE) && p.lifecycle.is_some() {
         return Err(CalmError::Forbidden(
-            "cove chat wave lifecycle cannot be changed".into(),
+            "area chat wave lifecycle cannot be changed".into(),
         ));
     }
     let scope = EventScope::Wave {
         wave: existing.id.clone(),
-        cove: existing.cove_id.clone(),
+        area: existing.area_id.clone(),
     };
     let actor_id = actor.to_actor_id();
 
@@ -2919,7 +2919,7 @@ pub(crate) async fn update_wave(
     // subscribers don't have to inspect every `WaveUpdated`, plus the
     // usual `WaveUpdated` so cache invalidation still sees the new
     // row shape. Both share scope + actor; both land or neither does.
-    let cove_id_for_event = existing.cove_id.clone();
+    let area_id_for_event = existing.area_id.clone();
     let wave_id_for_event = existing.id.clone();
     // `tree_task_budget` feeds every member's deterministic share, so changing
     // it invalidates every member's projection. Rebuild the bounded member set
@@ -2951,7 +2951,7 @@ pub(crate) async fn update_wave(
                         scope.clone(),
                         Event::WaveLifecycleChanged {
                             id: wave_id_for_event.clone(),
-                            cove_id: cove_id_for_event.clone(),
+                            area_id: area_id_for_event.clone(),
                             from,
                             to,
                             agent_message: None,
@@ -2969,7 +2969,7 @@ pub(crate) async fn update_wave(
                             actor_id.clone(),
                             EventScope::Wave {
                                 wave: projected_wave.id.clone(),
-                                cove: projected_wave.cove_id.clone(),
+                                area: projected_wave.area_id.clone(),
                             },
                             Event::PlanUpdated {
                                 wave_id: projected_wave.id,
@@ -3008,7 +3008,7 @@ async fn snapshot_wave_deletion(
     .await?;
     Ok(WaveDeletePlan {
         wave_id: wave.id.clone(),
-        cove_id: wave.cove_id.clone(),
+        area_id: wave.area_id.clone(),
         cards,
         terminals,
         active_runtime_ids,
@@ -3041,11 +3041,11 @@ async fn teardown_wave_deletion(
 async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: ActorId) -> Result<()> {
     let write_for_tx = s.write.clone();
     let wave_id = plan.wave_id.clone();
-    let cove_id = plan.cove_id.clone();
+    let area_id = plan.area_id.clone();
     let terminals = plan.terminals;
     let scope = EventScope::Wave {
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     let (sweeps, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
@@ -3065,13 +3065,13 @@ async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: Actor
                 overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
                 let release = release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
                 let mut events = release.events;
-                wave_delete_tx(tx, wave_id.as_str(), write_for_tx.cove_cache()).await?;
+                wave_delete_tx(tx, wave_id.as_str(), write_for_tx.area_cache()).await?;
                 events.push((
                     actor,
                     scope,
                     Event::WaveDeleted {
                         id: wave_id,
-                        cove_id,
+                        area_id,
                     },
                 ));
                 Ok((release.sweep.into_iter().collect::<Vec<_>>(), events))
@@ -3100,17 +3100,17 @@ async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: Actor
 /// [`workspace_recycle::recycle_wave_workspace`] for why the row must stay
 /// deletable even when the directory cannot be proven ours.
 ///
-/// `cove_kind` is guard 4's input, read once by the caller (which needs it for
-/// the row-layer 403 anyway). `None` — a cove row we could not read — is "not
-/// provably a user cove", and the recycler refuses on it.
+/// `area_kind` is guard 4's input, read once by the caller (which needs it for
+/// the row-layer 403 anyway). `None` — an area row we could not read — is "not
+/// provably a user area", and the recycler refuses on it.
 fn recycle_wave_workspace_for_delete(
     s: &RouteState,
     wave: &Wave,
-    cove_kind: Option<CoveKind>,
+    area_kind: Option<AreaKind>,
 ) -> Result<()> {
     workspace_recycle::recycle_wave_workspace(
         &s.workspace_root,
-        cove_kind,
+        area_kind,
         wave.id.as_str(),
         &wave.workspace,
         crate::model::now_ms(),
@@ -3127,7 +3127,7 @@ fn recycle_wave_workspace_for_delete(
     responses(
         (status = 204, description = "Wave deleted"),
         (status = 404, description = "Wave not found", body = ErrorBody),
-        (status = 403, description = "Wave belongs to the system cove and cannot be deleted via REST", body = ErrorBody),
+        (status = 403, description = "Wave belongs to the system area and cannot be deleted via REST", body = ErrorBody),
         (status = 409, description = "Wave has a descendant or active forge action", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -3162,9 +3162,9 @@ pub(crate) async fn delete_wave(
 
     // #1147 S5 — the ROW-layer half of recycle guard 4.
     //
-    // `workspace_recycle`'s guard 4 refuses to touch a system-cove workspace on
-    // disk, and `DELETE /api/coves/{id}` already 403s a system cove. This route
-    // was the asymmetric one: it deleted a system-cove wave row and returned
+    // `workspace_recycle`'s guard 4 refuses to touch a system-area workspace on
+    // disk, and `DELETE /api/areas/{id}` already 403s a system area. This route
+    // was the asymmetric one: it deleted a system-area wave row and returned
     // 204 while the directory (correctly) survived — and *that* is the leak,
     // because reclaiming a managed directory needs the wave row that names it.
     // Once the row is gone the directory is unreachable forever, so every
@@ -3175,9 +3175,9 @@ pub(crate) async fn delete_wave(
     // kernel-owned and not user-deletable. Kernel paths that legitimately
     // retire these rows do not come through this handler.
     //
-    // **Scope is the whole system cove, not just the launchpad — deliberately.**
-    // The rule is written over the cove, not over `purpose = launchpad`,
-    // because carving out a purpose puts an exception into "the system cove is
+    // **Scope is the whole system area, not just the launchpad — deliberately.**
+    // The rule is written over the area, not over `purpose = launchpad`,
+    // because carving out a purpose puts an exception into "the system area is
     // kernel-owned", and an invariant with an exception is the shape this
     // design line keeps getting hurt by. What the wide rule costs is that the
     // launchpad wave — which *is* user-visible, on Today — cannot be deleted
@@ -3201,19 +3201,19 @@ pub(crate) async fn delete_wave(
     // rests on where the ownership boundary is drawn.
     //
     // #1300 — this paragraph used to justify itself by the *other* residents
-    // of the system cove, the three hidden template waves `ensure_templates`
+    // of the system area, the three hidden template waves `ensure_templates`
     // seeded. Those are gone: a template is a Rust constant
     // (`crate::templates`) and creating from one mints no hidden wave. The
     // ruling did not depend on them — it is about where the boundary is drawn,
     // not about how many rows sit behind it — so it stands unchanged with the
     // launchpad wave as today's only kernel-seeded resident.
-    let owning_cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
-    if owning_cove
+    let owning_area = s.repo.area_get(wave.area_id.as_str()).await?;
+    if owning_area
         .as_ref()
-        .is_some_and(|c| c.kind == CoveKind::System)
+        .is_some_and(|c| c.kind == AreaKind::System)
     {
         return Err(CalmError::Forbidden(format!(
-            "wave {id} belongs to the system cove and cannot be deleted via the public API"
+            "wave {id} belongs to the system area and cannot be deleted via the public API"
         )));
     }
 
@@ -3247,7 +3247,7 @@ pub(crate) async fn delete_wave(
 
     let plan = snapshot_wave_deletion(&s, &pool, &wave).await?;
     teardown_wave_deletion(&s, &w, &cs, &plan).await?;
-    recycle_wave_workspace_for_delete(&s, &wave, owning_cove.map(|c| c.kind))?;
+    recycle_wave_workspace_for_delete(&s, &wave, owning_area.map(|c| c.kind))?;
     finish_wave_deletion(&s, plan, actor.to_actor_id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3312,7 +3312,7 @@ impl From<report_backlinks::BacklinkPage> for WaveBacklinksResponse {
     tag = "waves",
     params(("id" = String, Path, description = "Wave id")),
     responses(
-        (status = 200, description = "Report links from waves in the same cove", body = WaveBacklinksResponse),
+        (status = 200, description = "Report links from waves in the same area", body = WaveBacklinksResponse),
         (status = 404, description = "Wave not found", body = ErrorBody),
     ),
 )]
@@ -3571,7 +3571,7 @@ mod tests {
     };
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
-    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::model::{NewArea, NewCard, NewWave};
     use crate::routes::theme::RequestTheme;
     use crate::templates::TEMPLATES;
     use crate::wave_report::{ReportBlock, WaveReportPayload};
@@ -3757,8 +3757,8 @@ mod tests {
     #[tokio::test]
     async fn fork_persist_helper_writes_cache_crdt_and_projection_together() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "fork-helper".into(),
                 color: "#000".into(),
                 sort: None,
@@ -3767,7 +3767,7 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "fork helper".into(),
                 sort: None,
                 cwd: "/tmp/fork-helper".into(),

@@ -5,13 +5,13 @@ import {
   useMemo,
 } from 'react';
 import { useState } from '../shared/state';
-import { coveOf } from '../shared/components/helpers';
+import { areaOf } from '../shared/components/helpers';
 import { useTheme } from '../app/theme';
 import { CardHead } from '../cards/CardHead';
 import { isRunning, waveNeedsUserAttention } from '../shared/lifecycle';
 import { lifecycleLabel } from '../shared/components/WaveLifecycleBadge';
 import { waveDisplayTitle } from '../shared/waveTitle';
-import type { Cove, Route, Wave } from '../types';
+import type { Area, Route, Wave } from '../types';
 import { useXtermWheelTargetRef } from '../input/useXtermWheelTarget';
 
 // xterm.js is heavy and only mounts when the Today home panel resolves a
@@ -31,7 +31,7 @@ const XtermView = lazy(() =>
 //
 // Issue #250 PR 5 — until then, the rail's dots and agenda surface live
 // wave activity: any wave whose `[createdAt, terminalAt ?? now]` window
-// overlaps a calendar day shows up on that day, colour-keyed by cove.
+// overlaps a calendar day shows up on that day, colour-keyed by area.
 // The user can finally see "what was I working on Tuesday?" without a
 // scheduling layer.
 // ============================================================
@@ -79,7 +79,7 @@ interface CalEvent { wave: Wave; date: Date; h: number; dur: number; }
 /**
  * Issue #250 PR 5 — every wave whose `[createdAt, terminalAt ?? nowMs]`
  * interval overlaps the local day that owns `day`. Used to drive
- * per-day cove-colour dots on the week / month grids and to populate
+ * per-day area-colour dots on the week / month grids and to populate
  * the selected-day agenda when no hour-scheduled `CalEvent` is present.
  *
  * The predicate uses inclusive endpoints (`createdAt <= endOfDay AND
@@ -117,7 +117,7 @@ export function activeWavesOn(
 
 export function TodayPage({
   waves,
-  coves,
+  areas,
   onGo,
   todayTerminalId,
   todayError,
@@ -125,7 +125,7 @@ export function TodayPage({
   nowMs,
 }: {
   waves: Wave[];
-  coves: Cove[];
+  areas: Area[];
   onGo: (r: Route) => void;
   /** When defined, the home panel hosts a live `<XtermView>` for this id. */
   todayTerminalId?: string | null;
@@ -167,7 +167,7 @@ export function TodayPage({
           <CalendarCard
             today0={today0}
             events={events}
-            coves={coves}
+            areas={areas}
             waves={waves}
             onGo={onGo}
             nowMs={nowMs}
@@ -188,7 +188,7 @@ export function TodayPage({
  *     line body: title + dot flag(s) for waiting/running.
  *   * **wave** (`hourLabel` undefined) — drops the time gutter (waves
  *     are day-level, not hour-bucketed; the empty 40px column made the
- *     cove bar look stranded). Grid collapses to `3px / 1fr` and the
+ *     area bar look stranded). Grid collapses to `3px / 1fr` and the
  *     body becomes a two-line column: title on top, human-readable
  *     `lifecycleLabel` underneath. Both lines clamp to a single line
  *     with ellipsis so a long title / status string can't reflow the
@@ -203,7 +203,7 @@ export function TodayPage({
 function CalEventRow({
   wave,
   hourLabel,
-  coves,
+  areas,
   onGo,
 }: {
   wave: Wave;
@@ -212,15 +212,15 @@ function CalEventRow({
    *  absence of this prop also selects the `cal-event--wave` layout
    *  modifier (no hour gutter, lifecycle text below the title). */
   hourLabel?: string;
-  coves: Cove[];
+  areas: Area[];
   onGo: (r: Route) => void;
 }) {
-  const c = coveOf(wave.coveId, coves);
+  const c = areaOf(wave.areaId, areas);
   const isWaiting = waveNeedsUserAttention(wave);
   const eventRunning = isRunning(wave.lifecycle);
   const isWave = hourLabel === undefined;
   // Reuse the canonical lifecycle phrase so the calendar agrees with
-  // <WaveLifecycleBadge> / Cove buckets — no parallel mapping table.
+  // <WaveLifecycleBadge> / Area buckets — no parallel mapping table.
   const lifecycleText = lifecycleLabel(wave.lifecycle);
   // The dot flags are visual; the full lifecycle state goes into the
   // button's aria-label so screen readers and axe checks see the same
@@ -229,12 +229,12 @@ function CalEventRow({
   const stateBits: string[] = [];
   if (isWaiting) stateBits.push('waiting on you');
   if (eventRunning) stateBits.push('running');
-  const coveName = c?.name ?? 'Unknown cove';
+  const areaName = c?.name ?? 'Unknown area';
   const label =
     `Wave ${displayTitle}` +
     (stateBits.length > 0 ? `, ${stateBits.join(', ')}` : '') +
     `, ${lifecycleText}` +
-    `, in cove ${coveName}`;
+    `, in area ${areaName}`;
   return (
     <button
       className={
@@ -286,9 +286,9 @@ function CalEventRow({
 // Replaces the original mockup's static `SurfTerminal` (later renamed
 // `TodayTerminal` in the class-name cleanup pass) with an actual live
 // shell. The terminal binds to a single per-browser card hosted inside
-// the kernel-owned system cove + "Today" wave (resolved by
+// the kernel-owned system area + "Today" wave (resolved by
 // `useTodayTerminal` upstream and passed in as `terminalId`). Issue
-// #175 hides the system cove from the sidebar; the user only ever
+// #175 hides the system area from the sidebar; the user only ever
 // interacts with the terminal here. While the resolver runs we show a
 // calm "Booting…" line.
 //
@@ -427,14 +427,14 @@ function TodayClock({ waves }: { waves: Wave[] }) {
 function CalendarCard({
   today0,
   events,
-  coves,
+  areas,
   waves,
   onGo,
   nowMs,
 }: {
   today0: Date;
   events: CalEvent[];
-  coves: Cove[];
+  areas: Area[];
   waves: Wave[];
   onGo: (r: Route) => void;
   /** Tests pin this so the "active on day" predicate doesn't drift
@@ -493,7 +493,7 @@ function CalendarCard({
           setSelected={setSelected}
           events={events}
           waves={waves}
-          coves={coves}
+          areas={areas}
           nowMs={now}
         />
       ) : (
@@ -505,7 +505,7 @@ function CalendarCard({
           setMonthCursor={setMonthCursor}
           events={events}
           waves={waves}
-          coves={coves}
+          areas={areas}
           nowMs={now}
         />
       )}
@@ -520,12 +520,12 @@ function CalendarCard({
             key={`evt-${i}`}
             wave={e.wave}
             hourLabel={fmtHour(e.h)}
-            coves={coves}
+            areas={areas}
             onGo={onGo}
           />
         ))}
         {waveAgenda.map((w) => (
-          <CalEventRow key={`wave-${w.id}`} wave={w} coves={coves} onGo={onGo} />
+          <CalEventRow key={`wave-${w.id}`} wave={w} areas={areas} onGo={onGo} />
         ))}
       </div>
     </section>
@@ -538,7 +538,7 @@ function CalWeek({
   setSelected,
   events,
   waves,
-  coves,
+  areas,
   nowMs,
 }: {
   today0: Date;
@@ -546,7 +546,7 @@ function CalWeek({
   setSelected: (d: Date) => void;
   events: CalEvent[];
   waves: Wave[];
-  coves: Cove[];
+  areas: Area[];
   nowMs: number;
 }) {
   const start = startOfWeek(selected);
@@ -578,12 +578,12 @@ function CalWeek({
           for (const e of evs) {
             if (activeIds.has(e.wave.id)) continue;
             activeIds.add(e.wave.id);
-            activeColors.push({ id: e.wave.id, color: coveOf(e.wave.coveId, coves)?.color });
+            activeColors.push({ id: e.wave.id, color: areaOf(e.wave.areaId, areas)?.color });
           }
           for (const w of activeWavesOn(waves, d, nowMs)) {
             if (activeIds.has(w.id)) continue;
             activeIds.add(w.id);
-            activeColors.push({ id: w.id, color: coveOf(w.coveId, coves)?.color });
+            activeColors.push({ id: w.id, color: areaOf(w.areaId, areas)?.color });
           }
           const isToday = sameDay(d, today0);
           const isSel = sameDay(d, selected);
@@ -622,7 +622,7 @@ function CalMonth({
   setMonthCursor,
   events,
   waves,
-  coves,
+  areas,
   nowMs,
 }: {
   today0: Date;
@@ -632,7 +632,7 @@ function CalMonth({
   setMonthCursor: (d: Date) => void;
   events: CalEvent[];
   waves: Wave[];
-  coves: Cove[];
+  areas: Area[];
   nowMs: number;
 }) {
   const first = startOfMonth(monthCursor);
@@ -679,12 +679,12 @@ function CalMonth({
           for (const e of evs) {
             if (seenIds.has(e.wave.id)) continue;
             seenIds.add(e.wave.id);
-            dotColors.push({ id: e.wave.id, color: coveOf(e.wave.coveId, coves)?.color });
+            dotColors.push({ id: e.wave.id, color: areaOf(e.wave.areaId, areas)?.color });
           }
           for (const w of activeWavesOn(waves, d, nowMs)) {
             if (seenIds.has(w.id)) continue;
             seenIds.add(w.id);
-            dotColors.push({ id: w.id, color: coveOf(w.coveId, coves)?.color });
+            dotColors.push({ id: w.id, color: areaOf(w.areaId, areas)?.color });
           }
           const isToday = sameDay(d, today0);
           const isSel = sameDay(d, selected);

@@ -21,8 +21,8 @@ use calm_server::db::sqlite::{SqlxRepo, wave_update_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId};
-use calm_server::model::{CardRole, NewCove, NewWave, WavePatch};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::model::{CardRole, NewArea, NewWave, WavePatch};
+use calm_server::wave_area_cache::WaveAreaCache;
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -39,8 +39,8 @@ async fn spec_card_can_update_wave() {
     let (repo, bus) = boot().await;
     let mut sub = bus.subscribe();
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -50,7 +50,7 @@ async fn spec_card_can_update_wave() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -81,14 +81,14 @@ async fn spec_card_can_update_wave() {
 
     // Re-seed the role cache so it sees the new spec role.
     let cache = CardRoleCache::new();
-    let wcc = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     assert_eq!(cache.get(&card.id), Some(CardRole::Spec));
 
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     let wave_id_for_tx = wave.id.clone();
     let res = write_with_event_typed(
@@ -139,8 +139,8 @@ async fn ai_codex_cannot_update_wave() {
     let (repo, bus) = boot().await;
     let mut sub = bus.subscribe();
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -150,7 +150,7 @@ async fn ai_codex_cannot_update_wave() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -174,8 +174,8 @@ async fn ai_codex_cannot_update_wave() {
     // Worker codex cards are denied for wave.updated.
 
     let cache = CardRoleCache::new();
-    let wcc = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
 
     let baseline_events: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events")
@@ -185,7 +185,7 @@ async fn ai_codex_cannot_update_wave() {
 
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     let wave_id_for_tx = wave.id.clone();
     let title_before = wave.title.clone();
@@ -252,8 +252,8 @@ async fn ai_codex_cannot_update_wave() {
 async fn empty_codex_card_id_rejected() {
     let (repo, bus) = boot().await;
     let cache = CardRoleCache::new();
-    let wcc = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
     repo.seed_card_role_cache(&cache).await.unwrap();
     // Pure-event path with an empty CardId actor.
     let res = repo
@@ -287,8 +287,8 @@ async fn empty_codex_card_id_rejected() {
 async fn public_card_create_writes_worker_role() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     // Seed a card via the public API (uses the migrated column).
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -298,7 +298,7 @@ async fn public_card_create_writes_worker_role() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -333,8 +333,8 @@ async fn public_card_create_writes_worker_role() {
 #[tokio::test]
 async fn unique_spec_card_per_wave_index_enforced() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -344,7 +344,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),

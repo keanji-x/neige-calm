@@ -40,30 +40,30 @@ export async function resetReplayServer(request: APIRequestContext): Promise<voi
 }
 
 /**
- * Issue #175 — mint a user-facing cove via the kernel REST API so the
+ * Issue #175 — mint a user-facing area via the kernel REST API so the
  * keyboard-only tests have a stable anchor in the sidebar after the
- * pre-#175 `Scratch` auto-bootstrap moved into a hidden system cove.
+ * pre-#175 `Scratch` auto-bootstrap moved into a hidden system area.
  * The replay binary serves the same routes as production, so a direct
- * `POST /api/coves` call here lands a real row backed by an
- * `EventScope::System` `cove.updated` event — the live frontend picks
- * it up on the WS feed and the sidebar renders the new cove without
+ * `POST /api/areas` call here lands a real row backed by an
+ * `EventScope::System` `area.updated` event — the live frontend picks
+ * it up on the WS feed and the sidebar renders the new area without
  * a reload.
  *
  * The default name `'Atlas'` matches the fixture sweep applied across
- * the unit-test surface (`web/src/pages/Cove.test.tsx`,
+ * the unit-test surface (`web/src/pages/Area.test.tsx`,
  * `web/src/app/eventBridge.test.tsx`, `web/src/api/schemas.test.ts`,
  * `web/src/api/queries.test.tsx`) — keeping the e2e suite on the same
- * sentinel makes "where did this cove come from?" greppable across the
+ * sentinel makes "where did this area come from?" greppable across the
  * codebase.
  *
- * Returns the cove id (UUID, kernel-generated).
+ * Returns the area id (UUID, kernel-generated).
  */
-export async function createUserCove(
+export async function createUserArea(
   request: APIRequestContext,
   name = 'Atlas',
   color = '#6a8',
 ): Promise<{ id: string; name: string }> {
-  const url = `http://127.0.0.1:${REPLAY_PORT}/api/coves`;
+  const url = `http://127.0.0.1:${REPLAY_PORT}/api/areas`;
   const response = await request.post(url, {
     data: { name, color },
     headers: { 'content-type': 'application/json' },
@@ -71,44 +71,44 @@ export async function createUserCove(
   if (!response.ok()) {
     const body = await response.text().catch(() => '<unreadable body>');
     throw new Error(
-      `createUserCove: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
+      `createUserArea: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
     );
   }
-  const cove = (await response.json()) as { id: string; name: string };
-  return cove;
+  const area = (await response.json()) as { id: string; name: string };
+  return area;
 }
 
 /**
- * Issue #175 — mint a wave inside an existing cove. Counterpart to
- * `createUserCove`; the a11y keyboard suite uses both to set up an
- * `Atlas` cove with a `Today` wave inside it, replacing the pre-#175
+ * Issue #175 — mint a wave inside an existing area. Counterpart to
+ * `createUserArea`; the a11y keyboard suite uses both to set up an
+ * `Atlas` area with a `Today` wave inside it, replacing the pre-#175
  * auto-bootstrap that put the Today wave inside what is now the hidden
- * system cove.
+ * system area.
  */
-export async function createWaveInCove(
+export async function createWaveInArea(
   request: APIRequestContext,
-  coveId: string,
+  areaId: string,
   title: string,
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
   // #1147 S3 — this helper sends NO `cwd` (and therefore no
   // `attach_folder`). Omitting `cwd` is the *managed workspace* branch:
-  // the kernel derives `<workspace-root>/<cove>/<wave>` and creates the
+  // the kernel derives `<workspace-root>/<area>/<wave>` and creates the
   // git repository itself, which is what the Today-wave bootstrap
   // (`routes/today.rs`) already does on every environment. An explicit
   // `cwd` is the *attached* branch, and since S3 the kernel requires
   // that path to exist and be inside a git work tree — the helper used
-  // to invent `/tmp/playwright-cove-<id>` and never create it, so the
+  // to invent `/tmp/playwright-area-<id>` and never create it, so the
   // seeded waves were structurally unusable (any worker on one dies in
   // `git_repo_root_for_wave_cwd`) even before the check made it a 400.
   //
   // Consequence for callers: these waves no longer mint a
-  // `cove_folders` row. No a11y spec depended on that — the two
-  // cascade tests in `a11y-wave-cove-ops.spec.ts` claim their paths
-  // explicitly via `POST /api/coves/:id/folders`, which carries no
+  // `area_folders` row. No a11y spec depended on that — the two
+  // cascade tests in `a11y-wave-area-ops.spec.ts` claim their paths
+  // explicitly via `POST /api/areas/:id/folders`, which carries no
   // filesystem contract. It also removes the reason the old signature
   // needed an `attachFolder: false` escape hatch: two waves in the same
-  // cove no longer collide on `cove_folders.UNIQUE(path)`.
+  // area no longer collide on `area_folders.UNIQUE(path)`.
   //
   // `theme` is required end-to-end (#177): the kernel rejects a body
   // without it (422). Pass an inert dark-theme sentinel — the e2e
@@ -116,7 +116,7 @@ export async function createWaveInCove(
   // matter, only that the request boundary accepts it.
   const response = await request.post(url, {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
@@ -125,7 +125,7 @@ export async function createWaveInCove(
   if (!response.ok()) {
     const body = await response.text().catch(() => '<unreadable body>');
     throw new Error(
-      `createWaveInCove: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
+      `createWaveInArea: POST ${url} → ${response.status()} ${response.statusText()}: ${body}`,
     );
   }
   const wave = (await response.json()) as { id: string; title: string };

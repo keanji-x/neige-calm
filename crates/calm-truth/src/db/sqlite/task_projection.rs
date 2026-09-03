@@ -375,13 +375,13 @@ pub async fn mark_context_material_tx(
     rationale: &str,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT t.key,w.cove_id FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
+        "SELECT t.key,w.area_id FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
     )
     .bind(task_id)
     .bind(wave_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((task_key, cove_id)) = row else {
+    let Some((task_key, area_id)) = row else {
         tracing::warn!(
             task_id,
             wave_id,
@@ -405,7 +405,7 @@ pub async fn mark_context_material_tx(
         ActorId::Kernel,
         EventScope::Wave {
             wave: WaveId::from(wave_id),
-            cove: cove_id.into(),
+            area: area_id.into(),
         },
         Event::TaskContextAdvanced {
             wave_id: WaveId::from(wave_id),
@@ -462,9 +462,9 @@ struct WaveProjectionState {
     policy: Option<String>,
     ceiling: i64,
     require_gates: bool,
-    /// Cove of the wave being projected — the source side of the
-    /// cross-cove reference check.
-    source_cove: String,
+    /// Area of the wave being projected — the source side of the
+    /// cross-area reference check.
+    source_area: String,
     inflight: Vec<InflightTaskRow>,
     task_read_state: Vec<TaskReadState>,
 }
@@ -474,22 +474,22 @@ struct WaveProjectionStateRow {
     automation_policy: Option<String>,
     spec_task_ceiling: Option<i64>,
     require_task_gates: i64,
-    cove_id: String,
+    area_id: String,
     inflight_json: String,
     task_read_state_json: String,
 }
 
-/// Reads the wave's projection policy, its cove, and every in-flight task
+/// Reads the wave's projection policy, its area, and every in-flight task
 /// row in a SINGLE statement.
 ///
 /// This used to be four statements — policy/ceiling/gates, the in-flight key
-/// list, the ceiling-occupancy `count(*)`, and `SELECT cove_id` — which is
+/// list, the ceiling-occupancy `count(*)`, and `SELECT area_id` — which is
 /// fine inside the write path's IMMEDIATE transaction but mixes database
 /// versions on the read path, where the caller runs in autocommit. A ceiling
 /// read at t0 against an occupancy counted at t1 can report a capacity that
 /// never existed, and the orphaned-in-flight scan could contradict the
 /// in-flight key list. One statement is one implicit transaction, so all of
-/// it now comes from one version. It also removes the `SELECT cove_id ...
+/// it now comes from one version. It also removes the `SELECT area_id ...
 /// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
@@ -501,7 +501,7 @@ async fn wave_projection_state(
     include_read_state: bool,
 ) -> Result<WaveProjectionState> {
     let sql = if include_read_state {
-        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -523,7 +523,7 @@ async fn wave_projection_state(
                    FROM tasks t WHERE t.wave_id = w.id) AS task_read_state_json
            FROM waves w WHERE w.id = ?1"#
     } else {
-        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -542,7 +542,7 @@ async fn wave_projection_state(
         policy: row.automation_policy,
         ceiling: effective_limit(row.spec_task_ceiling, DEFAULT_SPEC_TASK_CEILING),
         require_gates: row.require_task_gates != 0,
-        source_cove: row.cove_id,
+        source_area: row.area_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
     })
@@ -557,7 +557,7 @@ async fn wave_projection_state(
 ///
 /// Consistency on the READ path, stated precisely — including what is still
 /// broken. The local verdict core — policy, ceiling, in-flight occupancy,
-/// in-flight keys, the wave's cove — is ONE statement
+/// in-flight keys, the wave's area — is ONE statement
 /// ([`wave_projection_state`]). Before it, [`wave_tree_term`] runs three
 /// autocommit statements (root walk, member/inventory walk, root budget); after
 /// it, two more kinds of reads remain outside that statement, each its own
@@ -565,7 +565,7 @@ async fn wave_projection_state(
 ///
 ///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
 ///     key is already executing"; and
-///   * the per-reference existence/cove lookups, which are questions about
+///   * the per-reference existence/area lookups, which are questions about
 ///     OTHER waves and cards and are inherently point-in-time.
 ///
 /// The per-reference lookups really are only "possibly stale": they ask about
@@ -674,7 +674,7 @@ async fn evaluate_schedulability_with_tree_term(
         WaveTreeTerm::Share(share) => (Some(share.clone()), false),
     };
     let require_gates = state.require_gates;
-    let source_cove = state.source_cove;
+    let source_area = state.source_area;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
     // unknown_deps knows every in-flight key in the wave.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
@@ -766,14 +766,14 @@ async fn evaluate_schedulability_with_tree_term(
                     continue;
                 };
                 sqlx::query_as(
-                    "SELECT w.cove_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.wave_id=w.id AND card.kind='wave-report' AND json_extract(block.value,'$.id')=?2) FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1",
+                    "SELECT w.area_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.wave_id=w.id AND card.kind='wave-report' AND json_extract(block.value,'$.id')=?2) FROM waves w JOIN areas c ON c.id=w.area_id WHERE w.id=?1",
                 )
                     .bind(dst_wave).bind(dst_block).fetch_optional(&mut *conn).await?
             } else if let Some(card_id) = reference
                 .strip_prefix("neige://card/")
                 .filter(|id| !id.is_empty() && !id.contains('/'))
             {
-                sqlx::query_as("SELECT w.cove_id,c.kind,1 FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
+                sqlx::query_as("SELECT w.area_id,c.kind,1 FROM cards card JOIN waves w ON w.id=card.wave_id JOIN areas c ON c.id=w.area_id WHERE card.id=?1")
                     .bind(card_id).fetch_optional(&mut *conn).await?
             } else {
                 continue;
@@ -784,11 +784,11 @@ async fn evaluate_schedulability_with_tree_term(
                     reference,
                     destination_wave.clone(),
                 )),
-                Some((target_cove, target_kind, _))
-                    if target_cove != source_cove && target_kind != "system" =>
+                Some((target_area, target_kind, _))
+                    if target_area != source_area && target_kind != "system" =>
                 {
                     diagnostics.push(reference_diagnostic(
-                        "reference_cross_cove",
+                        "reference_cross_area",
                         reference,
                         destination_wave.clone(),
                     ));
@@ -1445,7 +1445,7 @@ mod tests {
             .await
             .unwrap();
         let wave = "wave-projection".to_string();
-        sqlx::query("INSERT INTO coves(id,name,color,sort,kind,created_at,updated_at) VALUES('cove-projection','c','#000',0,'user',0,0)")
+        sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
             .execute(&repo.pool).await.unwrap();
         // #1147 S1 — this fixture used to inline `cwd='/'`, which made it a
         // second writer of a column design D1 reserves for
@@ -1453,7 +1453,7 @@ mod tests {
         // a fixture that bypasses a production invariant is exactly the shape
         // that lets the invariant rot. The projection assertions never read
         // the workspace, so the value is the same `/` routed properly.
-        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'cove-projection','w',0,'draft',0,0,1,0)")
+        sqlx::query("INSERT INTO waves(id,area_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
             .bind(&wave).execute(&repo.pool).await.unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
         crate::db::sqlite::wave_workspace::wave_workspace_write_tx(

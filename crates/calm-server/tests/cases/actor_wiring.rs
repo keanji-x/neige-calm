@@ -26,7 +26,7 @@ use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -83,7 +83,7 @@ fn base_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             events,
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -106,10 +106,10 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
     // So this test must seed a real card and put it into the role
     // cache before POSTing.
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // Seed cove + wave + card so the card_id query points at a row
+    // Seed area + wave + card so the card_id query points at a row
     // the role cache will see.
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -119,7 +119,7 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -142,9 +142,9 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
         .unwrap();
     let events = EventBus::new();
     let cache = calm_server::card_role_cache::CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = calm_server::state::AppState::from_parts(
         repo.clone() as Arc<dyn Repo>,
         events.clone(),
@@ -156,11 +156,11 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let app = app(state);
 
@@ -274,9 +274,9 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
 
     let repo: Arc<SqlxRepo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    // Seed cove + wave so the plugin can overlay-set onto a real wave id.
-    let cove = repo
-        .cove_create(NewCove {
+    // Seed area + wave so the plugin can overlay-set onto a real wave id.
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -286,7 +286,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -344,7 +344,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
 
@@ -370,7 +370,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_cove_cache — same rationale
+        None, // #234: wave_area_cache — same rationale
     );
 
     let body = json!({
@@ -436,8 +436,8 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
 
     let repo: Arc<SqlxRepo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -447,7 +447,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -502,7 +502,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
 
@@ -527,7 +527,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_cove_cache — same rationale
+        None, // #234: wave_area_cache — same rationale
     );
 
     // No call_id field at all — exercises serde default + "no allocation"
@@ -589,8 +589,8 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub")).unwrap();
 
     let repo: Arc<SqlxRepo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -600,7 +600,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -655,7 +655,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
 
@@ -680,7 +680,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
         plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_cove_cache — same rationale
+        None, // #234: wave_area_cache — same rationale
     );
 
     // Empty-string call_id — must be normalized to absent, NOT produce

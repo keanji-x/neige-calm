@@ -7,7 +7,7 @@ use calm_server::actor::actor_middleware;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewArea, NewCard, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -16,8 +16,8 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn duplicate_codex_hook_is_acked_without_second_event() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -27,7 +27,7 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -49,9 +49,9 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
         .await
         .unwrap();
     let cache = calm_server::card_role_cache::CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -65,11 +65,11 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let app = axum::Router::new()
         .merge(routes::router())
