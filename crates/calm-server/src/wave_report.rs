@@ -253,7 +253,7 @@ fn require_tree_budget_postcondition(
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{
-    guard_non_prose_stomp, validate_body_fences, validate_prose_block_content,
+    guard_non_prose_stomp, validate_block_content, validate_body_fences,
 };
 use std::sync::Arc;
 
@@ -379,6 +379,29 @@ pub(crate) fn apply_report_op(
                 .0),
         }
     };
+    // #1269 (+ follow-up) — the content rule judges what a CALLER sent,
+    // so the `kind`/`content` it sees are read off the caller's own op,
+    // here, before `normalize_report_op` below can hand the `UpsertBlock`
+    // arm something else. That rewrite turns a user's `DeleteBlock` on a
+    // live task into a tombstone upsert the server synthesizes from
+    // fields already stored on that block; running a schema check over
+    // those bytes would make a *repair* path fail on the very data it
+    // exists to retire (a task stored with a `key` the current schema
+    // rejects could no longer be deleted at all, since the whole-document
+    // shapes refuse to drop a live task). `render_fence`'s output is
+    // still parsed and kind-matched by `ReportDoc::upsert_block`; only
+    // the payload-schema gate is scoped to caller bytes.
+    //
+    // This is `Some` exactly when the caller's op is an `UpsertBlock`,
+    // and `normalize_report_op` returns such an op unchanged (it rewrites
+    // only `DeleteBlock`), so the `UpsertBlock` arms below run with this
+    // `Some` for every caller-supplied upsert. Reading it here rather
+    // than checking before the match keeps the existing order of
+    // verdicts: a stale `if_rev` is still the `Conflict` it was.
+    let caller_block_content = match op {
+        ReportDocOp::UpsertBlock { kind, content, .. } => Some((kind.as_str(), content.as_str())),
+        _ => None,
+    };
     let op = normalize_report_op(doc, op.clone(), author)?;
     let before = doc.blocks_snapshot().map_err(|e| {
         CalmError::Internal(format!("wave_report: snapshot before task guard: {e}"))
@@ -428,22 +451,28 @@ pub(crate) fn apply_report_op(
                     )
                 })?;
                 check_rev(doc, id, expected)?;
-                // #1269 — defence in depth at the op layer. `ReportDoc::
-                // upsert_block` fence-checks only NON-prose content, so
-                // a direct `apply_report_op` call with `kind: "prose"`
-                // would otherwise carry a ```neige-block fence straight
-                // in. No user request *can* reach this arm carrying one:
-                // the MCP (#971) and REST (#990) block surfaces each run
-                // `check_prose_markdown` on their own argument first;
-                // the point is that the op stops depending on them to do
-                // so. Why the surfaces' rule (`check_prose_markdown`)
-                // rather than the weaker `validate_body_fences`, and how
-                // much of the prose entrance this does and does not
-                // close — a fence carried whole in one block, yes; a
-                // fence split across two adjacent prose blocks, no — is
-                // written up once on `validate_prose_block_content`
-                // rather than restated here.
-                validate_prose_block_content(kind, content)?;
+                // #1269 (+ follow-up) — defence in depth at the op
+                // layer, on both halves of `kind`. All `ReportDoc::
+                // upsert_block` asks of the content is `parse_fence` +
+                // a kind match, so a direct `apply_report_op` call used
+                // to carry a ```neige-block fence straight into a
+                // `kind: "prose"` block, and a schema-invalid payload
+                // straight into a data block. Content a user sends to
+                // the block *upsert* endpoints (MCP #971 / REST #990)
+                // never arrives that way — they run
+                // `check_prose_markdown` on a prose argument and build
+                // data content with `render_data_block` — and the point
+                // is that the op stops depending on them to do so.
+                // `caller_block_content` is read before the delete
+                // rewrite, so the tombstone that rewrite synthesizes is
+                // not judged here; see its comment above. Which rule
+                // each `kind` gets and what is left to `upsert_block`
+                // (and so still surfaces as a 500 rather than a 400) is
+                // written up once on `validate_block_content` rather
+                // than restated here.
+                if let Some((kind, content)) = caller_block_content {
+                    validate_block_content(kind, content)?;
+                }
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -454,9 +483,14 @@ pub(crate) fn apply_report_op(
                     CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                 })?;
                 check_doc_rev(doc, expected)?;
-                // #1269 — same check on the create arm; leaving either
-                // arm unchecked would leave the op-layer gap open.
-                validate_prose_block_content(kind, content)?;
+                // #1269 (+ follow-up) — same check on the create arm;
+                // leaving either arm unchecked would leave the op-layer
+                // gap open. (The delete rewrite only ever produces the
+                // replace arm above, since it carries the stored block's
+                // id, so this arm sees caller content in every case.)
+                if let Some((kind, content)) = caller_block_content {
+                    validate_block_content(kind, content)?;
+                }
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len

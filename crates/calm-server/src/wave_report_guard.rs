@@ -13,45 +13,98 @@
 //!   REST user path) and `WriteMarkdown`. It is also called outside
 //!   `apply_report_op` on the fork exit (`routes::waves::
 //!   prepare_fork_report`, #1252 S0b).
-//! * [`validate_prose_block_content`] — since #1269, the prose
-//!   `UpsertBlock` arm (both the create `id: None` and the replace
-//!   `id: Some(..)` branch). It defers to
-//!   `calm_types::report_blocks::check_prose_markdown`, which is
-//!   *stricter* than `validate_body_fences`: prose may not carry a
-//!   `neige-block` fence at all, well-formed or not.
+//! * [`validate_block_content`] — the `UpsertBlock` arms, both the
+//!   create (`id: None`) and the replace (`id: Some(..)`) branch, and no
+//!   other op. It picks the rule from the op's own `kind`:
 //!
-//!   This is **defence in depth at the op layer, not a user-reachable
-//!   hole being closed**. The two surfaces that can send a prose
-//!   `UpsertBlock` have called `check_prose_markdown` on their own
-//!   argument since well before #1269 —
-//!   `mcp_server::tools::wave_report_blocks` since #971 and
-//!   `routes::wave_report_blocks` since #990 — and they are the only
-//!   production builders of a prose `UpsertBlock`
-//!   (`wave_report_edit_guard::normalize_report_op`, the third builder,
-//!   emits `kind: "task"`), so no user request *can* reach this arm
-//!   carrying a fenced prose block. What #1269 changes is that the op
-//!   layer no longer depends on those two surfaces to keep a fence out
-//!   of a *single* prose block: a direct `apply_report_op` call (a
+//!   - `kind == "prose"` (#1269): defer to
+//!     `calm_types::report_blocks::check_prose_markdown`, which is
+//!     *stricter* than `validate_body_fences` — prose may not carry a
+//!     `neige-block` fence at all, well-formed or not.
+//!   - any other `kind` (#1269 follow-up): if the content parses as one
+//!     canonical fence, schema-validate that fence's payload through
+//!     [`check_fence_payload`] — the same helper `validate_body_fences`
+//!     applies to each body slice. So an `UpsertBlock { kind:
+//!     "chart.candles", .. }` whose fence payload is missing `candles` is
+//!     refused here, where before the follow-up the op layer took it
+//!     while the identical bytes through `Replace` / `WriteMarkdown`
+//!     were refused.
+//!
+//!   Both halves are **defence in depth at the op layer**, on the
+//!   evidence below. The `kind` / `content` they judge are read off the
+//!   *caller's* op, which is why the third bullet — the one production
+//!   `UpsertBlock` nobody outside the server authors — is out of their
+//!   reach by construction.
+//!   Production code constructs a `ReportDocOp::UpsertBlock` in exactly
+//!   four places, in three modules. Grep `ReportDocOp::UpsertBlock`: apart
+//!   from those four, the only non-test hits it returns are the two
+//!   matches inside `wave_report::apply_report_op` — the
+//!   `caller_block_content` read and the `UpsertBlock` arm, both of which
+//!   *consume* the op rather than building one — and this comment; every
+//!   other hit is under `#[cfg(test)]`.
+//!   (`calm_types::proposal::ProposalOp::UpsertBlock` is a different enum
+//!   and does not match that grep at all; it only shows up under an
+//!   unqualified `UpsertBlock` grep.)
+//!
+//!   1. `mcp_server::tools::wave_report_blocks` (#971) — prose content
+//!      goes through `check_prose_markdown`, data content through
+//!      `report_blocks::render_data_block`, which schema-validates.
+//!   2. `routes::wave_report_blocks::{create_block, update_block}`
+//!      (#990) — two sites, both routed through the one `block_content`
+//!      helper, which does the same two things.
+//!   3. `wave_report_edit_guard::normalize_report_op` — the task-delete
+//!      rewrite. It emits only `kind: "task"` (never prose) and builds
+//!      its tombstone payload with `render_fence`, which does **not**
+//!      validate, from `key` / `declared_by` read back off an
+//!      already-stored task block. It is the one site here that is not
+//!      caller input, and its payload is deliberately **not** checked:
+//!      `apply_report_op` binds the `kind` / `content` it hands to
+//!      [`validate_block_content`] from the caller's op *before* running
+//!      the rewrite, so these bytes never arrive. Checking them would
+//!      let a stored task the current schema rejects — a legacy `key`,
+//!      say — answer its owner's delete with a 400, and for a
+//!      user-controlled task that is the route the other guards leave:
+//!      a whole-document write either drops the live task, which
+//!      `guard_task_declarations` refuses, or carries a same-key
+//!      tombstone fence, which [`validate_body_fences`] refuses on that
+//!      same invalid `key`. `ReportDoc::upsert_block` still parses this
+//!      fence and matches its kind.
+//!
+//!   For the prose half that enumeration does close the door: only (1)
+//!   and (2) can emit `kind: "prose"`, and both have run
+//!   `check_prose_markdown` on their own argument since long before
+//!   #1269. What the follow-up changes in general is that the op layer
+//!   stops *depending* on any caller: a direct `apply_report_op` call (a
 //!   future surface, a test fixture, an in-process caller) used to land
-//!   such a fence verbatim, and now cannot. That is the whole of the
-//!   claim — the prose entrance is not shut. A fence split across two
-//!   adjacent prose blocks still reassembles in the projection, exactly
-//!   as it did before #1269; `tests::
-//!   fence_assembled_across_two_prose_blocks_is_caught_at_the_materialising_write`
-//!   pins that residual and what it does and does not grant.
+//!   a fenced prose block or a schema-invalid data payload verbatim, and
+//!   now cannot.
 //! * [`guard_non_prose_stomp`] — only the `Replace` shim: it may not
 //!   modify or delete a non-prose block; a whole-document rewrite
 //!   that carries every fence through byte-for-byte passes.
 //!
-//! What is deliberately *not* claimed here: the **non-prose**
-//! `UpsertBlock` arm also carries markdown (a fence body) and is not
-//! covered by either fence check. `ReportDoc::upsert_block` only runs
-//! `parse_fence` + a kind match on it, never `validate_payload`, so at the
-//! op layer a schema-invalid payload inside an otherwise well-formed fence
-//! is accepted on that arm — while the identical bytes through `Replace` /
-//! `WriteMarkdown` are rejected. The MCP and REST surfaces close that gap
-//! ahead of the op by building non-prose content with
-//! `report_blocks::render_data_block`, which does schema-validate.
+//! Two things are deliberately *not* claimed here.
+//!
+//! The `UpsertBlock` arms are not made symmetric with `Replace` /
+//! `WriteMarkdown` in the *status* they produce for every rejection.
+//! [`validate_block_content`]'s non-prose branch only inspects content
+//! that `parse_fence` accepts as one whole canonical fence. Non-prose
+//! content it does not — a typo'd opener, a fence with prose trailing it —
+//! is left to `ReportDoc::upsert_block`, whose `anyhow` error
+//! `apply_report_op` maps through its `internal()` closure, so it is a
+//! 500 where `validate_body_fences` gives those same bytes a 400.
+//! Likewise a fence that *does* parse but whose own kind disagrees with
+//! the op's `kind`: its payload is validated here against the **fence's**
+//! kind (the kind `validate_body_fences` would also use), and the
+//! disagreement itself is caught one layer down by `upsert_block`'s
+//! `ensure!` — a 500 again. Nothing extra is *accepted* in any of these;
+//! the classification is just coarse, and narrowing it is a separate
+//! change.
+//!
+//! And a fence split across two adjacent prose blocks still reassembles
+//! in the projection, exactly as it did before #1269, because the prose
+//! rule is per block; `tests::
+//! fence_assembled_across_two_prose_blocks_is_caught_at_the_materialising_write`
+//! pins that residual and what it does and does not grant.
 //!
 //! All three surface `CalmError::BadRequest`, which the MCP layers map to
 //! `-32602` and REST maps to 400 — the tx aborts, nothing is written,
@@ -60,9 +113,25 @@
 use crate::error::CalmError;
 use crate::wave_report_doc::ReportDoc;
 use calm_types::report_blocks::{
-    KIND_PROSE, check_prose_markdown, flat_text, invalid_neige_fences, parse_fence, reassign_ids,
-    split_body, validate_payload,
+    KIND_PROSE, NonProseFence, check_prose_markdown, flat_text, invalid_neige_fences, parse_fence,
+    reassign_ids, split_body, validate_payload,
 };
+
+/// Schema-validate one already-parsed fence's payload, wording the
+/// failure as a `BadRequest` that names the kind and the field errors.
+///
+/// Shared so that the two places the op layer meets a fence apply the
+/// identical verdict to identical bytes: [`validate_body_fences`] calls
+/// it per body slice, [`validate_block_content`] calls it on the
+/// non-prose `UpsertBlock` content parsed whole.
+fn check_fence_payload(fence: &NonProseFence) -> Result<(), CalmError> {
+    validate_payload(&fence.kind, &fence.payload).map_err(|errors| {
+        CalmError::BadRequest(format!(
+            "invalid `{}` block payload: {errors} (see calm.report.blocks.kinds)",
+            fence.kind
+        ))
+    })
+}
 
 /// Refuse malformed `neige-block` fences and schema-invalid fence
 /// payloads anywhere in `body`.
@@ -76,40 +145,59 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
     }
     for slice in split_body(body) {
         if let Some(fence) = parse_fence(&slice.raw) {
-            validate_payload(&fence.kind, &fence.payload).map_err(|errors| {
-                CalmError::BadRequest(format!(
-                    "invalid `{}` block payload: {errors} (see calm.report.blocks.kinds)",
-                    fence.kind
-                ))
-            })?;
+            check_fence_payload(&fence)?;
         }
     }
     Ok(())
 }
 
-/// #1269 — the prose `UpsertBlock` arm **at the op layer**. For
-/// `kind == "prose"`, apply the surfaces' prose rule verbatim by calling
-/// [`calm_types::report_blocks::check_prose_markdown`]: prose may not
-/// embed a `neige-block` fence at all. Non-prose kinds are left to
-/// `ReportDoc::upsert_block`'s own canonical-fence check.
+/// #1269 (+ its follow-up) — the content rule for the `UpsertBlock`
+/// arms **at the op layer**, dispatched on the op's own `kind`.
 ///
-/// Not a user-reachable hole: the MCP surface (#971) and the REST
-/// surface (#990) have both refused fenced prose on their own arguments
-/// since long before this. This makes the op itself refuse it, so the
-/// invariant no longer rests on every present and future caller
-/// remembering to check first.
+/// * `kind == "prose"`: apply the surfaces' prose rule verbatim by
+///   calling [`calm_types::report_blocks::check_prose_markdown`] — prose
+///   may not embed a `neige-block` fence at all.
+/// * any other `kind`: when — and only when — the content parses as one
+///   whole canonical fence, schema-validate that fence's payload via
+///   [`check_fence_payload`], which is the identical call
+///   `validate_body_fences` makes on the same bytes appearing in a
+///   whole-body write. Content `parse_fence` does not accept is left to
+///   `ReportDoc::upsert_block`'s canonical-fence check; see the module
+///   doc for why that leaves the *status* coarse without accepting
+///   anything extra.
 ///
-/// Deliberately stricter than [`validate_body_fences`], which tolerates
-/// a well-formed, schema-valid fence. The op layer must not be weaker
-/// than the invariant its neighbours rely on: a fence carried **whole in
-/// one prose block** is invisible to `ReportDoc::blocks_snapshot` (prose
-/// projects as `{"markdown": text}`, so `guard_task_declarations`'
-/// `is_task` never sees it), and the next wholesale write splinters it
-/// into a live block — which `guard_non_prose_stomp` cannot object to,
-/// because it early-returns while all *current* blocks are prose.
+/// Both halves judge **caller-supplied** content, and both are defence in
+/// depth rather than the last line before a user-reachable hole. The
+/// production sites that build an `UpsertBlock` out of caller input are
+/// the MCP surface (#971) and the REST surface (#990); they have run
+/// `check_prose_markdown` on a prose argument and `render_data_block`,
+/// which schema-validates, on a data one since long before this. What
+/// the op layer gains is that it stops *depending* on them: a direct
+/// `apply_report_op` call cannot land either shape.
 ///
-/// The scope of that sentence is exact, and is the scope of this check:
-/// *whole fence, one block*. This is a per-block check, while
+/// The one production `UpsertBlock` that is not caller input — the
+/// tombstone `wave_report_edit_guard::normalize_report_op` synthesizes
+/// from an already-stored task block — is out of scope here, because
+/// `apply_report_op` binds the `kind` / `content` it passes to this
+/// function from the caller's op before that rewrite runs. That is what
+/// keeps a task whose *stored* payload the current schema rejects
+/// deletable by its owner; `tests::
+/// user_delete_of_a_task_with_a_schema_invalid_stored_key_still_tombstones`
+/// is the pin. The module doc carries the full four-site enumeration
+/// this rests on.
+///
+/// The prose half is deliberately stricter than
+/// [`validate_body_fences`], which tolerates a well-formed, schema-valid
+/// fence. The op layer must not be weaker than the invariant its
+/// neighbours rely on: a fence carried **whole in one prose block** is
+/// invisible to `ReportDoc::blocks_snapshot` (prose projects as
+/// `{"markdown": text}`, so `guard_task_declarations`' `is_task` never
+/// sees it), and the next wholesale write splinters it into a live block
+/// — which `guard_non_prose_stomp` cannot object to, because it
+/// early-returns while all *current* blocks are prose.
+///
+/// The scope of that sentence is exact, and is the scope of the prose
+/// half: *whole fence, one block*. That half is a per-block check, while
 /// `ReportDoc::project` concatenates block bodies byte-for-byte, so a
 /// fence can be split across two adjacent prose blocks such that neither
 /// fragment is a recognisable opener and the fence still assembles in
@@ -124,9 +212,12 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
 /// being what refuses an assembled `task` whose `declared_by` the writer
 /// is not entitled to claim. All of that is pinned by `tests::
 /// fence_assembled_across_two_prose_blocks_is_caught_at_the_materialising_write`.
-pub(crate) fn validate_prose_block_content(kind: &str, content: &str) -> Result<(), CalmError> {
+pub(crate) fn validate_block_content(kind: &str, content: &str) -> Result<(), CalmError> {
     if kind == KIND_PROSE {
-        check_prose_markdown(content).map_err(CalmError::BadRequest)?;
+        return check_prose_markdown(content).map_err(CalmError::BadRequest);
+    }
+    if let Some(fence) = parse_fence(content) {
+        check_fence_payload(&fence)?;
     }
     Ok(())
 }
@@ -468,8 +559,215 @@ mod tests {
         );
     }
 
-    /// The residual that [`validate_prose_block_content`] does **not**
-    /// close, pinned as behaviour rather than papered over.
+    /// #1269 follow-up — the **non-prose** half of the same arm. Before
+    /// it, `ReportDoc::upsert_block` ran `parse_fence` + a kind match and
+    /// never `validate_payload`, so a well-formed fence carrying a
+    /// schema-invalid payload landed at the op layer while the identical
+    /// bytes inside a `Replace` / `WriteMarkdown` body were refused by
+    /// `validate_body_fences` (see
+    /// `malformed_or_schema_invalid_fences_are_rejected_on_every_write_end`,
+    /// which uses this same `chart.candles` payload). Both arms are
+    /// covered: create (`id: None`) and replace (`id: Some(..)` +
+    /// `if_rev`).
+    ///
+    /// The rejection must be `BadRequest`, not `Internal`: it is a caller
+    /// error, and `apply_report_op` maps `upsert_block`'s `anyhow` error
+    /// through `internal()` — which is exactly why the check cannot live
+    /// inside `upsert_block`.
+    #[test]
+    fn non_prose_upsert_with_a_schema_invalid_payload_is_refused_on_both_arms() {
+        // Well-formed canonical fence; `candles` is missing.
+        let content =
+            calm_types::report_blocks::render_fence("chart.candles", &json!({ "symbol": "X" }));
+
+        // Create arm.
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
+        let before = doc.project().unwrap();
+        let err = match apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: None,
+                kind: "chart.candles".into(),
+                content: content.clone(),
+                if_rev: None,
+                if_doc_rev: Some(0),
+                position: None,
+            },
+            EditAuthor::Spec,
+        ) {
+            Ok(landed) => panic!("create arm must refuse the payload, got {landed:?}"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(&err, CalmError::BadRequest(m) if m.contains("chart.candles")
+                && m.contains("candles: required")),
+            "create arm: {err:?}"
+        );
+        assert_eq!(doc.project().unwrap(), before, "create must not land");
+
+        // Replace arm: aim at the existing prose block, changing its kind
+        // to the data kind — the shape `routes::wave_report_blocks::
+        // update_block` builds.
+        let block = doc.blocks_snapshot().unwrap().remove(0);
+        assert_eq!(block.kind, "prose");
+        let err = match apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some(block.id.clone()),
+                kind: "chart.candles".into(),
+                content,
+                if_rev: Some(block.rev),
+                if_doc_rev: None,
+                position: None,
+            },
+            EditAuthor::Spec,
+        ) {
+            Ok(landed) => panic!("replace arm must refuse the payload, got {landed:?}"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(&err, CalmError::BadRequest(m) if m.contains("chart.candles")
+                && m.contains("candles: required")),
+            "replace arm: {err:?}"
+        );
+        assert_eq!(doc.project().unwrap(), before, "replace must not land");
+    }
+
+    /// The over-strictness fence for the check above: a schema-**valid**
+    /// data payload must still land on both arms. Without this, "reject
+    /// every non-prose upsert" would satisfy the negative test.
+    #[test]
+    fn schema_valid_non_prose_upsert_still_lands_on_both_arms() {
+        let content = calm_types::report_blocks::render_fence(
+            "app",
+            &json!({ "src": "/apps/x", "height": 480 }),
+        );
+
+        // Create arm.
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
+        let outcome = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: None,
+                kind: "app".into(),
+                content: content.clone(),
+                if_rev: None,
+                if_doc_rev: Some(0),
+                position: None,
+            },
+            EditAuthor::Spec,
+        )
+        .expect("a schema-valid app block must be accepted on the create arm");
+        let created = outcome.expect("upsert reports the block").id;
+        let block = doc
+            .blocks_snapshot()
+            .unwrap()
+            .into_iter()
+            .find(|block| block.id == created)
+            .expect("the created block is live");
+        assert_eq!(block.kind, "app");
+        assert_eq!(block.payload, json!({ "src": "/apps/x", "height": 480 }));
+
+        // Replace arm: edit the same block to another valid payload.
+        let edited = content.replace("480", "600");
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some(created.clone()),
+                kind: "app".into(),
+                content: edited,
+                if_rev: Some(block.rev),
+                if_doc_rev: None,
+                position: None,
+            },
+            EditAuthor::Spec,
+        )
+        .expect("a schema-valid app block must be accepted on the replace arm");
+        let block = doc
+            .blocks_snapshot()
+            .unwrap()
+            .into_iter()
+            .find(|block| block.id == created)
+            .expect("the replaced block is live");
+        assert_eq!(block.payload, json!({ "src": "/apps/x", "height": 600 }));
+    }
+
+    /// The task-delete rewrite is a repair path, and
+    /// [`super::validate_block_content`] must not close it.
+    ///
+    /// `wave_report_edit_guard::normalize_report_op` turns a user's
+    /// block-level delete of a live task into a tombstone `UpsertBlock`
+    /// whose `key` it copies off the stored block, so gating that
+    /// synthesized op on the payload schema would make the delete's
+    /// verdict depend on bytes the caller never sent. A task whose
+    /// stored `key` the current schema rejects would answer its owner's
+    /// delete with a 400 — and the whole-document shapes are no way
+    /// round it: dropping the live task is what `guard_task_declarations`
+    /// refuses, and retiring it there means writing a same-key tombstone
+    /// fence, which [`super::validate_body_fences`] refuses on the same
+    /// invalid `key` (run as a probe: both `Replace` and `WriteMarkdown`
+    /// come back `invalid \`task\` block payload: key: must match …`).
+    /// No other author may touch a user-controlled task at all.
+    /// `wave_report::apply_report_op`
+    /// therefore reads the content it checks off the caller's own op
+    /// (`caller_block_content`), before the rewrite runs.
+    ///
+    /// `Build` below is such a key: uppercase, which `key_is_valid`
+    /// refuses.
+    #[test]
+    fn user_delete_of_a_task_with_a_schema_invalid_stored_key_still_tombstones() {
+        // Legacy stored shape: an uppercase `key`, which today's
+        // `key_is_valid` (`^[a-z0-9][a-z0-9._-]{0,63}$`) refuses.
+        assert!(
+            !calm_types::report_blocks::tasks::key_is_valid("Build"),
+            "the fixture only means anything while `Build` is an invalid key"
+        );
+        let legacy = calm_types::report_blocks::render_fence(
+            "task",
+            &json!({
+                "key": "Build",
+                "goal": "build it",
+                "kind": "codex",
+                "ready": true,
+                "declared_by": "user",
+            }),
+        );
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &legacy));
+        let task = doc
+            .blocks_snapshot()
+            .unwrap()
+            .into_iter()
+            .find(|block| block.kind == "task")
+            .expect("the seeded task block projects");
+        assert_eq!(task.payload["key"], "Build");
+        assert!(
+            task.payload.get("tombstone").is_none(),
+            "the seeded block is live, not already retired"
+        );
+
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::DeleteBlock {
+                id: task.id.clone(),
+                if_rev: task.rev,
+            },
+            EditAuthor::User,
+        )
+        .expect("a user must still be able to retire a task whose stored key is invalid");
+
+        let after = doc.blocks_snapshot().unwrap();
+        let tombstone = after
+            .iter()
+            .find(|block| block.id == task.id)
+            .expect("the block is retired in place, not dropped");
+        assert_eq!(tombstone.kind, "task");
+        assert_eq!(tombstone.payload["tombstone"], json!({ "reason": null }));
+        assert_eq!(tombstone.payload["tombstoned_by"], "user");
+        assert_eq!(tombstone.payload["key"], "Build");
+    }
+
+    /// The residual that [`super::validate_block_content`]'s prose branch
+    /// does **not** close, pinned as behaviour rather than papered over.
     ///
     /// `check_prose_markdown` is a *per-block* check, and
     /// `ReportDoc::project` concatenates block bodies byte-for-byte with

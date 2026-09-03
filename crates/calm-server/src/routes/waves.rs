@@ -1853,22 +1853,30 @@ fn prepare_fork_report(
             // was false at the time): its production call sites are
             // `wave_report::apply_report_op`'s two whole-body arms —
             // `ReportDocOp::Replace` and `::WriteMarkdown` — plus this fork
-            // exit. The prose `UpsertBlock` arm, which this note used to
-            // record as an open *op-layer* gap, is covered since #1269 by a
-            // *different* and stricter check: `wave_report_guard::
-            // validate_prose_block_content`, which forbids any
-            // `neige-block` fence in prose (other fences — a ```rust code
-            // block, say — still land).
-            // `ReportDoc::upsert_block` itself fence-checks only
-            // non-prose content (`if kind != KIND_PROSE`), which is why the
-            // prose case has to be checked in the op arm. To be exact about
-            // the reach of that gap: only a direct `apply_report_op` call
-            // exercises it — no user request can, because the MCP (#971) and
-            // REST (#990) block surfaces both refuse fenced prose at their
-            // own argument. And "fenced prose" there means a fence carried
-            // whole in one block; on the residual that a fence split across
-            // two prose blocks still assembles in the projection, see
-            // `wave_report_guard::validate_prose_block_content`.
+            // exit. The `UpsertBlock` arms, which this note used to record
+            // as an open *op-layer* gap, are covered since #1269 and its
+            // follow-up by a *different* check, `wave_report_guard::
+            // validate_block_content`, which branches on the op's `kind`:
+            // for prose it forbids any `neige-block` fence at all (stricter
+            // than here — other fences, a ```rust code block say, still
+            // land), and for a data kind whose content is a canonical fence
+            // it schema-validates that fence's payload.
+            // `ReportDoc::upsert_block` on its own only parses the fence and
+            // matches its kind (`if kind != KIND_PROSE`), which is why both
+            // cases have to be checked in the op arm. To be exact about the
+            // reach of the *prose* gap that was closed: only a direct
+            // `apply_report_op` call exercises it — no user request can,
+            // because the MCP (#971) and REST (#990) block surfaces are the
+            // only production builders of a prose `UpsertBlock` and both
+            // refuse fenced prose at their own argument. (The same holds
+            // for the non-prose half: the fourth `UpsertBlock` builder,
+            // the task-delete rewrite, is server-synthesized and does not
+            // reach that check at all — see `wave_report_guard`'s module
+            // doc, which enumerates all four construction sites.) And
+            // "fenced prose" here means a fence
+            // carried whole in one block; on the residual that a fence split
+            // across two prose blocks still assembles in the projection, see
+            // `wave_report_guard::validate_block_content`.
             //
             // Deliberately only the fence check here: the fork exit does not
             // additionally run `validate_payload` on the prose block's own
@@ -3544,9 +3552,9 @@ mod tests {
     /// `wave_report_guard::validate_body_fences` at the whole-body write
     /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`), and since #1269
     /// the prose `::UpsertBlock` arm refuses it at the op layer too — via
-    /// the stricter `validate_prose_block_content`, behind MCP/REST
-    /// surfaces that already refused it (#971 / #990). Forking is a write
-    /// end as well.
+    /// the stricter prose branch of `validate_block_content`, behind
+    /// MCP/REST surfaces that already refused it (#971 / #990). Forking is
+    /// a write end as well.
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {
