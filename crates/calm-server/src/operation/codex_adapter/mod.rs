@@ -32,8 +32,8 @@ use crate::operation::workspace_lease::{
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
-    await_shared_initial_turn_lifecycle, default_cwd, normalize_optional_css_color,
-    shell_single_quote,
+    INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
+    normalize_optional_css_color, shell_single_quote,
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
@@ -78,6 +78,7 @@ pub struct CodexAdapter {
     pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
+    initial_turn_lifecycle_timeout: Duration,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -115,6 +116,7 @@ impl CodexAdapter {
             pending_codex_threads_spawn_serial,
             card_role_cache,
             wave_cove_cache,
+            initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -140,8 +142,15 @@ impl CodexAdapter {
             pending_codex_threads_spawn_serial,
             card_role_cache,
             wave_cove_cache,
+            initial_turn_lifecycle_timeout: INITIAL_TURN_LIFECYCLE_TIMEOUT,
             spawn_hook: Some(spawn_hook),
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_initial_turn_lifecycle_timeout(mut self, timeout: Duration) -> Self {
+        self.initial_turn_lifecycle_timeout = timeout;
+        self
     }
 }
 
@@ -490,7 +499,13 @@ impl ProviderAdapter for CodexAdapter {
                 output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
                 checkpoint_prompt_turn_started(ctx, op, output, &thread_id).await?;
             }
-            match await_shared_initial_turn_lifecycle(&mut notifs, &thread_id).await {
+            match await_shared_initial_turn_lifecycle(
+                &mut notifs,
+                &thread_id,
+                self.initial_turn_lifecycle_timeout,
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(err) => return Err(err),
             }

@@ -208,11 +208,14 @@ pub(crate) fn default_cwd() -> String {
         })
 }
 
+pub(crate) const INITIAL_TURN_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) async fn await_shared_initial_turn_lifecycle(
     rx: &mut tokio::sync::broadcast::Receiver<Notification>,
     thread_id: &str,
+    timeout: Duration,
 ) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
@@ -303,6 +306,11 @@ mod tests {
     fn shell_single_quote_basic() {
         assert_eq!(shell_single_quote("hello"), "'hello'");
         assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn initial_turn_lifecycle_timeout_is_30_seconds() {
+        assert_eq!(INITIAL_TURN_LIFECYCLE_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]

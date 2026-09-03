@@ -10,18 +10,31 @@
 # repository currently has no such input; adding one requires narrowing this allowlist first.
 set -euo pipefail
 
+mode="${1:-code}"
+case "$mode" in
+  code|rust) ;;
+  *) echo "unknown change-classification mode: $mode" >&2; exit 2 ;;
+esac
+
 seen=false
-code_changed=false
+relevant=false
 while IFS= read -r -d '' path; do
   seen=true
-  case "$path" in
-    docs/*|README.md|*/README.md|CHANGELOG.md|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|LICENSE|LICENSE.*|NOTICE|NOTICE.*) ;;
-    *) code_changed=true ;;
-  esac
+  if [ "$mode" = code ]; then
+    case "$path" in
+      docs/*|README.md|*/README.md|CHANGELOG.md|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|LICENSE|LICENSE.*|NOTICE|NOTICE.*) ;;
+      *) relevant=true ;;
+    esac
+  else
+    case "$path" in
+      *.rs|Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain|rust-toolchain.toml|rustfmt.toml|.cargo/*|.config/nextest.toml|crates/*|plugins/*|scripts/*|e2e/*|docker/*|Makefile|docker-compose.yml|.github/workflows/*) relevant=true ;;
+      *) ;;
+    esac
+  fi
 done
 
 if [ "$seen" = false ]; then
-  code_changed=true
+  relevant=true
 fi
 
-printf '%s\n' "$code_changed"
+printf '%s\n' "$relevant"

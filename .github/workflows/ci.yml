@@ -34,10 +34,6 @@ env:
   # keys once (one cold-compile round, then warm).
   CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
   CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
-  # PR and main-push feedback uses each mutation entry's declared witness files. Scheduled/manual
-  # runs preserve the old whole-suite over-red oracle.
-  MUTATION_TEST_SCOPE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'witness' }}
-
 jobs:
   changes:
     name: classify changes
@@ -45,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code_changed: ${{ steps.classify.outputs.code_changed }}
+      rust_changed: ${{ steps.classify.outputs.rust_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,19 +56,26 @@ jobs:
           set -euo pipefail
           scripts/ci/classify-code-changes-selftest.sh
           code_changed=true
+          rust_changed=true
           if [ -n "${BASE_SHA:-}" ] \
              && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
              && git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
             if [ "$EVENT_NAME" = "pull_request" ]; then
               code_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
                 | scripts/ci/classify-code-changes.sh)"
+              rust_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh rust)"
             else
               code_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
                 | scripts/ci/classify-code-changes.sh)"
+              rust_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
+                | scripts/ci/classify-code-changes.sh rust)"
             fi
           fi
           echo "code_changed=$code_changed"
+          echo "rust_changed=$rust_changed"
           echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
+          echo "rust_changed=$rust_changed" >> "$GITHUB_OUTPUT"
 
   # #903 — fmt + grep ratchets + clippy split off the critical path: none of
   # them consume the test build, so they run as a parallel job instead of
@@ -469,7 +473,7 @@ jobs:
   rust:
     name: rust (test)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -500,9 +504,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Shared key so the openapi-drift job (which also builds the
-          # workspace via `cargo run --bin emit-openapi`) reuses this cache.
-          shared-key: workspace
+          # Test artifacts are profile/feature-specific. Sharing this key with the faster OpenAPI
+          # and release jobs made the first finisher persist a partial cache that could never be
+          # augmented (GitHub cache keys are immutable), so every exact "hit" still rebuilt all 105
+          # test binaries. Include workspace crates and rotate on Rust source changes; non-Rust PRs
+          # then restore the complete test graph, while Rust PRs fall back and rebuild what changed.
+          shared-key: rust-test
+          key: ${{ hashFiles('**/*.rs') }}
+          cache-workspace-crates: true
 
       # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
       # .config/nextest.toml; CI uses --profile ci below.
@@ -701,6 +710,7 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+      MUTATION_TEST_SCOPE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'witness' }}
     defaults:
       run:
         working-directory: fe
@@ -831,7 +841,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(
-            --test-scope "$MUTATION_TEST_SCOPE"
+            --test-scope "${{ needs.fe-mutation-plan.outputs.test_scope }}"
             --shard "${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}"
             --report "/tmp/mutation-report-${{ matrix.shard }}.json"
           )
