@@ -2004,7 +2004,14 @@ async fn create_track_via_rest(boot: &Boot, title: &str, suffix: &str, extra: Va
     for (key, value) in extra.as_object().expect("extra must be an object") {
         body[key] = value.clone();
     }
-    let (status, created) = request_json(&boot.app, "POST", "/api/tracks".into(), &boot.cookie, Some(body)).await;
+    let (status, created) = request_json(
+        &boot.app,
+        "POST",
+        "/api/tracks".into(),
+        &boot.cookie,
+        Some(body),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "create `{title}`: {created}");
     created["id"].as_str().unwrap().to_string()
 }
@@ -2119,11 +2126,12 @@ async fn structural_init_leaves_one_card_added_and_no_card_updated() {
             .find(|card| card.kind == "track-report")
             .expect("created track has a report card");
 
-        let added: Vec<(Value, Value)> = events_for_track(boot.repo.as_ref(), "card.added", &track_id)
-            .await
-            .into_iter()
-            .filter(|(_, payload)| payload["id"] == json!(report_card.id.as_str()))
-            .collect();
+        let added: Vec<(Value, Value)> =
+            events_for_track(boot.repo.as_ref(), "card.added", &track_id)
+                .await
+                .into_iter()
+                .filter(|(_, payload)| payload["id"] == json!(report_card.id.as_str()))
+                .collect();
         assert_eq!(
             added.len(),
             1,
@@ -2220,7 +2228,9 @@ async fn forked_task_refs_are_rewritten_onto_the_copy_and_resolve() {
     let forked = task_block_by_key(&report, "build");
     assert_eq!(
         forked["payload"]["refs"],
-        json!([format!("neige://wave/{target_track_id}#{internal_block_id}")]),
+        json!([format!(
+            "neige://wave/{target_track_id}#{internal_block_id}"
+        )]),
         "the forked task must reference the copy of the source block: {forked}"
     );
     assert!(

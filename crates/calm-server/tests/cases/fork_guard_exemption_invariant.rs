@@ -117,7 +117,9 @@ fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {
             syn::FnArg::Receiver(_) => panic!("{STRUCTURAL_DOOR} must be a free function"),
             syn::FnArg::Typed(typed) => match &*typed.pat {
                 syn::Pat::Ident(ident) => ident.ident.to_string(),
-                _ => panic!("{STRUCTURAL_DOOR}: every parameter must be a plain `name: Type` binding"),
+                _ => panic!(
+                    "{STRUCTURAL_DOOR}: every parameter must be a plain `name: Type` binding"
+                ),
             },
         })
         .collect();

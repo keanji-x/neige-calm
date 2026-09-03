@@ -43,8 +43,8 @@ use crate::event::{Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
-    AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
-    NewTrack, RequestTheme, Track, TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind,
+    AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewTrack,
+    RequestTheme, Track, TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind,
     TrackWorkspacePatch, new_id,
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
@@ -3424,12 +3424,12 @@ mod tests {
         planner_harness_layout_payload, prepare_fork_report, prepare_initial_report_payload,
         prepare_template_report,
     };
-    use crate::track_report::write::{InitialReportTarget, structural_init_report_tx};
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack};
     use crate::routes::theme::RequestTheme;
     use crate::templates::TEMPLATES;
+    use crate::track_report::write::{InitialReportTarget, structural_init_report_tx};
     use crate::track_report::{ReportBlock, TrackReportPayload};
     use crate::track_report_doc::ReportDoc;
     use serde_json::json;
