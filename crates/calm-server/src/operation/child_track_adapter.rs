@@ -427,14 +427,7 @@ impl ProviderAdapter for ChildTrackAdapter {
         }
         let mut envelopes = Vec::with_capacity(entries.len());
         for (event_actor, scope, event) in entries {
-            let id = append_decision_event_in_tx(
-                tx,
-                &event_actor,
-                &scope,
-                None,
-                &event,
-            )
-            .await?;
+            let id = append_decision_event_in_tx(tx, &event_actor, &scope, None, &event).await?;
             envelopes.push(BroadcastEnvelope {
                 id,
                 event_version: SYNC_EVENT_VERSION,

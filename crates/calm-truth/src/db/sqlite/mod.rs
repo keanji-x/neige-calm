@@ -85,10 +85,10 @@ pub use card_composite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
     card_with_codex_create_tx, card_with_terminal_create_tx, card_with_terminal_rollback_tx,
 };
-pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
 /// #1252 S3′ negative nail — see [`events::append_probe`].
 #[cfg(any(test, feature = "test-helpers"))]
 pub use events::append_probe;
+pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
 pub use infra::{begin_immediate_tx, is_sqlite_busy};
 pub use out_of_domain::{
     HarnessTranscriptMeasure, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
@@ -523,6 +523,9 @@ mod workspace_lease_lookup_tests;
 
 #[cfg(test)]
 mod write_path_gate_wiring_tests;
+
+#[cfg(test)]
+mod append_seam_gate_tests;
 
 #[cfg(test)]
 mod runtime_read_flip_parity_tests;

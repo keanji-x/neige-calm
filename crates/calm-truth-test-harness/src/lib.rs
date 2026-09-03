@@ -225,10 +225,9 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
     let inserted = session_insert_tx(&mut tx, state)
         .await
         .expect("insert session in saga tx");
-    let event_id =
-        append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
-            .await
-            .expect("append decision event in saga tx");
+    let event_id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+        .await
+        .expect("append decision event in saga tx");
     tx.commit().await.expect("commit saga tx");
 
     assert_eq!(inserted.id.as_str(), "ws-t1-saga");

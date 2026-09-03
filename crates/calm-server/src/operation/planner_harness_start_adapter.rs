@@ -665,14 +665,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
             let event = Event::CardAdded(created);
-            let event_id = append_decision_event_in_tx(
-                tx,
-                &payload.actor,
-                &scope,
-                None,
-                &event,
-            )
-            .await?;
+            let event_id =
+                append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event).await?;
             post_commit_events.push(BroadcastEnvelope {
                 id: event_id,
                 event_version: SYNC_EVENT_VERSION,

@@ -311,16 +311,9 @@ impl ProviderAdapter for TerminalAdapter {
             status: WorkerSessionState::Starting,
         };
         let event_id =
-            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event)
-                .await?;
-        let runtime_event_id = append_decision_event_in_tx(
-            tx,
-            &payload.actor,
-            &scope,
-            None,
-            &runtime_event,
-        )
-        .await?;
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &event).await?;
+        let runtime_event_id =
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
         let projected_card = project_terminal_id_for_response(&card, &term.id);
         let mut output = TxOutput::new(

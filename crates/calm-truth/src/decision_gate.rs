@@ -276,12 +276,12 @@ async fn hydrate_role_caches_from_tx<T: WriteTx + ?Sized + Send>(
     }
 
     for track in tracks {
-        let area = tx
-            .read_track_area(&track)
-            .await
-            .map_err(|_| RoleViolation::RoleLookupFailed {
-                subject: format!("tracks.area_id({track})"),
-            })?;
+        let area =
+            tx.read_track_area(&track)
+                .await
+                .map_err(|_| RoleViolation::RoleLookupFailed {
+                    subject: format!("tracks.area_id({track})"),
+                })?;
         if let Some(area) = area {
             track_area_cache.insert(track, area);
         }
@@ -598,6 +598,8 @@ mod tests {
         worker_session_read_error: bool,
         /// `cards` rows this fake knows about: id → (role, home track).
         cards: Vec<(CardId, CardRole, TrackId)>,
+        /// `tracks` rows this fake knows about: id → area.
+        tracks: Vec<(TrackId, AreaId)>,
     }
 
     impl FakeWriteTx {
@@ -608,12 +610,18 @@ mod tests {
                 worker_session_reads: 0,
                 worker_session_read_error: false,
                 cards: Vec::new(),
+                tracks: Vec::new(),
             }
         }
 
         fn with_card(mut self, card: &str, role: CardRole, track: &str) -> Self {
             self.cards
                 .push((CardId::from(card), role, TrackId::from(track)));
+            self
+        }
+
+        fn with_track(mut self, track: &str, area: &str) -> Self {
+            self.tracks.push((TrackId::from(track), AreaId::from(area)));
             self
         }
 
@@ -676,8 +684,12 @@ mod tests {
                 .map(|(_, _, track)| track.clone()))
         }
 
-        async fn read_track_area(&mut self, _track: &TrackId) -> Result<Option<AreaId>> {
-            Ok(None)
+        async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>> {
+            Ok(self
+                .tracks
+                .iter()
+                .find(|(id, _)| id == track)
+                .map(|(_, area)| area.clone()))
         }
     }
 
@@ -1381,5 +1393,226 @@ mod tests {
         assert!(direct.is_ok(), "direct sync gate should allow: {direct:?}");
         assert!(routed.is_ok(), "async passthrough should allow: {routed:?}");
         assert_eq!(tx.worker_session_reads, 0);
+    }
+    // -----------------------------------------------------------------
+    // #1252 S3′ — equivalence matrix.
+    //
+    // `enforce_role_resolving_session_from_tx` replaces the write-through
+    // caches with live reads from the caller's transaction. That swap is only
+    // legitimate if the two substrates produce the *same verdict* on every
+    // input, so this matrix walks (actor × event × scope) and asserts the two
+    // functions agree exactly — including on the violation text, so a
+    // same-shape-different-reason divergence is caught too.
+    //
+    // Both substrates are projected from one `World` description, which is
+    // what makes this an equivalence test rather than two hand-written
+    // expectations that could drift together. Mutating either substrate — the
+    // hydrator's key set, the fake's rows, the cache seeding — must turn this
+    // red.
+    // -----------------------------------------------------------------
+
+    /// The rows both substrates are built from.
+    struct World {
+        cards: Vec<(&'static str, CardRole, &'static str)>,
+        tracks: Vec<(&'static str, &'static str)>,
+        session: Option<WorkerSessionRow>,
+    }
+
+    impl World {
+        fn tx(&self) -> FakeWriteTx {
+            let mut tx = match &self.session {
+                Some(session) => FakeWriteTx::with_worker_session(session.clone()),
+                None => FakeWriteTx::new(),
+            };
+            for (card, role, track) in &self.cards {
+                tx = tx.with_card(card, *role, track);
+            }
+            for (track, area) in &self.tracks {
+                tx = tx.with_track(track, area);
+            }
+            tx
+        }
+
+        fn caches(&self) -> (CardRoleCache, TrackAreaCache) {
+            let cache = CardRoleCache::new();
+            for (card, role, track) in &self.cards {
+                cache.insert(CardId::from(*card), *role, TrackId::from(*track));
+            }
+            let area_cache = TrackAreaCache::new();
+            for (track, area) in &self.tracks {
+                area_cache.insert(TrackId::from(*track), AreaId::from(*area));
+            }
+            (cache, area_cache)
+        }
+    }
+
+    fn matrix_world() -> World {
+        World {
+            cards: vec![
+                ("planner", CardRole::Planner, "w"),
+                ("worker", CardRole::Worker, "w"),
+                ("report", CardRole::ReportCard, "w"),
+                ("assistant", CardRole::Assistant, "w"),
+                ("foreign-worker", CardRole::Worker, "w2"),
+            ],
+            tracks: vec![("w", "c"), ("w2", "c2")],
+            session: Some(worker_session("s-live", Some(CardId::from("planner")))),
+        }
+    }
+
+    fn matrix_actors() -> Vec<ActorId> {
+        vec![
+            ActorId::User,
+            ActorId::Kernel,
+            ActorId::KernelDispatcher,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner(CardId::from("planner")),
+            ActorId::AiPlanner(CardId::from("worker")),
+            ActorId::AiPlanner(CardId::from("")),
+            ActorId::AiCodex(CardId::from("worker")),
+            ActorId::AiCodex(CardId::from("planner")),
+            ActorId::AiCodex(CardId::from("report")),
+            ActorId::AiCodex(CardId::from("assistant")),
+            ActorId::AiCodex(CardId::from("foreign-worker")),
+            ActorId::AiCodex(CardId::from("ghost")),
+            ActorId::AiCodex(CardId::from("")),
+            ActorId::AiClaude(CardId::from("worker")),
+            // Session actors: live (resolves to the planner card), unknown
+            // (no row), and empty (unresolvable).
+            ActorId::AiCodexSession(WorkerSessionId::from("s-live")),
+            ActorId::AiPlannerSession(WorkerSessionId::from("s-live")),
+            ActorId::AiClaudeSession(WorkerSessionId::from("s-live")),
+            ActorId::AiCodexSession(WorkerSessionId::from("s-ghost")),
+            ActorId::AiCodexSession(WorkerSessionId::from("")),
+        ]
+    }
+
+    fn matrix_scopes() -> Vec<EventScope> {
+        vec![
+            EventScope::System,
+            EventScope::Area {
+                area: AreaId::from("c"),
+            },
+            track_scope("w", "c"),
+            track_scope("w2", "c2"),
+            card_scope("worker", "w", "c"),
+            card_scope("report", "w", "c"),
+            card_scope("assistant", "w", "c"),
+            card_scope("planner", "w", "c"),
+            // #232 / #234 spoof shapes: right card, wrong track / wrong area.
+            card_scope("worker", "w2", "c2"),
+            card_scope("worker", "w", "c2"),
+            card_scope("foreign-worker", "w2", "c2"),
+            card_scope("ghost", "w", "c"),
+        ]
+    }
+
+    fn matrix_events() -> Vec<(&'static str, Event)> {
+        vec![
+            ("track.updated", track_updated()),
+            ("area.updated", area_updated()),
+            (
+                "plan.updated",
+                Event::PlanUpdated {
+                    track_id: TrackId::from("w"),
+                    changed_keys: Vec::new(),
+                    agent_message: None,
+                },
+            ),
+            (
+                "task.dispatched",
+                Event::TaskDispatched {
+                    idempotency_key: "k".into(),
+                    kind: "codex".into(),
+                    agent_message: None,
+                },
+            ),
+            (
+                "task.context_frozen",
+                Event::TaskContextFrozen {
+                    track_id: TrackId::from("w"),
+                    task_key: "k".into(),
+                    idempotency_key: "k".into(),
+                    task_id: "t".into(),
+                    refs: Vec::new(),
+                    doc_revs: Default::default(),
+                    truncated: false,
+                },
+            ),
+            (
+                "ratify.resolved",
+                Event::RatifyResolved {
+                    track_id: TrackId::from("w"),
+                    decision: crate::event::RatifyDecision::Grant,
+                },
+            ),
+            (
+                "hook.codex",
+                Event::CodexHook {
+                    card_id: CardId::from("worker"),
+                    kind: "hook.codex.pre_tool_use".into(),
+                    hook_idempotency_key: "k".into(),
+                    payload: serde_json::json!({}),
+                },
+            ),
+        ]
+    }
+
+    /// Format a verdict so "allowed" and every distinct denial reason are
+    /// separate strings — comparing `is_err()` alone would let a divergence in
+    /// *why* a write was refused slip through.
+    fn verdict(result: std::result::Result<(), RoleViolation>) -> String {
+        match result {
+            Ok(()) => "allow".to_string(),
+            Err(violation) => format!("deny: {violation}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_read_gate_agrees_with_cache_gate_on_the_whole_matrix() {
+        let world = matrix_world();
+        let (cache, area_cache) = world.caches();
+        let mut compared = 0usize;
+        let mut denials = 0usize;
+
+        for actor in matrix_actors() {
+            for (event_label, event) in matrix_events() {
+                for scope in matrix_scopes() {
+                    let mut tx_a = world.tx();
+                    let from_tx = verdict(
+                        enforce_role_resolving_session_from_tx(&mut tx_a, &actor, &event, &scope)
+                            .await,
+                    );
+                    let mut tx_b = world.tx();
+                    let from_cache = verdict(
+                        enforce_role_resolving_session(
+                            &mut tx_b,
+                            &actor,
+                            &event,
+                            &scope,
+                            &cache,
+                            &area_cache,
+                        )
+                        .await,
+                    );
+                    assert_eq!(
+                        from_tx, from_cache,
+                        "substrate divergence for actor={actor:?} event={event_label} scope={scope:?}"
+                    );
+                    compared += 1;
+                    if from_tx.starts_with("deny") {
+                        denials += 1;
+                    }
+                }
+            }
+        }
+
+        // Guard against the matrix silently collapsing to nothing (an empty
+        // or all-allow matrix would agree trivially and prove nothing).
+        assert_eq!(compared, 20 * 7 * 12, "matrix size changed unexpectedly");
+        assert!(
+            denials > compared / 4,
+            "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"
+        );
     }
 }

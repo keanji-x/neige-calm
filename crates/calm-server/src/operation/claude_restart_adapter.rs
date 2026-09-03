@@ -245,14 +245,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Starting,
         };
-        let runtime_event_id = append_decision_event_in_tx(
-            tx,
-            &payload.actor,
-            &scope,
-            None,
-            &runtime_event,
-        )
-        .await?;
+        let runtime_event_id =
+            append_decision_event_in_tx(tx, &payload.actor, &scope, None, &runtime_event).await?;
 
         // Preserve the previous exit row so compensation can restore the
         // Restart affordance if the replacement spawn fails.

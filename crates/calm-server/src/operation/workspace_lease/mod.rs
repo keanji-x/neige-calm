@@ -248,14 +248,8 @@ async fn acquire_workspace_lease_at_path_tx(
         lease_id: lease_id.clone(),
         path: path_string.clone(),
     };
-    let event_id = append_decision_event_in_tx(
-        tx,
-        &ActorId::KernelDispatcher,
-        &scope,
-        None,
-        &event,
-    )
-    .await?;
+    let event_id =
+        append_decision_event_in_tx(tx, &ActorId::KernelDispatcher, &scope, None, &event).await?;
 
     let lease = WorkspaceLease {
         lease_id,
@@ -483,14 +477,9 @@ async fn complete_workspace_lease_release(
         card_id: CardId::from(lease.card_id.clone()),
         lease_id: lease.lease_id.clone(),
     };
-    let event_id = append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::KernelDispatcher,
-        &scope,
-        None,
-        &event,
-    )
-    .await?;
+    let event_id =
+        append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, &event)
+            .await?;
     envelopes.push(BroadcastEnvelope {
         id: event_id,
         event_version: SYNC_EVENT_VERSION,
@@ -1000,14 +989,9 @@ async fn persist_worktree_removed_for_lease(
         card_id: CardId::from(lease.card_id.clone()),
         path: lease.path.clone(),
     };
-    let event_id = append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::KernelDispatcher,
-        &scope,
-        None,
-        &event,
-    )
-    .await?;
+    let event_id =
+        append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, &event)
+            .await?;
     tx.commit().await?;
     events.emit_envelope(BroadcastEnvelope {
         id: event_id,
@@ -1025,8 +1009,7 @@ async fn append_workspace_events_tx(
 ) -> Result<Vec<BroadcastEnvelope>> {
     let mut envelopes = Vec::with_capacity(events.len());
     for (actor, scope, event) in events {
-        let event_id =
-            append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
+        let event_id = append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
         envelopes.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,

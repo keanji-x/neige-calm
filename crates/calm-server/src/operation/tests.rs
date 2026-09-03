@@ -537,15 +537,9 @@ async fn operation_event_append_creates_track_vcs_commit() {
         area: area.id.clone(),
     };
     let event = Event::CardAdded(report);
-    let event_id = append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::Kernel,
-        &scope,
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
+    let event_id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let head = crate::track_vcs::head(sqlx_repo.pool(), &track.id)

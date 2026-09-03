@@ -233,14 +233,8 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     {
         events.extend(auto_events);
     }
-    let ids = append_decision_events_in_tx(
-        tx,
-        &ActorId::KernelDispatcher,
-        &scope,
-        None,
-        &events,
-    )
-    .await?;
+    let ids =
+        append_decision_events_in_tx(tx, &ActorId::KernelDispatcher, &scope, None, &events).await?;
     Ok(ids
         .into_iter()
         .zip(events)
