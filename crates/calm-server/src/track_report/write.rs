@@ -195,8 +195,54 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Entry points — the complete set of ways to reach `persist` from outside
+// Entry points — the complete set of ways to reach `persist` from outside,
+// plus the structural door, which reaches the row write without reaching
+// `persist` at all
 // ---------------------------------------------------------------------------
+
+/// The arguments of [`structural_init_report_tx`], as one value.
+///
+/// A struct rather than six positional parameters for the ordinary reason (four
+/// of the six are borrowed slices or strings and two of those are `&str`), and
+/// for one that is specific to this door: the absences documented on
+/// [`structural_init_report_tx`] are only readable if the whole argument set is
+/// readable in one place. This is that place, and it holds exactly the report
+/// content and the two ids the row write and the projection need — nothing that
+/// names a writer, an authority or a prior revision.
+///
+/// The `doc` arrives **already authoritative**, and this door applies no op to
+/// it. Both producers (`routes::tracks::prepare_fork_report` via
+/// `ReportDoc::from_blocks_exact`, and
+/// `routes::tracks::prepare_initial_report_payload` via
+/// `ReportDoc::from_payload`) settle the document before handing it over —
+/// `from_blocks_exact` in particular bypasses `write_blocks_layout` precisely so
+/// each block keeps the `(id, rev)` it had in the source track. That is why this
+/// door does not route through `apply_report_op`: `apply_persisted_report_op`
+/// unconditionally advances `doc_rev` and re-stamps every block's `rev`, which
+/// would move a fork's `docRev` from 0 to 1 and break the on-the-wire fork
+/// contract.
+///
+/// The borrow is `&mut` only because serializing an `automerge::AutoCommit`
+/// takes `&mut self` (`ReportDoc::to_bytes` → `AutoCommit::save`), which is the
+/// same reason `persist` holds its own doc mutably. It is not a licence for this
+/// door to edit the document, and it does not.
+pub(crate) struct InitialReportTarget<'a> {
+    /// The report card row this write lands on. It was INSERTed earlier in the
+    /// same transaction, which is why there is no CAS input anywhere here.
+    pub report_card_id: &'a str,
+    /// The track that owns the card, used for the task projection.
+    pub track_id: &'a str,
+    /// The projected payload — the JSON read cache mirroring `doc`.
+    pub payload: &'a TrackReportPayload,
+    /// The authoritative CRDT document. `&mut` for serialization only — see
+    /// [`structural_init_report_tx`].
+    pub doc: &'a mut ReportDoc,
+    /// The task declarations projected out of the report's blocks.
+    pub declarations: &'a [calm_types::report_blocks::tasks::TaskDeclaration],
+    /// Per-block local diagnostics, aligned with the blocks the declarations
+    /// came from.
+    pub diagnostics: &'a [Vec<calm_types::report_blocks::tasks::Diagnostic>],
+}
 
 /// `POST /api/tracks/{id}/report` — the user's wholesale report replace.
 ///
@@ -310,6 +356,79 @@ pub(crate) async fn agent_report_op(
         lifecycle,
         auto_promote_draft,
         Some(recorder_shadow),
+    )
+    .await
+}
+
+/// #1252 S2 — the **structural door**: track creation laying a forked or
+/// templated report onto the report card it just INSERTed, inside the create
+/// transaction.
+///
+/// This is not a report *edit* and it is not a fourth way to reach [`persist`]:
+/// it never calls it. What it shares with [`persist`] is the last two
+/// statements — the row write and the task projection, in that order — through
+/// the private [`write_report_row_and_project_tx`]. Everything an edit needs
+/// and a structural initialization does not, this door does not have. Before
+/// this slice the same two statements lived in
+/// `routes::tracks::persist_initial_report_and_project_tasks_tx`, which is why
+/// this module's header used to list the create paths as a second writer of the
+/// row; it no longer is one.
+///
+/// # The six absences, and why each is load-bearing
+///
+/// Read these as the signature's content, not as missing features. Each is a
+/// thing that *cannot be said here*, and the reason it cannot is different in
+/// every case:
+///
+/// * **No `author: EditAuthor`.** #1115. `guard_task_declarations` is
+///   unreachable from this function because there is nothing to pass it: no
+///   parameter of this door carries an author, and the create path deliberately
+///   derives none (`routes::tracks::create_track_structure` says so at the
+///   closure it builds). The fork's own belt over that decision —
+///   `routes::tracks::fork_guard::guard_forked_blocks` — deliberately stays
+///   **upstream**, in `prepare_fork_report`, next to the normalization it belts.
+///   Hanging it here would give `TrackInit::Template` a guard it has never had
+///   and separate the belt from what it belts. An `Option<EditAuthor>` is the
+///   same hole with a nullable type; see `track_report_origin`'s header.
+/// * **No `&EventBus`, and no event in the return type.** Q12. This door
+///   **cannot emit** — not "emits nothing today". The create transaction owns
+///   the report card's only event, one `Event::CardAdded` attributed to
+///   `actor.to_actor_id()`, and it is emitted by the create closure that calls
+///   this. So a fork or a template instantiation produces no
+///   `track.report_edited` and no `card.updated`, because there is no bus here
+///   to put one on.
+/// * **No `ActorId`.** The one event that exists is the create closure's, and
+///   the closure holds the actor. Threading one in here would give this door an
+///   attribution it has nothing to attribute.
+/// * **No `if_doc_rev` / `expected_rev`.** The target row was INSERTed by
+///   `card_create_with_id_tx` earlier in *this same transaction*, so there is no
+///   prior version for a compare-and-swap to be against. A CAS input here could
+///   only ever compare a value with the one this transaction just wrote.
+/// * **No `TrackLifecycle`, and no `auto_promote_draft`.** A track being created
+///   has no lifecycle to transition and no draft state to promote out of; both
+///   of [`persist`]'s lifecycle legs are about a track that already exists.
+/// * **No `RecorderShadowProbe`.** The recorder gate decides whether an *agent
+///   principal* may write. Track creation has no agent principal —
+///   `create_track_structure` runs on a REST request whose only identity is the
+///   `Actor` extractor's — so there is no session for a probe to read.
+///
+/// None of the six is expressible by a caller of this function, which is the
+/// difference between a door and a flag. In particular this door does not take
+/// a `track_report_origin::WritePolicy` and reads no field of one: three of its
+/// four fields are consumed here by *not existing*, and the fourth (`actor`) is
+/// consumed by the create closure, outside this boundary.
+pub(crate) async fn structural_init_report_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    target: InitialReportTarget<'_>,
+) -> Result<(Card, TaskProjectionOutcome), CalmError> {
+    write_report_row_and_project_tx(
+        tx,
+        target.report_card_id,
+        target.track_id,
+        target.payload,
+        target.doc,
+        target.declarations,
+        target.diagnostics,
     )
     .await
 }
@@ -599,32 +718,26 @@ async fn persist(
                 let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
                 let (declarations, block_diagnostics) =
                     calm_types::report_blocks::tasks::project_task_declarations(blocks);
-                let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
-                    CalmError::Internal(format!("track_report: serialize projected payload: {e}"))
-                })?;
-                let patch = CardPatch {
-                    title: None,
-                    kind: None,
-                    sort: None,
-                    payload: Some(payload_value),
-                    deletable: None,
-                };
-                let crdt_bytes = doc.to_bytes();
-                // 5. One transactional write rewriting both columns +
-                //    two events tagged with the same card scope. Order
-                //    matters: `CardUpdated` first so an existing
-                //    subscriber that processes both events sees the
-                //    generic "row changed" signal before the structured
-                //    edit-log entry (matches the historical broadcast
-                //    order before PR2 added the structured event).
-                let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
-                // The block-existence leg of projection reads the report cache.
-                // Update that cache first inside this same transaction so refs
-                // are checked against this write's snapshot, never the previous
-                // committed payload. Any projection error still rolls all of it back.
-                let task_projection =
-                    project_tasks_tx(tx, track_id.as_str(), &declarations, &block_diagnostics)
-                        .await?;
+                // 5. The row write and the task projection, in the one order
+                //    both writers use — see `write_report_row_and_project_tx`,
+                //    which is where that order is stated and where the
+                //    structural door meets this one.
+                let (updated, task_projection) = write_report_row_and_project_tx(
+                    tx,
+                    &id,
+                    track_id.as_str(),
+                    &projected_payload,
+                    &mut doc,
+                    &declarations,
+                    &block_diagnostics,
+                )
+                .await?;
+                //    Then two events tagged with the same card scope. Order
+                //    matters here too: `CardUpdated` first so an existing
+                //    subscriber that processes both events sees the generic
+                //    "row changed" signal before the structured edit-log entry
+                //    (matches the historical broadcast order before PR2 added
+                //    the structured event).
                 let report_edited = Event::TrackReportEdited {
                     track_id: track_id.clone(),
                     card_id: report_card_id,
@@ -663,4 +776,51 @@ async fn persist(
     )
     .await?;
     Ok(updated)
+}
+
+// ---------------------------------------------------------------------------
+// The two statements both writers share, and the order between them
+// ---------------------------------------------------------------------------
+
+/// Write the report card's row (JSON cache + CRDT bytes) and then reproject the
+/// track's tasks, inside the caller's transaction.
+///
+/// **The order of the two statements is the contract.** The block-existence leg
+/// of task projection resolves `refs` by reading the report card's *payload
+/// cache*, so the cache must already hold this write's snapshot when the
+/// projection runs. Swap them and a task block whose `refs` point at another
+/// block of the same write is checked against the previously committed payload:
+/// on a create that payload is the birth skeleton, so every ref into the new
+/// content resolves to nothing and the task collects a `reference_missing`
+/// diagnostic — silently, because a diagnostic is data, not an error. Any
+/// projection failure still rolls the row write back with it; the transaction,
+/// not this function, is what makes the pair atomic.
+///
+/// Private, and shared by exactly two callers: [`persist`] (its step 5) and
+/// [`structural_init_report_tx`]. That is the whole of what an edit and a
+/// structural initialization have in common — everything else about them
+/// differs, which is why they are two functions and not one function with a
+/// mode parameter.
+async fn write_report_row_and_project_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    report_card_id: &str,
+    track_id: &str,
+    payload: &TrackReportPayload,
+    doc: &mut ReportDoc,
+    declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
+    diagnostics: &[Vec<calm_types::report_blocks::tasks::Diagnostic>],
+) -> Result<(Card, TaskProjectionOutcome), CalmError> {
+    let payload_value = serde_json::to_value(payload).map_err(|e| {
+        CalmError::Internal(format!("track_report: serialize projected payload: {e}"))
+    })?;
+    let patch = CardPatch {
+        title: None,
+        kind: None,
+        sort: None,
+        payload: Some(payload_value),
+        deletable: None,
+    };
+    let updated = card_update_with_crdt_tx(tx, report_card_id, patch, doc.to_bytes()).await?;
+    let projection = project_tasks_tx(tx, track_id, declarations, diagnostics).await?;
+    Ok((updated, projection))
 }

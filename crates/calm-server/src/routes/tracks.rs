@@ -32,11 +32,10 @@ use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, TrackRecipeOrigin, TrackWorkspacePlan,
-    area_folder_create_tx, area_folders_list_all_tx, card_create_with_id_tx,
-    card_update_with_crdt_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, project_tasks_tx,
-    terminal_delete_tx, track_create_tx, track_delete_tx, track_recipe_get_tx, track_update_tx,
+    MAX_TREE_TASK_BUDGET, TrackRecipeOrigin, TrackWorkspacePlan, area_folder_create_tx,
+    area_folders_list_all_tx, card_create_with_id_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, terminal_delete_tx,
+    track_create_tx, track_delete_tx, track_recipe_get_tx, track_update_tx,
 };
 use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -44,7 +43,7 @@ use crate::event::{Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
-    AreaKind, Card, CardPatch, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
+    AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewTrack, RequestTheme, Track, TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind,
     TrackWorkspacePatch, new_id,
 };
@@ -1434,20 +1433,27 @@ async fn create_track_structure(
 
                 let mut init_projection = None;
                 if let Some((payload, mut doc, declarations, diagnostics)) = init_snapshot {
-                    let payload = serde_json::to_value(payload).map_err(|error| {
-                        CalmError::Internal(format!(
-                            "track_create: serialize forked track-report payload: {error}"
-                        ))
-                    })?;
+                    // #1252 S2 — the structural door of the report write
+                    // boundary. It takes no author, no actor, no event bus and
+                    // no CAS input, so neither of the two things this closure
+                    // must not do is expressible from here: it cannot emit a
+                    // `track.report_edited` (the report card's only event is
+                    // the `CardAdded` below) and it cannot reach
+                    // `guard_task_declarations` (#1115 — there is no author to
+                    // hand it). The fork's own release belt stays upstream in
+                    // `prepare_fork_report`, next to the normalization it
+                    // belts, so `TrackInit::Template` does not acquire it.
                     let (persisted_report, projection) =
-                        persist_initial_report_and_project_tasks_tx(
-                        tx,
-                        report_card.id.as_str(),
-                        track_id.as_str(),
-                        payload,
-                        &mut doc,
-                        &declarations,
-                        &diagnostics,
+                        crate::track_report::write::structural_init_report_tx(
+                            tx,
+                            crate::track_report::write::InitialReportTarget {
+                                report_card_id: report_card.id.as_str(),
+                                track_id: track_id.as_str(),
+                                payload: &payload,
+                                doc: &mut doc,
+                                declarations: &declarations,
+                                diagnostics: &diagnostics,
+                            },
                         )
                         .await?;
                     report_card = persisted_report;
@@ -1720,33 +1726,13 @@ type InitialReportSnapshot = (
     Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
 );
 
-async fn persist_initial_report_and_project_tasks_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    report_card_id: &str,
-    track_id: &str,
-    payload: serde_json::Value,
-    doc: &mut ReportDoc,
-    declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
-    diagnostics: &[Vec<calm_types::report_blocks::tasks::Diagnostic>],
-) -> Result<(Card, TaskProjectionOutcome)> {
-    let report_card = card_update_with_crdt_tx(
-        tx,
-        report_card_id,
-        CardPatch {
-            title: None,
-            kind: None,
-            sort: None,
-            payload: Some(payload),
-            deletable: None,
-        },
-        doc.to_bytes(),
-    )
-    .await?;
-    // Projection resolves block refs through this cache, so both effects are
-    // deliberately one production operation with one fixed internal order.
-    let projection = project_tasks_tx(tx, track_id, declarations, diagnostics).await?;
-    Ok((report_card, projection))
-}
+// #1252 S2 — `persist_initial_report_and_project_tasks_tx` used to live here.
+// It was the second production caller of `card_update_with_crdt_tx`, i.e. the
+// thing that made "the create paths write the report row outside the write
+// boundary" true. It is now `track_report::write::structural_init_report_tx`,
+// the boundary's structural door, and the row write plus the task projection —
+// which have to stay in that order — are the private
+// `write_report_row_and_project_tx` that door shares with `write::persist`.
 
 fn prepare_fork_report(
     summary: String,
@@ -3435,9 +3421,10 @@ pub(crate) async fn update_track_report(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_initial_report_and_project_tasks_tx, planner_harness_layout_payload,
-        prepare_fork_report, prepare_initial_report_payload, prepare_template_report,
+        planner_harness_layout_payload, prepare_fork_report, prepare_initial_report_payload,
+        prepare_template_report,
     };
+    use crate::track_report::write::{InitialReportTarget, structural_init_report_tx};
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack};
@@ -3623,8 +3610,19 @@ mod tests {
             .expect("well-formed prose must fork");
     }
 
+    /// #1252 S2 — the structural door writes the JSON cache, the CRDT bytes and
+    /// the task projection as one operation, and the projection sees this
+    /// write's cache.
+    ///
+    /// The task block's `refs` point at the prose block of the *same* snapshot,
+    /// so it can only resolve if the payload cache already holds this write.
+    /// Swap the two statements inside `write_report_row_and_project_tx` and this
+    /// test collects a `reference_missing` diagnostic instead.
+    ///
+    /// Formerly `fork_persist_helper_writes_cache_crdt_and_projection_together`,
+    /// against `persist_initial_report_and_project_tasks_tx` in this file.
     #[tokio::test]
-    async fn fork_persist_helper_writes_cache_crdt_and_projection_together() {
+    async fn structural_door_writes_cache_crdt_and_projection_together() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
             .area_create(NewArea {
@@ -3685,20 +3683,22 @@ mod tests {
         let (summary, body) = doc.project().unwrap();
         let mut payload = TrackReportPayload::new(summary, body);
         payload.blocks = Some(blocks.clone());
-        let payload_value = serde_json::to_value(payload).unwrap();
+        let payload_value = serde_json::to_value(&payload).unwrap();
         let (declarations, diagnostics) =
             calm_types::report_blocks::tasks::project_task_declarations(&blocks);
 
         let pool = repo.sqlite_pool().unwrap();
         let mut tx = pool.begin().await.unwrap();
-        let (updated, projection) = persist_initial_report_and_project_tasks_tx(
+        let (updated, projection) = structural_init_report_tx(
             &mut tx,
-            report.id.as_str(),
-            track.id.as_str(),
-            payload_value.clone(),
-            &mut doc,
-            &declarations,
-            &diagnostics,
+            InitialReportTarget {
+                report_card_id: report.id.as_str(),
+                track_id: track.id.as_str(),
+                payload: &payload,
+                doc: &mut doc,
+                declarations: &declarations,
+                diagnostics: &diagnostics,
+            },
         )
         .await
         .unwrap();
