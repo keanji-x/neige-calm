@@ -368,14 +368,19 @@ export function TodayPage({
                 is what `Section` already does in the main column — an empty
                 RUNNING module would read as a gap.
 
-                RECENT used to sit here and no longer does. The calendar's
-                agenda above it is `activeTracksOn(selected)` — every track
-                whose lifetime overlaps the selected day, uncapped — so on the
-                default selection (today) RECENT was a sorted subset of the
-                list directly above it, and every non-waiting, non-running
-                track alive today was drawn twice in one card. The de-dup that
-                was here only excluded waiting/running; it never looked at the
-                agenda. */}
+                RECENT used to sit here and no longer does — a trade, not a
+                de-duplication. The overlap was real: the agenda above is
+                `activeTracksOn(selected)`, uncapped, so on the default
+                selection every non-waiting, non-running track still alive
+                today was drawn twice in one card, and the de-dup that was here
+                only excluded waiting/running and never looked at the agenda.
+                But RECENT applied no date filter at all, so it also held the
+                tracks that finished BEFORE today — which no agenda for today
+                contains, since `activeTracksOn` closes a terminal track's
+                interval at `terminalAt`. Those stay reachable one selection
+                away, on the day they ran; giving up that page-turn is the
+                price of Today staying "what needs me" rather than an archive
+                ordered by `updatedAt`. See this feature's README. */}
             <PanelRows title="Running" tracks={running} render={renderTrackRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
@@ -736,18 +741,26 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
             </h2>
           )}
 
+        {/* Empty *or* rows, never an empty `.rows` around the empty line.
+            `.rows` bleeds 4px into the card's padding so a row's own fill
+            padding puts its state dot on the container's inset; `PanelEmpty`
+            has no such padding, so nesting it there started the sentence 4px
+            left of the module title and of the conversation module's identical
+            empty line. Sharing the carrier only unifies these two lines if
+            they also sit at the same inset.
+
+            `PanelEmpty` rather than a local class that merely looks like one:
+            this module's empty line and the conversation module's are the same
+            statement in the same card, and they had drifted apart — this one
+            carried a dashed frame, which drew a box around "there is nothing
+            here" and made an empty day read as a broken widget.
+
+            The condition is *both* sources empty. The string is the one the
+            live contract pins; it satisfies §5.3 as well as any rewrite. */}
+        {scheduledAgenda.length === 0 && trackAgenda.length === 0
+          ? <PanelEmpty>Nothing scheduled.</PanelEmpty>
+          : (
         <div className={styles.rows}>
-          {/* Only when *both* sources are empty. The string is the one the live
-              contract pins; it satisfies §5.3 as well as any rewrite would. */}
-          {scheduledAgenda.length === 0 && trackAgenda.length === 0 && (
-            /* `PanelEmpty`, not a local class that merely looks like it. This
-               module's empty line and the conversation module's are the same
-               statement in the same card, and they had drifted apart: this one
-               carried a dashed frame, which drew a box around "there is nothing
-               here" and made an empty day read as a broken widget. Sharing the
-               carrier is what stops them drifting again. */
-            <PanelEmpty>Nothing scheduled.</PanelEmpty>
-          )}
           {scheduledAgenda.map((event) => (
             <span key={`scheduled-${event.track.id}-${event.hour}`}>
               {renderTrackRow(event.track, {
@@ -763,6 +776,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
             </span>
           ))}
         </div>
+          )}
       </div>
     </div>
   );

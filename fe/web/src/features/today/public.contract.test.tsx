@@ -162,30 +162,46 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * inside the empty-state paragraph" (that paragraph is a `<p>` with one
      * text node, so querying it for a button is null whatever production does)
      * and not as a label regex either — "Generate", "Run" or a Chinese label
-     * would walk straight past one. The workspace is seeded with no tracks so
-     * the column holds only the document region, which has no control today.
+     * would walk straight past one.
+     *
+     * The workspace is seeded with ONE BLOCKED TRACK, and that is what makes
+     * the walk verifiable rather than merely plausible. The element this test
+     * ends up on has to be pinned from both sides, and each side is pinned by
+     * a different fact about that fixture:
+     *
+     *   too high (past `.mainColumn` into `.content` or above) — the sibling
+     *   panel column renders the calendar, whose week nav is two `<button>`s,
+     *   so the zero-button assertion itself goes red;
+     *
+     *   too low (stopping on some wrapper inside `.mainColumn`, which is the
+     *   real regression: someone adds one around `TodayDocument` and the
+     *   claim silently narrows to "this wrapper has no button") — the waiting
+     *   section is a SIBLING of the document region inside the column and
+     *   nowhere else, so requiring the landed element to contain its heading
+     *   fails on any wrapper below the column.
+     *
+     * That sibling is doing the job the retired terminal placeholder used to
+     * do here. One blocked track and not six: `WAITING_ROW_LIMIT` is 5, and
+     * the sixth would add the "+N more waiting" disclosure — a real button in
+     * the main column, which this assertion would then have to carve out.
      */
     render(<TodayPage
-      renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW}
+      renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
     const empty = screen.getByText(EMPTY_COPY);
     /* Two hops, not one: the empty line sits inside the document region, and
        the region sits in the main column. The walk used to be one hop because
        the region had no wrapper — it gained one when the document took the
-       prose type rank. Stopping at the region would narrow this assertion from
-       "nowhere in the column" to "not next to this paragraph", which is the
-       weaker claim the comment above explicitly rejects. */
+       prose type rank. */
     const documentRegion = empty.parentElement;
     expect(documentRegion).not.toBeNull();
     const mainColumn = documentRegion?.parentElement;
     expect(mainColumn).not.toBeNull();
+    // The identity anchor, per the note above: a sibling that lives in the
+    // main column and in no wrapper inside it.
+    expect(mainColumn?.contains(screen.getByText('Waiting on you'))).toBe(true);
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
-    /* And the walk really did land on the main column rather than one hop
-       short: the column is the document region's parent and holds it as an
-       only child here, so the region is not also the column. */
-    expect(mainColumn).not.toBe(documentRegion);
-    expect(mainColumn?.contains(empty)).toBe(true);
   });
 });
 

@@ -3,7 +3,7 @@
 The landing route: a status bar and **the day's document**, beside a panel
 holding the week calendar's activity agenda and the Running list.
 
-Three things were removed on 2026-09-03 (owner call) and must not drift back in
+Two things were removed on 2026-09-03 (owner call) and must not drift back in
 without one:
 
 - **The Today terminal placeholder.** A dashed box reading "Terminal is not
@@ -11,16 +11,34 @@ without one:
   (INV-TODAYTERM-001/003/005/006) for an implementation that never landed and
   has no `features/today/terminal` to land in. Both are gone. A page does not
   get to keep making a promise it has not kept.
-- **RECENT.** The calendar's agenda directly above it is
+- **RECENT.** This was a deliberate trade of reach for focus, and it is worth
+  stating as one rather than as a de-duplication, because the two lists were
+  never the same list.
+
+  What *did* overlap: the calendar's agenda one module up is
   `activeTracksOn(selected)` — every track whose lifetime overlaps the selected
-  day, **uncapped** — so on the default selection (today) RECENT was a sorted
-  subset of the list one module up, and every non-waiting, non-running track
-  alive today was drawn twice inside one card. The de-dup that existed
-  (`shown`) only excluded waiting and running; it never looked at the agenda,
-  so the invariant it was written to protect ("one track appearing twice on a
-  page distorts both the counts and the scan") was false where it mattered
-  most. Deleting the module is the fix; widening the de-dup would have left a
-  module that renders nothing on the default view.
+  day, **uncapped** — so on the default selection (today) every non-waiting,
+  non-running track still alive today was drawn twice inside one card. The
+  de-dup that existed (`shown`) only excluded waiting and running; it never
+  looked at the agenda, so "one track appearing twice on a page distorts both
+  the counts and the scan" was violated by the card against itself.
+
+  What did **not** overlap, and is the part being given up: RECENT applied no
+  date filter at all — it took every visible non-waiting, non-running track by
+  `updatedAt` — so a track that finished *before* today was in RECENT and is in
+  no agenda for today, because `activeTracksOn` closes a terminal track's
+  interval at `terminalAt` and that interval no longer reaches today's start.
+  That class is exactly "what happened while I was away", which is what RECENT
+  was for.
+
+  Those tracks are not lost, they stop being one glance away: move the
+  calendar's selection to the day such a track ran or finished and
+  `activeTracksOn` puts it in the agenda there, under the same row. The cost is
+  one page-turn on an entry point to finished work, and the reason it is worth
+  paying is what this route is for — Today answers *what needs me*, and a list
+  ordered by `updatedAt` with no date bound is an archive browser, which is a
+  surface this page is not and should not grow into.
+
 **The conversation module was proposed for removal in the same pass and kept.**
 It looks like a duplicate of the track pages' module and is not one: on Today it
 is the **cross-track index** (#1189 S5). It is the only place a track's

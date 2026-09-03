@@ -141,8 +141,15 @@
     max-inline-size: var(--measure-prose);
     /* `--text-lg` is the prose rank, and `--measure-prose` is measured for it
        (tokens.css) — the two only mean anything as a pair. `ReportDocument`
-       already reads at this rank, so this sets the region around it: the empty
-       line and the trigger stop being 11px label text under a 18px document. */
+       already reads at this rank, so this sets the region around it, and the
+       empty line (`.documentEmpty`) is sized against a document rather than
+       against a label.
+
+       It does NOT resize the trigger or its notice, and neither should it:
+       `.moreButton` declares `--text-xs` itself, and a declaration beats an
+       inherited value, so the button stays 11px on purpose — it is a
+       disclosure-weight control beside a document, not part of the prose.
+       The notice inherits, so it is pinned back to interface rank below. */
     font-size: var(--text-lg);
     line-height: var(--leading-loose);
     color: var(--text-1);
@@ -173,6 +180,28 @@
     flex-wrap: wrap;
     gap: var(--space-2);
     align-items: center;
+  }
+
+  /* What the last press answered, at interface rank.
+     `app/router` renders the notice as a bare `[data-nc-role="hint"]` with no
+     type of its own, so inside `.document` it would inherit the prose rank and
+     the darkest text colour — 18px `--text-1` beside an 11px `--text-3`
+     button, which reads as the page's most important sentence when it is an
+     aside about a press that did not do anything. It answers a control, so it
+     takes the control's register.
+
+     One selector covers both shapes: the refusal (`data-nc-role="hint"`) and
+     the failure (`role="alert"` on the same element, which the rule below only
+     steps up in colour — a failure is worth more contrast, not more size). */
+  .summaryTrigger [data-nc-role='hint'] {
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .summaryTrigger [role='alert'] {
+    color: var(--text-2);
   }
 
   /* `.inlineEmpty` is gone. It styled two empty lines that wanted different
