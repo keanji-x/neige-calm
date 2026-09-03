@@ -151,6 +151,15 @@ pub struct RouteState {
     ///      for the same card while still holding its guard, and
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
+    ///    * *There are now THREE forward-order nestings, not one.*
+    ///      `create_cove_conversation` was the first; `create_wave_conversation`
+    ///      (#1189) and `routes::today_summary`'s bootstrap recovery (#1253 PR2)
+    ///      are the others, and all three hold this claim across
+    ///      `send_spec_input` → `ensure_live_spec_harness`. The Today path also
+    ///      holds it across a `spec-harness-start` operation on its dormant
+    ///      branch, which blocks on a codex RPC; that submits no per-card lock
+    ///      of its own (the adapter's mint map is private and is taken and
+    ///      released inside the operation), so it closes no cycle.
     ///    * *Taking the two maps in the reverse order* does NOT self-deadlock
     ///      — they are different mutexes, so one task alone completes fine.
     ///      It deadlocks only when it runs concurrently with a
@@ -263,6 +272,11 @@ impl BootState {
             events: self.events,
             system_cove_mint: Arc::new(crate::routes::today::SystemCoveMintCounters::default()),
             system_cove_mint_rendezvous: None,
+            today_summary_create: Arc::new(
+                crate::routes::today_summary::TodaySummaryCreateCounters::default(),
+            ),
+            today_summary_create_rendezvous: None,
+            today_summary_bootstrap_rendezvous: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -314,6 +328,18 @@ pub struct AppState {
     /// so that race is created rather than waited for; see
     /// [`crate::routes::today::SystemCoveMintRendezvous`].
     pub system_cove_mint_rendezvous: crate::routes::today::SystemCoveMintRendezvous,
+    /// #1253 PR2 — per-server observation of `POST /api/today/summary`'s create
+    /// arm. See [`crate::routes::today_summary::TodaySummaryCreateCounters`]
+    /// for why it is not `fixtures`-gated.
+    pub today_summary_create: Arc<crate::routes::today_summary::TodaySummaryCreateCounters>,
+    /// #1253 PR2 — `None` in production. Armed by the create-race case so that
+    /// one-request-wide window is created rather than waited for; see
+    /// [`crate::routes::today_summary::TodaySummaryCreateRendezvous`].
+    pub today_summary_create_rendezvous: crate::routes::today_summary::TodaySummaryCreateRendezvous,
+    /// #1253 PR2 — `None` in production. Armed by the first-message race case;
+    /// see [`crate::routes::today_summary::TodaySummaryBootstrapRendezvous`].
+    pub today_summary_bootstrap_rendezvous:
+        crate::routes::today_summary::TodaySummaryBootstrapRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
@@ -634,6 +660,32 @@ impl AppState {
         barrier: std::sync::Arc<tokio::sync::Barrier>,
     ) -> Self {
         self.system_cove_mint_rendezvous = Some(barrier);
+        self
+    }
+
+    /// #1253 PR2 — arm the create-race rendezvous. Same shape, same reasons as
+    /// [`Self::with_system_cove_mint_rendezvous`]: the field is unconditional
+    /// and the `if let Some(..)` is compiled into every build; only the ability
+    /// to arm it is test-only.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_today_summary_create_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.today_summary_create_rendezvous = Some(barrier);
+        self
+    }
+
+    /// #1253 PR2 — arm the first-message race rendezvous. Same shape and same
+    /// reasons as the sibling above.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_today_summary_bootstrap_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.today_summary_bootstrap_rendezvous = Some(barrier);
         self
     }
 

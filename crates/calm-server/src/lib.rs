@@ -571,6 +571,9 @@ pub(crate) async fn probe_supervisor_for_terminal(
     }
 }
 
+/// #1253 D4 — the Today summary's activity source. One caller
+/// (`routes::today_summary`), no MCP surface; see the module docs.
+pub mod activity_window;
 pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_appserver;

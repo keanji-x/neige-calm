@@ -24,6 +24,7 @@ pub mod terminal_cards;
 pub mod theme;
 pub mod threads;
 pub mod today;
+pub mod today_summary;
 pub mod version;
 pub mod wave_conversations;
 pub mod wave_report_blocks;
@@ -68,6 +69,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(terminal::router())
         .merge(terminal_cards::router())
         .merge(today::router())
+        .merge(today_summary::router())
         .merge(claude_cards::router())
         .merge(codex_cards::router())
         .merge(fs::router())

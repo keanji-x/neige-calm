@@ -30,6 +30,7 @@ import {
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
+import { todaySummaryFailure } from '../../../../core/domain/today.ts';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
@@ -65,7 +66,7 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions,
   prefetchCoveList, specRunQueryOptions, todayLaunchpadQueryOptions,
-  useCoveConversationMutations, useCoveMutations, useSpecMutations,
+  useCoveConversationMutations, useCoveMutations, useSpecMutations, useTodaySummaryMutation,
   useWaveConversationMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
@@ -1652,6 +1653,32 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * here — arrives as an error and is rendered as one (INV-TODAYDOC-002).
    */
   const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
+  /*
+   * #1253 D5 — the trigger. `POST /api/today/summary`, no body and no prompt.
+   *
+   * It is a mutation on an explicit action and nowhere near the page load:
+   * the endpoint bootstraps the launchpad internally, which materializes a
+   * workspace and waits on a `spec-harness-start` (INV-TODAYDOC-001 is about
+   * keeping exactly that off the render path).
+   *
+   * A success does not refresh the document here. The agent's write arrives
+   * later as `wave.report_edited`, which the event bridge turns into
+   * `['today-launchpad']` and `['wave', id]` — refetching the report at 200
+   * would only fetch the OLD one, and it would hide a broken invalidation
+   * chain behind a lucky refresh.
+   */
+  const summary = useTodaySummaryMutation(transport, unauthorized);
+  const summaryNotice = useMemo(() => {
+    if (summary.failure === null) return undefined;
+    const classified = todaySummaryFailure(summary.failure);
+    /* "Nothing happened today" is data, not a malfunction, so it is not an
+       alert: `role="alert"` interrupts a screen-reader user for something they
+       asked about and got a straight answer to. The other two are failures and
+       are announced. */
+    return classified.kind === 'no-activity'
+      ? <span data-nc-role="hint">{classified.message}</span>
+      : <span role="alert" data-nc-role="hint">{classified.message}</span>;
+  }, [summary.failure]);
   const launchpad = launchpadQuery.data;
   const launchpadWaveId = launchpad?.wave_id ?? '';
   /* The document itself comes from the ordinary wave detail — the resolve
@@ -1767,6 +1794,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           onRetry={() => { void launchpadQuery.refetch(); }}
         />
         : undefined}
+      onWriteSummary={summary.write}
+      summaryPending={summary.pending}
+      summaryNotice={summaryNotice}
     />
     <ConfirmDialog
       open={deletion.open}

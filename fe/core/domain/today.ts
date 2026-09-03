@@ -26,7 +26,7 @@
 
 import { z } from 'zod';
 
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 
 export const todayLaunchpadSchema = z.object({
   wave_id: z.string(),
@@ -69,4 +69,82 @@ export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire | nul
     path: '/api/today/launchpad',
     responseSchema: todayLaunchpadSchema.nullable(),
   };
+}
+
+export const todaySummarySchema = z.object({
+  /** The launchpad wave, whose report the agent has been asked to rewrite. */
+  wave_id: z.string(),
+  /**
+   * The summary conversation's card — the same card for the launchpad's whole
+   * lifetime, and openable in Today's Conversations module. It is derived from
+   * a bare constant key server-side, so it does not move when the workspace
+   * does (INV-TODAYDOC-011).
+   */
+  card_id: z.string(),
+});
+
+export type TodaySummaryWire = z.infer<typeof todaySummarySchema>;
+
+/**
+ * Ask the server to write today's progress into Today's document (#1253 D5).
+ *
+ * **It sends no prompt, and there is no parameter for one.** The endpoint
+ * synthesises the whole message server-side, from an activity projection this
+ * frontend has no read for. That is not an omission to be filled in later: the
+ * design deleted the layer that would have let a client — or an agent — ask for
+ * activity, and a prompt parameter here would be the same hole with a nicer
+ * name.
+ *
+ * A 200 means the request has been enqueued, not that the report has changed.
+ * The agent's write arrives later as a `wave.report_edited` event, and that is
+ * what refreshes the page — see `core/events/invalidation-plan`, where that
+ * kind carries `['today-launchpad']` and `['wave', id]` precisely so this
+ * button visibly does something.
+ */
+export function todaySummaryOperation(): ApiOperation<TodaySummaryWire> {
+  return {
+    method: 'POST',
+    path: '/api/today/summary',
+    responseSchema: todaySummarySchema,
+  };
+}
+
+/**
+ * The copy for the one refusal that is not a malfunction.
+ *
+ * The server counts four permanent event kinds over today's window and refuses
+ * when they are all zero, creating no conversation and sending no message
+ * (INV-TODAYDOC-007). That is a fact about the day, so it reads as one rather
+ * than as an error: nothing is broken and there is nothing to retry.
+ */
+export const NOTHING_TO_SUMMARISE = 'Nothing has happened in this workspace today yet.';
+
+export type TodaySummaryFailure = Readonly<{
+  /** `'no-activity'` is data wearing a 409; the other two are failures. */
+  kind: 'no-activity' | 'unavailable' | 'error';
+  message: string;
+}>;
+
+/**
+ * Classify a rejected summary trigger.
+ *
+ * The `code` is matched, not the status and not the message text. All three
+ * kinds of 409 this endpoint can answer share a status — `conflict` from the
+ * underlying create, `spec_harness_dormant` from a send that could not be
+ * recovered, and this one — and only the code tells them apart. Matching the
+ * sentence instead would be mirror code for a string the server owns.
+ */
+export function todaySummaryFailure(failure: ApiFailure): TodaySummaryFailure {
+  if (failure.kind === 'transport' || failure.kind === 'decode') {
+    return { kind: 'error', message: failure.message };
+  }
+  if (failure.code === 'today_summary_no_activity') {
+    return { kind: 'no-activity', message: NOTHING_TO_SUMMARISE };
+  }
+  /* The agent service is down, which is not "something went wrong": the
+     request was understood and can simply be made again. */
+  if (failure.status === 503) {
+    return { kind: 'unavailable', message: `The agent service is not available: ${failure.message}` };
+  }
+  return { kind: 'error', message: failure.message };
 }

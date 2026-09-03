@@ -57,6 +57,9 @@ mod threads_api;
 mod threads_resolve_claude;
 #[path = "cases/today_launchpad.rs"]
 mod today_launchpad;
+
+#[path = "cases/today_summary.rs"]
+mod today_summary;
 #[path = "cases/version.rs"]
 mod version;
 #[path = "cases/wave_conversations.rs"]

@@ -21,7 +21,8 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'InterruptSpecCardResponse', 'ListdirResponse', 'PluginDetail', 'PluginListItem',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetSpecCardResponse', 'SendSpecInputResponse', 'SettingsBag', 'Terminal',
-  'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadResolved', 'VersionInfo',
+  'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadResolved', 'TodaySummaryStarted',
+  'VersionInfo',
   'ViewCatalogEntry', 'WaveBacklinksResponse', 'WaveDetail', 'WaveFsContent', 'WaveFsEntry',
   'WaveReportReadResponse', 'WaveTemplate',
 ]);

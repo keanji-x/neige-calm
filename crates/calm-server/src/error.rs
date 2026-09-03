@@ -25,7 +25,8 @@ pub struct ErrorBody {
     /// `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
-    /// `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+    /// `spec_harness_dormant`, `today_summary_no_activity`,
+    /// `db_error`, `io_error`, `serde_error`,
     /// `codex_app_server`, `service_unavailable`, `internal`,
     /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
     pub code: String,
@@ -62,6 +63,19 @@ pub enum CalmError {
     /// [`CalmError::PluginConflict`] and [`CalmError::SpecHarnessDormant`].
     #[error("idempotency key exhausted: {0}")]
     IdempotencyKeyExhausted(String),
+
+    /// 409 — `POST /api/today/summary` found no activity in today's window, so
+    /// it created no conversation and sent no message (#1253 INV-TODAYDOC-007).
+    ///
+    /// Its own code rather than the generic [`CalmError::Conflict`], for the
+    /// same reason as [`CalmError::IdempotencyKeyExhausted`]: nothing is wrong
+    /// and nothing is retryable, and the caller's correct response is to say
+    /// "there is nothing to summarise yet" rather than to show an error. A
+    /// status alone cannot carry that, and the other 409s on this path
+    /// ("already exists", "the harness is dormant") mean something a client
+    /// must handle differently.
+    #[error("no activity today: {0}")]
+    TodaySummaryNoActivity(String),
 
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -172,6 +186,7 @@ impl CalmError {
             CalmError::Conflict(_) => "conflict",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
+            CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
             CalmError::Forbidden(_) => "forbidden",
@@ -201,7 +216,8 @@ impl CalmError {
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::PluginConflict(_)
             | CalmError::PluginBusy(_)
-            | CalmError::SpecHarnessDormant(_) => StatusCode::CONFLICT,
+            | CalmError::SpecHarnessDormant(_)
+            | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
@@ -317,6 +333,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginKernelTooOld(m)
             | CalmError::SpecResetUnsupportedInSharedMode(m)
             | CalmError::SpecHarnessDormant(m)
+            | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexAppServer(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
         }
