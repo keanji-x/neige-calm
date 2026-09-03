@@ -1088,6 +1088,78 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     );
 }
 
+/// #1318 S2 — `tracks.template_id` stores the **roster's** key.
+///
+/// ## What this pins, and what it deliberately cannot
+///
+/// The create route overwrites `NewTrack::template_id` with `admission.key`
+/// before the insert, so the column and the recipe lookup read the same value.
+/// This case asserts the column, for every roster key, against the key
+/// spelled out in this file rather than echoed back from the request body —
+/// so "the row carries the roster's identity for this template" stays pinned
+/// no matter what the caller sent.
+///
+/// It is **not** a discriminating test of the overwrite itself, and saying so
+/// is the point. `admit_template` admits an id iff `template_by_key` matches
+/// it *exactly*, so the caller's string and `admission.key` are equal byte for
+/// byte on every input that reaches the insert; deleting the overwrite line
+/// leaves this case green. That was verified by running the mutation, not
+/// assumed. No input can separate the two today — a case-only variant like
+/// `"SMALL-CHANGE"` 400s at admission and never reaches the column at all.
+///
+/// The half that *is* discriminating lives at the source, where the two
+/// values are still distinguishable: `templates::tests::
+/// template_by_key_returns_the_rosters_own_borrow` asserts by pointer
+/// identity that the admitted key is the roster's `&'static str` and not a
+/// value derived from the caller's argument. Together they say: the route
+/// stores `admission.key`, and `admission.key` is the roster's. Neither on its
+/// own would survive the admission rule loosening, which is the exact moment
+/// the overwrite starts changing a stored value.
+#[tokio::test]
+async fn create_stores_the_roster_key_as_template_id() {
+    let boot = boot().await;
+    for key in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            create_body(&boot.area_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let track_id = body["id"].as_str().expect("track id").to_string();
+        let track = boot
+            .repo
+            .track_get(&track_id)
+            .await
+            .expect("track_get")
+            .expect("created track row");
+        assert_eq!(
+            track.template_id.as_deref(),
+            Some(key),
+            "{key}: tracks.template_id must carry the roster key"
+        );
+    }
+
+    // A create with no `template_id` must still store NULL — without this the
+    // overwrite could be widened to "always stamp something" and the loop
+    // above would not notice.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        create_body(&boot.area_id, "no template", json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let track = boot
+        .repo
+        .track_get(&track_id)
+        .await
+        .expect("track_get")
+        .expect("created track row");
+    assert_eq!(track.template_id, None, "unbound create must store NULL");
+}
+
 #[tokio::test]
 async fn unknown_template_id_still_400s() {
     let boot = boot().await;

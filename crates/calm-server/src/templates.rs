@@ -688,6 +688,42 @@ mod tests {
         assert!(template_tasks("missing-template").is_none());
     }
 
+    /// #1318 S2 — `template_by_key` hands back a borrow **into** [`TEMPLATES`],
+    /// never a value derived from the caller's argument.
+    ///
+    /// This is the source side of "`tracks.template_id` stores the roster's
+    /// key": `create_track` writes `admission.key` onto the row, and that key
+    /// is only worth writing if it is the roster's own `&'static str` rather
+    /// than a copy of whatever the client sent. Asserted by data-pointer
+    /// identity, which is the one form the caller's string cannot satisfy —
+    /// `owned` below is a freshly allocated `String` with identical bytes, so
+    /// an equality assertion would pass for both and discriminate nothing.
+    ///
+    /// The mutation this catches is not hypothetical: rewriting the lookup as
+    /// `TEMPLATES.iter().find(..).map(|_| Template { key, .. })` (or any
+    /// case-folding rule that reflects the caller's spelling back) still
+    /// returns an equal key and turns this test red.
+    #[test]
+    fn template_by_key_returns_the_rosters_own_borrow() {
+        for template in &TEMPLATES {
+            let owned = String::from(template.key);
+            assert_ne!(
+                owned.as_ptr(),
+                template.key.as_ptr(),
+                "the fixture must not accidentally be the roster's own buffer"
+            );
+            let found = template_by_key(owned.as_str()).expect("roster key admits");
+            assert!(
+                std::ptr::eq(found, template),
+                "template_by_key must borrow the roster entry, not rebuild one"
+            );
+            assert!(
+                std::ptr::eq(found.key.as_ptr(), template.key.as_ptr()),
+                "the admitted key must be the roster's &'static str, not the caller's"
+            );
+        }
+    }
+
     /// #1209 — the picker's tooltip lists a template's pre-set tasks, and it
     /// reads them from `template_tasks`. That is only honest while the
     /// list is the *same* slice the report renders: a task added to the report

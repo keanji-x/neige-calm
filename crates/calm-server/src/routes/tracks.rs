@@ -659,6 +659,19 @@ pub(crate) async fn create_track(
         })?),
         None => None,
     };
+    // #1318 S2 — the stored `template_id` is the roster's key, not the
+    // caller's string. Both consumers of an admitted id now read the same
+    // value: the recipe lookup already did (`TrackInit::Template { key }`),
+    // and the track row does from here on. Under today's exact-match
+    // `template_by_key` the two strings are equal, so this is not a
+    // behaviour change yet — it is the line that keeps them from diverging
+    // the moment admission stops being exact (case folding, aliases), which
+    // is precisely when a row carrying `"SMALL-CHANGE"` for roster key
+    // `"small-change"` would start meaning something different to every
+    // later reader of the column.
+    if let Some(admission) = admission.as_ref() {
+        p.template_id = Some(admission.key.to_string());
+    }
     // The binding is read off the admitted template; the route no longer digs
     // through the registry a second time.
     let bound_plugin = admission.as_ref().and_then(|a| a.binding.as_ref());
@@ -841,22 +854,25 @@ pub(crate) async fn create_track(
 pub(crate) struct TemplateAdmission {
     /// The roster's own `&'static` key, not the caller's string.
     ///
-    /// It reaches exactly one consumer: `TrackInit::Template { key }`, i.e. the
-    /// **recipe lookup** (`templates::template_report`) inside the create
-    /// transaction. That side is what this borrow protects — a future
-    /// case-folding or aliasing admission rule cannot hand an unnormalized key
-    /// to `template_report`, because the value passed on is the roster's, not
-    /// the caller's.
+    /// It reaches **both** consumers of an admitted id:
     ///
-    /// It does **not** reach the track row. `CreateTrackRequest::into_parts`
-    /// puts the caller's original `template_id` string on `NewTrack` (`:247`),
-    /// and that is what `track_create_tx` binds into `tracks.template_id`. The
-    /// two are identical only because `template_by_key` is an exact match
-    /// today; the very rule this field guards against would separate them —
-    /// `"SMALL-CHANGE"` admitted against roster key `"small-change"` would
-    /// instantiate the right recipe and store `"SMALL-CHANGE"` on the row.
-    /// Normalizing the stored id is a behaviour change and deliberately not
-    /// one this field makes.
+    ///   * the **recipe lookup** (`templates::template_report`) inside the
+    ///     create transaction, via `TrackInit::Template { key }`;
+    ///   * the **track row**, since #1318 S2: `create_track` overwrites
+    ///     `NewTrack::template_id` with `admission.key` before the insert, so
+    ///     `tracks.template_id` stores the roster's spelling.
+    ///
+    /// That symmetry is what this borrow protects. A future case-folding or
+    /// aliasing admission rule cannot hand an unnormalized key to either side,
+    /// because the value passed on is the roster's, not the caller's.
+    ///
+    /// Until #1318 S2 the second bullet read the opposite way:
+    /// `CreateTrackRequest::into_parts` put the caller's original string on
+    /// `NewTrack` and that is what landed in the column. The two spellings are
+    /// identical only because `template_by_key` is an exact match today, so the
+    /// overwrite changes no stored value yet — but the very rule this field
+    /// guards against would have separated them, storing `"SMALL-CHANGE"` on a
+    /// row whose report was instantiated from roster key `"small-change"`.
     pub key: &'static str,
     /// The owning plugin, when a running trusted one claims this id. `None` is
     /// an ordinary template, not a rejection.
