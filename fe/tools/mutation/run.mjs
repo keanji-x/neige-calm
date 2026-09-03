@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -9,17 +9,23 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 const mutationRunner = await import('./runner.ts');
 const {
   boundedTestIdList, boundedVerdict, byteSequencesEqual, gitApplyDirectory, judgeMutation, manifestRelativePath,
-  mutationRunExitCode, oracleIdsFromDocuments, parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan,
-  trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest,
+  mutationRunExitCode, mutationShardMatrix, mutationWitnessTestPaths, oracleIdsFromDocuments,
+  parseMutationTestScope, parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan,
+  trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest, validateWitnessCatalog,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
 const { values } = parseArgs({ options: {
   base: { type: 'string' }, plan: { type: 'boolean' }, report: { type: 'string' }, shard: { type: 'string' },
+  'test-scope': { type: 'string', default: 'full' },
 } });
 if (values.plan && (values.shard || values.report)) throw new Error('--plan cannot be combined with --shard or --report');
 const shard = values.shard ? parseShard(values.shard) : null;
+const testScope = parseMutationTestScope(values['test-scope']);
 const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8'));
+const witnessCatalog = JSON.parse(readFileSync(
+  resolve(feRoot, '../scripts/ci/mutation-witness-extra-paths.json'), 'utf8',
+));
 
 /** @param {string[]} args */
 function git(args) {
@@ -67,15 +73,22 @@ const oracleIds = oracleIdsFromDocuments(readdirSync(oracleRoot).filter((name) =
 const architectureRuleNames = new Set(Object.keys(architecturePlugin.rules ?? {}));
 const trackedPaths = new Set(checkedGit(['ls-files', '--cached']).split('\n').filter(Boolean));
 validateManifest(manifest, { oracle: oracleIds, 'arch-rule': architectureRuleNames }, trackedPaths);
+validateWitnessCatalog(manifest, witnessCatalog, trackedPaths);
 validateTrackedFixtures();
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner requires a clean worktree');
 const mergeBase = values.base ? checkedGit(['merge-base', values.base, 'HEAD']) : null;
 const changed = mergeBase === null ? [] : changedPaths(mergeBase);
-const selected = mergeBase === null ? manifest : selectedEntries(manifest, changed, baseManifestAt(mergeBase));
+const selected = mergeBase === null
+  ? manifest
+  : selectedEntries(manifest, changed, baseManifestAt(mergeBase), witnessCatalog);
 // --plan shares this exact selection path, so a plan can never drift from the run it schedules.
 if (values.plan) {
-  const { total, shards, clamped } = shardPlan(selected.length);
-  console.log(JSON.stringify({ selected: selected.length, total, shards, clamped }));
+  const { total, shards, clamped } = shardPlan(selected.length, testScope);
+  const matrix = mutationShardMatrix(selected, { total, shards }, testScope, witnessCatalog);
+  // `process.exit` may truncate buffered stdout once the matrix grows beyond the old four scalars.
+  // The plan is a subprocess protocol, so write its single line synchronously before exiting.
+  writeSync(process.stdout.fd,
+    `${JSON.stringify({ selected: selected.length, total, shards, clamped, matrix, test_scope: testScope })}\n`);
   process.exit(0);
 }
 const entriesToRun = shardEntries(selected, shard);
@@ -100,8 +113,11 @@ try {
     let failureMessages = {};
     let reverse = null;
     let restoreError = null;
+    const testFiles = testScope === 'witness' ? mutationWitnessTestPaths(entry, witnessCatalog) : [];
     try {
-      test = spawnSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${jsonPath}`], { cwd: feRoot, encoding: 'utf8' });
+      test = spawnSync('npx', ['vitest', 'run', ...testFiles, '--reporter=json', `--outputFile=${jsonPath}`], {
+        cwd: feRoot, encoding: 'utf8',
+      });
     } finally {
       if (apply.status === 0) reverse = git(['apply', `--directory=${gitApplyDirectory}`, '--reverse', patchPath]);
       if (!byteSequencesEqual(before, readFileSync(target))) {
@@ -135,7 +151,8 @@ try {
     // `verdict.errors[].test_ids` re-emit the same ids and dominate the size when a mutation reds the
     // whole suite. `boundedVerdict` touches neither `ok` nor the codes, so the exit code below is
     // computed on exactly the same verdict as before.
-    report.push({ mutation_id: entry.mutation_id, expected_red: entry.expected_red,
+    report.push({ mutation_id: entry.mutation_id, test_files: testScope === 'witness' ? testFiles : null,
+      expected_red: entry.expected_red,
       actual_red: boundedTestIdList(failed), verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, entry.expected_red, failureMessages) });
   }
@@ -143,8 +160,8 @@ try {
   rmSync(temporary, { recursive: true, force: true });
 }
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner left worktree dirty');
-const output = JSON.stringify({ shard, selected: selected.length, ran: entriesToRun.length, total: manifest.length,
-  mutations: report }, null, 2);
+const output = JSON.stringify({ shard, test_scope: testScope, selected: selected.length, ran: entriesToRun.length,
+  total: manifest.length, mutations: report }, null, 2);
 if (values.report) writeFileSync(resolve(feRoot, values.report), `${output}\n`);
 console.log(output);
 process.exitCode = mutationRunExitCode(report.map(({ verdict }) => verdict));
