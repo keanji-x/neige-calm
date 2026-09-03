@@ -1,8 +1,76 @@
 # `features/today`
 
-The landing route: a status bar, **the day's document**, the Today terminal
-placeholder, and a panel holding the week calendar's activity agenda, the
-Running / Recent lists and the conversation module.
+The landing route: a status bar and **the day's document**, beside a panel
+holding the week calendar's activity agenda and the Running list.
+
+Two things were removed on 2026-09-03 (owner call) and must not drift back in
+without one:
+
+- **The Today terminal placeholder.** A dashed box reading "Terminal is not
+  wired up yet" closed the main column, and this file carried a full contract
+  (INV-TODAYTERM-001/003/005/006) for an implementation that never landed and
+  has no `features/today/terminal` to land in. Both are gone. A page does not
+  get to keep making a promise it has not kept.
+- **RECENT.** This was a deliberate trade of reach for focus, and it is worth
+  stating as one rather than as a de-duplication, because the two lists were
+  never the same list.
+
+  What *did* overlap: the calendar's agenda one module up is
+  `activeTracksOn(selected)` over the visible tracks — every one of those whose
+  activity interval overlaps the selected day, with no cap on how many rows it
+  draws (the module scrolls at eight) — while RECENT took the same visible
+  tracks minus waiting and running, ordered them by `updatedAt`, and **kept 12**.
+  So on the default selection a quiet track whose interval covers today was
+  drawn twice inside one card, and the cap is the only thing that ever excused
+  it: 13 such tracks put 13 rows in the agenda and 12 in RECENT, and the row
+  RECENT dropped was the least recently touched. The de-dup that existed
+  (`shown`) only excluded waiting and running; it never looked at the agenda,
+  so "one track appearing twice on a page distorts both the counts and the
+  scan" was violated by the card against itself for each of those tracks except
+  the ones the cap had already discarded.
+
+  What did **not** overlap, and is the part being given up: RECENT applied no
+  date filter, so it also carried tracks whose interval had already closed
+  before today, and today's agenda holds none of those. That class is not the
+  clean "finished before today" it sounds like, because `activeTracksOn` closes
+  the interval at
+
+      end = terminalAt ?? (isTerminal(lifecycle) ? updatedAt : nowMs)
+
+  and `terminalAt` is nullable. A terminal track with `terminalAt === null` — a
+  pre-migration row — is closed at `updatedAt` instead, so editing its title
+  today puts it back in *today's* agenda even though the work finished last
+  month. What RECENT could show and today's agenda cannot is therefore the
+  quiet tracks the overlap test rejects for today: those whose `end` fell
+  before today's start, plus the degenerate row whose `createdAt` is still in
+  the future. The `terminalAt` case is worth knowing precisely because it means
+  "what happened while I was away" was never a clean class here — a null
+  `terminalAt` moves a row between the two lists on a metadata edit.
+
+  Those tracks are not lost. A row is in the agenda of the day its own `end`
+  falls on — that day satisfies both endpoints of the overlap test by
+  construction, for any row whose close is not earlier than its creation — and
+  stepping the calendar there costs one `Previous week` press per week back,
+  since a press moves the selection seven days and the grid follows its week.
+  What is given up is the glance, and the price rises with age: a track that
+  closed six weeks ago is six presses away instead of one row on the landing
+  page. It is worth paying because of what this route is for — Today answers
+  *what needs me*, and a list ordered by `updatedAt` with no date bound is an
+  archive browser, which is a surface this page is not and should not grow
+  into.
+
+**The conversation module was proposed for removal in the same pass and kept.**
+It looks like a duplicate of the track pages' module and is not one: on Today it
+is the **cross-track index** (#1189 S5). It is the only place a track's
+conversations stay reachable once you have navigated away from that track, and
+G6 opens one *from here* — the row navigates to the track and opens its
+assistant drawer in one act. Removing it turned 18 assertions red across the
+three `*-conversation.test.tsx` suites in `app/router/`, all of them behavioural
+(`[G5] lists every conversation of a track on Today after merely visiting it`,
+`[G6] opens an assistant conversation asked for from Today`, and the two that
+pin what must *not* reach Today). Judge the duplication complaint against those
+before touching it: the fix, if there is one, is about how the module is
+*labelled* on this route, not whether it exists.
 
 ## Visual contract
 
@@ -29,8 +97,10 @@ or DST.
 The main column is **status bar, then document**. The status bar is the header's
 `N waiting · N running` plus the compact waiting rows; it is O(1) in height, so
 it cannot grow and push the document off the first screen. "The document is the
-protagonist" is expressed by area and visual weight, not by type size (§8.1).
-Running and Recent are ambience and live in the panel.
+protagonist" is expressed by area and visual weight — and, since 2026-09-03, by
+type: the document region reads at the prose rank (`--text-lg` paired with
+`--measure-prose`, the only pairing tokens.css sanctions) while everything
+around it stays interface-sized. Running is ambience and lives in the panel.
 
 - **INV-TODAYDOC-001** — the page load only *resolves* (`GET /api/today/launchpad`).
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
@@ -91,8 +161,8 @@ Running and Recent are ambience and live in the panel.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
   reason for putting it above the document, so an uncapped list would not be a
   cosmetic problem — it would falsify the layout's justification. The overflow
-  sits behind one disclosure control rather than being dropped: RUNNING and
-  RECENT both exclude anything already counted as waiting.
+  sits behind one disclosure control rather than being dropped: RUNNING
+  excludes anything already counted as waiting.
 - **The first-run page owns a document too.** `areas` is the *user-visible*
   list — #175 filters the system area out of `GET /api/areas` and the launchpad
   lives there — so "no tracks, no areas" is an ordinary state for a workspace
@@ -119,22 +189,6 @@ link — a planned key with no adapter arm is silently dropped.
   that is a *seam*, not dead code. Scheduled events and live track activity must
   co-exist in one agenda; a scheduling plugin fills the prop later. Deleting the
   branch deletes the seam.
-- **The Today terminal is not wired here yet** (`features/today/terminal`). When
-  it lands, its resolve order is a contract: read the cached `calm.todayCardId`
-  → verify the card still has a terminal row → bootstrap **only** on 404. Any
-  other error must surface as an error, never a silent rebuild (INV-TODAYTERM-001),
-  the whole chain runs in one in-flight-guarded async resolver
-  (INV-TODAYTERM-003), the Today track **omits `cwd` and `attach_folder`**
-  entirely (INV-TODAYTERM-005), and the 404 check is duck-typed on
-  `status` rather than `instanceof` (INV-TODAYTERM-006).
-
-  INV-TODAYTERM-005 used to read "passes `cwd: '/'` with `attach_folder: false`".
-  #1147 S3 inverted it: an omitted `cwd` is the *managed* branch, so the kernel
-  allocates and `git init`s a real directory the track's workers can lease, while
-  `/` was never a workspace at all — a `kind: codex` task on that track died in
-  `git_repo_root_for_track_cwd` with nothing but `spawn-failed`, which is the
-  defect #1147 was opened on. An explicit `cwd` now means "attach this existing
-  repository" and is validated, so `/` would be a 400.
 - Attention counting is lifecycle-only for now. The kernel's card-FSM signal
   (`anyCardNeedsInput`) is OR'd in once overlays are read; the sidebar and this
   clock must keep using the same predicate.

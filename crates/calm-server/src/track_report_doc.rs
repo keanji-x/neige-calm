@@ -42,7 +42,7 @@
 //! body, split it into slices, reuse the block ids the caller passes
 //! from the payload JSON's PR1-derived `blocks` cache (minting fresh
 //! `b_xxxx` ids where there is no match), then delete `ROOT.body`.
-//! The persist boundary (`track_report::persist_report_with_shadow`)
+//! The persist boundary (`track_report::write::persist`)
 //! calls it right after loading, inside the same transaction, so the
 //! migrated bytes are written back atomically with the payload.
 //!

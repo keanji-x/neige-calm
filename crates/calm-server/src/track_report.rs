@@ -267,7 +267,7 @@ pub use calm_types::track_report::{ReportBlock, TrackReportPayload};
 // ---------------------------------------------------------------------------
 
 /// One mutation of the report's CRDT block map, executed *inside* the
-/// persist transaction by [`persist_report_with_shadow`] — the only
+/// persist transaction by `write::persist` — the only
 /// place `if_rev` may be checked, because only there is
 /// `ReportDoc::block_rev` the transactional truth (the JSON `blocks`
 /// cache can be arbitrarily stale under D8).
@@ -583,8 +583,121 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared persist boundary (Issue #247 PR3)
+// Shared persist boundary (Issue #247 PR3, closed by #1318 §1)
 // ---------------------------------------------------------------------------
+
+/// The resolved report a write is about: the three values that come out of
+/// [`resolve_report_for_track`] together and travel together from there on.
+///
+/// Introduced by #1318 §1 because the split made the duplication obvious —
+/// five signatures (three entry points, the test entry, the writer) each
+/// repeated the same three parameters in the same order, which is four chances
+/// to transpose two of them. They are one value; this is that value.
+///
+/// Deliberately not the return type of [`resolve_report_for_track`] itself: that
+/// function is `pub` and its tuple is destructured at ~20 test call sites, and
+/// churning those would have buried this slice's actual diff.
+///
+/// # The fields are private, and the constructor catches an accidental mismatch
+///
+/// Read the next two paragraphs together; the second is the one that keeps this
+/// doc honest.
+///
+/// **What the constructor is for.** `write::persist` takes the row id from
+/// `report_card`, and the event scope, the `PlanUpdated` target and the task
+/// reprojection from `track`. Hand it a mismatched pair and it rewrites B's
+/// report while emitting A's events and rebuilding A's tasks — and nothing
+/// downstream compares the two. A review channel built exactly that from a
+/// struct literal, back when the fields were `pub(crate)`. So the fields are
+/// private (visible only inside `track_report` and its descendants), and every
+/// other module goes through [`resolve`] — which cannot mismatch, because
+/// `resolve_report_for_track` finds the card *among that track's cards* — or
+/// through [`for_resolved_parts`], which compares the pair.
+///
+/// **What that comparison is worth.** Not much, against a caller that means it.
+/// `Card::track_id` is a `pub` field, so a sibling holding B's real card can
+/// clone it, overwrite `track_id` with A's, and walk straight through: the
+/// check compares two values the caller supplied. It is a **drift catch for an
+/// accidental pairing, not a guard** — the same reason this slice refused a
+/// witness token minted from `Actor` (`write.rs`, "What is still not closed",
+/// item 2), and it would be inconsistent to ship the shape here under a better
+/// name. A real check has to run against the row inside the write transaction;
+/// see item 6 of that list.
+///
+/// `current_payload` is not checked at all. It seeds the CRDT on a first write
+/// (`body_crdt` still NULL) and supplies the block-id hints on layout
+/// migration, so a wrong one is a real defect — it simply has no cheap local
+/// comparison, since a payload carries no owner.
+///
+/// [`resolve`]: ReportEditTarget::resolve
+/// [`for_resolved_parts`]: ReportEditTarget::for_resolved_parts
+pub(crate) struct ReportEditTarget {
+    track: Track,
+    report_card: Card,
+    current_payload: TrackReportPayload,
+}
+
+impl ReportEditTarget {
+    /// Resolve by track id — the REST legs' entry, which had no reason to see the
+    /// three parts separately in the first place. Cannot produce a mismatch:
+    /// [`resolve_report_for_track`] finds the report card *among that track's
+    /// cards*.
+    pub(crate) async fn resolve(repo: &dyn RouteRepo, id: &str) -> Result<Self, CalmError> {
+        let (track, report_card, current_payload) = resolve_report_for_track(repo, id).await?;
+        Ok(Self {
+            track,
+            report_card,
+            current_payload,
+        })
+    }
+
+    /// Build from parts a caller resolved itself — the MCP funnel, whose
+    /// resolver (`mcp_server::tools::track_report::resolve_report_for_caller`)
+    /// derives the track from the connection-bound spec card rather than from a
+    /// path parameter.
+    ///
+    /// Fallible on purpose. The check is one comparison and it is the whole
+    /// reason the fields are private: without it this constructor would be a
+    /// struct literal wearing a function's clothes.
+    pub(crate) fn for_resolved_parts(
+        track: Track,
+        report_card: Card,
+        current_payload: TrackReportPayload,
+    ) -> Result<Self, CalmError> {
+        if report_card.track_id != track.id {
+            return Err(CalmError::Internal(format!(
+                "track_report: report card {} belongs to track {}, not {} — a write built from                  these parts would rewrite one track's report while emitting another's events",
+                report_card.id.as_str(),
+                report_card.track_id.as_str(),
+                track.id.as_str()
+            )));
+        }
+        Ok(Self {
+            track,
+            report_card,
+            current_payload,
+        })
+    }
+}
+
+/// #1318 §1 — the writer and the complete set of ways to reach it.
+///
+/// The mutating function lives in there as a **private** `fn`, so "which code
+/// can write a track report" is a question `rustc` answers: this module's file
+/// and nothing else. Read [`write`]'s header for what that does and does not
+/// close. Everything outside calls one of its three `pub(crate)` entry points.
+pub(crate) mod write;
+
+/// The pre-#1318 direct handle on the persist boundary, kept for tests only.
+///
+/// Re-exported here rather than left at `track_report::write::persist_report`
+/// so the ten integration-test files that call
+/// `calm_server::track_report::persist_report` keep working unchanged — the
+/// point of this slice is the production caller set, and churning test imports
+/// would have buried that diff. Same `cfg` as the definition: absent from any
+/// build without `fixtures`, so it is not a hole in the boundary.
+#[cfg(any(test, feature = "fixtures"))]
+pub use write::persist_report;
 
 /// Look up the track-report card for a given track id, returning the
 /// `(track, report_card, current_payload)` triple. The invariant
@@ -599,12 +712,12 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 ///     deserialize (someone wrote past card kind validation).
 ///
 /// Used by `routes::tracks::update_track_report` (REST) to gather the
-/// pieces `persist_report` needs without duplicating the row-lookup
+/// pieces the write entry needs without duplicating the row-lookup
 /// logic across paths. The MCP path uses its own resolver
 /// (`mcp_server::tools::track_report::resolve_report_for_caller`)
 /// because it derives the track from the connection-bound planner card
-/// rather than a path parameter — but both ultimately funnel into
-/// the same [`persist_report`] writer below.
+/// rather than a path parameter — but both ultimately funnel into the
+/// same `write::persist` writer, through different entry points.
 pub async fn resolve_report_for_track(
     repo: &dyn RouteRepo,
     track_id: &str,
@@ -632,320 +745,6 @@ pub async fn resolve_report_for_track(
     Ok((track, report_card, payload))
 }
 
-/// Persist a new `TrackReportPayload` onto the track-report card row and
-/// emit `Event::CardUpdated` + `Event::TrackReportEdited` from the same
-/// transaction. Returns the updated `Card` row so callers can build
-/// their wire response (REST returns the projected payload, MCP
-/// returns `{ updated_at }`).
-///
-/// Single write boundary for every track-report mutation — both the
-/// planner-MCP tools (`calm.report.write` / `calm.report.edit`, with
-/// `author = Planner`) and the REST user-edit endpoint (`POST
-/// /api/tracks/:id/report`, with `author = User`) funnel through this
-/// function so the CRDT-write + dual-event invariant holds uniformly:
-/// every call → one `CardUpdated` + one `TrackReportEdited`.
-///
-/// Issue #247 PR1 — materializes the opaque CRDT blob alongside the
-/// legacy `payload` JSON. The CRDT is authoritative; the JSON column
-/// is a read-cache the existing v1 REST / WS read paths and the
-/// frontend continue to consume.
-///
-/// Issue #247 PR2 — every call also emits a structured
-/// `Event::TrackReportEdited` carrying `(summary_before, summary_after,
-/// body_before, body_after, author, edit_id)` so PR4's UI can render an
-/// edit timeline and PR5's planner agent can wake on user-authored edits.
-///
-/// Issue #247 PR3 — `author` is now a parameter (was hard-coded
-/// `Planner`). The MCP tools pass `EditAuthor::Planner`; the REST handler
-/// passes `EditAuthor::User`. The `EditAuthor::Kernel` arm has no
-/// caller today and is reserved for future server-internal rewrites.
-///
-/// In-tx sequence:
-///
-///   1. Read the current `body_crdt`. NULL = first post-PR1 write on
-///      this row (legacy seed / pre-#247 mint); seed a fresh doc from
-///      `current_payload`. Non-NULL = load via `ReportDoc::from_bytes`.
-///   2. Project the doc to capture `(summary_before, body_before)` —
-///      the authoritative pre-write state for the edit-log entry.
-///   3. Apply the new `(summary, body)` via `ReportDoc::update` —
-///      automerge does the per-field Myers diff internally.
-///   4. Project back to `(summary_after, body_after)` and re-serialize
-///      a `TrackReportPayload` from those values (not the raw `next`
-///      input). The projection is what the JSON cache must mirror so
-///      a future read sees the post-merge text rather than a partially-
-///      applied input — under single-writer it's identical to `next`,
-///      but reading from the doc keeps the JSON-cache contract
-///      ("CRDT is source of truth") true by construction.
-///   5. Write both columns and emit both events in one tx — via
-///      `write_with_events_typed` so the events are persisted in the
-///      same transaction as the row update (commit-then-emit invariant
-///      preserved).
-///
-/// **Both events fire on every call, including content-equal writes**
-/// (e.g. re-asserting the same body, or `report.edit` with
-/// `old_string == new_string`). PR4's UI can filter no-op entries from
-/// the timeline if it wants. Keeping the invariant "every
-/// `persist_report` call → one `CardUpdated` + one `TrackReportEdited`"
-/// dead simple means downstream consumers never have to second-guess
-/// whether an event is missing.
-///
-/// The `current_payload` argument is the payload as it was last seen
-/// by the caller. It's used only as the seed for the first-time
-/// `from_payload` branch — once `body_crdt` is non-NULL, the doc is
-/// the source.
-#[allow(clippy::too_many_arguments)]
-pub async fn persist_report(
-    repo: &dyn RouteRepo,
-    events: &EventBus,
-    write: &WriteContext,
-    actor: ActorId,
-    author: EditAuthor,
-    track: Track,
-    report_card: Card,
-    current_payload: TrackReportPayload,
-    next: TrackReportPayload,
-    if_doc_rev: u64,
-    agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
-    auto_promote_draft: bool,
-) -> Result<Card, CalmError> {
-    let (updated, _block) = persist_report_with_shadow(
-        repo,
-        events,
-        write,
-        actor,
-        author,
-        track,
-        report_card,
-        current_payload,
-        ReportDocOp::Replace {
-            summary: Some(next.summary),
-            body: next.body,
-            if_doc_rev,
-        },
-        agent_message,
-        lifecycle,
-        auto_promote_draft,
-        None,
-    )
-    .await?;
-    Ok(updated)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn persist_report_with_shadow(
-    repo: &dyn RouteRepo,
-    events: &EventBus,
-    write: &WriteContext,
-    actor: ActorId,
-    author: EditAuthor,
-    track: Track,
-    report_card: Card,
-    current_payload: TrackReportPayload,
-    op: ReportDocOp,
-    agent_message: Option<String>,
-    lifecycle: Option<TrackLifecycle>,
-    auto_promote_draft: bool,
-    recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
-    let report_card_id = report_card.id.clone();
-    let track_id = track.id.clone();
-    let area_id = track.area_id.clone();
-    let scope = EventScope::Card {
-        card: report_card_id.clone(),
-        track: track_id.clone(),
-        area: area_id.clone(),
-    };
-    let track_scope = EventScope::Track {
-        track: track_id.clone(),
-        area: area_id,
-    };
-    let report_card_id_inner = report_card_id.clone();
-    let track_id_for_event = track_id.clone();
-    let (updated, _ids) = write_with_actor_events_typed::<(Card, Option<BlockOpOutcome>), _>(
-        repo,
-        None,
-        events,
-        write,
-        move |tx| {
-            let id = report_card_id_inner.as_str().to_string();
-            let report_card_id = report_card_id_inner.clone();
-            let track_id = track_id_for_event.clone();
-            let scope = scope.clone();
-            let track_scope = track_scope.clone();
-            let current_payload = current_payload.clone();
-            let op = op.clone();
-            let actor = actor.clone();
-            let agent_message = agent_message.clone();
-            let recorder_shadow = recorder_shadow.clone();
-            Box::pin(async move {
-                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                if auto_promote_draft
-                    && let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await?
-                {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &track_id,
-                        target,
-                        &actor,
-                        agent_message.clone().unwrap_or_default(),
-                    )
-                    .await?
-                {
-                    if let Some(probe) = recorder_shadow.as_ref() {
-                        probe
-                            .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
-                            .await?;
-                    }
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), track_scope.clone(), event)),
-                    );
-                }
-                if let Some(probe) = recorder_shadow.as_ref() {
-                    probe
-                        .record(tx, RecorderShadowDecisionKind::ReportWrite)
-                        .await?;
-                }
-                // 1. Load (or lazy-init) the CRDT doc for this card.
-                //    Loaded docs may still carry the pre-#960 layout
-                //    (`ROOT.body` Text, no block map) — migrate them
-                //    in place, reusing the PR1-derived block ids from
-                //    the payload JSON as the id hint. The migrated
-                //    bytes are written back below in this same tx.
-                let existing = card_body_crdt_get_tx(tx, &id).await?;
-                let mut doc = match existing {
-                    Some(bytes) => {
-                        let mut doc = ReportDoc::from_bytes(&bytes).map_err(|e| {
-                            CalmError::Internal(format!(
-                                "track_report: load CRDT for card {id}: {e}"
-                            ))
-                        })?;
-                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
-                            .map_err(|e| {
-                                CalmError::Internal(format!(
-                                    "track_report: migrate CRDT block layout for card {id}: {e}"
-                                ))
-                            })?;
-                        doc
-                    }
-                    // Safe: current_payload was read outside the tx,
-                    // but is only consulted here when body_crdt is
-                    // still NULL in-tx. SQLite's single-writer means
-                    // no concurrent writer can have populated the
-                    // blob between that read and this branch; once
-                    // body_crdt is non-NULL we take the Some arm and
-                    // ignore current_payload entirely.
-                    None => ReportDoc::from_payload(&current_payload),
-                };
-                // 2. Capture the pre-write projection for the edit-log
-                //    entry. A malformed doc surfaces as Internal here
-                //    (never a panic).
-                let (summary_before, body_before) = doc.project().map_err(|e| {
-                    CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
-                })?;
-                // 3. Apply the requested op on the doc. `if_rev`
-                //    checks happen in here, against the CRDT truth
-                //    inside this transaction — a conflict aborts the
-                //    tx (nothing written, no events emitted).
-                let (outcome, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
-                // 4. Project back — these are the authoritative values
-                //    that go into the JSON cache. Since #960 PR2 the
-                //    CRDT block map is the source of truth: `body` is
-                //    the per-block concatenation and `blocks` is the
-                //    doc's own snapshot (id/rev alignment already
-                //    happened inside `ReportDoc::update`), so nothing
-                //    is re-derived at the JSON layer.
-                let (summary_after, body_after) = doc.project().map_err(|e| {
-                    CalmError::Internal(format!(
-                        "track_report: project CRDT post-op for card {id}: {e}"
-                    ))
-                })?;
-                let mut projected_payload =
-                    TrackReportPayload::new(summary_after.clone(), body_after.clone());
-                projected_payload.doc_rev = doc_rev;
-                projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
-                    CalmError::Internal(format!(
-                        "track_report: snapshot CRDT blocks for card {id}: {e}"
-                    ))
-                })?);
-                let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
-                let (declarations, block_diagnostics) =
-                    calm_types::report_blocks::tasks::project_task_declarations(blocks);
-                let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
-                    CalmError::Internal(format!("track_report: serialize projected payload: {e}"))
-                })?;
-                let patch = CardPatch {
-                    title: None,
-                    kind: None,
-                    sort: None,
-                    payload: Some(payload_value),
-                    deletable: None,
-                };
-                let crdt_bytes = doc.to_bytes();
-                // 5. One transactional write rewriting both columns +
-                //    two events tagged with the same card scope. Order
-                //    matters: `CardUpdated` first so an existing
-                //    subscriber that processes both events sees the
-                //    generic "row changed" signal before the structured
-                //    edit-log entry (matches the historical broadcast
-                //    order before PR2 added the structured event).
-                let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
-                // The block-existence leg of projection reads the report cache.
-                // Update that cache first inside this same transaction so refs
-                // are checked against this write's snapshot, never the previous
-                // committed payload. Any projection error still rolls all of it back.
-                let task_projection =
-                    project_tasks_tx(tx, track_id.as_str(), &declarations, &block_diagnostics)
-                        .await?;
-                let report_edited = Event::TrackReportEdited {
-                    track_id: track_id.clone(),
-                    card_id: report_card_id,
-                    author,
-                    // Kept on the event wire for historical compatibility;
-                    // the withdrawn proposal channel has no write point.
-                    author_plugin_id: None,
-                    edit_id: uuid::Uuid::new_v4().to_string(),
-                    summary_before,
-                    summary_after,
-                    body_before,
-                    body_after,
-                    agent_message,
-                };
-                events.push((
-                    actor.clone(),
-                    scope.clone(),
-                    Event::CardUpdated(updated.clone()),
-                ));
-                events.push((actor.clone(), scope, report_edited));
-                if !task_projection.changed_keys.is_empty() {
-                    events.push((
-                        actor.clone(),
-                        track_scope,
-                        Event::PlanUpdated {
-                            track_id,
-                            changed_keys: task_projection.changed_keys,
-                            agent_message: None,
-                        },
-                    ));
-                }
-                events.extend(task_projection.kernel_events);
-                Ok(((updated, outcome), events))
-            })
-        },
-    )
-    .await?;
-    Ok(updated)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,6 +762,56 @@ mod tests {
                 .unwrap_err();
         assert!(
             matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished planner task(s)") && message.contains("tree_task_budget of 8"))
+        );
+    }
+
+    /// #1318 §1 — the check that makes [`ReportEditTarget`] a resolved target
+    /// rather than three arguments in a trench coat.
+    ///
+    /// The construction a review channel built: hand the constructor track A
+    /// with B's report card, and `write::persist` would rewrite B's row while
+    /// emitting A's events and reprojecting A's tasks. Nothing downstream
+    /// compares the two, so this is the only place it can be caught — which is
+    /// why the fields are private and this is the only door in.
+    ///
+    /// Both directions, because a constructor that rejected everything would
+    /// pass the first assertion on its own.
+    #[test]
+    fn report_edit_target_pairs_a_card_only_with_its_own_owner() {
+        fn parts(card_owner: &str) -> (Track, Card) {
+            let owner = serde_json::from_value(json!({
+                "id": "w_a", "area_id": "a_1", "title": "A", "sort": 1.0,
+                "archived_at": null, "pinned_at": null, "cwd": "",
+                "created_at": 0, "updated_at": 0
+            }))
+            .expect("owner fixture");
+            let card = serde_json::from_value(json!({
+                "id": "c_1", "track_id": card_owner, "kind": "track-report",
+                "sort": 1.0, "payload": {}, "created_at": 0, "updated_at": 0
+            }))
+            .expect("card fixture");
+            (owner, card)
+        }
+
+        let (owner, own_card) = parts("w_a");
+        ReportEditTarget::for_resolved_parts(owner, own_card, TrackReportPayload::initial())
+            .expect("its own report card must build a target");
+
+        let (owner, foreign_card) = parts("w_b");
+        // `let ... else` rather than `expect_err`: the latter would need
+        // `ReportEditTarget: Debug`, and deriving it to serve one test is how a
+        // type grows an accessor nobody asked for.
+        let Err(error) = ReportEditTarget::for_resolved_parts(
+            owner,
+            foreign_card,
+            TrackReportPayload::initial(),
+        ) else {
+            panic!("a report card from another owner must not build a target");
+        };
+        assert!(
+            matches!(&error, CalmError::Internal(message)
+                if message.contains("belongs to track w_b, not w_a")),
+            "the error must name both so the mismatch is diagnosable, got: {error:?}"
         );
     }
 

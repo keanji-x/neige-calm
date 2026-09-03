@@ -150,7 +150,7 @@ async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> 
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM operations \
          WHERE kind = 'planner-harness-start' \
-           AND json_extract(payload_json, '$.track_id') = ?1",
+           AND json_extract(payload_json, '$.wave_id') = ?1",
     )
     .bind(track_id)
     .fetch_one(&pool)

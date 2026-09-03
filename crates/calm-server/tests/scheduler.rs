@@ -1080,7 +1080,9 @@ impl ProviderAdapter for BootstrapAdapter {
         input: &Value,
         _op: &Operation,
     ) -> CalmResult<TxOutput> {
-        let track_id = input["track_id"].as_str().unwrap();
+        // `wave_id` is the frozen persisted spelling of this field; see
+        // `PlannerHarnessStartOperationPayload`.
+        let track_id = input["wave_id"].as_str().unwrap();
         sqlx::query("UPDATE tracks SET lifecycle='planning' WHERE id=?1 AND lifecycle='draft'")
             .bind(track_id)
             .execute(&mut **tx)

@@ -39,8 +39,8 @@
 //!
 //! ## Edit semantics (matched to codex's Edit)
 //!
-//!   * `old_string == new_string` → falls through to `persist_report`
-//!     as a content-equal write. Emits the same two-event pair
+//!   * `old_string == new_string` → falls through to the persist
+//!     boundary as a content-equal write. Emits the same two-event pair
 //!     (`CardUpdated` + `TrackReportEdited`) as every other persist
 //!     path, with `body_before == body_after`. PR4's UI consumer can
 //!     filter no-op edits from the timeline client-side; the kernel
@@ -376,8 +376,8 @@ async fn report_edit(
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
 
     // Issue #247 PR2 review: removed the `old_string == new_string`
-    // short-circuit so this handler always falls through to
-    // `persist_report` and emits the same `CardUpdated` +
+    // short-circuit so this handler always falls through to the
+    // persist boundary and emits the same `CardUpdated` +
     // `TrackReportEdited` event pair as `report.write`. The asymmetry
     // it created (write-with-identical-content → 2 events, edit-with-
     // identical-strings → 0 events) made PR4's UI consumer have to
@@ -536,12 +536,19 @@ pub(crate) async fn load_report_for_track(
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).
 ///
 /// Issue #247 PR3 — the heavy lifting (CRDT load / project / update /
-/// dual-event emit) lives in [`crate::track_report::persist_report`] so
-/// the REST user-edit endpoint (`POST /api/tracks/:id/report`) can call
-/// the same write boundary with `EditAuthor::User`. The two callers
-/// share one persist path; one event-pair contract; one transactional
-/// write. Anything else would be two parallel implementations of the
-/// same invariant, with the corresponding drift risk.
+/// dual-event emit) lives in `crate::track_report::write::persist` so
+/// the REST user-edit endpoint (`POST /api/tracks/:id/report`) reaches
+/// the same write boundary. The two callers share one persist path;
+/// one event-pair contract; one transactional write. Anything else
+/// would be two parallel implementations of the same invariant, with
+/// the corresponding drift risk.
+///
+/// #1318 §1 — they no longer reach it through the same *function*: that
+/// writer is private to `track_report::write`, and this path enters via
+/// `write::agent_report_op` (through `decision_sink`) while the REST
+/// endpoint enters via `write::rest_user_replace`. The sharing is
+/// unchanged and the attribution got stricter — only this path can name
+/// an `EditAuthor` at all, and it takes it from the role.
 struct ReportSinkCall {
     track: Track,
     report_card: Card,

@@ -2570,7 +2570,10 @@ async fn planner_harness_start_payloads(repo: &SqlxRepo, card_id: &str) -> Vec<V
             payload
                 .get("request")
                 .unwrap_or(payload)
-                .get("planner_card_id")
+                // The PERSISTED key, which #1316 S3 froze at the old spelling —
+                // see `PlannerHarnessStartOperationPayload`'s doc comment for
+                // why renaming it would be a permanent 409.
+                .get("spec_card_id")
                 .and_then(Value::as_str)
                 == Some(card_id)
         })

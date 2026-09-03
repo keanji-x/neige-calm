@@ -424,8 +424,13 @@ async fn insert_harness_start_op_for_card(
             },
             json!({
                 "actor": ActorId::KernelDispatcher,
-                "track_id": track_id.as_str(),
-                "planner_card_id": card_id,
+                // The FROZEN persisted spelling — `PlannerHarnessStartOperationPayload`
+                // serializes as `wave_id` / `spec_card_id` because the payload is
+                // hashed into `operations.payload_hash`. Seeding the Rust spelling
+                // here would make this fixture disagree with every real row, and the
+                // reaper's `$.wave_id` predicate would silently match nothing.
+                "wave_id": track_id.as_str(),
+                "spec_card_id": card_id,
                 "cwd": "/tmp",
             }),
         )

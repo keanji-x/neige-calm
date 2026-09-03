@@ -82,7 +82,8 @@ pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `3` since #979: the CRDT root carries `doc_rev`, mirrored as
 /// `docRev` in the payload. There is no SQL migration — v1/v2 rows
 /// deserialize with revision zero and are lazily upgraded to v3 on
-/// their next write through `persist_report`, whose CRDT migrator
+/// their next write through the report-edit boundary
+/// (`calm_server::track_report::write::persist`), whose CRDT migrator
 /// (`ReportDoc::ensure_blocks_layout`) rebuilds the block layout. The
 /// read path carries no version guard for this kind, so v1 rows stay
 /// readable in place.

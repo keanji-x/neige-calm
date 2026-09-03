@@ -217,7 +217,13 @@ impl SessionRepo for SqlxRepo {
                       SELECT 1 FROM operations o
                        WHERE o.kind = 'planner-harness-start'
                          AND o.phase = 'failed'
-                         AND json_extract(o.payload_json, '$.track_id') = w.id
+                         -- `$.wave_id` / `$.spec_card_id` are the FROZEN keys of
+                         -- `PlannerHarnessStartOperationPayload`: that payload is
+                         -- hashed into `operations.payload_hash`, so #1316 kept its
+                         -- serialization stable while renaming the Rust fields. A
+                         -- query written against the Rust spelling matches zero
+                         -- rows — silently, at runtime.
+                         AND json_extract(o.payload_json, '$.wave_id') = w.id
                          -- The inner MAX subquery limits candidates to start ops
                          -- for this track's real planner card. Equality to that MAX
                          -- therefore implies o is a planner op; repeating the join
@@ -225,11 +231,11 @@ impl SessionRepo for SqlxRepo {
                          AND o.rowid = (
                              SELECT MAX(o2.rowid) FROM operations o2
                               WHERE o2.kind = 'planner-harness-start'
-                                AND json_extract(o2.payload_json, '$.track_id') = w.id
-                                AND json_type(o2.payload_json, '$.planner_card_id') = 'text'
+                                AND json_extract(o2.payload_json, '$.wave_id') = w.id
+                                AND json_type(o2.payload_json, '$.spec_card_id') = 'text'
                                 AND EXISTS (
                                     SELECT 1 FROM cards c2
-                                     WHERE c2.id = json_extract(o2.payload_json, '$.planner_card_id')
+                                     WHERE c2.id = json_extract(o2.payload_json, '$.spec_card_id')
                                        AND c2.track_id = w.id
                                        AND c2.role = 'planner'
                                 )

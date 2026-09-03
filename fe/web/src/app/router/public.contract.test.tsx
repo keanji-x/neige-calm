@@ -81,7 +81,17 @@ describe('route registration', () => {
     );
 
     expect(await screen.findByRole('complementary')).toBeTruthy();
-    expect(screen.getByLabelText('Today terminal')).toBeTruthy();
+    /* The index route really rendered *Today* and not just some page with a
+       panel. The anchor used to be the retired placeholder's `aria-label`,
+       which no longer exists; the status counts are the replacement — they are
+       in `TodayHeader` and on no other route. */
+    expect(screen.getByText('waiting')).toBeTruthy();
+    /* And this is the exact locator the two Playwright suites now anchor
+       `/next/` on. It is asserted here, against the real route tree, so that
+       "the anchor exists" is something a run proves rather than something a
+       reader concluded from the source: Today's calendar module is the only
+       place in the app that renders a `Previous week` control. */
+    expect(screen.getByRole('button', { name: 'Previous week' })).toBeTruthy();
   });
 
   function registeredPaths(): (string | undefined)[] {

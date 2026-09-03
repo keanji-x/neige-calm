@@ -16,7 +16,11 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
   const track = await createTrack(request, area.id);
 
   const routes = [
-    { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
+    /* #1253 — see `routes-reachable`: Today's page title is a locale- and
+       date-dependent string, so the anchor is the calendar module's week nav
+       instead. It is Today-only, so a green run here means axe really scanned
+       Today. */
+    { path: '/next/', anchor: page.getByRole('button', { name: 'Previous week' }) },
     { path: `/next/area/${area.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: area.name }) },
     /* #1211 — the new-track page. Added here rather than left to the create
        planner: this is a real route with its own heading, a `contenteditable` and

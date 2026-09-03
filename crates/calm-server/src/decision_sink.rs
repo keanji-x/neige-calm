@@ -22,7 +22,7 @@ use crate::track_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
 use crate::track_report::{
-    BlockOpOutcome, ReportDocOp, TrackReportPayload, persist_report_with_shadow,
+    self, BlockOpOutcome, ReportDocOp, ReportEditTarget, TrackReportPayload,
 };
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
@@ -455,20 +455,22 @@ impl CardDecisionSink {
                 track_id: track.id.clone(),
             });
         let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
-        persist_report_with_shadow(
+        // #1318 §1 — the writer is private to its module; this funnel
+        // reaches it through the one entry point that accepts a
+        // caller-decided attribution, because the decision above is genuinely
+        // this funnel's to make. The two REST entries cannot pass one at all.
+        track_report::write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
             &self.write,
             actor,
             author,
-            track,
-            report_card,
-            current_payload,
+            ReportEditTarget::for_resolved_parts(track, report_card, current_payload)?,
             op,
             agent_message,
             lifecycle,
             auto_promote_draft,
-            Some(recorder_shadow),
+            recorder_shadow,
         )
         .await
     }
