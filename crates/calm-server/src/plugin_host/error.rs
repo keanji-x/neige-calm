@@ -166,6 +166,38 @@ pub enum HostError {
     #[error("connector `{plugin_id}` is unavailable: {reason}")]
     ConnectorUnavailable { plugin_id: String, reason: String },
 
+    /// #1284 §2.2/§2.4 — the plugin declares `config_schema.required` keys
+    /// that neither the operator's `user_config` nor a manifest `default`
+    /// supplies, so the kernel refuses to start it.
+    ///
+    /// Its own variant rather than [`Self::ConnectorUnavailable`] because this
+    /// fires on the `app` path, where "connector" is simply false; and rather
+    /// than [`Self::BadState`] because the state is the operator's to fix, not
+    /// a kernel invariant that broke. Like `KernelTooOld` and
+    /// `TemplateConflict` it is raised before any process spawn or token mint,
+    /// so nothing is left half-started — but unlike them it also publishes a
+    /// live `Unavailable` entry, because `reason` is the operator's only
+    /// diagnostic and it has to survive to `GET /api/plugins/{id}`.
+    #[error("plugin `{plugin_id}` cannot start: {reason}")]
+    MissingRequiredConfig { plugin_id: String, reason: String },
+
+    /// #1284 §2.3 (S2 review P2-1) — the spawn path could not read the
+    /// plugin's stored `user_config` at all: the repo call failed. Not
+    /// [`Self::MissingRequiredConfig`], because the kernel does not know
+    /// whether anything is missing — it never got to look; and not
+    /// [`Self::BadState`], whose catch-all 500 mapping would both claim a
+    /// kernel fault and, more importantly, invite the plain `?` that skips
+    /// publishing the `Unavailable` entry.
+    ///
+    /// Reading `{}` instead would be worse than failing: manifest defaults
+    /// would silently paper over the operator's real configuration, and a
+    /// `required` key could look satisfied by a default while the operator's
+    /// actual value sat unread. So the spawn is refused, and — like
+    /// `MissingRequiredConfig` — a live `Unavailable` entry is published
+    /// first, so `reason` survives to `GET /api/plugins/{id}`.
+    #[error("plugin `{plugin_id}` cannot start: {reason}")]
+    ConfigUnreadable { plugin_id: String, reason: String },
+
     /// #1196 §2.5 — the per-id lifecycle lock was held by another operation.
     ///
     /// **Nothing happened.** Every entry point that can return this takes the
