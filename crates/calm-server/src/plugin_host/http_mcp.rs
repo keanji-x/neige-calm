@@ -657,6 +657,10 @@ impl HttpMcpClient {
             header_auth,
             secret_forms,
             agent: ureq::AgentBuilder::new()
+                // The manifest names the one endpoint this credential belongs
+                // to. Following an upstream redirect would replay arbitrary
+                // custom auth headers (for example `X-API-Key`) to the target.
+                .redirects(0)
                 // Connect gets its OWN floor because it is a third phase with a
                 // third constraint — see [`CONNECT_TIMEOUT_FLOOR`]. It is not
                 // the bring-up budget (which would cut off a cold connection on
