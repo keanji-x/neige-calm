@@ -121,33 +121,16 @@ jobs:
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
+      - name: frozen-vector gate discriminates branch-creation pushes (#1294)
+        run: scripts/ci/frozen-vector-gate-selftest.sh
+
       # This used to be a standalone, non-required eight-second job. Folding it into the required
       # lint context removes one runner and makes the security-vector freeze gate enforceable.
       - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          VEC_DIR='crates/calm-server/tests/vectors/'
-          if [ -z "${BASE_SHA:-}" ] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-            BASE_SHA=$(git rev-parse HEAD~1)
-          fi
-          if git diff --quiet "$BASE_SHA"...HEAD -- "$VEC_DIR"; then
-            echo "OK: frozen vectors untouched"
-            exit 0
-          fi
-          bad=0
-          for sha in $(git log --format=%H "$BASE_SHA"..HEAD -- "$VEC_DIR"); do
-            if ! git log -1 --format=%B "$sha" | grep -q 'FROZEN-VECTOR-CHANGE:'; then
-              echo "::error::commit $sha touches $VEC_DIR without a 'FROZEN-VECTOR-CHANGE:' rationale in its message"
-              git log -1 --format='  %h %s' "$sha"
-              bad=1
-            fi
-          done
-          if [ "$bad" -ne 0 ]; then
-            exit 1
-          fi
-          echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: scripts/ci/frozen-vector-gate.sh
 
       - name: single migrations/ dir gate (#679 PR2)
         run: |
