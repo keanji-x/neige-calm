@@ -122,7 +122,12 @@ fail() {
 #
 # `/* */` is rejected outright rather than parsed: a block comment can hide a
 # declaration from a line-oriented stripper, and this file has never needed one.
-CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_FILE")"
+CODE="$(awk '{
+  if ($0 ~ /^[[:space:]]*\/\//) { print ""; next }
+  i = index($0, "//")
+  if (i > 0) { print substr($0, 1, i - 1); next }
+  print
+}' "$BOUNDARY_FILE")"
 
 # attrs_above <awk-ERE> — print the block of `#[…]` attribute lines *directly
 # above* the first line matching the pattern, and nothing else.
@@ -152,12 +157,28 @@ CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_
 # and the writer. Rust does not detach an attribute from its item across blank
 # lines or comments; neither does this. A non-empty, non-attribute line still
 # breaks the block, which is what keeps the decoy-`const` above caught.
+#
+# A multi-line attribute is one attribute. rustfmt emits them — a long
+# `#[cfg(all(\n    feature = "fixtures",\n    unix\n))]` is three lines, only the
+# first of which starts with `#[`. Treating the continuation as "some other
+# line" cleared the block, which made R1b go GREEN on a cfg'd writer. So the
+# block stays open until brackets balance.
 attrs_above() {
   printf '%s' "$CODE" | awk -v pat="$1" '
-    $0 ~ pat         { print block; exit }
-    /^#\[/           { block = block $0 "\n"; next }
-    /^[[:space:]]*$/ { next }
-                     { block = "" }
+    function depth(s,   i, c, d) {
+      d = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "[") d++
+        else if (c == "]") d--
+      }
+      return d
+    }
+    open > 0          { block = block $0 "\n"; open += depth($0); next }
+    $0 ~ pat          { print block; exit }
+    /^#\[/            { block = block $0 "\n"; open = depth($0); next }
+    /^[[:space:]]*$/  { next }
+                      { block = "" }
   '
 }
 if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
@@ -168,8 +189,17 @@ fi
 # rustc but not to a rule looking for `fn persist(`, so the pair
 # (`#[cfg(any())] async fn persist() {}` decoy, `pub(crate) async fn r#persist(`
 # real) would leave R1 inspecting the decoy. Nothing in this file needs one.
-if printf '%s' "$CODE" | rg -q 'r#[a-z_]'; then
-  fail "R0: $BOUNDARY_FILE uses a raw identifier (\`r#…\`). It defeats every name-based rule here while meaning the same thing to rustc."
+if printf '%s' "$CODE" | rg -q 'r#'; then
+  fail "R0: $BOUNDARY_FILE uses \`r#\` — a raw identifier or a raw string. Both defeat name-based rules: \`r#persist\` *is* \`persist\` to rustc but not to a regex, and a raw string inside an attribute (\`#[doc = r#\"…\"#]\`) can carry text that looks like a second attribute to R4. Neither is needed in this file."
+fi
+
+# Aliasing, in either direction. `use std::include as format;` renames a builtin
+# macro onto the allowlist — verified to compile on this branch — so a name-based
+# allowlist cannot see it. This is the same `use … as` shape that walked past
+# #1300's census, which is worth stating plainly: the alias problem did not go
+# away with the module boundary, it just moved into this one file.
+if printf '%s' "$CODE" | rg -q '\buse\b[^;]*\bas\b'; then
+  fail "R0: $BOUNDARY_FILE contains a \`use … as …\` alias. Renaming an item — a macro especially — makes every name-based rule below inspect the wrong name."
 fi
 
 # `impl`: an `impl` block can carry a `pub(crate)` associated method that reaches

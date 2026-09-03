@@ -64,7 +64,12 @@ run_case() {
   local file="$dir/write.rs"
   sed "$program" "$real_boundary" > "$file"
 
-  if [ "$expect" = red ] && cmp -s "$file" "$real_boundary"; then
+  # Applies to GREEN cases too, and that was a review finding: a green case
+  # whose sed silently stops matching degrades into "run the gate on the
+  # production file", which the first case already does. It would keep passing
+  # while testing nothing. The only case allowed to be a no-op is the one that
+  # asks for no mutation at all.
+  if [ -n "$program" ] && cmp -s "$file" "$real_boundary"; then
     echo "FAIL [$name]: the mutation changed nothing — the sed program no longer matches the production file, so this case is testing the green fixture"
     failures=$((failures + 1))
     rm -rf "$dir"
@@ -236,11 +241,13 @@ run_case "R2b: pub use re-export" red \
   '/^use super::\*;$/a\
 pub use self::persist as escape_hatch;'
 
-# R0 — a macro invocation whose definition lives in another file. This is the
-# construction that broke the previous revision: it compiles, it produces a real
-# `pub(crate) mod` inside this module whose body calls `persist` as Kernel, and
-# the blocklist-shaped rule was green on it because nothing named `mod` or
-# `macro_rules!` appears here.
+# R0 — a macro invocation whose definition lives in another file. The real
+# construction compiles and produces a `pub(crate) mod` inside this module whose
+# body calls `persist` as Kernel; this fixture does not build it, so what the
+# case proves is narrower than the story: the rule fires on *this spelling* of a
+# non-allowlisted macro. It does not prove the class is covered — an attribute
+# or derive proc-macro carries no `ident!` for the rule to see at all, which the
+# gate's header states as a standing gap rather than a solved one.
 run_case "R0: macro invocation defined elsewhere" red \
   "R0:" \
   '/^use super::\*;$/a\
@@ -262,11 +269,26 @@ pub(crate) async unsafe fn fifth(repo: \&dyn RouteRepo) -> Result<Card, CalmErro
 # R4 — the cfg is gone, but its *text* survives inside a legal `#[doc]`
 # attribute that `attrs_above` collects. An unanchored search of the block found
 # the string and passed; the function is `pub` in every build.
-run_case "R4: cfg text hidden in a doc attribute" red \
-  "R4: the test-only \`persist_report\` entry does not carry" \
-  's|^#\[cfg(any(test, feature = "fixtures"))\]$|#[doc = r\
-"#[cfg(any(test, feature = \\"fixtures\\"))]"\
-]|'
+# R0 — a raw string. The construction it blocks is a multi-line
+# `#[doc = r#"…"#]` whose body reads as an attribute: with bracket-aware
+# adjacency the whole thing is one attribute block, and an unanchored — or even
+# a line-anchored — search finds the cfg *inside the string* while the function
+# is public in every build. Rejecting `r#` outright is cheaper than teaching the
+# scanner about string literals, and nothing here needs one.
+run_case "R0: raw string in an attribute" red \
+  "R0:" \
+  '/^use super::\*;$/a\
+#[doc = r#"inert"#]\
+const DOC_DECOY: () = ();'
+
+# R0 — `use … as`. `use std::include as format;` renames a builtin macro *onto*
+# the allowlist; verified to compile on this branch. This is the same aliasing
+# shape that walked past #1300's census, so the module boundary did not retire
+# the problem — it moved it into this one file.
+run_case "R0: use-as alias" red \
+  "R0:" \
+  '/^use super::\*;$/a\
+use std::include as format;'
 
 # GREEN — the false-red regression. A doc comment between an attribute and its
 # item is ordinary Rust and must not break the block: the stripper blanks that
@@ -276,6 +298,18 @@ run_case "R4: cfg text hidden in a doc attribute" red \
 run_case "green: doc comment between the cfg and the fn" green "" \
   's|^#\[cfg(any(test, feature = "fixtures"))\]$|#[cfg(any(test, feature = "fixtures"))]\
 /// rationale line that used to break adjacency|'
+
+# R1b — a rustfmt-wrapped multi-line `#[cfg(all(…))]` on the writer. The first
+# revision of `attrs_above` treated the continuation line as "some other line"
+# and cleared the block, so the writer could be made conditional while R1b
+# stayed green. Bracket-aware adjacency is what catches it.
+run_case "R1b: writer gains a multi-line cfg" red \
+  "R1b:" \
+  '/^async fn persist($/i\
+#[cfg(all(\
+    feature = "fixtures",\
+    unix\
+))]'
 
 echo "----"
 echo "$cases case(s), $failures failure(s)"

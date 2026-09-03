@@ -14,19 +14,38 @@
 //! 1. **`rustc`** limits callers to `mod write` *and its descendants* — Rust
 //!    privacy is per module subtree, not per file. A call added in any other
 //!    module does not compile (`error[E0603]: function `persist` is private`,
-//!    reproduced on this branch).
-//! 2. **`scripts/ci/ratchets/report_write_boundary.sh`** forbids this module
-//!    from having descendants at all: no `mod`, no `#[path]`, no `include!`,
-//!    and — the part that took two attempts — no macro invocation outside a
-//!    one-name allowlist. A review channel broke the first wording with a macro
-//!    *defined in another file* and invoked here on one line, expanding to
-//!    `pub(crate) mod smuggled { ... super::persist(.., Kernel, ..) }`. That
-//!    compiles, and the gate was green on it: it looked for `macro_rules!`
-//!    declared here and for a literal `mod`, and the construction has neither.
-//!    A blocklist cannot be finished, so the rule is now an allowlist.
+//!    reproduced on this branch). This half is a proof and it is the one that
+//!    carries the slice.
+//! 2. **`scripts/ci/ratchets/report_write_boundary.sh`** tries to keep this
+//!    module from acquiring descendants — no `mod`, no `#[path]`, no
+//!    `include!`, no macro outside a one-name allowlist, no `use … as` alias,
+//!    no `r#`. It is a **drift detector, not a proof**, and the honest reading
+//!    of "one file" stops here.
 //!
-//!    Only with that second step is "this file and nothing else" true, and it
-//!    is a text rule — the weaker half of the two.
+//!    That wording is the third attempt, and the first two were both wrong in
+//!    the same direction — they claimed the gate *closed* the question. Review
+//!    channels broke each of them with constructions that compile:
+//!
+//!    * a macro **defined in another file**, invoked here on one line,
+//!      expanding to `pub(crate) mod smuggled { … super::persist(.., Kernel, ..) }`
+//!      — the blocklist looked for `macro_rules!` declared here and for a
+//!      literal `mod`, and this has neither;
+//!    * `use std::include as format;` — renaming a builtin macro *onto* the
+//!      allowlist, the same `use … as` shape that walked past #1300's census;
+//!    * a multi-line `#[doc = r#"…"#]` whose body reads as an attribute, and a
+//!      rustfmt-wrapped multi-line `#[cfg(all(…))]` that split the attribute
+//!      block in two.
+//!
+//!    Each is now rejected, and that is exactly the point: **the list grew
+//!    every round.** An attribute or derive proc-macro still expands to
+//!    whatever it likes with no `ident!` for any regex to find. So the claim
+//!    this module makes is the one #1300's census made about itself, and no
+//!    more: it catches somebody adding a writer *without knowing this boundary
+//!    exists*. It does not catch somebody working around it.
+//!
+//!    What is closed is step 1, and step 1 alone: the caller set is `mod write`
+//!    and its descendants, by `rustc`. Read every "one file" in this repository
+//!    as "one file, as far as a text scan can tell".
 //!
 //! Step 1 is the part #1300 S2's text census could only approximate; step 2 is
 //! the small remainder that still needs a gate, over one file instead of the
@@ -137,6 +156,18 @@
 //! 5. **Which `EditAuthor` [`agent_report_op`] is handed.** Closed for the two
 //!    REST entries by their signatures; for the MCP entry it remains the
 //!    characterization suite's job.
+//! 6. **That the `Track` and the `Card` in a [`ReportEditTarget`] belong
+//!    together.** The constructor compares `report_card.track_id` to
+//!    `track.id`, which catches an accidental pairing and nothing more:
+//!    `Card::track_id` is a `pub` field, so a caller can clone the real card
+//!    and overwrite it. That is the same forgeable-marker shape item 2 rejects,
+//!    and it is labelled as a drift catch where it lives rather than dressed up
+//!    here. Closing it for real means checking the row inside the write
+//!    transaction — scoping the `UPDATE` by track, or reading the owner back
+//!    before the write. Neither is in this slice, and the reason is scope, not
+//!    difficulty: `card_update_with_crdt_tx` is shared truth-layer code with
+//!    callers outside this module, so narrowing it is its own change with its
+//!    own caller sweep. `current_payload` has no comparison at all.
 //!
 //! ## The test-only escape hatch
 //!

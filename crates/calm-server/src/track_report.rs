@@ -598,27 +598,36 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 /// function is `pub` and its tuple is destructured at ~20 test call sites, and
 /// churning those would have buried this slice's actual diff.
 ///
-/// # The fields are private, and the constructor is fallible
+/// # The fields are private, and the constructor catches an accidental mismatch
 ///
-/// Bundling three parameters into a struct with `pub(crate)` fields would have
-/// been the same three parameters with extra steps — worse, actually, because
-/// it reads like a checked value while checking nothing. A review channel built
-/// the construction: any sibling could write
+/// Read the next two paragraphs together; the second is the one that keeps this
+/// doc honest.
 ///
-/// ```ignore
-/// ReportEditTarget { track: a, report_card: report_of_b, current_payload: payload_of_b }
-/// ```
+/// **What the constructor is for.** `write::persist` takes the row id from
+/// `report_card`, and the event scope, the `PlanUpdated` target and the task
+/// reprojection from `track`. Hand it a mismatched pair and it rewrites B's
+/// report while emitting A's events and rebuilding A's tasks — and nothing
+/// downstream compares the two. A review channel built exactly that from a
+/// struct literal, back when the fields were `pub(crate)`. So the fields are
+/// private (visible only inside `track_report` and its descendants), and every
+/// other module goes through [`resolve`] — which cannot mismatch, because
+/// `resolve_report_for_track` finds the card *among that track's cards* — or
+/// through [`for_resolved_parts`], which compares the pair.
 ///
-/// and hand it to `write::rest_user_replace`. `write::persist` takes the row id
-/// from `report_card` and the event scope, the `PlanUpdated` target and the task
-/// reprojection from `track`, so that call rewrites B's report while emitting A's
-/// events and rebuilding A's tasks. The hazard predates this type — the three
-/// were independent arguments before — but a type that says "the resolved
-/// report a write is about" has to earn the definite article.
+/// **What that comparison is worth.** Not much, against a caller that means it.
+/// `Card::track_id` is a `pub` field, so a sibling holding B's real card can
+/// clone it, overwrite `track_id` with A's, and walk straight through: the
+/// check compares two values the caller supplied. It is a **drift catch for an
+/// accidental pairing, not a guard** — the same reason this slice refused a
+/// witness token minted from `Actor` (`write.rs`, "What is still not closed",
+/// item 2), and it would be inconsistent to ship the shape here under a better
+/// name. A real check has to run against the row inside the write transaction;
+/// see item 6 of that list.
 ///
-/// So the fields are visible only inside `track_report` and its descendants (i.e.
-/// this module and `write`), and every other module must go through [`resolve`]
-/// or [`for_resolved_parts`], which rejects the mismatch.
+/// `current_payload` is not checked at all. It seeds the CRDT on a first write
+/// (`body_crdt` still NULL) and supplies the block-id hints on layout
+/// migration, so a wrong one is a real defect — it simply has no cheap local
+/// comparison, since a payload carries no owner.
 ///
 /// [`resolve`]: ReportEditTarget::resolve
 /// [`for_resolved_parts`]: ReportEditTarget::for_resolved_parts
