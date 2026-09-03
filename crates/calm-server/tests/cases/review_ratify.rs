@@ -13,11 +13,11 @@ use calm_server::error::CalmError;
 use calm_server::event::{
     ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
 };
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -36,13 +36,13 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
     app: axum::Router,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     // Exposed for tests that seed events via `log_pure_event` (#888 t10/t12/t13).
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
+    wave_area_cache: calm_server::wave_area_cache::WaveAreaCache,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -101,8 +101,8 @@ async fn seed_wave_root_session(
 
 async fn boot() -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "review-ratify".into(),
             color: "#000".into(),
             sort: None,
@@ -112,7 +112,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "review ratify".into(),
             sort: None,
             cwd: String::new(),
@@ -154,8 +154,8 @@ async fn boot() -> Boot {
         CardRole::Spec,
     )
     .await;
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let state = AppState::from_parts(
         repo.clone(),
@@ -168,11 +168,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-review-ratify"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     let app = calm_server::routes::router()
         .layer(axum::middleware::from_fn(
@@ -189,7 +189,7 @@ async fn boot() -> Boot {
         events: events.clone(),
         write: calm_server::state::WriteContext::new(
             card_role_cache.clone(),
-            wave_cove_cache.clone(),
+            wave_area_cache.clone(),
         ),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
@@ -204,12 +204,12 @@ async fn boot() -> Boot {
         registry: Arc::new(registry),
         repo,
         app,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         events,
         card_role_cache,
-        wave_cove_cache,
+        wave_area_cache,
     }
 }
 
@@ -220,7 +220,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -1127,12 +1127,12 @@ async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
             ActorId::AiSpec(boot.spec_card_id.clone()),
             EventScope::Wave {
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.events,
             &boot.card_role_cache,
-            &boot.wave_cove_cache,
+            &boot.wave_area_cache,
             Event::ReviewRound {
                 wave_id: boot.wave_id.clone(),
                 subject: ReviewSubject {

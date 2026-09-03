@@ -14,7 +14,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{EventBus, FieldSource, ForgeEventSpec, ForgeMergeSubject};
-use calm_server::model::{NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewWave, new_id, now_ms};
 use calm_server::operation::ProviderAdapter;
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
@@ -83,18 +83,18 @@ impl TestBoot {
                 .await
                 .expect("open in-memory repo"),
         );
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "forge-action".into(),
                 color: "#334455".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "forge-action".into(),
                 sort: None,
                 cwd: tmp.path().display().to_string(),
@@ -505,7 +505,7 @@ async fn latest_event_scope(
     kind: &str,
 ) -> (String, Option<String>, Option<String>, Option<String>) {
     sqlx::query_as(
-        "SELECT scope_kind, scope_cove, scope_wave, scope_card \
+        "SELECT scope_kind, scope_area, scope_wave, scope_card \
          FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
     )
     .bind(kind)
@@ -1713,12 +1713,12 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
     assert_eq!(worktree_event["wave_id"], json!(boot.wave_id));
     assert_eq!(worktree_event["card_id"], json!(card_id));
     assert_eq!(worktree_event["path"], json!("/tmp/neige/worktrees/card-1"));
-    let (scope_kind, scope_cove, scope_wave, scope_card) =
+    let (scope_kind, scope_area, scope_wave, scope_card) =
         latest_event_scope(&boot.repo, "worktree.provisioned").await;
     assert_eq!(scope_kind, "card");
     assert_eq!(scope_card.as_deref(), Some(card_id.as_str()));
     assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
-    assert!(scope_cove.is_some(), "card scope carries cove");
+    assert!(scope_area.is_some(), "card scope carries area");
 
     let forge_idem = "forge-scan-completed-wave-scope";
     let mut forge_input = payload(
@@ -1738,11 +1738,11 @@ async fn forge_action_scopes_worktree_events_to_card_and_forge_events_to_wave() 
     let result = boot.runtime.wait(&op_id).await?;
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
 
-    let (scope_kind, scope_cove, scope_wave, scope_card) =
+    let (scope_kind, scope_area, scope_wave, scope_card) =
         latest_event_scope(&boot.repo, "forge.scan.completed").await;
     assert_eq!(scope_kind, "wave");
     assert_eq!(scope_wave.as_deref(), Some(boot.wave_id.as_str()));
-    assert!(scope_cove.is_some(), "wave scope carries cove");
+    assert!(scope_area.is_some(), "wave scope carries area");
     assert!(scope_card.is_none(), "forge.* events remain wave-scoped");
     Ok(())
 }

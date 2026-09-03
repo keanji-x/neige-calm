@@ -11,7 +11,7 @@
 //      with a `Wave` — so it marks the *navigation* it makes, and
 //      `WaveRouteBody` redeems that mark against its own cards. That hand-off
 //      spans three modules, which is exactly why it is asserted here and not in
-//      any of them. Since #1211 S3 the create site is `/cove/{id}/new` rather
+//      any of them. Since #1211 S3 the create site is `/area/{id}/new` rather
 //      than a dialog; the hand-off is the same one and this file drives it
 //      through the page.
 //   2. **Clearing the title is a request, not a cancel.** The wave header
@@ -32,18 +32,18 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 /* The wave the create answers with. `title: ''` is what the kernel stores when
    the POST omits the key, which is the whole point of the slice. */
 const WAVE = {
-  id: 'w1', cove_id: 'c1', title: '', sort: 1, lifecycle: 'draft', cwd: '/tmp',
+  id: 'w1', area_id: 'c1', title: '', sort: 1, lifecycle: 'draft', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 /* A named wave, for the rename half: clearing a name that is already empty is
    the arithmetic no-op, so the PATCH case needs something to clear. */
 const NAMED_WAVE = { ...WAVE, title: 'Test wave' };
 /* The wave a *second* create answers with. It exists so the intent can be
-   stated while the reader is standing on some other wave — the rail's per-cove
+   stated while the reader is standing on some other wave — the rail's per-area
    `+` is rendered by `AppShell`, above the route outlet, so "read one wave and
    start another" is an ordinary move and the wave being left is still
    mounted. */
@@ -86,11 +86,11 @@ function setup(options: Options = {}) {
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
-      if (request.path === '/api/coves') return Promise.resolve(ok([COVE]));
-      if (request.path === '/api/coves/c1/waves') {
+      if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
+      if (request.path === '/api/areas/c1/waves') {
         return Promise.resolve(ok(created.id === wave.id ? [wave] : [wave, created]));
       }
-      if (request.path === '/api/coves/c1/conversations') return Promise.resolve(ok([]));
+      if (request.path === '/api/areas/c1/conversations') return Promise.resolve(ok([]));
       if (request.path === '/api/overlays?entity_kind=wave') return Promise.resolve(ok([]));
       if (request.path === '/api/wave-templates') return Promise.resolve(ok([]));
       if (request.method === 'POST' && request.path === '/api/waves') return Promise.resolve(ok(created));
@@ -149,7 +149,7 @@ function messageField(): HTMLElement {
 }
 
 /* The composer page, with the one thing it does ask for typed into it.
-   Since #1211 S3 the `+` navigates to `/cove/{id}/new` instead of opening a
+   Since #1211 S3 the `+` navigates to `/area/{id}/new` instead of opening a
    dialog, so a create waits for the page's own field rather than
    `role="dialog"`, and Create stays disabled until that field says something.
    What is typed is the wave's **intent**, not its name: no title is collected
@@ -160,8 +160,8 @@ async function composerOnScreen() {
 }
 
 async function createAWave() {
-  /* Exact: the rail's per-cove opener is `New wave in Work`, which a substring
-     match would also find — the cove page's own `+` is the one this drives. */
+  /* Exact: the rail's per-area opener is `New wave in Work`, which a substring
+     match would also find — the area page's own `+` is the one this drives. */
   await userEvent.click(await screen.findByRole('button', { name: /^New wave$/ }));
   await composerOnScreen();
   await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
@@ -180,7 +180,7 @@ async function goToWave(router: ReturnType<typeof setup>['router'], waveId: stri
 }
 
 beforeEach(() => {
-  window.history.pushState({}, '', `${APP_BASEPATH}/cove/c1`);
+  window.history.pushState({}, '', `${APP_BASEPATH}/area/c1`);
   /* The drawer, the composer and `EditableTitle` all move focus inside a frame.
      Running frames synchronously is what makes "who ended up with the focus"
      a question this tier can answer at all. */
@@ -214,7 +214,7 @@ describe('creating a wave lands in its spec conversation', () => {
   /*
    * ── The same landing, started from a wave page ───────────────────────────
    *
-   * The rail's per-cove `+` is rendered by `AppShell`, above the route outlet,
+   * The rail's per-area `+` is rendered by `AppShell`, above the route outlet,
    * so it is on screen on every route — "read one wave, start another" is an
    * ordinary move, and no layer covered it before this slice.
    *
@@ -250,7 +250,7 @@ describe('creating a wave lands in its spec conversation', () => {
    *
    * The detail read fails, so `WaveRoute` returns the error box and the body
    * that would redeem the intent never mounts. The reader gives up, walks back
-   * to the cove, and later opens the wave again — a *new* navigation, so a new
+   * to the area, and later opens the wave again — a *new* navigation, so a new
    * history entry, and the mark is not on it. An ordinary visit does not spring
    * the drawer open and take the caret.
    *
@@ -267,8 +267,8 @@ describe('creating a wave lands in its spec conversation', () => {
     await createAWave();
     await screen.findByRole('button', { name: 'Retry' });
 
-    await act(async () => { await router.navigate({ to: '/cove/$coveId', params: { coveId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename cove' });
+    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
+    await screen.findByRole('button', { name: 'Rename area' });
 
     gate.createdDetailFails = false;
     await goToWave(router, 'w2');
@@ -305,8 +305,8 @@ describe('creating a wave lands in its spec conversation', () => {
     await screen.findByRole('button', { name: 'Retry' });
 
     /* A push, so the failed entry stays underneath rather than being replaced. */
-    await act(async () => { await router.navigate({ to: '/cove/$coveId', params: { coveId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename cove' });
+    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
+    await screen.findByRole('button', { name: 'Rename area' });
 
     gate.createdDetailFails = false;
     await act(async () => {
@@ -334,8 +334,8 @@ describe('creating a wave lands in its spec conversation', () => {
     /* Leaving the route takes the drawer with it — that is the "closed" state
        this case needs, and it is one the reader reaches every time they walk
        away. Coming back is then an ordinary visit, and it must stay one. */
-    await act(async () => { await router.navigate({ to: '/cove/$coveId', params: { coveId: 'c1' } }); });
-    await screen.findByRole('button', { name: 'Rename cove' });
+    await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
+    await screen.findByRole('button', { name: 'Rename area' });
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
 
     await act(async () => { await router.navigate({ to: '/wave/$waveId', params: { waveId: 'w1' } }); });
@@ -376,7 +376,7 @@ describe('clearing the wave title', () => {
    * The empty title is the one state `calm.wave.rename` will fill in (#1211
    * S3), so "clear the name" is how a reader hands naming back to the agent.
    * Swallowing the keystroke — which is what the primitive does by default,
-   * and still does for a cove — would leave "I cleared it, pressed Enter, and
+   * and still does for an area — would leave "I cleared it, pressed Enter, and
    * nothing happened".
    *
    * Red when the wave page drops `emptyCommit`, or the primitive stops

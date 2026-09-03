@@ -6,7 +6,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -19,8 +19,8 @@ use tower::ServiceExt;
 
 async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "threads".into(),
             color: "#123456".into(),
             sort: None,
@@ -30,7 +30,7 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "thread map".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -54,7 +54,7 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

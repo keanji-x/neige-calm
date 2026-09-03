@@ -162,7 +162,7 @@ describe('WavePage delete confirm contract', () => {
   /*
    * #1211 — clearing the name is a request on a wave, because the spec agent's
    * `calm.wave.rename` is a second namer that only fires while the title is
-   * empty. On a cove the same gesture is a cancel; the difference is the
+   * empty. On an area the same gesture is a cancel; the difference is the
    * explicit `emptyCommit` this page passes, and this is its wave-side half.
    * Red when the page drops that prop or the primitive re-hardcodes 'cancel'.
    */

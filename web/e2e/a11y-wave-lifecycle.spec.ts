@@ -26,7 +26,7 @@
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import {
   forceWaveLifecycle,
   getWave,
@@ -37,7 +37,7 @@ import {
 import { clearEventTrace, getEventTrace, waitForEvent, type TraceEvent } from './helpers/trace';
 
 test.describe('wave lifecycle', () => {
-  let coveId: string;
+  let areaId: string;
   let waveId: string;
 
   test.beforeEach(async ({ page, request }) => {
@@ -46,11 +46,11 @@ test.describe('wave lifecycle', () => {
     // spec left behind in the shared replay binary.
     await resetReplayServer(request);
 
-    // Mint a fresh cove + wave for each test. `createWaveInCove`
+    // Mint a fresh area + wave for each test. `createWaveInArea`
     // returns the new wave's id — fresh waves start in `draft`.
-    const cove = await createUserCove(request, 'AtlasLifecycle');
-    coveId = cove.id;
-    const wave = await createWaveInCove(request, coveId, 'Lifecycle test');
+    const area = await createUserArea(request, 'AtlasLifecycle');
+    areaId = area.id;
+    const wave = await createWaveInArea(request, areaId, 'Lifecycle test');
     waveId = wave.id;
 
     // Boot a real browser session with the trace ring buffer enabled —
@@ -60,12 +60,12 @@ test.describe('wave lifecycle', () => {
     await page.goto('/?trace=1');
     // Wait for the buffer to come into existence (the bridge writes it
     // lazily on first WS frame). The newly-minted wave's
-    // `wave.updated` event from `createWaveInCove` above will land
+    // `wave.updated` event from `createWaveInArea` above will land
     // here; we clear the buffer before driving any per-test transition
     // so trace assertions see only the events under test.
     await page.waitForFunction(() => Array.isArray(window.__neigeEvents__));
     // Give the boot replay a moment to drain the seeded fixture + the
-    // freshly-minted cove/wave frames, then clear so each test starts
+    // freshly-minted area/wave frames, then clear so each test starts
     // from a clean trace.
     await waitForEvent(page, 'wave.updated');
     await clearEventTrace(page);
@@ -84,7 +84,7 @@ test.describe('wave lifecycle', () => {
     // actor header -> ActorId::User). Both User and SpecAgent are
     // allowed to drive this edge; we use PATCH to mirror the "user
     // clicks Start in the UI" production path.
-    await runTransition(page, request, waveId, coveId, {
+    await runTransition(page, request, waveId, areaId, {
       from: 'draft',
       to: 'planning',
       driver: 'user',
@@ -98,7 +98,7 @@ test.describe('wave lifecycle', () => {
       { from: 'working' as const, to: 'reviewing' as const },
       { from: 'reviewing' as const, to: 'done' as const },
     ]) {
-      await runTransition(page, request, waveId, coveId, { from, to, driver: 'spec' });
+      await runTransition(page, request, waveId, areaId, { from, to, driver: 'spec' });
     }
 
     // Final state: Done is terminal, so `terminal_at` is stamped with
@@ -158,7 +158,7 @@ test.describe('wave lifecycle', () => {
     const lifecycleEvt = await waitForEvent(page, 'wave.lifecycle_changed');
     expect(extractLifecyclePayload(lifecycleEvt)).toMatchObject({
       id: waveId,
-      cove_id: coveId,
+      area_id: areaId,
       from: 'done',
       to: 'planning',
     });
@@ -203,7 +203,7 @@ test.describe('wave lifecycle', () => {
     await page.waitForTimeout(500);
 
     // Scope the assertion to events for THIS wave. The replay binary's
-    // default-cove bootstrap can emit a late `wave.updated` for the
+    // default-area bootstrap can emit a late `wave.updated` for the
     // unrelated "Today" wave that drifts into the 500ms window above on
     // a loaded runner — that's not what idempotency is about. The
     // kernel's idempotency contract is per-wave, so filter on the
@@ -291,7 +291,7 @@ async function runTransition(
   page: Page,
   request: APIRequestContext,
   waveId: string,
-  coveId: string,
+  areaId: string,
   step: TransitionStep,
 ): Promise<void> {
   // Snapshot the pre-transition state to anchor the assertion's
@@ -332,11 +332,11 @@ async function runTransition(
 
   // Browser-side event assertion. The `wave.lifecycle_changed` payload
   // shape mirrors `Event::WaveLifecycleChanged` in
-  // `crates/calm-server/src/event.rs` — `{ id, cove_id, from, to }`.
+  // `crates/calm-server/src/event.rs` — `{ id, area_id, from, to }`.
   const evt = await waitForEvent(page, 'wave.lifecycle_changed');
   expect(extractLifecyclePayload(evt)).toMatchObject({
     id: waveId,
-    cove_id: coveId,
+    area_id: areaId,
     from: step.from,
     to: step.to,
   });
@@ -349,17 +349,17 @@ async function runTransition(
  *  carries the typed payload. Narrow it to the variant we need. */
 function extractLifecyclePayload(evt: TraceEvent): {
   id: string;
-  cove_id: string;
+  area_id: string;
   from: string;
   to: string;
 } {
-  const data = (evt.data ?? {}) as { id?: string; cove_id?: string; from?: string; to?: string };
-  if (!data.id || !data.cove_id || !data.from || !data.to) {
+  const data = (evt.data ?? {}) as { id?: string; area_id?: string; from?: string; to?: string };
+  if (!data.id || !data.area_id || !data.from || !data.to) {
     throw new Error(
       `extractLifecyclePayload: missing fields on event ${JSON.stringify(evt)}`,
     );
   }
-  return { id: data.id, cove_id: data.cove_id, from: data.from, to: data.to };
+  return { id: data.id, area_id: data.area_id, from: data.from, to: data.to };
 }
 
 function extractWavePayload(evt: TraceEvent): WaveSnapshot {
@@ -371,9 +371,9 @@ function extractWavePayload(evt: TraceEvent): WaveSnapshot {
   // pointing at the wire-format regression. Throw a clear error here
   // so the failure mode is obvious.
   const data = (evt.data ?? {}) as Partial<WaveSnapshot>;
-  if (!data.id || !data.cove_id || !data.lifecycle) {
+  if (!data.id || !data.area_id || !data.lifecycle) {
     throw new Error(
-      `extractWavePayload: missing fields (id/cove_id/lifecycle) on event ${JSON.stringify(evt)}`,
+      `extractWavePayload: missing fields (id/area_id/lifecycle) on event ${JSON.stringify(evt)}`,
     );
   }
   return data as WaveSnapshot;

@@ -192,7 +192,7 @@ async fn backlinks_for_wave_with_byte_cap(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
     let mut report_cards = repo
-        .wave_report_cards_by_cove(target_wave.cove_id.as_str())
+        .wave_report_cards_by_area(target_wave.area_id.as_str())
         .await?;
     report_cards.sort_by(|left, right| left.wave_id.as_str().cmp(right.wave_id.as_str()));
     let target_card = report_cards
@@ -211,7 +211,7 @@ async fn backlinks_for_wave_with_byte_cap(
         .map(|block| block.id.as_str())
         .collect();
     let waves: HashMap<_, _> = repo
-        .waves_by_cove(target_wave.cove_id.as_str())
+        .waves_by_area(target_wave.area_id.as_str())
         .await?
         .into_iter()
         .map(|wave| (wave.id.as_str().to_owned(), wave.title))
@@ -303,14 +303,14 @@ mod tests {
     use crate::db::{RepoSyncDomainRaw, RouteRepo, ServerRepoReadExt};
     use crate::event::{EditAuthor, EventBus};
     use crate::ids::ActorId;
-    use crate::model::{NewCove, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewWave, RequestTheme};
     use crate::state::WriteContext;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use crate::wave_report::{ReportBlock, WaveReportPayload, persist_report};
     use serde_json::json;
 
-    async fn cove(repo: &SqlxRepo, name: &str) -> crate::model::Cove {
-        repo.cove_create(NewCove {
+    async fn area(repo: &SqlxRepo, name: &str) -> crate::model::Area {
+        repo.area_create(NewArea {
             name: name.into(),
             color: "#123456".into(),
             sort: None,
@@ -319,9 +319,9 @@ mod tests {
         .unwrap()
     }
 
-    async fn wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> crate::model::Wave {
+    async fn wave(repo: &SqlxRepo, area_id: &str, title: &str) -> crate::model::Wave {
         repo.wave_create(NewWave {
-            cove_id: cove_id.into(),
+            area_id: area_id.into(),
             title: title.into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -361,7 +361,7 @@ mod tests {
         persist_report(
             repo,
             &EventBus::new(),
-            &WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            &WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
             ActorId::Kernel,
             author,
             wave,
@@ -487,11 +487,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlink_found_across_two_waves_in_one_cove() {
+    async fn backlink_found_across_two_waves_in_one_area() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -522,9 +522,9 @@ mod tests {
     #[tokio::test]
     async fn task_backlinks_scan_declared_text_fields_not_canonical_json() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let target_card = repo
             .cards_by_wave(target.id.as_str())
@@ -559,12 +559,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlink_from_another_cove_is_absent() {
+    async fn backlink_from_another_area_is_absent() {
         let repo = fresh_repo().await;
-        let target_cove = cove(&repo, "target cove").await;
-        let other_cove = cove(&repo, "other cove").await;
-        let target = wave(&repo, target_cove.id.as_str(), "Target").await;
-        let outside = wave(&repo, other_cove.id.as_str(), "Outside").await;
+        let target_area = area(&repo, "target area").await;
+        let other_area = area(&repo, "other area").await;
+        let target = wave(&repo, target_area.id.as_str(), "Target").await;
+        let outside = wave(&repo, other_area.id.as_str(), "Outside").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -582,9 +582,9 @@ mod tests {
     #[tokio::test]
     async fn missing_destination_block_degrades_without_dropping_backlink() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -603,9 +603,9 @@ mod tests {
     #[tokio::test]
     async fn v1_report_without_blocks_or_crdt_yields_backlinks() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Legacy").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Legacy").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -633,9 +633,9 @@ mod tests {
     #[tokio::test]
     async fn links_inside_fenced_code_blocks_do_not_yield_backlinks() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(
             &repo,
@@ -656,10 +656,10 @@ mod tests {
     #[tokio::test]
     async fn unreadable_source_report_does_not_blind_other_backlinks() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let corrupt = wave(&repo, cove.id.as_str(), "Corrupt").await;
-        let healthy = wave(&repo, cove.id.as_str(), "Healthy").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let corrupt = wave(&repo, area.id.as_str(), "Corrupt").await;
+        let healthy = wave(&repo, area.id.as_str(), "Healthy").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
         report(
@@ -686,9 +686,9 @@ mod tests {
     #[tokio::test]
     async fn every_non_target_source_unreadable_is_an_error() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let corrupt = wave(&repo, cove.id.as_str(), "Corrupt").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let corrupt = wave(&repo, area.id.as_str(), "Corrupt").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
         sqlx::query(
@@ -711,9 +711,9 @@ mod tests {
     #[tokio::test]
     async fn backlink_byte_cap_bounds_rest_and_mcp_wire_envelopes() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         // Control characters expand to six bytes in structured JSON and are escaped again in the
         // MCP text copy. This crosses the real 64 KiB cap with a much smaller CRDT fixture than a
@@ -749,9 +749,9 @@ mod tests {
     #[tokio::test]
     async fn backlink_byte_cap_is_enforced_when_rest_quote_is_the_tighter_envelope() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let before = "甲".repeat(QUOTE_BEFORE_CHARS);
         let after = "乙".repeat(QUOTE_AFTER_CHARS);
@@ -856,9 +856,9 @@ mod tests {
     #[tokio::test]
     async fn backlink_entry_cap_returns_exactly_500_entries() {
         let repo = fresh_repo().await;
-        let cove = cove(&repo, "one").await;
-        let target = wave(&repo, cove.id.as_str(), "Target").await;
-        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        let area = area(&repo, "one").await;
+        let target = wave(&repo, area.id.as_str(), "Target").await;
+        let source = wave(&repo, area.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         let body = (0..=MAX_BACKLINK_ENTRIES)
             .map(|index| format!("[{index}](neige://wave/{})", target.id))

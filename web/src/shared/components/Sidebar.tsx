@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useState } from '../state';
 import { Menu, type MenuItem } from '../../ui/Menu/Menu';
 import { useSession } from '../../app/SessionProvider';
-import type { Cove, Route, Wave } from '../../types';
+import type { Area, Route, Wave } from '../../types';
 import { isRunning, sortByLifecycleRank, waveNeedsUserAttention } from '../lifecycle';
 import { waveDisplayTitle } from '../waveTitle';
 import { ConfirmDialog } from '../../ui/ConfirmDialog/ConfirmDialog';
@@ -13,10 +13,10 @@ import { PlusIcon } from './PlusIcon';
 
 // ---------------- Sidebar ----------------
 
-const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
+const EXPANDED_AREAS_STORAGE_KEY = 'calm:sidebar:expandedAreas';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'calm:sidebar:collapsed';
 
-type ExpandedCoves = Record<string, true>;
+type ExpandedAreas = Record<string, true>;
 
 function readSidebarCollapsed(): boolean {
   if (typeof window === 'undefined') return false;
@@ -39,18 +39,18 @@ function writeSidebarCollapsed(collapsed: boolean) {
   }
 }
 
-function readExpandedCoves(): ExpandedCoves {
+function readExpandedAreas(): ExpandedAreas {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = window.localStorage.getItem(EXPANDED_COVES_STORAGE_KEY);
+    const raw = window.localStorage.getItem(EXPANDED_AREAS_STORAGE_KEY);
     if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {};
     }
-    const expanded: ExpandedCoves = {};
-    for (const [coveId, value] of Object.entries(parsed)) {
-      if (value === true) expanded[coveId] = true;
+    const expanded: ExpandedAreas = {};
+    for (const [areaId, value] of Object.entries(parsed)) {
+      if (value === true) expanded[areaId] = true;
     }
     return expanded;
   } catch {
@@ -58,11 +58,11 @@ function readExpandedCoves(): ExpandedCoves {
   }
 }
 
-function writeExpandedCoves(expanded: ExpandedCoves) {
+function writeExpandedAreas(expanded: ExpandedAreas) {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(
-      EXPANDED_COVES_STORAGE_KEY,
+      EXPANDED_AREAS_STORAGE_KEY,
       JSON.stringify(expanded),
     );
   } catch {
@@ -70,68 +70,68 @@ function writeExpandedCoves(expanded: ExpandedCoves) {
   }
 }
 
-function useExpandedCoves(): [
-  ExpandedCoves,
-  (coveId: string) => void,
-  (coveId: string) => void,
+function useExpandedAreas(): [
+  ExpandedAreas,
+  (areaId: string) => void,
+  (areaId: string) => void,
 ] {
-  const [expandedCoves, setExpandedCoves] = useState<ExpandedCoves>(
-    () => readExpandedCoves(),
+  const [expandedAreas, setExpandedAreas] = useState<ExpandedAreas>(
+    () => readExpandedAreas(),
   );
-  const toggleCoveExpanded = useCallback((coveId: string) => {
-    setExpandedCoves((current) => {
-      const next: ExpandedCoves = { ...current };
-      if (next[coveId]) {
-        delete next[coveId];
+  const toggleAreaExpanded = useCallback((areaId: string) => {
+    setExpandedAreas((current) => {
+      const next: ExpandedAreas = { ...current };
+      if (next[areaId]) {
+        delete next[areaId];
       } else {
-        next[coveId] = true;
+        next[areaId] = true;
       }
-      writeExpandedCoves(next);
+      writeExpandedAreas(next);
       return next;
     });
-  }, [setExpandedCoves]);
-  const expandCove = useCallback((coveId: string) => {
-    setExpandedCoves((current) => {
-      if (current[coveId]) return current;
-      const next: ExpandedCoves = { ...current, [coveId]: true };
-      writeExpandedCoves(next);
+  }, [setExpandedAreas]);
+  const expandArea = useCallback((areaId: string) => {
+    setExpandedAreas((current) => {
+      if (current[areaId]) return current;
+      const next: ExpandedAreas = { ...current, [areaId]: true };
+      writeExpandedAreas(next);
       return next;
     });
-  }, [setExpandedCoves]);
-  return [expandedCoves, toggleCoveExpanded, expandCove];
+  }, [setExpandedAreas]);
+  return [expandedAreas, toggleAreaExpanded, expandArea];
 }
 
-function coveWavesListId(coveId: string): string {
-  return `sidebar-cove-waves-${encodeURIComponent(coveId)}`;
+function areaWavesListId(areaId: string): string {
+  return `sidebar-area-waves-${encodeURIComponent(areaId)}`;
 }
 
 export function Sidebar({
-  coves,
+  areas,
   waves,
   route,
   onGo,
-  onCreateCove,
-  onDeleteCove,
+  onCreateArea,
+  onDeleteArea,
   onDeleteWave,
   onPinWave,
   onOpenSettings,
   onSignOut,
 }: {
-  coves: Cove[];
+  areas: Area[];
   waves: Wave[];
   route: Route;
   onGo: (r: Route) => void;
-  /** Bootstrap affordance: renders a small `+` icon button on the Coves
+  /** Bootstrap affordance: renders a small `+` icon button on the Areas
    *  section header that expands an inline name input at the top of the
-   *  cove list. Lives here (not in CovePage) because creating the *first*
-   *  cove has no other home. Wave creation, by contrast, lives inside
-   *  CovePage where the cove context is already established. */
-  onCreateCove?: (name: string, color: string) => void | Promise<void>;
-  /** Per-row delete on each cove. When provided, every cove row reveals a
+   *  area list. Lives here (not in AreaPage) because creating the *first*
+   *  area has no other home. Wave creation, by contrast, lives inside
+   *  AreaPage where the area context is already established. */
+  onCreateArea?: (name: string, color: string) => void | Promise<void>;
+  /** Per-row delete on each area. When provided, every area row reveals a
    *  hover `×` that opens a single shared ConfirmDialog. Mirrors the
    *  WaveRow delete pattern. Optional so tests can render the sidebar
    *  without wiring deletion. */
-  onDeleteCove?: (coveId: string) => void | Promise<void>;
+  onDeleteArea?: (areaId: string) => void | Promise<void>;
   /** Per-row delete on each wave. When provided, every wave row reveals a
    *  hover `×` that opens a single shared ConfirmDialog. */
   onDeleteWave?: (waveId: string) => void | Promise<void>;
@@ -147,9 +147,9 @@ export function Sidebar({
   onSignOut?: () => void;
 }) {
   // Single shared ConfirmDialog at the sidebar root; `pendingDelete`
-  // carries the cove being confirmed so the dialog text reflects the
-  // actual cove name. Mirrors Cove.tsx's `pendingDeleteWave` pattern.
-  const [pendingDelete, setPendingDelete] = useState<Cove | null>(null);
+  // carries the area being confirmed so the dialog text reflects the
+  // actual area name. Mirrors Area.tsx's `pendingDeleteWave` pattern.
+  const [pendingDelete, setPendingDelete] = useState<Area | null>(null);
   const [pendingDeleteWave, setPendingDeleteWave] = useState<Wave | null>(null);
   const [activeWaveRowEl, setActiveWaveRowEl] = useState<HTMLDivElement | null>(
     null,
@@ -157,12 +157,12 @@ export function Sidebar({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => readSidebarCollapsed(),
   );
-  const [expandedCoves, toggleCoveExpanded, expandCove] = useExpandedCoves();
+  const [expandedAreas, toggleAreaExpanded, expandArea] = useExpandedAreas();
   const activeWaveId = route.name === 'wave' ? route.id : null;
-  const activeCoveId = useMemo(
+  const activeAreaId = useMemo(
     () => (
       activeWaveId
-        ? waves.find((w) => w.id === activeWaveId)?.coveId ?? null
+        ? waves.find((w) => w.id === activeWaveId)?.areaId ?? null
         : null
     ),
     [activeWaveId, waves],
@@ -174,9 +174,9 @@ export function Sidebar({
     [setActiveWaveRowEl],
   );
   useEffect(() => {
-    if (activeCoveId == null) return;
-    expandCove(activeCoveId);
-  }, [activeWaveId, activeCoveId, expandCove]);
+    if (activeAreaId == null) return;
+    expandArea(activeAreaId);
+  }, [activeWaveId, activeAreaId, expandArea]);
   useEffect(() => {
     activeWaveRowEl?.scrollIntoView?.({
       block: 'nearest',
@@ -187,8 +187,8 @@ export function Sidebar({
   const confirmDelete = async () => {
     const c = pendingDelete;
     setPendingDelete(null);
-    if (!c || !onDeleteCove) return;
-    await onDeleteCove(c.id);
+    if (!c || !onDeleteArea) return;
+    await onDeleteArea(c.id);
   };
   const openDeleteWaveDialog = (w: Wave) => {
     if (!onDeleteWave) return;
@@ -225,10 +225,10 @@ export function Sidebar({
   //   <nav aria-label="Sidebar navigation">  → Today button
   //   <section aria-label="Waiting on you">  → side-wave rows (when any)
   //   <section aria-label="Pinned">          → pinned wave rows (when any)
-  //   <nav aria-label="Coves">               → cove-nav buttons + New cove
+  //   <nav aria-label="Areas">               → area-nav buttons + New area
   // Two <nav>s rather than one because the "Waiting on you" section sits
-  // visually between Today and the cove list and reads as a third
-  // concern (waves needing attention) — folding the cove list into the
+  // visually between Today and the area list and reads as a third
+  // concern (waves needing attention) — folding the area list into the
   // top nav would either reorder the DOM or nest the section inside a
   // nav. Both landmarks have unique accessible names so the
   // `landmark-unique` axe rule stays green.
@@ -271,7 +271,7 @@ export function Sidebar({
             <section className="side-section attn-zone" aria-label="Waiting on you">
               <div className="nav-label warn-text">Waiting on you</div>
               {waitingWaves.map((w) => {
-                const cove = coves.find((c) => c.id === w.coveId);
+                const area = areas.find((c) => c.id === w.areaId);
                 const active = route.name === 'wave' && route.id === w.id;
                 const displayTitle = waveDisplayTitle(w.title);
                 return (
@@ -279,8 +279,8 @@ export function Sidebar({
                     key={w.id}
                     wave={w}
                     active={active}
-                    cove={cove ?? null}
-                    title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
+                    area={area ?? null}
+                    title={area ? `${area.name} · ${displayTitle}` : displayTitle}
                     onGo={() => onGo({ name: 'wave', id: w.id })}
                     onPinWave={onPinWave}
                     onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
@@ -295,7 +295,7 @@ export function Sidebar({
             <section className="side-section" aria-label="Pinned">
               <div className="nav-label">Pinned</div>
               {pinnedWaves.map((w) => {
-                const cove = coves.find((c) => c.id === w.coveId);
+                const area = areas.find((c) => c.id === w.areaId);
                 const active = route.name === 'wave' && route.id === w.id;
                 const displayTitle = waveDisplayTitle(w.title);
                 return (
@@ -303,8 +303,8 @@ export function Sidebar({
                     key={w.id}
                     wave={w}
                     active={active}
-                    cove={cove ?? null}
-                    title={cove ? `${cove.name} · ${displayTitle}` : displayTitle}
+                    area={area ?? null}
+                    title={area ? `${area.name} · ${displayTitle}` : displayTitle}
                     onGo={() => onGo({ name: 'wave', id: w.id })}
                     onPinWave={onPinWave}
                     onDeleteWave={onDeleteWave ? openDeleteWaveDialog : undefined}
@@ -315,21 +315,21 @@ export function Sidebar({
             </section>
           )}
 
-          <nav className="side-nav side-coves" aria-label="Coves">
-            <CovesHeader onCreate={onCreateCove} />
-            {coves.map((cove) => {
-              const cw = waves.filter((w) => w.coveId === cove.id);
+          <nav className="side-nav side-areas" aria-label="Areas">
+            <AreasHeader onCreate={onCreateArea} />
+            {areas.map((area) => {
+              const cw = waves.filter((w) => w.areaId === area.id);
               // Pinned waves intentionally appear in both the quick-access
-              // Pinned section and their cove's inline list; pinning is not
-              // relocation, and the wave still belongs to this cove.
+              // Pinned section and their area's inline list; pinning is not
+              // relocation, and the wave still belongs to this area.
               const inlineWaves = sortByLifecycleRank(cw);
               const running = cw.filter((w) => isRunning(w.lifecycle)).length;
               // Match the top-of-sidebar "Waiting on you" predicate, including
-              // pinned attention waves, so cove warn badges surface pinned work.
+              // pinned attention waves, so area warn badges surface pinned work.
               const waiting = cw.filter(waveNeedsUserAttention).length;
-              const active = route.name === 'cove' && route.coveId === cove.id;
-              const expanded = !!expandedCoves[cove.id];
-              const listId = coveWavesListId(cove.id);
+              const active = route.name === 'area' && route.areaId === area.id;
+              const expanded = !!expandedAreas[area.id];
+              const listId = areaWavesListId(area.id);
               const showInlineWaves = expanded && inlineWaves.length > 0;
               // Single right-edge badge slot: warn-red waiting count beats
               // muted total count; empty when there are no waves at all.
@@ -341,54 +341,54 @@ export function Sidebar({
                     : null;
               return (
                 <div
-                  key={cove.id}
-                  className="cove-block"
-                  style={{ '--cove-color': cove.color } as React.CSSProperties}
+                  key={area.id}
+                  className="area-block"
+                  style={{ '--area-color': area.color } as React.CSSProperties}
                 >
-                  <div className="cove-row" role="group">
+                  <div className="area-row" role="group">
                     <button
                       type="button"
-                      className={'cove-row-chevron' + (expanded ? ' expanded' : '')}
+                      className={'area-row-chevron' + (expanded ? ' expanded' : '')}
                       onClick={(e) => {
                         e.stopPropagation();
-                        toggleCoveExpanded(cove.id);
+                        toggleAreaExpanded(area.id);
                       }}
                       aria-expanded={expanded}
                       aria-controls={showInlineWaves ? listId : undefined}
-                      aria-label={`${expanded ? 'Collapse' : 'Expand'} cove ${cove.name}`}
+                      aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${area.name}`}
                     >
                       <ChevronIcon />
                     </button>
                     <button
-                      className={'cove-nav' + (active ? ' active' : '')}
-                      onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+                      className={'area-nav' + (active ? ' active' : '')}
+                      onClick={() => onGo({ name: 'area', areaId: area.id })}
                     >
                       <span className="swatch-wrap">
                         <span
                           className={'swatch' + (running > 0 ? ' pulse' : '')}
-                          style={{ background: cove.color }}
+                          style={{ background: area.color }}
                         />
                       </span>
-                      <span className="lbl">{cove.name}</span>
+                      <span className="lbl">{area.name}</span>
                       {badge && (
                         <span
-                          className={'cove-nav-badge ' + badge.kind}
+                          className={'area-nav-badge ' + badge.kind}
                           aria-hidden="true"
                         >
                           {badge.n}
                         </span>
                       )}
                     </button>
-                    {onDeleteCove && (
+                    {onDeleteArea && (
                       <button
                         type="button"
-                        className="cove-row-delete"
+                        className="area-row-delete"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setPendingDelete(cove);
+                          setPendingDelete(area);
                         }}
-                        title={`Delete cove "${cove.name}"`}
-                        aria-label={`Delete cove "${cove.name}"`}
+                        title={`Delete area "${area.name}"`}
+                        aria-label={`Delete area "${area.name}"`}
                       >
                         <CloseIcon />
                       </button>
@@ -397,9 +397,9 @@ export function Sidebar({
                   {showInlineWaves && (
                     <div
                       id={listId}
-                      className="side-coves-waves"
+                      className="side-areas-waves"
                       role="group"
-                      aria-label={`Waves in ${cove.name}`}
+                      aria-label={`Waves in ${area.name}`}
                     >
                       {inlineWaves.map((w) => {
                         const waveActive = route.name === 'wave' && route.id === w.id;
@@ -409,7 +409,7 @@ export function Sidebar({
                             key={w.id}
                             wave={w}
                             active={waveActive}
-                            cove={null}
+                            area={null}
                             title={displayTitle}
                             onGo={() => onGo({ name: 'wave', id: w.id })}
                             onPinWave={onPinWave}
@@ -429,13 +429,13 @@ export function Sidebar({
 
           <ConfirmDialog
             open={pendingDelete !== null}
-            title="Delete cove?"
+            title="Delete area?"
             description={
               pendingDelete
-                ? `Delete cove "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
+                ? `Delete area "${pendingDelete.name}"? Its waves and cards go too. This cannot be undone.`
                 : null
             }
-            confirmLabel="Delete cove"
+            confirmLabel="Delete area"
             cancelLabel="Cancel"
             onConfirm={confirmDelete}
             onCancel={cancelDelete}
@@ -524,16 +524,16 @@ function computeInitials(displayName: string): string {
     .join('');
 }
 
-// ---------------- CovesHeader ----------------
+// ---------------- AreasHeader ----------------
 //
-// Renders the "Coves" section label with a tiny `+` icon button anchored
+// Renders the "Areas" section label with a tiny `+` icon button anchored
 // on the right edge of the same row. Clicking `+` expands an inline name
-// input directly below the header (still at the top of the cove list),
-// so the trigger stays in view even when the cove list overflows.
+// input directly below the header (still at the top of the area list),
+// so the trigger stays in view even when the area list overflows.
 
 const PALETTE = ['#5a9', '#c97', '#79c', '#b86', '#6a8', '#a6c'];
 
-function CovesHeader({
+function AreasHeader({
   onCreate,
 }: {
   onCreate?: (name: string, color: string) => void | Promise<void>;
@@ -543,7 +543,7 @@ function CovesHeader({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   if (!onCreate) {
-    return <div className="nav-label">Coves</div>;
+    return <div className="nav-label">Areas</div>;
   }
 
   const openForm = () => {
@@ -568,19 +568,19 @@ function CovesHeader({
   return (
     <>
       <div className="nav-label nav-label-row">
-        <span>Coves</span>
+        <span>Areas</span>
         <button
           type="button"
           className="nav-label-add"
           onClick={openForm}
-          title="New cove"
-          aria-label="New cove"
+          title="New area"
+          aria-label="New area"
         >
           <PlusIcon />
         </button>
       </div>
       {open && (
-        <div className="cove-nav-edit">
+        <div className="area-nav-edit">
           <span className="swatch-wrap">
             <span className="swatch-plus">+</span>
           </span>
@@ -603,7 +603,7 @@ function CovesHeader({
 
 // ---------------- WaveRow ----------------
 //
-// A single wave entry in the Pinned, Waiting-on-you, or inline cove list.
+// A single wave entry in the Pinned, Waiting-on-you, or inline area list.
 // Rendered as `<div role="group">` containing sibling `<button>`s to
 // avoid nested-button a11y violations: pin, navigation, and delete.
 // The pin button is hover-revealed but always visible when the wave is
@@ -612,7 +612,7 @@ function CovesHeader({
 function WaveRow({
   wave,
   active,
-  cove,
+  area,
   title,
   onGo,
   onPinWave,
@@ -621,7 +621,7 @@ function WaveRow({
 }: {
   wave: Wave;
   active: boolean;
-  cove: { id: string; name: string } | null;
+  area: { id: string; name: string } | null;
   title: string;
   onGo: () => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
@@ -656,7 +656,7 @@ function WaveRow({
         title={title}
       >
         <span className="side-wave-title">{displayTitle}</span>
-        {cove && <span className="side-wave-cove">{cove.name}</span>}
+        {area && <span className="side-wave-area">{area.name}</span>}
       </button>
       {onDeleteWave && (
         <button

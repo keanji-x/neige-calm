@@ -396,7 +396,7 @@ pub struct PluginHost {
     registry: Arc<PluginRegistry>,
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
     /// the host only does eventized writes + out-of-domain plugin/token/kv
-    /// writes + reads. Raw sync-domain writes (`cove_*`, `wave_*`,
+    /// writes + reads. Raw sync-domain writes (`area_*`, `wave_*`,
     /// `card_*` direct, `overlay_upsert`) are unreachable so a future
     /// contributor can't quietly bypass the audit log inside the host.
     pub(crate) repo: Arc<dyn RouteRepo>,
@@ -3115,7 +3115,7 @@ impl PluginHost {
             };
             // PR2 of #136: `ActorId::Plugin(id)` typed; `EventScope::System`
             // because `Event::PluginState` is a server-lifecycle signal with
-            // no entity (cove/wave/card) scope.
+            // no entity (area/wave/card) scope.
             if let Err(e) = self
                 .repo
                 .log_pure_event(
@@ -3124,7 +3124,7 @@ impl PluginHost {
                     None,
                     bus,
                     self.write.role_cache(),
-                    self.write.cove_cache(),
+                    self.write.area_cache(),
                     event,
                 )
                 .await

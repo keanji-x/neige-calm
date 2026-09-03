@@ -1,21 +1,21 @@
 // E2E: create a wave end-to-end via the NewTaskForm and land on its
 // detail page.
 //
-// After issue #175 there is no seeded `Scratch` cove in the sidebar.
-// We mint our own user cove first via the "+ New cove" affordance,
-// then navigate into it and create a wave by expanding the cove-page
+// After issue #175 there is no seeded `Scratch` area in the sidebar.
+// We mint our own user area first via the "+ New area" affordance,
+// then navigate into it and create a wave by expanding the area-page
 // "+ New wave" button into NewTaskForm (#250 PR 3). The form does
-// the cwd → cove resolve dance, but since this fresh cove has no
+// the cwd → area resolve dance, but since this fresh area has no
 // folder claims yet the resolve misses and we take the "existing
-// cove + attach_folder=true" branch (the cove is preselected by the
-// surrounding CovePage).
+// area + attach_folder=true" branch (the area is preselected by the
+// surrounding AreaPage).
 //
 // Prereq: `make dev` must be serving the docker stack at
 // http://localhost:4040 with the default seed. We use unique titles
 // per run (`E2E … <timestamp>`) so re-runs don't collide with
 // leftovers — and a unique per-run cwd under `$HOME` (see
 // `helpers/attached-workspace.ts`) so concurrent runs don't trip the
-// cove_folders UNIQUE(path).
+// area_folders UNIQUE(path).
 
 import { test, expect } from '@playwright/test';
 import {
@@ -24,53 +24,53 @@ import {
   createGitWorkTree,
 } from './helpers/attached-workspace';
 
-// Coves seeded (directly via REST or indirectly via the sidebar UI)
-// get tracked here so the afterEach hook can `DELETE /api/coves/<id>`
-// them. Without cleanup, leftover coves accumulate and break specs that
-// assume a zero-cove baseline (notably golden-path.spec.ts; #250 PR5
-// triage). `DELETE /api/coves/:id` cascades through waves → cards →
-// terminals (see `delete_cove` in crates/calm-server/src/routes/coves.rs).
-const createdCoveIds: string[] = [];
+// Areas seeded (directly via REST or indirectly via the sidebar UI)
+// get tracked here so the afterEach hook can `DELETE /api/areas/<id>`
+// them. Without cleanup, leftover areas accumulate and break specs that
+// assume a zero-area baseline (notably golden-path.spec.ts; #250 PR5
+// triage). `DELETE /api/areas/:id` cascades through waves → cards →
+// terminals (see `delete_area` in crates/calm-server/src/routes/areas.rs).
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} → ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   cleanupAttachedWorkspaces();
 });
 
-test('creates a new wave from a fresh cove via NewTaskForm and navigates to it', async ({ page }) => {
+test('creates a new wave from a fresh area via NewTaskForm and navigates to it', async ({ page }) => {
   await page.goto('/calm/');
 
-  // Step 1 — sidebar → mint a new user cove (issue #175).
-  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-  const coveName = `E2E cove ${Date.now()}`;
-  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  // Step 1 — sidebar → mint a new user area (issue #175).
+  const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+  const areaName = `E2E area ${Date.now()}`;
+  await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+  const nameInput = sidebarAreas.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
 
-  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
-  // whose accessible name also contains coveName — without exact match
+  // `exact: true` excludes the per-row "Delete area \"<name>\"" button
+  // whose accessible name also contains areaName — without exact match
   // the locator hits both and trips Playwright's strict mode.
-  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  const areaBtn = sidebarAreas.getByRole('button', { name: areaName, exact: true });
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
   // Step 2 — click the "+ New wave" CTA. It opens a modal Dialog
-  // hosting the shared NewTaskForm (per #250 PR 3 the cove page no
+  // hosting the shared NewTaskForm (per #250 PR 3 the area page no
   // longer renders a one-line title input; all creation goes through
   // the configuration card, now wrapped in a Dialog so the cwd
   // Browse… picker can take over the modal body).
@@ -89,10 +89,10 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   await form.getByLabel(/task description/i).fill(title);
 
   // Unique absolute cwd so concurrent test runs don't race on
-  // cove_folders.UNIQUE(path). The form will resolve this and miss
-  // (no folder claim yet); the cove dropdown defaults to "existing"
-  // with the current cove preselected (CovePage passes
-  // `defaultCoveId={cove.id}`), so submit goes through with
+  // area_folders.UNIQUE(path). The form will resolve this and miss
+  // (no folder claim yet); the area dropdown defaults to "existing"
+  // with the current area preselected (AreaPage passes
+  // `defaultAreaId={area.id}`), so submit goes through with
   // `attach_folder: true`.
   //
   // #1147 S3 — the legacy `web/` NewTaskForm always puts this input's
@@ -116,14 +116,14 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   // is the cheapest "the wave really rendered" assertion.
   await expect(page.getByText(title, { exact: false }).first()).toBeVisible();
 
-  // Resolve the sidebar-minted cove id via the wave-detail endpoint and
+  // Resolve the sidebar-minted area id via the wave-detail endpoint and
   // hand it off to the afterEach cleanup hook. We don't get it from
-  // sidebar markup because the sidebar `<button>` carries only the cove
-  // name, not its id; the wave we just created links back to its cove
-  // through `wave.cove_id`, so we cash that out into the cleanup list.
+  // sidebar markup because the sidebar `<button>` carries only the area
+  // name, not its id; the wave we just created links back to its area
+  // through `wave.area_id`, so we cash that out into the cleanup list.
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveRes = await page.request.get(`/api/waves/${waveId}`);
   expect(waveRes.ok()).toBeTruthy();
-  const { wave } = (await waveRes.json()) as { wave: { cove_id: string } };
-  createdCoveIds.push(wave.cove_id);
+  const { wave } = (await waveRes.json()) as { wave: { area_id: string } };
+  createdAreaIds.push(wave.area_id);
 });

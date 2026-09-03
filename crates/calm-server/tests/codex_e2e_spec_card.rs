@@ -63,11 +63,11 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 // #868: codex binary resolution goes through the shared no-fallback
@@ -210,8 +210,8 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "codex-e2e".into(),
             color: "#000".into(),
             sort: None,
@@ -237,11 +237,11 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     // the field is `pub` and the doc on `AppState::mcp_server`
     // explicitly calls out test-fixture mutation as the documented seam.
     let mcp_socket_path = tmp.path().join("mcp").join("kernel.sock");
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     let mcp_server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         mcp_socket_path.clone(),
         locate_shim_bin(),
         build_default_registry(),
@@ -269,11 +269,11 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
             std::env::temp_dir().join("calm-plugins-data-codex-e2e"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     state.mcp_server = Some(mcp_server.clone());
 
@@ -297,7 +297,7 @@ async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     let (status, body) = post(
         app.clone(),
         "/api/waves",
-        json!({"cove_id": cove.id, "title": "codex-e2e wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": area.id, "title": "codex-e2e wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(

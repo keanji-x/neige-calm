@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 
-async function waitForCoveInSidebar(page: Page, name: string): Promise<void> {
+async function waitForAreaInSidebar(page: Page, name: string): Promise<void> {
   await expect(
     page.locator('aside.side').getByRole('button', { name, exact: true }),
   ).toBeVisible({ timeout: 15_000 });
@@ -16,18 +16,18 @@ test.describe('a11y · sidebar wave delete', () => {
     page,
     request,
   }) => {
-    const coveName = `SidebarDel${Date.now()}`;
+    const areaName = `SidebarDel${Date.now()}`;
     const waveTitle = `SidebarWave${Date.now()}`;
-    const cove = await createUserCove(request, coveName);
-    await createWaveInCove(request, cove.id, waveTitle);
+    const area = await createUserArea(request, areaName);
+    await createWaveInArea(request, area.id, waveTitle);
 
     await page.goto('/calm/');
-    await waitForCoveInSidebar(page, coveName);
+    await waitForAreaInSidebar(page, areaName);
 
     const sidebar = page.locator('aside.side');
-    await sidebar.getByRole('button', { name: `Expand cove ${coveName}` }).click();
+    await sidebar.getByRole('button', { name: `Expand area ${areaName}` }).click();
 
-    const inlineWaves = sidebar.getByRole('group', { name: `Waves in ${coveName}` });
+    const inlineWaves = sidebar.getByRole('group', { name: `Waves in ${areaName}` });
     const waveRow = inlineWaves
       .getByRole('button', { name: waveTitle, exact: true })
       .locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " side-wave-row ")]');

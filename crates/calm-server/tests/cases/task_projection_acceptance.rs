@@ -1096,12 +1096,12 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     upsert(&boot, Some((&id, rev)), changed).await;
     assert_diagnosed_on_both_reads(&boot, "ceiling", "ceiling of 0").await;
 
-    // cross-cove reference
+    // cross-area reference
     let boot = new_boot().await;
     let (id, rev) = upsert(&boot, None, task("cross")).await;
-    let other_cove = boot
+    let other_area = boot
         .repo
-        .cove_create(calm_server::model::NewCove {
+        .area_create(calm_server::model::NewArea {
             name: "other".into(),
             color: "#fff".into(),
             sort: None,
@@ -1112,7 +1112,7 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
         .repo
         .wave_create(calm_server::model::NewWave {
             template_input: None,
-            cove_id: other_cove.id,
+            area_id: other_area.id,
             title: "other".into(),
             sort: None,
             cwd: String::new(),
@@ -1126,7 +1126,7 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     let mut changed = task("cross");
     changed["refs"] = json!([format!("neige://wave/{}#b_dead", other_wave.id)]);
     upsert(&boot, Some((&id, rev)), changed).await;
-    assert_diagnosed_on_both_reads(&boot, "cross", "cross-cove").await;
+    assert_diagnosed_on_both_reads(&boot, "cross", "cross-area").await;
 }
 
 async fn task_bytes(boot: &Boot) -> Vec<String> {

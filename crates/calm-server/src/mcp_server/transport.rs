@@ -993,9 +993,9 @@ async fn resolve_forge_cwd(
         .await
         .map_err(|e| RpcError::internal(format!("forge action wave lookup: {e}")))?
         .ok_or_else(|| RpcError::invalid_params(format!("unknown wave `{wave_id}`")))?;
-    if wave.cove_id.as_str() != identity.cove_id.as_str() {
+    if wave.area_id.as_str() != identity.area_id.as_str() {
         return Err(RpcError::invalid_params(
-            "forge action wave belongs to a different cove",
+            "forge action wave belongs to a different area",
         ));
     }
     let wave_cwd = PathBuf::from(&wave.workspace.path);
@@ -1483,7 +1483,7 @@ async fn card_bound_tool_identity(
         provider: bound.provider.clone(),
         session_id: bound.session_id.clone(),
         wave_id: Some(card.wave_id.as_str().to_string()),
-        cove_id: card.cove_id.as_str().to_string(),
+        area_id: card.area_id.as_str().to_string(),
         thread_id: "card-bound".to_string(),
     })
 }
@@ -1519,7 +1519,7 @@ async fn ensure_card_bound_session_active(
         })?;
     if card.card_id.as_str() != bound.card_id.as_str()
         || card.wave_id != session.wave_id
-        || card.cove_id.as_str() != bound.cove_id.as_str()
+        || card.area_id.as_str() != bound.area_id.as_str()
     {
         warn_bound_session_reject(method, bound, "card session link drift");
         return Err(bound_session_auth_error(method, bound));
@@ -1619,7 +1619,7 @@ async fn resolve_thread_identity(
             .unwrap_or(AgentProvider::Codex),
         session_id: runtime.id.clone(),
         wave_id: Some(card.wave_id.as_str().to_string()),
-        cove_id: card.cove_id.as_str().to_string(),
+        area_id: card.area_id.as_str().to_string(),
         thread_id: thread_id.to_string(),
     })
 }

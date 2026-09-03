@@ -4,7 +4,7 @@
 //! is materialized as data files under `tests/vectors/gate_denials/*.json`.
 //! This driver loads every vector and executes it through the **real write
 //! entry** — `Repo::log_pure_event` on a real sqlite `SqlxRepo` with a
-//! seeded card-role / wave-cove cache — exactly the path production MCP /
+//! seeded card-role / wave-area cache — exactly the path production MCP /
 //! REST writes take after `routes`/`emit` construct the `(actor, scope,
 //! event)` tuple. It deliberately imports **no role_gate internals**
 //! (no `enforce_role`, no `RoleViolation`): the gate is observed only
@@ -28,7 +28,7 @@
 //!   "note": "optional characterization caveat",
 //!   "actor":  { "kind": "AiCodex", "id": "$WORKER_CARD" },
 //!   "event":  { "ev": "task.completed", "data": { ... } },
-//!   "scope":  { "kind": "Card", "id": { "card": "...", "wave": "...", "cove": "..." } },
+//!   "scope":  { "kind": "Card", "id": { "card": "...", "wave": "...", "area": "..." } },
 //!   "expected": { "decision": "allow" } | { "decision": "deny", "error_contains": "..." }
 //! }
 //! ```
@@ -46,10 +46,10 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::session_projection_repo::WorkerSessionState;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
 };
@@ -81,7 +81,7 @@ enum Expected {
     Deny { error_contains: String },
 }
 
-/// Real-sqlite fixture mirroring `dispatcher_role_scope.rs`: two coves,
+/// Real-sqlite fixture mirroring `dispatcher_role_scope.rs`: two areas,
 /// each with one wave; the home wave hosts a codex worker, a claude
 /// worker, a spec card, a report card, and a second ("other") worker.
 /// Roles land in both the cards table and the in-memory caches the
@@ -90,7 +90,7 @@ struct Fixture {
     repo: Arc<SqlxRepo>,
     bus: EventBus,
     cache: CardRoleCache,
-    wcc: WaveCoveCache,
+    wcc: WaveAreaCache,
     /// `$PLACEHOLDER` → minted id. Longest keys first so no placeholder
     /// is a prefix of an earlier-substituted one.
     subst: Vec<(&'static str, String)>,
@@ -102,12 +102,12 @@ impl Fixture {
         let bus = EventBus::new();
         let cache = CardRoleCache::new();
         repo.seed_card_role_cache(&cache).await.unwrap();
-        let wcc = WaveCoveCache::new();
-        repo.seed_wave_cove_cache(&wcc).await.unwrap();
+        let wcc = WaveAreaCache::new();
+        repo.seed_wave_area_cache(&wcc).await.unwrap();
 
-        let (home_cove, home_wave) = seed_cove_wave(&repo, &wcc, "home-cove", "home-wave").await;
-        let (other_cove, other_wave) =
-            seed_cove_wave(&repo, &wcc, "other-cove", "other-wave").await;
+        let (home_area, home_wave) = seed_area_wave(&repo, &wcc, "home-area", "home-wave").await;
+        let (other_area, other_wave) =
+            seed_area_wave(&repo, &wcc, "other-area", "other-wave").await;
 
         let worker = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
         let claude_worker = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
@@ -178,9 +178,9 @@ impl Fixture {
             ("$OTHER_CARD", other.as_str().to_string()),
             ("$SPEC_CARD", spec.as_str().to_string()),
             ("$HOME_WAVE", home_wave.as_str().to_string()),
-            ("$HOME_COVE", home_cove.as_str().to_string()),
+            ("$HOME_AREA", home_area.as_str().to_string()),
             ("$OTHER_WAVE", other_wave.as_str().to_string()),
-            ("$OTHER_COVE", other_cove.as_str().to_string()),
+            ("$OTHER_AREA", other_area.as_str().to_string()),
         ];
 
         Self {
@@ -193,15 +193,15 @@ impl Fixture {
     }
 }
 
-async fn seed_cove_wave(
+async fn seed_area_wave(
     repo: &SqlxRepo,
-    wcc: &WaveCoveCache,
-    cove_name: &str,
+    wcc: &WaveAreaCache,
+    area_name: &str,
     wave_title: &str,
-) -> (CoveId, WaveId) {
-    let cove = repo
-        .cove_create(NewCove {
-            name: cove_name.into(),
+) -> (AreaId, WaveId) {
+    let area = repo
+        .area_create(NewArea {
+            name: area_name.into(),
             color: "#000".into(),
             sort: None,
         })
@@ -210,7 +210,7 @@ async fn seed_cove_wave(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: wave_title.into(),
             sort: None,
             cwd: String::new(),
@@ -221,13 +221,13 @@ async fn seed_cove_wave(
         })
         .await
         .unwrap();
-    let (cove_id, wave_id) = (
-        CoveId::from(cove.id.as_str()),
+    let (area_id, wave_id) = (
+        AreaId::from(area.id.as_str()),
         WaveId::from(wave.id.as_str()),
     );
-    // The gate's #234 cove cross-check consults this cache.
-    wcc.insert(wave_id.clone(), cove_id.clone());
-    (cove_id, wave_id)
+    // The gate's #234 area cross-check consults this cache.
+    wcc.insert(wave_id.clone(), area_id.clone());
+    (area_id, wave_id)
 }
 
 async fn seed_card(

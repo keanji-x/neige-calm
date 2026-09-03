@@ -2,7 +2,7 @@
 //!
 //! #679 PR1: the IO-free entity/DTO vocabulary moved to `calm-types`
 //! (`calm_types::model`) and is re-exported below, so every existing
-//! `crate::model::Cove` / `calm_server::model::Card` path keeps working.
+//! `crate::model::Area` / `calm_server::model::Card` path keeps working.
 //! What stays defined here:
 //!
 //!   * route-coupled request DTOs (`NewWave` / `NewTerminal` carry a
@@ -20,13 +20,13 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
+pub use crate::ids::{ActorId, AreaId, CardId, WaveId};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. The source
 // definitions live in calm-types; do NOT re-declare them here (shim-window
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
-    Card, CardRole, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
-    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave,
+    Area, AreaConversationSummary, AreaFolder, AreaKind, AreaResolve, Card, CardRole,
+    CardRuntimeView, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave,
     WaveConversationSummary, WaveLifecycle, WaveWorkspace, WaveWorkspaceKind, default_deletable,
 };
 
@@ -60,10 +60,10 @@ impl RequestTheme {
     }
 }
 
-// ---------------- Cove DTOs ----------------
+// ---------------- Area DTOs ----------------
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
-pub struct NewCove {
+pub struct NewArea {
     pub name: String,
     pub color: String,
     /// If absent, server appends to end.
@@ -71,16 +71,16 @@ pub struct NewCove {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
-pub struct CovePatch {
+pub struct AreaPatch {
     pub name: Option<String>,
     pub color: Option<String>,
     pub sort: Option<f64>,
 }
 
-// ---------------- CoveFolder DTOs ----------------
+// ---------------- AreaFolder DTOs ----------------
 
 #[derive(Clone, Debug, Deserialize, ToSchema)]
-pub struct NewCoveFolder {
+pub struct NewAreaFolder {
     /// Absolute filesystem path. Must start with `/`. The server trims
     /// a trailing slash before insert (root `/` excepted) so equality
     /// and prefix matching stay canonical.
@@ -93,14 +93,14 @@ pub struct NewCoveFolder {
 #[serde(deny_unknown_fields)]
 pub struct NewWave {
     #[schema(value_type = String)]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub title: String,
     pub sort: Option<f64>,
     /// Issue #250 PR 2 — absolute filesystem path the spec daemon will
     /// spawn under. Required (no `Option`): every wave-creating path
     /// must declare a cwd or the spec daemon has no defensible
     /// working directory. The `POST /api/waves` route enforces
-    /// absolute-path shape and the cove-folder claim check; the
+    /// absolute-path shape and the area-folder claim check; the
     /// inner `wave_create_tx` writes whatever the route lands here
     /// verbatim.
     pub cwd: String,
@@ -124,13 +124,13 @@ pub struct NewWave {
     #[schema(value_type = Option<Object>)]
     pub template_input: Option<serde_json::Value>,
     /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
-    /// `cove_id` as a new folder, in the same transaction as the
+    /// `area_id` as a new folder, in the same transaction as the
     /// wave-create write". Default `false`: the cwd must already be
-    /// covered by some existing folder under the same cove. Both the
+    /// covered by some existing folder under the same area. Both the
     /// covering scan and the claim insert run inside that one
     /// transaction (issue #275), through the same
-    /// [`crate::cove_folder_claim::find_owner`] rule
-    /// `GET /api/coves/resolve` uses. `true` adds a `cove_folder` row
+    /// [`crate::area_folder_claim::find_owner`] rule
+    /// `GET /api/areas/resolve` uses. `true` adds a `area_folder` row
     /// first and then the wave; folder-conflict rules
     /// (equal/ancestor/descendant of any existing claim) still apply and
     /// roll the whole tx back on conflict.
@@ -212,12 +212,12 @@ pub struct WavePatch {
 ///
 /// The only transition this expresses is `managed → attached`. There is no
 /// `managed → managed`: a managed path is *derived*
-/// (`<workspace-root>/<cove_id>/<wave_id>`, see
-/// `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+/// (`<workspace-root>/<area_id>/<wave_id>`, see
+/// `workspace_materialize::managed_workspace_path`) from a wave's area and id,
 /// neither of which can change, so "re-allocate a managed workspace" would
 /// always re-derive the same path — an in-place reset, not a change. And a
 /// caller-supplied *managed* path is worse than useless: S5's recycle guard 2
-/// requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+/// requires exactly `<root>/<area>/<wave>` depth, so any other path produces a
 /// row whose directory can never be reclaimed.
 ///
 /// `attached → *` stays refused (an attached repository belongs to the user;
@@ -233,7 +233,7 @@ pub struct WaveWorkspacePatch {
     /// wrong" surfacing later as a worker's `spawn-failed` is the defect
     /// #1147 was opened on.
     pub path: String,
-    /// Claim `path` for this wave's cove in the same transaction, exactly as
+    /// Claim `path` for this wave's area in the same transaction, exactly as
     /// `POST /api/waves`'s field of the same name does (issue #275 rules:
     /// equal / ancestor / descendant of any existing claim is a structured
     /// 409). Default `false`: an unclaimed path is refused rather than

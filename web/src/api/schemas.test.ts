@@ -6,25 +6,25 @@ import { describe, it, expect, expectTypeOf } from 'vitest';
 import type { z } from 'zod';
 import {
   wireEventSchema,
-  coveSchema,
+  areaSchema,
   waveSchema,
   cardSchema,
   overlaySchema,
 } from './schemas';
 import type {
   Event as GeneratedEvent,
-  Cove as GeneratedCove,
+  Area as GeneratedArea,
   Wave as GeneratedWave,
   Card as GeneratedCard,
   Overlay as GeneratedOverlay,
 } from './generated-events';
 
 describe('wireEventSchema', () => {
-  it('parses a valid cove.updated event', () => {
+  it('parses a valid area.updated event', () => {
     const payload = {
-      ev: 'cove.updated',
+      ev: 'area.updated',
       data: {
-        id: 'cove_1',
+        id: 'area_1',
         name: 'Atlas',
         color: '#abc',
         sort: 0,
@@ -34,22 +34,22 @@ describe('wireEventSchema', () => {
       },
     };
     const parsed = wireEventSchema.parse(payload);
-    expect(parsed.ev).toBe('cove.updated');
-    if (parsed.ev === 'cove.updated') {
-      expect(parsed.data.id).toBe('cove_1');
+    expect(parsed.ev).toBe('area.updated');
+    if (parsed.ev === 'area.updated') {
+      expect(parsed.data.id).toBe('area_1');
       expect(parsed.data.name).toBe('Atlas');
       expect(parsed.data.kind).toBe('user');
     }
   });
 
-  it('defaults cove.updated kind to "user" when absent (legacy wire payload)', () => {
-    // Issue #175 — `coveKindSchema` carries `.default('user')` so pre-#175
+  it('defaults area.updated kind to "user" when absent (legacy wire payload)', () => {
+    // Issue #175 — `areaKindSchema` carries `.default('user')` so pre-#175
     // wire payloads (event-log replay, legacy fixtures) parse without
     // requiring a fixture migration.
     const payload = {
-      ev: 'cove.updated',
+      ev: 'area.updated',
       data: {
-        id: 'cove_legacy',
+        id: 'area_legacy',
         name: 'Atlas',
         color: '#abc',
         sort: 0,
@@ -58,7 +58,7 @@ describe('wireEventSchema', () => {
       },
     };
     const parsed = wireEventSchema.parse(payload);
-    if (parsed.ev === 'cove.updated') {
+    if (parsed.ev === 'area.updated') {
       expect(parsed.data.kind).toBe('user');
     }
   });
@@ -102,13 +102,13 @@ describe('wireEventSchema', () => {
   });
 
   it('rejects a malformed wave (missing required fields)', () => {
-    // wave.updated requires the full waveSchema; drop `cove_id` to force a
+    // wave.updated requires the full waveSchema; drop `area_id` to force a
     // failure.
     const bad = {
       ev: 'wave.updated',
       data: {
         id: 'wave_1',
-        // cove_id missing on purpose
+        // area_id missing on purpose
         title: 'hello',
         sort: 0,
         archived_at: null,
@@ -125,7 +125,7 @@ describe('wireEventSchema', () => {
       ev: 'wave.updated',
       data: {
         id: 'wave_1',
-        cove_id: 'cove_1',
+        area_id: 'area_1',
         title: 'hello',
         sort: 0,
         archived_at: null,
@@ -156,7 +156,7 @@ describe('wireEventSchema', () => {
       ev: 'wave.updated',
       data: {
         id: 'wave_1',
-        cove_id: 'cove_1',
+        area_id: 'area_1',
         title: 'hello',
         sort: 0,
         archived_at: null,
@@ -219,7 +219,7 @@ describe('zod ↔ ts-rs conformance', () => {
     // Per-entity pins make a regression easier to localize than the
     // whole-union check above — a drift in `Card.payload` lights up here
     // before reaching `wireEventSchema`.
-    expectTypeOf<z.infer<typeof coveSchema>>().toEqualTypeOf<GeneratedCove>();
+    expectTypeOf<z.infer<typeof areaSchema>>().toEqualTypeOf<GeneratedArea>();
     expectTypeOf<z.infer<typeof waveSchema>>().toEqualTypeOf<GeneratedWave>();
     expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
     expectTypeOf<z.infer<typeof overlaySchema>>().toEqualTypeOf<GeneratedOverlay>();
@@ -691,7 +691,7 @@ describe('PR2 of #247: wave.report_edited', () => {
 });
 
 describe('entity sub-schemas', () => {
-  it('coveSchema round-trips a minimal cove', () => {
+  it('areaSchema round-trips a minimal area', () => {
     const c = {
       id: 'c1',
       name: 'n',
@@ -701,10 +701,10 @@ describe('entity sub-schemas', () => {
       created_at: 1,
       updated_at: 2,
     };
-    expect(coveSchema.parse(c)).toEqual(c);
+    expect(areaSchema.parse(c)).toEqual(c);
   });
 
-  it('coveSchema fills kind="user" when absent (legacy fixture)', () => {
+  it('areaSchema fills kind="user" when absent (legacy fixture)', () => {
     // Issue #175 — same default story as the event-schema test above:
     // pre-#175 wire payloads must round-trip without forcing a fixture
     // migration on every recorded session.
@@ -716,14 +716,14 @@ describe('entity sub-schemas', () => {
       created_at: 1,
       updated_at: 2,
     };
-    const parsed = coveSchema.parse(c);
+    const parsed = areaSchema.parse(c);
     expect(parsed.kind).toBe('user');
   });
 
   it('waveSchema accepts archived_at: null', () => {
     const w = {
       id: 'w1',
-      cove_id: 'c1',
+      area_id: 'c1',
       title: 't',
       sort: 0,
       archived_at: null,
@@ -743,7 +743,7 @@ describe('entity sub-schemas', () => {
     // compat path.
     const w = {
       id: 'w1',
-      cove_id: 'c1',
+      area_id: 'c1',
       title: 't',
       sort: 0,
       archived_at: null,
@@ -761,7 +761,7 @@ describe('entity sub-schemas', () => {
     // "present key" case pins that the field actually survives parsing.
     const base = {
       id: 'w1',
-      cove_id: 'c1',
+      area_id: 'c1',
       title: 't',
       sort: 0,
       archived_at: null,
@@ -802,7 +802,7 @@ describe('entity sub-schemas', () => {
     // Mirrors serde: none of the three fields has `#[serde(default)]`.
     const base = {
       id: 'w1',
-      cove_id: 'c1',
+      area_id: 'c1',
       title: 't',
       sort: 0,
       archived_at: null,
@@ -843,7 +843,7 @@ describe('entity sub-schemas', () => {
     for (const lc of all) {
       const w = {
         id: 'w1',
-        cove_id: 'c1',
+        area_id: 'c1',
         title: 't',
         sort: 0,
         archived_at: null,
@@ -860,7 +860,7 @@ describe('entity sub-schemas', () => {
       ev: 'wave.lifecycle_changed',
       data: {
         id: 'w1',
-        cove_id: 'c1',
+        area_id: 'c1',
         from: 'draft',
         to: 'planning',
         agent_message: 'planning rationale',
@@ -981,7 +981,7 @@ describe('#955: proposal events', () => {
 describe('#1209 pre-rename template keys on the wave shape', () => {
   const legacyWave = {
     id: 'w1',
-    cove_id: 'c1',
+    area_id: 'c1',
     title: 't',
     sort: 0,
     archived_at: null,

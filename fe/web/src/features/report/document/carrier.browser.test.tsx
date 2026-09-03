@@ -116,7 +116,7 @@ describe('a contract block takes no room', () => {
   it('takes its backlink sidenote with it, and still costs the next section nothing', async () => {
     /*
      * The orphan-marker case. A contract block is citable — it keeps a stable
-     * id in `cove.outline` — so another report can link straight at it and the
+     * id in `area.outline` — so another report can link straight at it and the
      * slot grows a `◂ N` sidenote in column 3. `.row` is `display: contents`,
      * so that sidenote is a grid item in its own right: a rule that hid only
      * the block would leave the marker alone on an otherwise blank row.

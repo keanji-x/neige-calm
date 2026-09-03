@@ -1,6 +1,6 @@
 use super::session_projection::runtime_get_projectable_for_card_from_pool;
 use super::*;
-use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme, new_id};
+use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme, new_id};
 use crate::session_projection_repo::{
     AgentProvider, RuntimeId, Tx as WorkerSessionProjectionTx, WorkerSessionInit,
     WorkerSessionKind, WorkerSessionProjection,
@@ -73,21 +73,21 @@ pub(super) async fn create_card_in_tx(
     label: &str,
     card_kind: &str,
 ) -> String {
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         tx,
-        NewCove {
+        NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
     let wave = wave_create_tx(
         tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: format!("read flip {label}"),
             sort: None,
             cwd: "/tmp".into(),
@@ -98,7 +98,7 @@ pub(super) async fn create_card_in_tx(
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");
@@ -186,21 +186,21 @@ pub(super) async fn seed_terminal_runtime(
     label: &'static str,
 ) -> (WorkerSessionProjection, String) {
     let mut tx = repo.pool().begin().await.expect("begin terminal seed tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("create terminal cove");
+    .expect("create terminal area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: format!("read flip {label}"),
             sort: None,
             cwd: "/tmp".into(),
@@ -211,7 +211,7 @@ pub(super) async fn seed_terminal_runtime(
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create terminal wave");
@@ -251,21 +251,21 @@ pub(super) async fn seed_codex_terminal_card(
         .begin()
         .await
         .expect("begin codex terminal seed tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("create codex terminal cove");
+    .expect("create codex terminal area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: format!("read flip {label}"),
             sort: None,
             cwd: "/tmp".into(),
@@ -276,7 +276,7 @@ pub(super) async fn seed_codex_terminal_card(
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create codex terminal wave");

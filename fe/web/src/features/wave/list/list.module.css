@@ -12,7 +12,7 @@
     list-style: none;
     /* Eight rows, then it scrolls. A panel module has no business setting the
        height of the page it sits next to, and an unbounded list does exactly
-       that: one busy cove pushed the conversation module below the fold and
+       that: one busy area pushed the conversation module below the fold and
        moved it every time a wave appeared. Eight is the count at which the last
        row is still findable by eye rather than by reading — past that you are
        scanning either way, so scrolling costs nothing. */

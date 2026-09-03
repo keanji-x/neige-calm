@@ -130,7 +130,7 @@ async fn host_parts(
 pub(super) fn test_write_context() -> calm_server::state::WriteContext {
     calm_server::state::WriteContext::new(
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
     )
 }
 

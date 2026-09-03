@@ -124,7 +124,7 @@ pub(super) async fn check_no_unknown_future_migrations(
 /// Compute the next sort value (max + 1) within a scoped table.
 ///
 /// `scope_sql` is appended verbatim after `FROM <table>`; supply `""` for
-/// global scope, or `"WHERE cove_id = ?1"` etc. Bind a single optional
+/// global scope, or `"WHERE area_id = ?1"` etc. Bind a single optional
 /// scope parameter via `scope_id`.
 pub(super) async fn next_sort_scoped_in_tx(
     tx: &mut Transaction<'_, Sqlite>,

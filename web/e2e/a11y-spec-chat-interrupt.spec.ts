@@ -21,7 +21,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 
 test.describe('spec chat interrupt UI', () => {
@@ -30,8 +30,8 @@ test.describe('spec chat interrupt UI', () => {
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
-    const cove = await createUserCove(request, 'AtlasSpecStop');
-    const wave = await createWaveInCove(request, cove.id, 'Spec interrupt test');
+    const area = await createUserArea(request, 'AtlasSpecStop');
+    const wave = await createWaveInArea(request, area.id, 'Spec interrupt test');
     waveId = wave.id;
     specCardId = await getSpecCardId(request, waveId);
   });

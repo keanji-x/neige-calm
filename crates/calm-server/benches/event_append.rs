@@ -4,9 +4,9 @@
 //!
 //! Two groups are measured side-by-side:
 //!
-//!   * `write_with_event_cove_create` — full sync engine write path
+//!   * `write_with_event_area_create` — full sync engine write path
 //!     (txn open → entity `_tx` → event insert → commit → broadcast).
-//!   * `baseline_cove_create_no_event_log` — pre-Scope-A path (entity
+//!   * `baseline_area_create_no_event_log` — pre-Scope-A path (entity
 //!     write only, no event row, no broadcast).
 //!
 //! The **delta** between the two is the cost the design budgets at
@@ -20,11 +20,11 @@
 use std::sync::Arc;
 
 use calm_server::db::Repo;
-use calm_server::db::sqlite::{SqlxRepo, cove_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, area_create_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn event_append_bench(c: &mut Criterion) {
@@ -53,17 +53,17 @@ fn event_append_bench(c: &mut Criterion) {
     // well under the cap.
     let _sub = bus.subscribe();
 
-    c.bench_function("write_with_event_cove_create", |b| {
+    c.bench_function("write_with_event_area_create", |b| {
         b.to_async(&rt).iter(|| {
             let repo = Arc::clone(&repo);
             let bus = bus.clone();
             async move {
-                let p = NewCove {
+                let p = NewArea {
                     name: "bench".into(),
                     color: "#000".into(),
                     sort: None,
                 };
-                let (cove, _id) = write_with_event_typed(
+                let (area, _id) = write_with_event_typed(
                     repo.as_ref(),
                     ActorId::User,
                     EventScope::System,
@@ -71,37 +71,37 @@ fn event_append_bench(c: &mut Criterion) {
                     &bus,
                     &calm_server::state::WriteContext::new(
                         calm_server::card_role_cache::CardRoleCache::new(),
-                        calm_server::wave_cove_cache::WaveCoveCache::new(),
+                        calm_server::wave_area_cache::WaveAreaCache::new(),
                     ),
                     move |tx| {
                         Box::pin(async move {
-                            let cove = cove_create_tx(tx, p).await?;
-                            Ok((cove.clone(), Event::CoveUpdated(cove)))
+                            let area = area_create_tx(tx, p).await?;
+                            Ok((area.clone(), Event::AreaUpdated(area)))
                         })
                     },
                 )
                 .await
                 .unwrap();
-                criterion::black_box(cove);
+                criterion::black_box(area);
             }
         });
     });
 
-    // Baseline: same cove_create, but bypassing write_with_event — runs
-    // the entity insert in a plain `Repo::cove_create` (its own txn, no
+    // Baseline: same area_create, but bypassing write_with_event — runs
+    // the entity insert in a plain `Repo::area_create` (its own txn, no
     // event log row). Lets reviewers compare the +event-row overhead
     // directly against the existing pre-Scope-A cost.
-    c.bench_function("baseline_cove_create_no_event_log", |b| {
+    c.bench_function("baseline_area_create_no_event_log", |b| {
         b.to_async(&rt).iter(|| {
             let repo = Arc::clone(&repo);
             async move {
-                let p = NewCove {
+                let p = NewArea {
                     name: "bench".into(),
                     color: "#000".into(),
                     sort: None,
                 };
-                let cove = repo.cove_create(p).await.unwrap();
-                criterion::black_box(cove);
+                let area = repo.area_create(p).await.unwrap();
+                criterion::black_box(area);
             }
         });
     });

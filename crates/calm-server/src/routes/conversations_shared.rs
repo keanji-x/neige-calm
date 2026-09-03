@@ -1,5 +1,5 @@
 //! The parts of "mint a conversation on its first message" that are identical
-//! for a cove chat (`cove_conversations`) and a wave assistant
+//! for an area chat (`area_conversations`) and a wave assistant
 //! (`wave_conversations`).
 //!
 //! Shared rather than copied because these are the four-arm retry contract's
@@ -9,7 +9,7 @@
 //! to prevent.
 //!
 //! What is deliberately NOT here: the derived ids (`crate::conversation_keys`,
-//! one namespace per flavour) and the list predicates (a cove chat is a
+//! one namespace per flavour) and the list predicates (an area chat is a
 //! `worker`/`plain_chat` card, a wave assistant is an `assistant` card, and
 //! collapsing those would be the bug G3 is about).
 

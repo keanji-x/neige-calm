@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { SessionContext } from '../../app/SessionProvider';
-import type { Cove, Route, Wave } from '../../types';
+import type { Area, Route, Wave } from '../../types';
 import { Sidebar } from './Sidebar';
 
 afterEach(() => {
@@ -26,14 +26,14 @@ function wrap(children: ReactNode) {
   );
 }
 
-function makeCove(overrides: Partial<Cove> = {}): Cove {
+function makeArea(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9', ...overrides };
 }
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1',
-    coveId: 'c1',
+    areaId: 'c1',
     title: 'Harbor cleanup',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
@@ -48,14 +48,14 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 }
 
 function renderSidebar({
-  coves = [makeCove()],
+  areas = [makeArea()],
   waves = [makeWave()],
   route = { name: 'today' },
   onGo = () => {},
   onPinWave,
   onDeleteWave,
 }: {
-  coves?: Cove[];
+  areas?: Area[];
   waves?: Wave[];
   route?: Route;
   onGo?: (r: Route) => void;
@@ -65,7 +65,7 @@ function renderSidebar({
   return render(
     wrap(
       <Sidebar
-        coves={coves}
+        areas={areas}
         waves={waves}
         route={route}
         onGo={onGo}
@@ -77,7 +77,7 @@ function renderSidebar({
 }
 
 async function expandAtlas(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+  await user.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
   return screen.getByRole('group', { name: 'Waves in Atlas' });
 }
 

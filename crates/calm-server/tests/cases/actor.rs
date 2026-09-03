@@ -27,7 +27,7 @@ use calm_server::db::sqlite::{SqlxRepo, overlay_upsert_tx};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -53,7 +53,7 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
             events,
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -68,17 +68,17 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
     (app, concrete, state)
 }
 
-/// Drive a `POST /api/coves` and return the recorded actor for the event
+/// Drive a `POST /api/areas` and return the recorded actor for the event
 /// the write produced. Header value is passed verbatim when `header` is
 /// `Some(...)`. Returns the response status and (if 2xx) the actor string.
-async fn post_cove_and_read_actor(
+async fn post_area_and_read_actor(
     app: axum::Router,
     repo: &SqlxRepo,
     header: Option<&str>,
 ) -> (StatusCode, Option<String>) {
     let mut req = Request::builder()
         .method("POST")
-        .uri("/api/coves")
+        .uri("/api/areas")
         .header("content-type", "application/json");
     if let Some(h) = header {
         req = req.header("X-Calm-Actor", h);
@@ -93,7 +93,7 @@ async fn post_cove_and_read_actor(
         return (status, None);
     }
 
-    // The most recent event row is the cove we just created. We could
+    // The most recent event row is the area we just created. We could
     // parse the response body for the id and round-trip through events,
     // but the events table is monotonic and we just created a row — read
     // the latest.
@@ -103,8 +103,8 @@ async fn post_cove_and_read_actor(
             .await
             .unwrap();
     assert_eq!(
-        row.0, "cove.updated",
-        "expected cove.updated, got {}",
+        row.0, "area.updated",
+        "expected area.updated, got {}",
         row.0
     );
     (status, Some(row.1))
@@ -125,7 +125,7 @@ fn parse_actor_json(s: &str) -> serde_json::Value {
 #[tokio::test]
 async fn missing_header_defaults_to_user_actor() {
     let (app, repo, _state) = boot().await;
-    let (status, actor) = post_cove_and_read_actor(app, &repo, None).await;
+    let (status, actor) = post_area_and_read_actor(app, &repo, None).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(
         parse_actor_json(actor.as_deref().unwrap()),
@@ -165,7 +165,7 @@ async fn ai_codex_header_rejected_without_card_context() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:codex")
                 .body(Body::from(
@@ -181,7 +181,7 @@ async fn ai_codex_header_rejected_without_card_context() {
 #[tokio::test]
 async fn valid_ai_actor_with_dashes_recorded() {
     let (app, repo, _state) = boot().await;
-    let (status, actor) = post_cove_and_read_actor(app, &repo, Some("ai:claude-3-5")).await;
+    let (status, actor) = post_area_and_read_actor(app, &repo, Some("ai:claude-3-5")).await;
     assert_eq!(status, StatusCode::CREATED);
     // Non-`codex` AI ids collapse to the defensive `User` fallback in
     // PR2. Documented in `Actor::to_actor_id` — PR3+ may refine.
@@ -202,7 +202,7 @@ async fn kernel_actor_rejected_from_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "kernel")
                 .body(Body::from(
@@ -234,7 +234,7 @@ async fn plugin_actor_rejected_from_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "plugin:hello-world")
                 .body(Body::from(
@@ -263,7 +263,7 @@ async fn empty_ai_id_rejected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:")
                 .body(Body::from(
@@ -288,7 +288,7 @@ async fn uppercase_ai_id_rejected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/coves")
+                .uri("/api/areas")
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:UPPER")
                 .body(Body::from(
@@ -324,8 +324,8 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let (_app, repo, state) = boot().await;
 
     // Seed a wave so the overlay upsert has a real entity to target.
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -335,7 +335,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -366,13 +366,13 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         actor,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id.clone(),
+            area: area.id.clone(),
         },
         None,
         &state.events,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -406,7 +406,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
 //
 // Drive the REST surface end-to-end and assert the resulting `events` row
 // carries `scope_kind = 'card'` plus the full `scope_card` / `scope_wave`
-// / `scope_cove` ancestor chain. This is the spot-check the issue brief
+// / `scope_area` ancestor chain. This is the spot-check the issue brief
 // calls out — a single test that exercises the whole pipeline (route →
 // `card_scope` helper → `write_with_event_typed` → `event_append_in_tx`
 // → SQL bind) instead of unit-testing the layers in isolation.
@@ -415,9 +415,9 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
 async fn create_card_stamps_full_scope_chain() {
     let (app, repo, _state) = boot().await;
 
-    // Seed a cove + wave so the card has somewhere to live.
-    let cove = repo
-        .cove_create(NewCove {
+    // Seed an area + wave so the card has somewhere to live.
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -427,7 +427,7 @@ async fn create_card_stamps_full_scope_chain() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -463,7 +463,7 @@ async fn create_card_stamps_full_scope_chain() {
     // The most recent event row is the one we just produced. Read every
     // scope_* column and assert the full chain is populated.
     let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT scope_kind, scope_cove, scope_wave, scope_card
+        "SELECT scope_kind, scope_area, scope_wave, scope_card
          FROM events ORDER BY id DESC LIMIT 1",
     )
     .fetch_one(repo.pool())
@@ -472,8 +472,8 @@ async fn create_card_stamps_full_scope_chain() {
     assert_eq!(row.0, "card", "scope_kind == 'card' for card.added");
     assert_eq!(
         row.1.as_deref(),
-        Some(cove.id.as_str()),
-        "scope_cove populated"
+        Some(area.id.as_str()),
+        "scope_area populated"
     );
     assert_eq!(
         row.2.as_deref(),

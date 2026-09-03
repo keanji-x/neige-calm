@@ -28,12 +28,12 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_state::{TOOL_TASK_VERDICT, TOOL_WAVE_STATE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, CardRuntimeView, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch,
+    CardRole, CardRuntimeView, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
@@ -45,14 +45,14 @@ use serde_json::{Value, json};
 
 const SPEC_SESSION_ID: &str = "spec-session";
 
-/// One-shot boot: in-memory sqlite + bus + cache + one cove with one
+/// One-shot boot: in-memory sqlite + bus + cache + one area with one
 /// wave with one spec card and one worker card. Returns enough handles
 /// to drive a tool through its registered closure.
 struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -118,8 +118,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-wave-state".into(),
             color: "#000".into(),
             sort: None,
@@ -129,7 +129,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "initial".into(),
             sort: None,
             cwd: String::new(),
@@ -181,15 +181,15 @@ async fn boot() -> Boot {
     )
     .await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
         wave_vcs: repo
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -204,7 +204,7 @@ async fn boot() -> Boot {
         ctx,
         registry,
         repo,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -235,7 +235,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -247,7 +247,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -662,13 +662,13 @@ async fn task_verdict_lifecycle_legal_emits_wave_updated_and_verdict() {
     match changed_env.event {
         Event::WaveLifecycleChanged {
             id,
-            cove_id,
+            area_id,
             from,
             to,
             agent_message,
         } => {
             assert_eq!(id, boot.wave_id);
-            assert_eq!(cove_id, boot.cove_id);
+            assert_eq!(area_id, boot.area_id);
             assert_eq!(from, WaveLifecycle::Planning);
             assert_eq!(to, WaveLifecycle::Dispatching);
             assert_eq!(agent_message.as_deref(), Some("accept and dispatch"));

@@ -12,7 +12,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_file::{TOOL_WAVE_CAT, TOOL_WAVE_LS};
 use calm_server::mcp_server::tools::wave_history::{
@@ -21,7 +21,7 @@ use calm_server::mcp_server::tools::wave_history::{
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, CardRuntimeView, NewCard, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, CardRuntimeView, NewArea, NewCard, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
@@ -42,9 +42,9 @@ struct Boot {
     /// F3) — `calm.wave.cat plan/<key>/gate.log` must read THIS dir,
     /// never an env-recomputed default.
     gate_logs_dir: std::path::PathBuf,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
-    other_cove_id: CoveId,
+    other_area_id: AreaId,
     other_wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -84,8 +84,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "wave-file-test".into(),
             color: "#000".into(),
             sort: None,
@@ -95,7 +95,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave file test".into(),
             sort: None,
             cwd: String::new(),
@@ -138,8 +138,8 @@ async fn boot() -> Boot {
         .unwrap();
     seed_spec_root_runtime(sqlx_repo.as_ref(), &spec_card.id).await;
 
-    let cove2 = repo
-        .cove_create(NewCove {
+    let area2 = repo
+        .area_create(NewArea {
             name: "wave-file-other".into(),
             color: "#0f0".into(),
             sort: None,
@@ -149,7 +149,7 @@ async fn boot() -> Boot {
     let wave2 = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove2.id.clone(),
+            area_id: area2.id.clone(),
             title: "other wave".into(),
             sort: None,
             cwd: String::new(),
@@ -205,8 +205,8 @@ async fn boot() -> Boot {
     }
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let gate_logs_dir = std::env::temp_dir().join(format!(
         "neige-wave-file-gate-logs-{}-{}",
         std::process::id(),
@@ -218,7 +218,7 @@ async fn boot() -> Boot {
             sqlx_repo.pool().clone(),
         )),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: gate_logs_dir.clone(),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -235,9 +235,9 @@ async fn boot() -> Boot {
         sqlx_repo,
         repo,
         gate_logs_dir,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
-        other_cove_id: cove2.id,
+        other_area_id: area2.id,
         other_wave_id: wave2.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -267,7 +267,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -279,7 +279,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }
@@ -291,7 +291,7 @@ fn other_spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "other-spec-session".to_string(),
         wave_id: Some(boot.other_wave_id.as_str().to_string()),
-        cove_id: boot.other_cove_id.as_str().to_string(),
+        area_id: boot.other_area_id.as_str().to_string(),
         thread_id: "other-spec-thread".to_string(),
     }
 }
@@ -314,8 +314,8 @@ fn entry_updated_at(entries: &[Value], name: &str) -> i64 {
 }
 
 #[allow(deprecated)]
-async fn log_wave_event(boot: &Boot, wave_id: &WaveId, cove_id: &CoveId, event: Event) -> i64 {
-    log_wave_event_as(boot, ActorId::User, wave_id, cove_id, event).await
+async fn log_wave_event(boot: &Boot, wave_id: &WaveId, area_id: &AreaId, event: Event) -> i64 {
+    log_wave_event_as(boot, ActorId::User, wave_id, area_id, event).await
 }
 
 #[allow(deprecated)]
@@ -323,7 +323,7 @@ async fn log_wave_event_as(
     boot: &Boot,
     actor: ActorId,
     wave_id: &WaveId,
-    cove_id: &CoveId,
+    area_id: &AreaId,
     event: Event,
 ) -> i64 {
     boot.repo
@@ -331,12 +331,12 @@ async fn log_wave_event_as(
             actor,
             EventScope::Wave {
                 wave: wave_id.clone(),
-                cove: cove_id.clone(),
+                area: area_id.clone(),
             },
             None,
             &boot.ctx.events,
             boot.ctx.write.role_cache(),
-            boot.ctx.write.cove_cache(),
+            boot.ctx.write.area_cache(),
             event,
         )
         .await
@@ -351,12 +351,12 @@ async fn log_worker_card_event(boot: &Boot, event: Event) -> i64 {
             EventScope::Card {
                 card: boot.worker_card_id.clone(),
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.ctx.events,
             boot.ctx.write.role_cache(),
-            boot.ctx.write.cove_cache(),
+            boot.ctx.write.area_cache(),
             event,
         )
         .await
@@ -376,12 +376,12 @@ async fn log_card_hook_event(boot: &Boot, card_id: &CardId, event: Event) -> i64
             EventScope::Card {
                 card: card_id.clone(),
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.ctx.events,
             boot.ctx.write.role_cache(),
-            boot.ctx.write.cove_cache(),
+            boot.ctx.write.area_cache(),
             event,
         )
         .await
@@ -410,7 +410,7 @@ async fn request_codex(boot: &Boot, key: &str) -> i64 {
     log_wave_event(
         boot,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         Event::CodexWorkerRequested {
             idempotency_key: key.into(),
             goal: format!("goal for {key}"),
@@ -1418,7 +1418,7 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
     let verdict_id = log_wave_event(
         &boot,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         Event::TaskCompleted {
             idempotency_key: "verdict-mtime".into(),
             result: json!({ "status": "accepted", "reason": "checked later" }),
@@ -1527,7 +1527,7 @@ async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
         &boot,
         ActorId::KernelDispatcher,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         Event::CodexWorkerRequested {
             idempotency_key: "dispatcher-wave-failed".into(),
             goal: "wave-scoped dispatcher request".into(),
@@ -1541,7 +1541,7 @@ async fn wave_scoped_dispatcher_failure_is_not_spec_verdict() {
         &boot,
         ActorId::KernelDispatcher,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         Event::TaskFailed {
             idempotency_key: "dispatcher-wave-failed".into(),
             reason: "spawn failed".into(),
@@ -1814,7 +1814,7 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
     log_wave_event(
         &boot,
         &boot.wave_id,
-        &boot.cove_id,
+        &boot.area_id,
         Event::TaskCompleted {
             idempotency_key: "out-of-order".into(),
             result: json!({ "status": "accepted", "reason": "early LGTM" }),

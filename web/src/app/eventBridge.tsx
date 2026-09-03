@@ -6,9 +6,9 @@
 // any more; they just re-render when their query re-fetches.
 //
 // Mapping (kept in sync with `api/schemas.ts` event variants):
-//   cove.updated / cove.deleted   → invalidate ['coves']
-//   wave.updated                  → invalidate ['waves', cove_id] + ['wave', id]
-//   wave.deleted                  → invalidate ['waves', cove_id], drop ['wave', id]
+//   area.updated / area.deleted   → invalidate ['areas']
+//   wave.updated                  → invalidate ['waves', area_id] + ['wave', id]
+//   wave.deleted                  → invalidate ['waves', area_id], drop ['wave', id]
 //   card.added / .updated         → invalidate ['wave', wave_id]
 //   card.deleted                  → invalidate ['wave', wave_id]
 //   overlay.set / .deleted        → invalidate the affected wave detail AND

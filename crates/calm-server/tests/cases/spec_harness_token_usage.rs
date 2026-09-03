@@ -22,12 +22,12 @@ use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, SpecHarness, SpecHarnessParams, TokenUsage,
 };
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -104,8 +104,8 @@ struct Boot {
 /// be installed under the same runtime id as the row.
 async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "token-usage".into(),
             color: "#111111".into(),
             sort: None,
@@ -115,7 +115,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "token usage".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -128,8 +128,8 @@ async fn boot() -> Boot {
         .unwrap();
 
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id);
+    let wave_area_cache = WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id);
 
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
@@ -186,11 +186,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-token-usage"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
@@ -203,7 +203,7 @@ async fn boot() -> Boot {
         repo: repo_dyn,
         events,
         card_role_cache: role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -465,7 +465,7 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
         repo: boot.repo.clone(),
         events: EventBus::new(),
         card_role_cache: CardRoleCache::new(),
-        wave_cove_cache: WaveCoveCache::new(),
+        wave_area_cache: WaveAreaCache::new(),
         daemon: SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None),
         config: HarnessConfig::default(),
         snapshot,

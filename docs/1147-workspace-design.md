@@ -17,7 +17,7 @@
 ## 产品契约
 
 - Neige 在 `$HOME/neige-workspaces` 下管理默认工作区。
-- Cove 只是命名空间；每个 wave 拥有独立仓库。
+- Area 只是命名空间；每个 wave 拥有独立仓库。
 - 创建 wave 时默认分配工作区，不要求用户先选目录。
 - 工作区在产生工作前可更换；开始工作后永久冻结。
 - 用户仓库可以附加，但 Neige 永不初始化、移动或删除它。
@@ -42,7 +42,7 @@ struct WaveWorkspace {
 
 `Managed` 表示服务端创建、独占且可回收的目录；`Attached` 表示用户已有仓库。这个类型决定删除权限，不能由路径猜测。
 
-除 system cove 的 Today/launchpad wave 外，`frozen_at` 单调：一旦有值，`kind` 和 `path` 永不再变。用户 cove 中的 attached wave 创建时即冻结；launchpad 路径由内核维护，保持未冻结且不接受用户 PATCH。
+除 system area 的 Today/launchpad wave 外，`frozen_at` 单调：一旦有值，`kind` 和 `path` 永不再变。用户 area 中的 attached wave 创建时即冻结；launchpad 路径由内核维护，保持未冻结且不接受用户 PATCH。
 
 ## 托管工作区
 
@@ -56,11 +56,11 @@ struct WaveWorkspace {
 布局：
 
 ```text
-<root>/<cove_id>/<wave_id>/
-<root>/<cove_id>/<wave_id>/.claude/worktrees/<wave>/<card>
+<root>/<area_id>/<wave_id>/
+<root>/<area_id>/<wave_id>/.claude/worktrees/<wave>/<card>
 ```
 
-目录使用稳定 ID，不使用标题 slug。托管路径不写入 `cove_folders`；该表只维护 attached 路径的 cove 归属。
+目录使用稳定 ID，不使用标题 slug。托管路径不写入 `area_folders`；该表只维护 attached 路径的 area 归属。
 
 ### 物化
 
@@ -73,9 +73,9 @@ struct WaveWorkspace {
 5. 物化后对 **canonical 路径**断言仍在 workspace root 之内。
 6. 任一步失败都让 wave 创建返回错误，不能留下一个稍后才以 `spawn-failed` 暴露的坏 wave。
 
-所有 wave 创建入口必须走同一物化契约，包括普通 REST、workflow/template、cove chat、Today/launchpad 和 child wave。这个集合不应长期靠调用点清单维持，应收敛到统一创建边界。
+所有 wave 创建入口必须走同一物化契约，包括普通 REST、workflow/template、area chat、Today/launchpad 和 child wave。这个集合不应长期靠调用点清单维持，应收敛到统一创建边界。
 
-Attached 创建只做校验：绝对路径、目录存在、是 Git 仓库，并完成 `cove_folders` 的唯一归属检查。
+Attached 创建只做校验：绝对路径、目录存在、是 Git 仓库，并完成 `area_folders` 的唯一归属检查。
 
 **S3 补齐了这条。** 在此之前只有第一项存在（`create_wave` 的 `starts_with('/')`）——
 在新 FE 没有 attach 入口时无所谓，而 S3 恰好补上了那个入口，所以缺口必须同片关掉：
@@ -132,7 +132,7 @@ tempdir）而不是真的 git 工作树——因为在本片之前根本没人�
 - **managed → managed**（S3 实测得出：managed 路径由 wave 派生，重新分配必然同路径 ⇒ 无语义）
 - attached → 任意目标
 - 已冻结 wave 的任何变更
-- system cove wave 的用户 PATCH
+- system area wave 的用户 PATCH
 
 不可重锚的持久 cwd 消费者出现前必须冻结工作区，包括首次 workspace lease、terminal 持久化、wave 离开 Draft、child wave 创建。冻结应位于真正的底层写入口，不能依赖上层调用点枚举。
 
@@ -175,7 +175,7 @@ SQLite 事务不能隔离文件系统写入，因此“事务内检查一次”�
 ```
 
 **唯一的转换是 `managed → attached`。没有 `managed → managed`**：managed 路径由
-`<root>/<cove_id>/<wave_id>` 派生，wave 的 cove 与 id 都不可变 ⇒ 「重新分配」必然
+`<root>/<area_id>/<wave_id>` 派生，wave 的 area 与 id 都不可变 ⇒ 「重新分配」必然
 重新派生出同一个目录，是原地重置而不是更换；而让调用方给一个**managed** 路径更糟——
 S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「目录永远回收不了」的行。
 `managed` 目标因此返回 400 而不是静默 no-op。`attached → *` 仍然不做。
@@ -195,16 +195,16 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
 而 worker 那边本来就自己求仓库根（`git_repo_root_for_wave_cwd`），拒绝子目录等于
 以一个下游根本不在乎的理由拒掉一个能干活的 cwd。
 
-**`cove_folders` 认领规则与创建路径共用同一个函数**（`enforce_folder_claim_tx`，
+**`area_folders` 认领规则与创建路径共用同一个函数**（`enforce_folder_claim_tx`，
 由 `create_wave_structure` 里原样抽出）。两份实现在任何一份被改动的那一刻就会变成两套规则，
 而「任意路径至多被一条 claim 覆盖」这条不变量经不起两套实现。冲突返回**结构化 409**
-（`FolderConflict`，含 `folder_id` / `cove_id` / `conflict_kind`），与创建路径同一个 body。
+（`FolderConflict`，含 `folder_id` / `area_id` / `conflict_kind`），与创建路径同一个 body。
 
 认领被查两遍，两遍作用不同，别当成重复：
 
 * **栅栏事务里那遍是 `ScanOnly`，且在 supersede 之前** —— 报同样的冲突，但**一行都不写**。
   它买到的是「一个本来就不会被接受的目标，不让用户白白丢掉正在跑的 agent」
-  （`a_directory_claimed_by_another_cove_is_a_structured_conflict` 断言活跃 runtime 前后不变）。
+  （`a_directory_claimed_by_another_area_is_a_structured_conflict` 断言活跃 runtime 前后不变）。
   必须 `ScanOnly`：这个事务**会提交**（它同时也是栅栏），在这里写下的 claim 会活过之后的拒绝
   ——而重指在它之后还可能因为「移动前重检」而 409，那就会给调用方留下「409 + 一条没有对应
   wave 的 claim」，恰好违背这条路由的全部承诺。
@@ -214,7 +214,7 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
 这条区分是**变异实测逼出来的**，不是推出来的：第一遍允许铸 claim 时，删掉权威的第二遍
 **零测试变红**——因为 claim 早就落库了。现在两遍各有单违规 fixture
 （第二遍：`a_pristine_wave_is_pointed_at_the_users_repository` 的 claim 断言；
-`ScanOnly`：`a_write_between_the_fence_and_the_move_is_refused` 断言拒绝后 `cove_folders` 为空）。
+`ScanOnly`：`a_write_between_the_fence_and_the_move_is_refused` 断言拒绝后 `area_folders` 为空）。
 
 **三步执行，缺一不可。** SQLite 事务对文件系统零隔离，「事务内查一次」关不掉检查与
 移动之间的窗口：spec harness 从第一条消息起就是 `workspace-write` 且此刻**刻意
@@ -236,20 +236,20 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
    **旧路径上**把它重开再返回 409——和 `POST /api/cards/{id}/reset` 每天做的是同一个操作，
    harness item 按 card 持久化，用户的历史不受影响。
 3. **移动走 S5 的唯一受控入口** `workspace_recycle::recycle_wave_workspace`，
-   于是 `kind == Managed`、canonical 前缀、`<root>/<cove>/<wave>` 深度、所有权标记四条守卫
+   于是 `kind == Managed`、canonical 前缀、`<root>/<area>/<wave>` 深度、所有权标记四条守卫
    与「rename 不 `rm -rf`」「EXDEV 硬失败」「落点复验」全部免费继承。传给它的是
    **事务里读到的旧 `WaveWorkspace` 值**，不是重读行——行这时已经是 `attached`，重读会让
    守卫 1 拒绝并把目录永远留在盘上。
 
 **顺序：先写行，后移目录 —— 与 S5 的 DELETE 相反，理由也相反。** 在 S5 那边，移动之后失败
-会留下「行还在、目录不可达」。这边真正会发生的失败是**认领冲突**：`cove_folders` 被扫两遍
+会留下「行还在、目录不可达」。这边真正会发生的失败是**认领冲突**：`area_folders` 被扫两遍
 （栅栏事务里一遍用来快速失败，写事务里一遍才是权威且与工作区写入原子），而在两者之间被并发
 请求抢走 claim，必须能把整次请求干净地中止掉。先移动会让这个中止留下「旧工作区在 trash、
 行还指着它」，而下一次重试的空判据在一个不存在的路径上永远为假——不可自愈。先写行则任何中止
 都是干净的 409。
 
 代价如实记下：提交与 rename 之间崩溃，会留下一个没有任何行指向的旧 managed 目录。那是泄漏
-不是丢失，而且与 S5 那半不同，它是**可推导的**——`managed_workspace_path(root, cove_id, wave_id)`
+不是丢失，而且与 S5 那半不同，它是**可推导的**——`managed_workspace_path(root, area_id, wave_id)`
 仍然能命名它——所以将来一次扫描就能收掉，不需要新的记账。
 
 **重开线程必须 `force_new_thread: true`。** 这是唯一会重新读 `cwd` 的机制
@@ -276,7 +276,7 @@ thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所
 冻结落在 `terminal_create_tx`（不是四个 composite），因为 `claude_restart_adapter`
 直接调它——S2 把守卫挂在 composite 上时漏掉的正是这条路。它对**卡片种类无条件**：
 codex / claude / terminal 三种卡都在这里持久化一个 `cwd`，都是设计说的那个「不可重锚
-的持久 cwd 消费者」。唯一的例外（system cove 的 launchpad）在 `wave_workspace_freeze_tx`
+的持久 cwd 消费者」。唯一的例外（system area 的 launchpad）在 `wave_workspace_freeze_tx`
 内部由 SQL 子句排除，所以这里不需要、也不许再写一次例外。
 
 **订正：N17 说「同一事务里 `UPDATE waves` 永不返回」，实测不是。** S6 用 printf 探针重测
@@ -308,7 +308,7 @@ N17 那条「同时钉住无害前提」的测试
 同一条路由，现在断言 terminal 的 cwd **等于**工作区路径、行已冻结、重指返回 409
 且盘上零改动。
 
-**system cove 在冻结函数内部被排除，不是在调用点。** launchpad 自带 terminal 卡、也会取租约，
+**system area 在冻结函数内部被排除，不是在调用点。** launchpad 自带 terminal 卡、也会取租约，
 按上表它每次 boot 都会被冻上，而 `today_launchpad_ensure_tx` 下一次 `ensure` 就会撞上门栓
 → 500 → Today 面板永久死亡。排除写成一条 SQL 子句而不是三处 `if`，理由和门栓本身一样：
 复制到三个模块的例外，会在第四个地方被忘记。
@@ -321,7 +321,7 @@ N17 那条「同时钉住无害前提」的测试
 
 | 父的 kind | 子的工作区 | 为什么安全 |
 |---|---|---|
-| `managed` | 派生 `<root>/<cove_id>/<child_id>`，`managed`，创建时冻结 | 两行共用一个 managed 目录会让回收删掉父仓库，所以必须分开 |
+| `managed` | 派生 `<root>/<area_id>/<child_id>`，`managed`，创建时冻结 | 两行共用一个 managed 目录会让回收删掉父仓库，所以必须分开 |
 | `attached` | 继承父的路径，`attached`，创建时冻结 | 回收只处理 managed；attached 目录服务端永不动。**多个 wave 指向同一个 attached 仓库是合法状态**，与库的新旧无关：同一个 checkout 被几个 wave 打开是常态用法 |
 
 由此，「没有两行 wave 共享同一路径」这条不变量**只约束 managed 路径**。不收窄的话它会把上面那个既有状态判成违规。
@@ -331,7 +331,7 @@ N17 那条「同时钉住无害前提」的测试
 ## 生命周期
 
 - 删除 wave：只回收 managed 目录，并先验证路径位于 workspace root。
-- 删除 cove：回收其所有 managed wave 目录和空的 cove 目录。
+- 删除 area：回收其所有 managed wave 目录和空的 area 目录。
 - attached 路径永不移动、初始化或删除。
 - 归档不回收；长期磁盘回收需要独立策略。
 - 子 wave 创建时冻结工作区：父 managed → 分配独立 managed 仓库；父 attached → 继承父的 attached 路径（见「子 wave 的工作区」）。
@@ -346,17 +346,17 @@ N17 那条「同时钉住无害前提」的测试
 **四条守卫，全部满足才动，缺一不动。**
 
 1. `workspace.kind == Managed`。权限来自类型化的列，绝不从路径猜。
-2. `fs::canonicalize(path)` 在 `fs::canonicalize(workspace_root)` 之下，**并且深度恰好是 `<root>/<cove_id>/<wave_id>`**。
+2. `fs::canonicalize(path)` 在 `fs::canonicalize(workspace_root)` 之下，**并且深度恰好是 `<root>/<area_id>/<wave_id>`**。
    - 不是词法 `starts_with`——S2 实测符号链接能让词法检查通过而真实字节在根外。根本身与 `.trash` 之下同样排除。
-   - 深度这半条是 S5 红队 R1/R2 补的：只查「在根之下」时，`<root>/<cove_id>/` 这层只要带一个有效标记，**整个 cove 目录连同兄弟 wave 的仓库**一起进 trash（实测兄弟仓库消失）；任意更深的子目录同理。今天这两种形状只被守卫 3「恰好」挡住——没有任何东西往那些深度写标记——那是巧合不是守卫，而 **S3 正是会往 `workspace_path` 写任意路径的那一片**。`remove_empty_cove_dir` 本来就断言自己的深度；移动整棵树的回收路径不该是两者中更弱的那个。
+   - 深度这半条是 S5 红队 R1/R2 补的：只查「在根之下」时，`<root>/<area_id>/` 这层只要带一个有效标记，**整个 area 目录连同兄弟 wave 的仓库**一起进 trash（实测兄弟仓库消失）；任意更深的子目录同理。今天这两种形状只被守卫 3「恰好」挡住——没有任何东西往那些深度写标记——那是巧合不是守卫，而 **S3 正是会往 `workspace_path` 写任意路径的那一片**。`remove_empty_area_dir` 本来就断言自己的深度；移动整棵树的回收路径不该是两者中更弱的那个。
 3. `<path>/.git/neige-workspace` 存在，且内容等于**该 wave 的 id**。「是不是 git 仓库」不是替代品。
-4. 所属 cove 不是 system cove（launchpad 由内核维护）。**这条今天整条都不可达，是纯纵深，不是「一半可达」**：`Some(System)` 被两条路由的 403 挡在前面；`None`（读不到 cove 行）也不可能——`waves.cove_id` 是 `NOT NULL REFERENCES coves(id) ON DELETE CASCADE`（`0001_init.sql`）且连接开着 `PRAGMA foreign_keys = ON`，「有 wave 行没有 cove 行」不是可表达的状态。保留它的理由是纵深：路由的 403 是边界策略，这条是不可逆移动前的最后一道，将来任何绕过路由的内部调用方免费获得。它的单违规 fixture 只在单元套件里，构造的是数据库不会产生的状态。
+4. 所属 area 不是 system area（launchpad 由内核维护）。**这条今天整条都不可达，是纯纵深，不是「一半可达」**：`Some(System)` 被两条路由的 403 挡在前面；`None`（读不到 area 行）也不可能——`waves.area_id` 是 `NOT NULL REFERENCES areas(id) ON DELETE CASCADE`（`0001_init.sql`）且连接开着 `PRAGMA foreign_keys = ON`，「有 wave 行没有 area 行」不是可表达的状态。保留它的理由是纵深：路由的 403 是边界策略，这条是不可逆移动前的最后一道，将来任何绕过路由的内部调用方免费获得。它的单违规 fixture 只在单元套件里，构造的是数据库不会产生的状态。
 
-守卫 4 在**行**这一层有对应的一半：`DELETE /api/waves/{id}` 对 system cove 的 wave 返回 403（`DELETE /api/coves/{id}` 本来就有）。此前这条路不对称——删掉 system cove 的 wave 行、返回 204，而目录（正确地）留着。**那个组合才是真正的泄漏**：回收要靠 wave 行来命名目录，行一没目录就永远不可达，于是每一轮「删 launchpad + `ensure` 重铸」都多攒一个孤儿仓库。同一条不变量，两层都要有。
+守卫 4 在**行**这一层有对应的一半：`DELETE /api/waves/{id}` 对 system area 的 wave 返回 403（`DELETE /api/areas/{id}` 本来就有）。此前这条路不对称——删掉 system area 的 wave 行、返回 204，而目录（正确地）留着。**那个组合才是真正的泄漏**：回收要靠 wave 行来命名目录，行一没目录就永远不可达，于是每一轮「删 launchpad + `ensure` 重铸」都多攒一个孤儿仓库。同一条不变量，两层都要有。
 
-**403 的口径是整个 system cove，不是只有 launchpad——刻意的**（2026-09-01 裁决）。system cove 里还有 `ensure_templates` seed 的 3 个 template wave，它们从此经 API 也不可删。接受：它们同样是内核 seed、boot 会重建，删除从来不是有意义的用户操作；而另一条路（给 `purpose = launchpad` 开特例）会让「system cove 是内核所有」这条不变量带上例外，**例外正是这条设计线上反复出事的形状**。一条宽而无聊的规则比三行 seed 数据的可删性值钱。
+**403 的口径是整个 system area，不是只有 launchpad——刻意的**（2026-09-01 裁决）。system area 里还有 `ensure_templates` seed 的 3 个 template wave，它们从此经 API 也不可删。接受：它们同样是内核 seed、boot 会重建，删除从来不是有意义的用户操作；而另一条路（给 `purpose = launchpad` 开特例）会让「system area 是内核所有」这条不变量带上例外，**例外正是这条设计线上反复出事的形状**。一条宽而无聊的规则比三行 seed 数据的可删性值钱。
 
-**任何一条判不出来（读不到、解析失败、`canonicalize` 失败、cove 行读不到）都算不满足。** 没有「老行没有标记就放行」这类兜底：按§前提二，那种行不存在，兜底只会是个洞。
+**任何一条判不出来（读不到、解析失败、`canonicalize` 失败、area 行读不到）都算不满足。** 没有「老行没有标记就放行」这类兜底：按§前提二，那种行不存在，兜底只会是个洞。
 
 **拒绝回收目录 ≠ 拒绝删除行。** 守卫不成立时返回「拒绝」并留下目录，DB 行照删。反过来会让丢了标记的 wave（缺口 N5）永久不可删，那比漏一个目录更糟，还会把用户逼去手动 `rm -rf`。拒绝一律打 `error` 日志，泄漏是可见的。
 
@@ -377,11 +377,11 @@ N17 那条「同时钉住无害前提」的测试
 
 **顺序。** 回收发生在 teardown 之后、删行事务之前。teardown 已经停掉所有 harness 与 terminal，没人在写；行还在，所以 rename 失败就整个 DELETE 失败、目录与行都完好、可重试。反过来（先删行）会把 rename 失败变成「wave 没了、仓库还在」——不可重试，只能人工。
 
-**这条顺序换来的另一半，如实记下。** rename 成功之后删行事务失败时，现状是**行还在、目录已进 trash**：wave 在 UI 上还在，它的仓库不在原处了。重试 DELETE 会走通（目录已不在原路径 ⇒ 判为 `PathMissing` ⇒ 放行删行），worker 取 lease 时 S2 的 ensure-materialize 会在原路径重建一个空仓库；旧内容 7 天内可从 `.trash` 手工取回，但**没有任何重新指向的机制**。`recycle_cove_workspaces` 中途失败同理，会留下「一部分 wave 的目录进了 trash、cove 行还在」的部分状态。
+**这条顺序换来的另一半，如实记下。** rename 成功之后删行事务失败时，现状是**行还在、目录已进 trash**：wave 在 UI 上还在，它的仓库不在原处了。重试 DELETE 会走通（目录已不在原路径 ⇒ 判为 `PathMissing` ⇒ 放行删行），worker 取 lease 时 S2 的 ensure-materialize 会在原路径重建一个空仓库；旧内容 7 天内可从 `.trash` 手工取回，但**没有任何重新指向的机制**。`recycle_area_workspaces` 中途失败同理，会留下「一部分 wave 的目录进了 trash、area 行还在」的部分状态。
 
 接受这个取舍，理由是两害相权：这一半的后果是「数据在 trash 里、可取回」，而反序那一半的后果是「行没了、目录永远不可达」（回收要靠 wave 行命名目录）。没有为它加测试固定行为，因为要固定的不是一个正确行为而是一个已知的不完美窗口；真解是把 rename 纳入与删行同一个可恢复的操作记录，那属于 S3 的重指向机制，不是本片。
 
-**cove 目录用非递归 `remove_dir`。** 只在真正为空时成功，于是「是不是每个子目录都回收了」成为内核无法搞错的前提，而不是一句断言。有任何一个 wave 被拒绝，cove 目录就留着——这是正确且可见的结果。
+**area 目录用非递归 `remove_dir`。** 只在真正为空时成功，于是「是不是每个子目录都回收了」成为内核无法搞错的前提，而不是一句断言。有任何一个 wave 被拒绝，area 目录就留着——这是正确且可见的结果。
 
 **`.trash` 的 GC：按时间，7 天，每次回收时顺带清扫。**
 
@@ -393,12 +393,12 @@ N17 那条「同时钉住无害前提」的测试
 **不做**：
 
 - 归档（`archived_at`）不回收，长期磁盘回收仍是独立策略。
-- **GC 只在回收动作上触发**，所以一个之后再不删任何 wave / cove 的实例，最后那批 trash 条目会无限期留着。这是磁盘上的一条明确边界，不是 bug：上界是「最后一次删除时窗口内的那批工作区」，有界且可预期。要拿掉它得引入定时任务或 boot 清扫，本片不做。
+- **GC 只在回收动作上触发**，所以一个之后再不删任何 wave / area 的实例，最后那批 trash 条目会无限期留着。这是磁盘上的一条明确边界，不是 bug：上界是「最后一次删除时窗口内的那批工作区」，有界且可预期。要拿掉它得引入定时任务或 boot 清扫，本片不做。
 - 缺口 N4/N5/N7/N9/N10 保持钉住。
 
-## Cove 对话与执行器
+## Area 对话与执行器
 
-没有 attached folder 的 cove 仍可创建对话；它使用默认 managed 工作区。已有 folder claim 的 cove 可以继续采用 attached 语义。
+没有 attached folder 的 area 仍可创建对话；它使用默认 managed 工作区。已有 folder claim 的 area 可以继续采用 attached 语义。
 
 Managed 仓库保证 Codex 能获得 Git 工作区。Claude 当前不读取 wave workspace，迁移到同等 worktree 租约是独立工作，不属于本设计。
 
@@ -486,8 +486,8 @@ S5 新增的三条按同一标准登记，但状态不同，别混：**N14 有�
 | N14 | 守卫拒绝时**目录留在盘上**（行照删） | 刻意取舍，不是 bug：见下 | — |
 | N15 | 回收**不取**物化用的那把 per-path 进程内互斥锁 | 一次回收与同一路径上的一次物化并发时，物化可能在刚被 rename 走的路径上重建目录，或回收撞上物化的中间态。后果是泄漏（trash 里一个目录 + 原路径一个新空仓库），不是数据丢失——rename 是原子的，两边都不会删东西 | 与 N9 同源（真解是跨进程文件锁），归同一片 |
 | N16 | canonicalize trash root 与 `rename` 之间的 TOCTOU：`.trash` 被换成符号链接 | 工作区被 rename 到托管根之外。**已由 rename 后的复验兜住**——检测得到、报硬错误、尽力移回，所以后果是「一次失败的 DELETE」而不是静默泄漏；未做的是防御（`openat(O_NOFOLLOW)` + `renameat`） | 独立 issue；威胁模型不高（能造这个符号链接的人本来就能直接删目录） |
-| N19 | `normalize_path("/a//")` 得到 `"/a/"`，而 `is_descendant_of` 用 `format!("{parent}/")` 探测 ⇒ 存成 `"/a/"` 的 claim **谁也覆盖不到** | 两层后果，第二层更重。**① 两条 claim 覆盖同一棵子树**：可达的第二条是 **`/a/b`** 而不是 `/a` —— `/a` 会被创建路由的反向 Ancestor 检查挡下（`is_descendant_of("/a","/a/")` 为真），而 `/a/b` 两个方向都不匹配，于是两行并存，正是 #275 要护住的不变量。**② `overlapping_pairs` 看不见这一对** —— 那是 `assert_cove_folders_disjoint` 这道 **boot 时 fail-closed** 围栏的全表扫描，于是一道「表有重叠就拒绝启动」的围栏，恰好在这个 gap 造出的唯一一种重叠上照常启动。**先于本片存在**，且可达（文件系统到处接受 `/a//`，路由的 `starts_with('/')` 与 S3 的 `validate_attached_workspace` 都不拦） | 认领规则的归属者；**三条测试钉住**（`a_doubled_trailing_slash_produces_a_claim_that_covers_nothing`、`n19_lets_two_claims_cover_one_subtree`、`n19_is_invisible_to_the_boot_disjointness_fence`，最后一条同时断言「没有双斜杠时围栏照样抓得到」，免得把围栏整体判成坏的）。没有顺手修，因为修法是一个「规范化到底是什么意思」的裁决（折叠连续斜杠？canonicalize？），不属于工作区片 |
-| N18 | attached 目标校验只在**用户指定目录**的两条路上（`POST /api/waves` 的 attached 分支、`PATCH /api/waves/{id}`）；内核派生的 attached 路径（cove chat wave 沿用既有 `cove_folders` claim、子 wave 继承 attached 父）**不校验** | 那些路径上一个不存在 / 非 git 的目录仍然会拖到 worker 起不来才暴露。今天可达性低（路径来自一条已经存在的 claim），但不是封闭的 | 独立一片：**实测把校验放进 `materialize_workspace` 的共用契约点会让 202 条测试变红**，因为全树的 attached fixture 指的都不是真仓库；关掉它等于把那些 fixture 全部改成建真仓库 |
+| N19 | `normalize_path("/a//")` 得到 `"/a/"`，而 `is_descendant_of` 用 `format!("{parent}/")` 探测 ⇒ 存成 `"/a/"` 的 claim **谁也覆盖不到** | 两层后果，第二层更重。**① 两条 claim 覆盖同一棵子树**：可达的第二条是 **`/a/b`** 而不是 `/a` —— `/a` 会被创建路由的反向 Ancestor 检查挡下（`is_descendant_of("/a","/a/")` 为真），而 `/a/b` 两个方向都不匹配，于是两行并存，正是 #275 要护住的不变量。**② `overlapping_pairs` 看不见这一对** —— 那是 `assert_area_folders_disjoint` 这道 **boot 时 fail-closed** 围栏的全表扫描，于是一道「表有重叠就拒绝启动」的围栏，恰好在这个 gap 造出的唯一一种重叠上照常启动。**先于本片存在**，且可达（文件系统到处接受 `/a//`，路由的 `starts_with('/')` 与 S3 的 `validate_attached_workspace` 都不拦） | 认领规则的归属者；**三条测试钉住**（`a_doubled_trailing_slash_produces_a_claim_that_covers_nothing`、`n19_lets_two_claims_cover_one_subtree`、`n19_is_invisible_to_the_boot_disjointness_fence`，最后一条同时断言「没有双斜杠时围栏照样抓得到」，免得把围栏整体判成坏的）。没有顺手修，因为修法是一个「规范化到底是什么意思」的裁决（折叠连续斜杠？canonicalize？），不属于工作区片 |
+| N18 | attached 目标校验只在**用户指定目录**的两条路上（`POST /api/waves` 的 attached 分支、`PATCH /api/waves/{id}`）；内核派生的 attached 路径（area chat wave 沿用既有 `area_folders` claim、子 wave 继承 attached 父）**不校验** | 那些路径上一个不存在 / 非 git 的目录仍然会拖到 worker 起不来才暴露。今天可达性低（路径来自一条已经存在的 claim），但不是封闭的 | 独立一片：**实测把校验放进 `materialize_workspace` 的共用契约点会让 202 条测试变红**，因为全树的 attached fixture 指的都不是真仓库；关掉它等于把那些 fixture 全部改成建真仓库 |
 | N20 | `workspace_path` 为空的 wave 开不了 terminal，且**没有自救路径**：S6 硬失败（`Internal`），而该 wave 若已冻结就再也改不了工作区 | 那种 wave 上任何 terminal / codex / claude 卡都建不起来。**但这个状态在任何现存库里都不存在**——实测：`:4040` 停在 migration 75，**根本没有 `workspace_path` 列**；`:4140` 在 78，空路径行数 **0**。且按§前提二（老数据不迁移、含 `:4040` 一并按大版本 refresh）本就出范围，与 S4 砍掉 N11 迁移是同一条理由 | 若将来前提变了：修法是「空路径时允许解冻重指」或一次性回填。**没有测试钉住这条缺口**（要构造它得先造一个生产路由造不出的行）；能红的是它的**反面**——`terminal_worker_refuses_to_default_to_an_empty_workspace` 钉住「空路径宁可硬失败也不继承服务端 cwd」 |
 | ~~N17~~ | 冻结点 2（terminal 持久化）没做 | 建了 terminal 卡的 wave 仍可更换工作区 | **S6 已关闭**（`terminal_create_tx` 冻结 + `card_scope_tx`）。原测试如约变红并被反转替换；N17 记的死锁诊断也在那里订正——见「冻结（S3）」下的 N17 段 |
 

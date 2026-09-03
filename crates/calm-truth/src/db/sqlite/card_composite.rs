@@ -648,8 +648,8 @@ mod tests {
     #[tokio::test]
     async fn card_title_round_trips_through_create_patch_and_composite() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "title-test".into(),
                 color: "#000".into(),
                 sort: None,
@@ -659,7 +659,7 @@ mod tests {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "wave".into(),
                 sort: None,
                 cwd: String::new(),

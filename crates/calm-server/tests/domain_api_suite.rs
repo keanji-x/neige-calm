@@ -5,6 +5,12 @@ mod support;
 mod actor;
 #[path = "cases/admin_maintenance.rs"]
 mod admin_maintenance;
+#[path = "cases/area_conversations.rs"]
+mod area_conversations;
+#[path = "cases/area_folders.rs"]
+mod area_folders;
+#[path = "cases/area_system_endpoint.rs"]
+mod area_system_endpoint;
 #[path = "cases/auth.rs"]
 mod auth;
 #[path = "cases/card_cascade_semantics.rs"]
@@ -17,12 +23,6 @@ mod chat_wave_ensure;
 mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
-#[path = "cases/cove_conversations.rs"]
-mod cove_conversations;
-#[path = "cases/cove_folders.rs"]
-mod cove_folders;
-#[path = "cases/cove_system_endpoint.rs"]
-mod cove_system_endpoint;
 #[path = "cases/deferred_read_tx_deadlock_repro.rs"]
 mod deferred_read_tx_deadlock_repro;
 #[path = "cases/dispatcher_real_auth_path.rs"]

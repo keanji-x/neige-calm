@@ -1,55 +1,55 @@
 [
   {
     "description": "#1189 §3.6 — an Assistant card of THIS wave may record a report write; this is the grant the whole slice exists to hand out",
-    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
     "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "assistant", "edit_id": "pd-assistant-report", "summary_before": "", "summary_after": "assistant", "body_before": "", "body_after": "assistant body", "agent_message": "assistant report" } },
-    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
   },
   {
     "description": "the recorder grant is not a lifecycle grant: the same Assistant session passes the recorder gate and is still refused by the role gate for a Wave-scoped lifecycle transition",
-    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "assistant lifecycle" } },
-    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "assistant lifecycle" } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "allow", "role": "deny", "role_error_contains": "out of scope" }
   },
   {
     "description": "the Assistant may not dispatch: a codex worker request is refused by the role gate regardless of the recorder grant",
-    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$ASSISTANT_SESSION", "wave_id": "$HOME_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
     "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "pd-assistant-codex", "goal": "forged dispatch", "context": null, "acceptance_criteria": null, "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "deny", "recorder": "skip", "role": "deny", "role_error_contains": "dispatch-request events" }
   },
   {
     "description": "G-A' — ANOTHER wave's Assistant card may not record into this wave's report. Same role, same shape, different `card.wave_id`: this is the half of the recorder criterion that carries the weight once the role whitelist admits N assistant cards",
-    "principal": { "session_id": "$AWAY_ASSISTANT_SESSION", "wave_id": "$AWAY_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$AWAY_ASSISTANT_SESSION", "wave_id": "$AWAY_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$AWAY_ASSISTANT_CARD" },
     "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "assistant", "edit_id": "pd-away-assistant-report", "summary_before": "", "summary_after": "away", "body_before": "", "body_after": "away body", "agent_message": "cross-wave report" } },
-    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }
   },
   {
     "description": "G-A' — and neither may another wave's Spec card, whose role gate has no rule of its own (AiSpec never reaches the role match): the recorder gate is the ONLY thing refusing this write",
-    "principal": { "session_id": "$AWAY_SPEC_SESSION", "wave_id": "$AWAY_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$AWAY_SPEC_SESSION", "wave_id": "$AWAY_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiSpec", "id": "$AWAY_SPEC_CARD" },
     "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-away-spec-report", "summary_before": "", "summary_after": "away spec", "body_before": "", "body_after": "away spec body", "agent_message": "cross-wave report" } },
-    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "allow" }
   },
   {
     "description": "the away wave's own root session is the away Spec card, and marking it root buys it nothing here — proof that root-ness is no longer part of the criterion in either direction",
-    "principal": { "session_id": "$AWAY_SPEC_SESSION", "wave_id": "$AWAY_WAVE", "cove_id": "$HOME_COVE" },
+    "principal": { "session_id": "$AWAY_SPEC_SESSION", "wave_id": "$AWAY_WAVE", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiSpec", "id": "$AWAY_SPEC_CARD" },
-    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "cross-wave lifecycle" } },
-    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "cove": "$HOME_COVE" } },
+    "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "area_id": "$HOME_AREA", "from": "planning", "to": "dispatching", "agent_message": "cross-wave lifecycle" } },
+    "scope": { "kind": "Wave", "id": { "wave": "$HOME_WAVE", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "allow" }
   }

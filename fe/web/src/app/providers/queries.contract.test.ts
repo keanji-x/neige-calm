@@ -13,8 +13,8 @@ import {
 } from '../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 import {
-  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
-  useCoveMutations, useWaveMutations, useWorkspace, wavesInCoveQueryOptions,
+  ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  useAreaMutations, useWaveMutations, useWorkspace, wavesInAreaQueryOptions,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -32,31 +32,31 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
-const systemCove = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
-const userCove = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
+const systemArea = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
+const userArea = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const baseWaveWire = {
-  id: 'w1', cove_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 
-describe('E2E-INV-SHELL-003 the system cove never reaches the workspace surface', () => {
-  it('filters a system cove out of the list the shell renders', async () => {
-    const { transport } = recordingTransport(() => ok([systemCove, userCove]));
-    const coves = await coveListQueryOptions(transport, unauthorized).queryFn();
-    expect(coves.map((cove) => cove.id)).toEqual(['c1']);
+describe('E2E-INV-SHELL-003 the system area never reaches the workspace surface', () => {
+  it('filters a system area out of the list the shell renders', async () => {
+    const { transport } = recordingTransport(() => ok([systemArea, userArea]));
+    const areas = await areaListQueryOptions(transport, unauthorized).queryFn();
+    expect(areas.map((area) => area.id)).toEqual(['c1']);
   });
 
-  it('yields zero cove rows for a fresh workspace that only has the system cove', async () => {
-    const { transport } = recordingTransport(() => ok([systemCove]));
-    expect(await coveListQueryOptions(transport, unauthorized).queryFn()).toEqual([]);
+  it('yields zero area rows for a fresh workspace that only has the system area', async () => {
+    const { transport } = recordingTransport(() => ok([systemArea]));
+    expect(await areaListQueryOptions(transport, unauthorized).queryFn()).toEqual([]);
   });
 
-  it('orders the surviving coves by sort so the rail is stable', async () => {
+  it('orders the surviving areas by sort so the rail is stable', async () => {
     const { transport } = recordingTransport(() => ok([
-      { ...userCove, id: 'b', sort: 3 }, { ...userCove, id: 'a', sort: 1 },
+      { ...userArea, id: 'b', sort: 3 }, { ...userArea, id: 'a', sort: 1 },
     ]));
-    expect((await coveListQueryOptions(transport, unauthorized).queryFn()).map((cove) => cove.id)).toEqual(['a', 'b']);
+    expect((await areaListQueryOptions(transport, unauthorized).queryFn()).map((area) => area.id)).toEqual(['a', 'b']);
   });
 });
 
@@ -82,38 +82,38 @@ describe('failure channel', () => {
   });
   it('rejects with ApiError carrying the normalized failure so Query can surface it', async () => {
     const { transport } = recordingTransport(() => ({ status: 500, statusText: 'Server Error', body: { code: 'boom', error: 'kaboom' } }));
-    await expect(coveListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
+    await expect(areaListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
   });
 
   it('keeps neutral waves readable while exporting an overlay failure', async () => {
-    const wave = { id: 'w1', cove_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    const wave = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
       archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
     const { transport } = recordingTransport((request) => {
-      if (request.path === '/api/coves') return ok([userCove]);
-      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas') return ok([userArea]);
+      if (request.path === '/api/areas/c1/waves') return ok([wave]);
       return { status: 500, statusText: 'Server Error', body: { error: 'overlays down' } };
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
     const { result } = renderHook(() => useWorkspace(transport, unauthorized), { wrapper });
     await waitFor(() => expect(result.current.waves).toHaveLength(1));
-    expect(result.current.covesError).toBeNull();
+    expect(result.current.areasError).toBeNull();
     expect(result.current.overlaysError).toBeInstanceOf(ApiError);
     expect(result.current.waves[0]).toMatchObject(NEUTRAL_ACTIVITY);
   });
 
   it('rejects when the payload does not match the schema instead of rendering junk', async () => {
     const { transport } = recordingTransport(() => ok([{ id: 'c1' }]));
-    await expect(coveListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
+    await expect(areaListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
   });
 });
 
 describe('wave list', () => {
-  it('reads one cove at a time so each cove keeps its own cache entry', async () => {
+  it('reads one area at a time so each area keeps its own cache entry', async () => {
     const { transport, paths } = recordingTransport(() => ok([]));
-    await wavesInCoveQueryOptions(transport, 'c1', unauthorized).queryFn();
-    await wavesInCoveQueryOptions(transport, 'c2', unauthorized).queryFn();
-    expect(paths).toEqual(['/api/coves/c1/waves', '/api/coves/c2/waves']);
+    await wavesInAreaQueryOptions(transport, 'c1', unauthorized).queryFn();
+    await wavesInAreaQueryOptions(transport, 'c2', unauthorized).queryFn();
+    expect(paths).toEqual(['/api/areas/c1/waves', '/api/areas/c2/waves']);
   });
 });
 
@@ -126,8 +126,8 @@ describe('delete mutation wiring', () => {
   it.each([
     ['wave', (transport: ApiTransportPort) => useWaveMutations(transport, unauthorized),
       (mutations: ReturnType<typeof useWaveMutations>, signal: AbortSignal) => mutations.remove('w1', 'c1', signal)],
-    ['cove', (transport: ApiTransportPort) => useCoveMutations(transport, unauthorized),
-      (mutations: ReturnType<typeof useCoveMutations>, signal: AbortSignal) => mutations.remove('c1', signal)],
+    ['area', (transport: ApiTransportPort) => useAreaMutations(transport, unauthorized),
+      (mutations: ReturnType<typeof useAreaMutations>, signal: AbortSignal) => mutations.remove('c1', signal)],
   ] as const)('relays the caller signal through the real %s mutation operation', async (_kind, useMutations, remove) => {
     let requestSignal: AbortSignal | undefined;
     const transport: ApiTransportPort = { send: vi.fn((request: ApiRequest) => {
@@ -147,26 +147,26 @@ describe('delete mutation wiring', () => {
 
   it('invalidates the wave list even when an aborted delete may have committed', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.wavesInCove('c1'), [{ id: 'w1' }]);
+    client.setQueryData(queryKeys.wavesInArea('c1'), [{ id: 'w1' }]);
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const transport: ApiTransportPort = { send: () => Promise.reject(new DOMException('aborted', 'AbortError')) };
     const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper: mutationWrapper(client) });
     const controller = new AbortController();
     controller.abort();
     await expect(result.current.remove('w1', 'c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.wavesInCove('c1') });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.wavesInArea('c1') });
   });
 
-  it('invalidates the cove list even when an aborted delete may have committed', async () => {
+  it('invalidates the area list even when an aborted delete may have committed', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.coves(), [userCove]);
+    client.setQueryData(queryKeys.areas(), [userArea]);
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const transport: ApiTransportPort = { send: () => Promise.reject(new DOMException('aborted', 'AbortError')) };
-    const { result } = renderHook(() => useCoveMutations(transport, unauthorized), { wrapper: mutationWrapper(client) });
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), { wrapper: mutationWrapper(client) });
     const controller = new AbortController();
     controller.abort();
     await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.coves() });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
   });
 });
 
@@ -266,23 +266,23 @@ describe('card mutation cache writes', () => {
 describe('wave create folders cache', () => {
   it('drops a successful empty folders cache after attach_folder create', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.coveFolders('c1'), []);
+    client.setQueryData(queryKeys.areaFolders('c1'), []);
     const transport: ApiTransportPort = {
       send: () => Promise.resolve(ok({
-        id: 'w1', cove_id: 'c1', title: 'Ship', sort: 0, created_at: 1, updated_at: 1,
+        id: 'w1', area_id: 'c1', title: 'Ship', sort: 0, created_at: 1, updated_at: 1,
       })),
     };
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, children);
     const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper });
     await act(() => result.current.create({
-      cove_id: 'c1',
+      area_id: 'c1',
       title: 'Ship',
       cwd: '/tmp/x',
       theme: { fg: [1, 2, 3], bg: [4, 5, 6] },
       attach_folder: true,
     }));
-    expect(client.getQueryData(queryKeys.coveFolders('c1'))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.areaFolders('c1'))).toBeUndefined();
   });
 });
 

@@ -39,7 +39,7 @@ Raw `*_tx` helper 只用于组合进上述事务。生产代码不得直接插�
 - actor；
 - wall-clock 时间；
 - 可选 correlation；
-- system/cove/wave/card scope。
+- system/area/wave/card scope。
 
 `id` 负责顺序，时间只用于展示和诊断。事件不对实体表建外键，因为删除事件需要比实体行活得更久。
 

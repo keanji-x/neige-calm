@@ -20,16 +20,16 @@ use calm_server::db::sqlite::{
     session_supersede_and_start_tx,
 };
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandlerFuture};
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::role_gate::enforce_role;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PrincipalDecisionGate;
 use calm_types::worker::{
     LivenessTag, Principal, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
@@ -99,8 +99,8 @@ async fn boot_with_registry(
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "transport-vector-test".into(),
             color: "#000".into(),
             sort: None,
@@ -110,7 +110,7 @@ async fn boot_with_registry(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "transport-vector-test".into(),
             sort: None,
             cwd: String::new(),
@@ -151,12 +151,12 @@ async fn boot_with_registry(
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -540,7 +540,7 @@ struct PrincipalDeltaVector {
 struct PrincipalSpec {
     session_id: String,
     wave_id: String,
-    cove_id: String,
+    area_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,7 +571,7 @@ enum GateExpectation {
 struct PrincipalFixture {
     repo: Arc<SqlxRepo>,
     cache: CardRoleCache,
-    wcc: WaveCoveCache,
+    wcc: WaveAreaCache,
     home_wave: WaveId,
     subst: Vec<(&'static str, String)>,
 }
@@ -580,12 +580,12 @@ impl PrincipalFixture {
     async fn boot() -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let cache = CardRoleCache::new();
-        let wcc = WaveCoveCache::new();
+        let wcc = WaveAreaCache::new();
         repo.seed_card_role_cache(&cache).await.unwrap();
-        repo.seed_wave_cove_cache(&wcc).await.unwrap();
+        repo.seed_wave_area_cache(&wcc).await.unwrap();
 
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "principal-delta".into(),
                 color: "#000".into(),
                 sort: None,
@@ -595,7 +595,7 @@ impl PrincipalFixture {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "principal-delta".into(),
                 sort: None,
                 cwd: String::new(),
@@ -606,9 +606,9 @@ impl PrincipalFixture {
             })
             .await
             .unwrap();
-        let home_cove = CoveId::from(cove.id.as_str());
+        let home_area = AreaId::from(area.id.as_str());
         let home_wave = WaveId::from(wave.id.as_str());
-        wcc.insert(home_wave.clone(), home_cove.clone());
+        wcc.insert(home_wave.clone(), home_area.clone());
 
         let spec = seed_role_card(&repo, &cache, &home_wave, CardRole::Spec).await;
         let executor = seed_role_card(&repo, &cache, &home_wave, CardRole::Worker).await;
@@ -622,7 +622,7 @@ impl PrincipalFixture {
         let away_wave_row = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "principal-delta-away".into(),
                 sort: None,
                 cwd: String::new(),
@@ -634,7 +634,7 @@ impl PrincipalFixture {
             .await
             .unwrap();
         let away_wave = WaveId::from(away_wave_row.id.as_str());
-        wcc.insert(away_wave.clone(), home_cove.clone());
+        wcc.insert(away_wave.clone(), home_area.clone());
         let away_assistant = seed_role_card(&repo, &cache, &away_wave, CardRole::Assistant).await;
         let away_spec = seed_role_card(&repo, &cache, &away_wave, CardRole::Spec).await;
 
@@ -733,7 +733,7 @@ impl PrincipalFixture {
             ("$AWAY_ASSISTANT_CARD", away_assistant.as_str().to_string()),
             ("$AWAY_SPEC_CARD", away_spec.as_str().to_string()),
             ("$HOME_WAVE", home_wave.as_str().to_string()),
-            ("$HOME_COVE", home_cove.as_str().to_string()),
+            ("$HOME_AREA", home_area.as_str().to_string()),
             ("$AWAY_WAVE", away_wave.as_str().to_string()),
         ];
 
@@ -870,10 +870,10 @@ async fn run_principal_delta_vector(
                 .as_str()
                 .expect("principal wave_id remains string"),
         ),
-        cove_id: CoveId::from(
-            substitute(&Value::String(v.principal.cove_id.clone()), &fx.subst)
+        area_id: AreaId::from(
+            substitute(&Value::String(v.principal.area_id.clone()), &fx.subst)
                 .as_str()
-                .expect("principal cove_id remains string"),
+                .expect("principal area_id remains string"),
         ),
     };
     let actor: ActorId = serde_json::from_value(substitute(&v.actor, &fx.subst))

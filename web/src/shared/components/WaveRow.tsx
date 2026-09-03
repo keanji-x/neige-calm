@@ -1,4 +1,4 @@
-import type { Cove, Wave } from '../../types';
+import type { Area, Wave } from '../../types';
 import { isRunning } from '../lifecycle';
 import { CloseIcon } from './CloseIcon';
 import { PinIcon } from './PinIcon';
@@ -11,15 +11,15 @@ import { waveDisplayTitle } from '../waveTitle';
 
 export function WaveRow({
   wave,
-  cove,
-  showCove = true,
+  area,
+  showArea = true,
   onClick,
   onDelete,
   onPinWave,
 }: {
   wave: Wave;
-  cove?: Cove;
-  showCove?: boolean;
+  area?: Area;
+  showArea?: boolean;
   onClick?: () => void;
   /** Optional per-row delete. When supplied, a × button reveals on hover
    *  on the right of the row. Caller is responsible for its own confirm
@@ -31,9 +31,9 @@ export function WaveRow({
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
 }) {
   // Avoid the "double-bullet" effect: only emit the `·` separator when both
-  // a cove tag AND a `now` line are going to render. Empty `now` (i.e. no
+  // an area tag AND a `now` line are going to render. Empty `now` (i.e. no
   // plugin posted activity text) drops out cleanly.
-  const showCoveTag = showCove && !!cove;
+  const showAreaTag = showArea && !!area;
   const showNow = !!wave.now;
   const showEta = !!wave.eta;
   const running = isRunning(wave.lifecycle);
@@ -66,22 +66,22 @@ export function WaveRow({
         <WaveGlyph lifecycle={wave.lifecycle} />
         <div className="body">
           <div className="t">{displayTitle}</div>
-          {(showCoveTag || showNow) && (
+          {(showAreaTag || showNow) && (
             <div className="s">
-              {showCoveTag && (
-                <span className="cove-tag">
-                  <i style={{ background: cove!.color }} />
-                  {cove!.name}
+              {showAreaTag && (
+                <span className="area-tag">
+                  <i style={{ background: area!.color }} />
+                  {area!.name}
                 </span>
               )}
-              {showCoveTag && showNow && <span>·</span>}
+              {showAreaTag && showNow && <span>·</span>}
               {showNow && <span>{wave.now}</span>}
             </div>
           )}
           {/* Issue #145 — secondary lifecycle pill on the wave row.
               `compact` skips the leading dot so we don't double up
               with the row's own status glyph on the left. The badge
-              shows up regardless of `now`/`cove` so the row's
+              shows up regardless of `now`/`area` so the row's
               lifecycle is always visible (the only "always present"
               wave-level state). */}
           <div className="s">

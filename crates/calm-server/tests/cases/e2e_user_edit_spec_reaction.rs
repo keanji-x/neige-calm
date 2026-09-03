@@ -51,16 +51,16 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{BroadcastEnvelope, EventBus, SubscribeFilter, SubscribeScope};
-use calm_server::ids::{CardId, CoveId, WaveId};
+use calm_server::ids::{AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_READ, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_report::WaveReportPayload;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
@@ -84,7 +84,7 @@ struct Boot {
     auth_state: AuthState,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     report_card_id: CardId,
@@ -151,8 +151,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "e2e-user-edit".into(),
             color: "#000".into(),
             sort: None,
@@ -162,7 +162,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "e2e wave".into(),
             sort: None,
             cwd: String::new(),
@@ -214,15 +214,15 @@ async fn boot() -> Boot {
         CardRole::ReportCard,
         wave.id.clone(),
     );
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let events = EventBus::new();
 
     // Build the AppState through `from_parts` with the shared bus and
     // caches. `from_parts` accepts pre-seeded caches via `Option`s, so
     // both the REST router and the MCP context observe the same role /
-    // wave-cove maps.
+    // wave-area maps.
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -234,11 +234,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-e2e-user-edit"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     let auth_state = AuthState::new(AuthConfig {
         username: Some("alice".into()),
@@ -248,7 +248,7 @@ async fn boot() -> Boot {
     });
 
     // MCP context — repo + the same bus the REST writes broadcast on,
-    // plus the shared role/cove caches.
+    // plus the shared role/area caches.
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
@@ -256,7 +256,7 @@ async fn boot() -> Boot {
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
         events: events.clone(),
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -271,7 +271,7 @@ async fn boot() -> Boot {
         auth_state,
         ctx,
         registry,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
@@ -286,7 +286,7 @@ fn spec_identity(b: &Boot) -> ToolCallIdentity {
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(b.wave_id.as_str().to_string()),
-        cove_id: b.cove_id.as_str().to_string(),
+        area_id: b.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }

@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
-use calm_server::mcp_server::tools::report_links::{TOOL_COVE_OUTLINE, TOOL_REPORT_BACKLINKS};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::mcp_server::tools::report_links::{TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS};
+use calm_server::model::{NewArea, NewCard, NewWave};
 use calm_server::wave_report::{WaveReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
 use serde_json::{Value, json};
@@ -10,14 +10,14 @@ use crate::mcp_wave_report::{boot, call_tool, spec_identity, worker_identity};
 
 async fn add_wave(
     boot: &crate::mcp_wave_report::Boot,
-    cove_id: &str,
+    area_id: &str,
     title: &str,
     body: String,
 ) -> calm_server::model::Wave {
     let wave = boot
         .repo
         .wave_create(NewWave {
-            cove_id: cove_id.into(),
+            area_id: area_id.into(),
             title: title.into(),
             sort: None,
             cwd: String::new(),
@@ -77,18 +77,18 @@ async fn strip_report_cache_and_crdt(
 }
 
 #[tokio::test]
-async fn outline_lists_same_cove_sibling_but_not_other_cove() {
+async fn outline_lists_same_area_sibling_but_not_other_area() {
     let boot = boot().await;
     let sibling = add_wave(
         &boot,
-        boot.cove_id.as_str(),
+        boot.area_id.as_str(),
         "Sibling",
         "# Sibling\n".into(),
     )
     .await;
-    let other_cove = boot
+    let other_area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "other".into(),
             color: "#fff".into(),
             sort: None,
@@ -97,12 +97,12 @@ async fn outline_lists_same_cove_sibling_but_not_other_cove() {
         .unwrap();
     let outside = add_wave(
         &boot,
-        other_cove.id.as_str(),
+        other_area.id.as_str(),
         "Outside",
         "# Outside\n".into(),
     )
     .await;
-    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
     let waves = value["waves"].as_array().unwrap();
@@ -115,14 +115,14 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
     let boot = boot().await;
     let legacy = add_wave(
         &boot,
-        boot.cove_id.as_str(),
+        boot.area_id.as_str(),
         "Legacy",
         "# Legacy heading\n\nBody\n".into(),
     )
     .await;
     strip_report_cache_and_crdt(&boot, &legacy).await;
 
-    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
     let wave = value["waves"]
@@ -141,14 +141,14 @@ async fn outline_wave_cap_is_reported_and_exact() {
     for index in 0..50 {
         add_wave(
             &boot,
-            boot.cove_id.as_str(),
+            boot.area_id.as_str(),
             &format!("Sibling {index}"),
             String::new(),
         )
         .await;
     }
 
-    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(value["waves"].as_array().unwrap().len(), 50);
@@ -171,9 +171,9 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
     // block title; but the entry stays, because this outline is the only
     // source of block ids for deep links.
     let boot = boot().await;
-    let wave = add_wave(&boot, boot.cove_id.as_str(), "Carrier", contract_body()).await;
+    let wave = add_wave(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
-    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
     let entry = value["waves"]
@@ -200,9 +200,9 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
 }
 
 #[tokio::test]
-async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
+async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
     /*
-     * What this measures, exactly: a cove at the realistic ceiling — 51 waves,
+     * What this measures, exactly: an area at the realistic ceiling — 51 waves,
      * every one carrying the maintenance contract plus four sections — still
      * fits the outline response comfortably, and the only degradation is the
      * wave cap, reported.
@@ -213,7 +213,7 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
      * serializes to about 17 KB against a 32 KiB cap, and 5 is well under the
      * 40-block cap. The assertions below therefore say "nothing was dropped",
      * which is the claim worth pinning for the carrier: adding a contract block
-     * to every report does not cost a cove its outline. A test of the *drop*
+     * to every report does not cost an area its outline. A test of the *drop*
      * paths would need a fixture built to blow the caps, it would be about the
      * degradation logic rather than about the contract, and it is not this one.
      *
@@ -226,7 +226,7 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
         seeded.push(
             add_wave(
                 &boot,
-                boot.cove_id.as_str(),
+                boot.area_id.as_str(),
                 &format!("Sibling {index}"),
                 contract_body(),
             )
@@ -234,7 +234,7 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
         );
     }
 
-    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
     let bytes = serde_json::to_vec(&value).unwrap().len();
@@ -265,7 +265,7 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
     );
 
     // Every block of every seeded wave is listed. This is the carrier's actual
-    // claim — a contract block in every report costs the cove nothing in
+    // claim — a contract block in every report costs the area nothing in
     // outline coverage — so the loop must also prove it actually looked at the
     // seeded waves: a fixture whose ids stopped matching would otherwise skip
     // every iteration and still pass.
@@ -284,7 +284,7 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
             "every block of a seeded wave is listed ({id})"
         );
     }
-    // The cove holds 51 waves — 50 seeded plus the boot wave — and `MAX_WAVES`
+    // The area holds 51 waves — 50 seeded plus the boot wave — and `MAX_WAVES`
     // lists the 50 lowest ids, so exactly one falls off, and which one depends
     // on where the random ids sort. Hence: nothing but the boot wave may show
     // up unrecognised, and at most one seeded wave may be missing.
@@ -307,7 +307,7 @@ async fn backlinks_returns_linking_wave_for_callers_wave() {
     let boot = boot().await;
     let source = add_wave(
         &boot,
-        boot.cove_id.as_str(),
+        boot.area_id.as_str(),
         "Source",
         format!("[target](neige://wave/{})\n", boot.wave_id),
     )
@@ -330,7 +330,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
     let boot = boot().await;
     let source = add_wave(
         &boot,
-        boot.cove_id.as_str(),
+        boot.area_id.as_str(),
         "Footnote source",
         format!("[^note]: [footnote](neige://wave/{})\n", boot.wave_id),
     )
@@ -367,7 +367,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
 #[tokio::test]
 async fn report_link_reads_reject_non_spec_caller() {
     let boot = boot().await;
-    for tool in [TOOL_COVE_OUTLINE, TOOL_REPORT_BACKLINKS] {
+    for tool in [TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS] {
         let error = call_tool(
             &boot,
             tool,

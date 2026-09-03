@@ -22,7 +22,7 @@ use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRunti
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -82,8 +82,8 @@ async fn boot(running: bool) -> Boot {
             .expect("open in-memory sqlite"),
     );
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let plugin_id = trusted_plugin_id();
     let plugins_dir = tmp.path().join("plugins");
@@ -129,7 +129,7 @@ async fn boot(running: bool) -> Boot {
         plugins_data_dir,
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
     if running {
         plugin_host.spawn(&plugin_id).await.expect("spawn plugin");
@@ -146,7 +146,7 @@ async fn boot(running: bool) -> Boot {
         plugin_host.clone(),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let state = state.with_shared_codex_appserver(
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
@@ -321,10 +321,10 @@ async fn every_template_lists_the_tasks_its_report_pre_sets() {
     );
 
     // Listing tasks must stay a read. The template *waves* are created by the
-    // create path, in a cove; if listing ever reached for a stored report
+    // create path, in an area; if listing ever reached for a stored report
     // instead of the constants, that seed would show up right here.
     assert!(
-        boot.repo.coves_list().await.expect("coves list").is_empty(),
+        boot.repo.areas_list().await.expect("areas list").is_empty(),
         "listing wave templates must not write anything"
     );
 }

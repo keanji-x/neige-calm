@@ -46,8 +46,8 @@ const TOKEN_INVENTORY = [
   '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
   '--warn-text', '--success-text', '--error-soft', '--error-border', '--text-on-accent',
   '--shadow-float',
-  '--cove-1', '--cove-2', '--cove-3', '--cove-4',
-  '--cove-5', '--cove-6', '--cove-7', '--cove-8',
+  '--area-1', '--area-2', '--area-3', '--area-4',
+  '--area-5', '--area-6', '--area-7', '--area-8',
 ] as const;
 
 describe('styles/tokens public type contract', () => {

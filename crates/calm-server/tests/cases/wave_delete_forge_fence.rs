@@ -9,7 +9,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, new_id, now_ms};
+use calm_server::model::{NewArea, new_id, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionPayload};
 use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -25,7 +25,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<dyn Repo>,
     tmp: TempDir,
 }
@@ -37,8 +37,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "forge-fence-test".into(),
             color: "#000".into(),
             sort: None,
@@ -52,8 +52,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -65,11 +65,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-forge-fence-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
 
     let app = routes::router()
@@ -80,7 +80,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         tmp,
     }
@@ -127,7 +127,7 @@ async fn create_wave(boot: &Boot, title: &str) -> String {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id.clone(),
+            "area_id": boot.area_id.clone(),
             "title": title,
             "cwd": cwd,
             "attach_folder": true,
@@ -210,11 +210,11 @@ async fn delete_wave_conflicts_while_forge_action_active_then_allows_terminal_ph
 }
 
 #[tokio::test]
-async fn delete_cove_conflicts_when_child_wave_has_active_forge_action() {
+async fn delete_area_conflicts_when_child_wave_has_active_forge_action() {
     let boot = boot().await;
-    let wave_id = create_wave(&boot, "cove-active").await;
-    insert_spawn_started_forge_action(&boot, &wave_id, "cove-active-op").await;
+    let wave_id = create_wave(&boot, "area-active").await;
+    insert_spawn_started_forge_action(&boot, &wave_id, "area-active-op").await;
 
-    let status = delete(boot.app.clone(), &format!("/api/coves/{}", boot.cove_id)).await;
+    let status = delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }

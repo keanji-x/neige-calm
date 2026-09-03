@@ -11,7 +11,7 @@ use support::mcp::{
 
 fn expected_spec_toolset() -> Vec<&'static str> {
     vec![
-        "calm.cove.outline",
+        "calm.area.outline",
         "calm.plan.cancel",
         "calm.plan.list",
         "calm.ratify.request",

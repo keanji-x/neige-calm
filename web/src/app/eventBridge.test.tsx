@@ -8,8 +8,8 @@
 // the mapping in `dispatch()`.
 //
 // The 'event variants we care about (one assertion per dispatch arm):
-//   - cove.updated      → invalidate ['coves']
-//   - wave.updated      → invalidate ['waves', cove_id] AND ['wave', id]
+//   - area.updated      → invalidate ['areas']
+//   - wave.updated      → invalidate ['waves', area_id] AND ['wave', id]
 //   - card.added        → invalidate ['wave', wave_id]
 //   - plugin.state      → no invalidation (no plugin query yet)
 //
@@ -117,7 +117,7 @@ function seedWaveDetailWithCard(client: QueryClient, waveId: string, cardId: str
   client.setQueryData(['wave', waveId], {
     wave: {
       id: waveId,
-      cove_id: 'cove_1',
+      area_id: 'area_1',
       title: 'Wave',
       sort: 0,
       archived_at: null,
@@ -192,7 +192,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('cove.updated invalidates the coves list', () => {
+  it('area.updated invalidates the areas list', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -202,9 +202,9 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'cove.updated',
+      ev: 'area.updated',
       data: {
-        id: 'cove_1',
+        id: 'area_1',
         name: 'Atlas',
         color: '#abc',
         sort: 0,
@@ -213,31 +213,31 @@ describe('EventBridge', () => {
         updated_at: 2,
       },
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['coves'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['areas'] });
     cleanup();
   });
 
-  it('issue #288 — cove.updated writes the renamed payload through to the cache', () => {
+  it('issue #288 — area.updated writes the renamed payload through to the cache', () => {
     // Regression guard for the production sidebar-staleness bug.
     //
-    // Before the fix, this arm only invalidated ['coves'] and relied on
+    // Before the fix, this arm only invalidated ['areas'] and relied on
     // a refetch round-trip to repaint the Sidebar. In production we
     // observed the refetch sometimes failing to surface to the Sidebar
-    // even though `GET /api/coves` returned the new name. The fix is
+    // even though `GET /api/areas` returned the new name. The fix is
     // a write-through: apply the event payload to the cache directly
-    // so observers (Sidebar's `useCovesQuery`) see the new name on
+    // so observers (Sidebar's `useAreasQuery`) see the new name on
     // the very next render, with no refetch dependency.
     //
-    // This test seeds the cache with a stale name, fires `cove.updated`
+    // This test seeds the cache with a stale name, fires `area.updated`
     // with a renamed payload, and asserts the cache holds the new name
     // synchronously after dispatch — independent of any HTTP refetch.
     const client = makeClient();
-    // Seed two coves so the test catches "I forgot to copy unaffected
+    // Seed two areas so the test catches "I forgot to copy unaffected
     // rows" — a naive `setQueryData([{updated}])` would silently drop
-    // the other cove.
-    client.setQueryData(['coves'], [
+    // the other area.
+    client.setQueryData(['areas'], [
       {
-        id: 'cove_1',
+        id: 'area_1',
         name: 'KeepMe',
         color: '#5a9',
         sort: 0,
@@ -246,7 +246,7 @@ describe('EventBridge', () => {
         updated_at: 2,
       },
       {
-        id: 'cove_2',
+        id: 'area_2',
         name: 'OldName',
         color: '#c97',
         sort: 1,
@@ -262,9 +262,9 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'cove.updated',
+      ev: 'area.updated',
       data: {
-        id: 'cove_2',
+        id: 'area_2',
         name: 'NewName',
         color: '#c97',
         sort: 1,
@@ -275,22 +275,22 @@ describe('EventBridge', () => {
     });
     const cached = client.getQueryData<
       Array<{ id: string; name: string }>
-    >(['coves']);
+    >(['areas']);
     expect(cached).toBeDefined();
-    expect(cached!.find((c) => c.id === 'cove_1')?.name).toBe('KeepMe');
-    expect(cached!.find((c) => c.id === 'cove_2')?.name).toBe('NewName');
+    expect(cached!.find((c) => c.id === 'area_1')?.name).toBe('KeepMe');
+    expect(cached!.find((c) => c.id === 'area_2')?.name).toBe('NewName');
     cleanup();
   });
 
-  it('issue #288 — cove.updated is a no-op when the cove is not in cache', () => {
-    // Defensive: a cove.updated event for a cove the client has never
+  it('issue #288 — area.updated is a no-op when the area is not in cache', () => {
+    // Defensive: an area.updated event for an area the client has never
     // fetched (or that was GC'd from the cache) must not crash and must
     // not synthesize a phantom row. The invalidate-on-the-side path
     // still triggers a refetch that lands the correct list on the next
-    // mount of useCovesQuery.
+    // mount of useAreasQuery.
     const client = makeClient();
-    // No coves in cache.
-    expect(client.getQueryData(['coves'])).toBeUndefined();
+    // No areas in cache.
+    expect(client.getQueryData(['areas'])).toBeUndefined();
     const Wrapper = wrap(client);
     render(
       <Wrapper>
@@ -298,9 +298,9 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'cove.updated',
+      ev: 'area.updated',
       data: {
-        id: 'cove_new',
+        id: 'area_new',
         name: 'Phantom',
         color: '#abc',
         sort: 0,
@@ -311,11 +311,11 @@ describe('EventBridge', () => {
     });
     // Cache stays empty — we don't fabricate a row, we wait for the
     // refetch (driven by the sibling invalidate) to land the truth.
-    expect(client.getQueryData(['coves'])).toBeUndefined();
+    expect(client.getQueryData(['areas'])).toBeUndefined();
     cleanup();
   });
 
-  it('wave.updated invalidates both the cove list and the wave detail', () => {
+  it('wave.updated invalidates both the area list and the wave detail', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -328,7 +328,7 @@ describe('EventBridge', () => {
       ev: 'wave.updated',
       data: {
         id: 'wave_1',
-        cove_id: 'cove_1',
+        area_id: 'area_1',
         title: 'Hello',
         sort: 0,
         archived_at: null,
@@ -351,7 +351,7 @@ describe('EventBridge', () => {
     });
     // Two invalidations, one per affected key. We don't care about ordering
     // — the bridge fires both, and TanStack Query coalesces refetches.
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves', 'cove_1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['waves', 'area_1'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave', 'wave_1'] });
     cleanup();
   });
@@ -866,9 +866,9 @@ describe('EventBridge', () => {
       setTraceUrl(false);
       renderBridge();
       fakeStream.emit({
-        ev: 'cove.updated',
+        ev: 'area.updated',
         data: {
-          id: 'cove_x',
+          id: 'area_x',
           name: 'X',
           color: '#fff',
           sort: 0,
@@ -887,9 +887,9 @@ describe('EventBridge', () => {
       renderBridge();
       fakeStream.emit(
         {
-          ev: 'cove.updated',
+          ev: 'area.updated',
           data: {
-            id: 'cove_a',
+            id: 'area_a',
             name: 'A',
             color: '#aaa',
             sort: 0,
@@ -906,7 +906,7 @@ describe('EventBridge', () => {
       expect(buf![0]).toMatchObject({
         id: 17,
         eventVersion: 1,
-        ev: 'cove.updated',
+        ev: 'area.updated',
       });
       expect(typeof buf![0].ts).toBe('number');
       cleanup();
@@ -922,9 +922,9 @@ describe('EventBridge', () => {
       for (let i = 1; i <= 205; i++) {
         fakeStream.emit(
           {
-            ev: 'cove.updated',
+            ev: 'area.updated',
             data: {
-              id: `cove_${i}`,
+              id: `area_${i}`,
               name: 'n',
               color: '#000',
               sort: 0,
@@ -949,7 +949,7 @@ describe('EventBridge', () => {
       setTraceUrl(true);
       renderBridge();
       fakeStream.emit({
-        ev: 'cove.updated',
+        ev: 'area.updated',
         data: {
           id: 'c',
           name: 'n',

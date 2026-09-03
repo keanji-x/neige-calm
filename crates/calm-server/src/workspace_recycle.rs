@@ -25,7 +25,7 @@
 //! 3. `<path>/.git/neige-workspace` exists and its contents equal this wave's
 //!    id. "Is it a git repository" is not a substitute — S2 measured that
 //!    predicate waving a third-party repository through.
-//! 4. The owning cove is not the system cove. The launchpad's workspace is
+//! 4. The owning area is not the system area. The launchpad's workspace is
 //!    kernel-maintained (`today_launchpad_ensure_tx` repoints it) and is not
 //!    user-recyclable.
 //!
@@ -45,11 +45,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{CalmError, Result};
-use crate::model::{CoveKind, WaveWorkspace, WaveWorkspaceKind};
+use crate::model::{AreaKind, WaveWorkspace, WaveWorkspaceKind};
 
 /// Name of the trash directory under the workspace root. Leading dot so it can
-/// never collide with a cove id (ids are never dot-prefixed) and so it does not
-/// look like a cove to anything walking the root.
+/// never collide with an area id (ids are never dot-prefixed) and so it does not
+/// look like an area to anything walking the root.
 pub const TRASH_DIR_NAME: &str = ".trash";
 
 /// Ownership marker path relative to a managed workspace. Kept in sync with
@@ -79,16 +79,16 @@ pub const TRASH_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub enum RecycleRefusal {
     /// Guard 1 — `Attached`. The user's own repository.
     NotManaged,
-    /// Guard 4 — the owning cove is system-owned (or could not be read, which
+    /// Guard 4 — the owning area is system-owned (or could not be read, which
     /// is treated the same way).
-    SystemCove,
+    SystemArea,
     /// Guard 2 — nothing at the stored path. Nothing to recycle; not an error.
     PathMissing,
     /// Guard 2 — `canonicalize` resolved outside the managed root, or the root
     /// itself could not be canonicalized.
     OutsideRoot { real: PathBuf },
-    /// Guard 2 — inside the root, but not at `<root>/<cove_id>/<wave_id>`.
-    /// A cove layer or a deeper subdirectory would take siblings with it.
+    /// Guard 2 — inside the root, but not at `<root>/<area_id>/<wave_id>`.
+    /// An area layer or a deeper subdirectory would take siblings with it.
     WrongDepth { real: PathBuf },
     /// Guard 3 — no ownership marker.
     MarkerMissing,
@@ -103,7 +103,7 @@ impl RecycleRefusal {
     pub fn tag(&self) -> &'static str {
         match self {
             RecycleRefusal::NotManaged => "not-managed",
-            RecycleRefusal::SystemCove => "system-cove",
+            RecycleRefusal::SystemArea => "system-area",
             RecycleRefusal::PathMissing => "path-missing",
             RecycleRefusal::OutsideRoot { .. } => "outside-root",
             RecycleRefusal::WrongDepth { .. } => "wrong-depth",
@@ -151,12 +151,12 @@ impl RecycleDecision {
 /// notably `EXDEV`.
 pub fn recycle_wave_workspace(
     workspace_root: &Path,
-    cove_kind: Option<CoveKind>,
+    area_kind: Option<AreaKind>,
     wave_id: &str,
     workspace: &WaveWorkspace,
     now_ms: i64,
 ) -> Result<RecycleDecision> {
-    let decision = decide_and_move(workspace_root, cove_kind, wave_id, workspace, now_ms)?;
+    let decision = decide_and_move(workspace_root, area_kind, wave_id, workspace, now_ms)?;
     match &decision {
         RecycleDecision::Trashed { from, to } => {
             tracing::info!(
@@ -193,7 +193,7 @@ pub fn recycle_wave_workspace(
 
 fn decide_and_move(
     workspace_root: &Path,
-    cove_kind: Option<CoveKind>,
+    area_kind: Option<AreaKind>,
     wave_id: &str,
     workspace: &WaveWorkspace,
     now_ms: i64,
@@ -204,31 +204,31 @@ fn decide_and_move(
         return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
     }
 
-    // Guard 4 — system cove. `None` means the cove row could not be read, which
+    // Guard 4 — system area. `None` means the area row could not be read, which
     // is "cannot tell", which is a refusal.
     //
     // **Reachability: this guard is entirely unreachable today. Pure depth.**
     // Stated exactly, so nobody deletes it as dead code and nobody mistakes it
     // for a live defence:
     //
-    // * `Some(System)` — both delete routes 403 a system cove before they get
+    // * `Some(System)` — both delete routes 403 a system area before they get
     //   here. That 403 is the row-layer half of this same invariant; see
     //   `routes/waves.rs::delete_wave`.
-    // * `None` — cannot happen either. `waves.cove_id` is
-    //   `NOT NULL REFERENCES coves(id) ON DELETE CASCADE`
+    // * `None` — cannot happen either. `waves.area_id` is
+    //   `NOT NULL REFERENCES areas(id) ON DELETE CASCADE`
     //   (`calm-truth/migrations/0001_init.sql`) and the pool sets
-    //   `PRAGMA foreign_keys = ON` per connection, so a wave row with no cove
+    //   `PRAGMA foreign_keys = ON` per connection, so a wave row with no area
     //   row is not a representable state.
     //
     // Kept anyway, deliberately: the routes' 403s are policy at a boundary,
     // this is the last check before an irreversible move, and any future
     // internal caller that skips the routes gets it for free. Measured
     // consequence: mutating this guard away turns NO integration test red. Its
-    // single-violation fixtures are `a_system_cove_workspace_is_refused` and
-    // `an_unknown_cove_is_refused_rather_than_assumed_user` in the unit suite,
+    // single-violation fixtures are `a_system_area_workspace_is_refused` and
+    // `an_unknown_area_is_refused_rather_than_assumed_user` in the unit suite,
     // and they construct states the database will not.
-    if cove_kind != Some(CoveKind::User) {
-        return Ok(RecycleDecision::Refused(RecycleRefusal::SystemCove));
+    if area_kind != Some(AreaKind::User) {
+        return Ok(RecycleDecision::Refused(RecycleRefusal::SystemArea));
     }
 
     let stored = Path::new(&workspace.path);
@@ -278,16 +278,16 @@ fn decide_and_move(
         }));
     }
     // Containment is not enough: **depth** matters, because what gets renamed
-    // is a whole subtree. A managed workspace is `<root>/<cove_id>/<wave_id>`
+    // is a whole subtree. A managed workspace is `<root>/<area_id>/<wave_id>`
     // and nothing else.
     //
     // Measured (red team R1/R2): with only the containment check above, a valid
-    // marker sitting on the `<root>/<cove_id>/` layer moves the entire cove
+    // marker sitting on the `<root>/<area_id>/` layer moves the entire area
     // directory into the trash — **including every sibling wave's repository**
     // — and a marker on any deeper subdirectory is recyclable too. Today those
     // are closed only by coincidence: nothing writes a marker at those depths.
     // That is not a guard, it is luck, and S3 is precisely the slice that will
-    // start writing arbitrary paths into `workspace_path`. `remove_empty_cove_dir`
+    // start writing arbitrary paths into `workspace_path`. `remove_empty_area_dir`
     // already asserts its own depth; the recycle path — the one that moves a
     // whole tree — must not be the weaker of the two.
     //
@@ -539,38 +539,38 @@ pub struct RecycleTarget<'a> {
     pub workspace: &'a WaveWorkspace,
 }
 
-/// Report of a cove-level recycle.
+/// Report of an area-level recycle.
 #[derive(Debug, Default)]
-pub struct CoveRecycleReport {
+pub struct AreaRecycleReport {
     pub decisions: Vec<(String, RecycleDecision)>,
-    /// `true` when `<root>/<cove_id>/` was removed (it was empty afterwards).
-    pub cove_dir_removed: bool,
+    /// `true` when `<root>/<area_id>/` was removed (it was empty afterwards).
+    pub area_dir_removed: bool,
 }
 
-/// Recycle every managed workspace under a cove, then the `<root>/<cove_id>/`
+/// Recycle every managed workspace under an area, then the `<root>/<area_id>/`
 /// layer itself.
 ///
-/// Before this slice, `DELETE /api/coves/{id}` released leases and swept
-/// worktrees but never touched the managed directories, so every cove delete
+/// Before this slice, `DELETE /api/areas/{id}` released leases and swept
+/// worktrees but never touched the managed directories, so every area delete
 /// left a tree of repositories that no database row pointed at any more.
 ///
-/// The cove directory is removed with a **non-recursive** `remove_dir`: it
+/// The area directory is removed with a **non-recursive** `remove_dir`: it
 /// succeeds only when the directory is genuinely empty, which makes "did every
 /// child get recycled?" a precondition the kernel cannot get wrong rather than
 /// a claim it asserts. Anything left behind (a refused wave, a stray file)
-/// keeps the cove directory, and that is the correct, visible outcome.
-pub fn recycle_cove_workspaces(
+/// keeps the area directory, and that is the correct, visible outcome.
+pub fn recycle_area_workspaces(
     workspace_root: &Path,
-    cove_id: &str,
-    cove_kind: Option<CoveKind>,
+    area_id: &str,
+    area_kind: Option<AreaKind>,
     waves: &[RecycleTarget<'_>],
     now_ms: i64,
-) -> Result<CoveRecycleReport> {
-    let mut report = CoveRecycleReport::default();
+) -> Result<AreaRecycleReport> {
+    let mut report = AreaRecycleReport::default();
     for target in waves {
         let decision = recycle_wave_workspace(
             workspace_root,
-            cove_kind,
+            area_kind,
             target.wave_id,
             target.workspace,
             now_ms,
@@ -580,43 +580,43 @@ pub fn recycle_cove_workspaces(
             .push((target.wave_id.to_string(), decision));
     }
 
-    if cove_kind == Some(CoveKind::User) {
-        report.cove_dir_removed = remove_empty_cove_dir(workspace_root, cove_id);
+    if area_kind == Some(AreaKind::User) {
+        report.area_dir_removed = remove_empty_area_dir(workspace_root, area_id);
     }
     Ok(report)
 }
 
-/// `rmdir <root>/<cove_id>` when it is empty and canonically a direct child of
+/// `rmdir <root>/<area_id>` when it is empty and canonically a direct child of
 /// the root. Never recursive; failure is reported as `false`, never as an
 /// error, because an un-removed empty directory is cosmetic.
-fn remove_empty_cove_dir(workspace_root: &Path, cove_id: &str) -> bool {
+fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
     let Ok(real_root) = std::fs::canonicalize(workspace_root) else {
         return false;
     };
-    let cove_dir = real_root.join(cove_id);
-    let Ok(real_cove_dir) = std::fs::canonicalize(&cove_dir) else {
+    let area_dir = real_root.join(area_id);
+    let Ok(real_area_dir) = std::fs::canonicalize(&area_dir) else {
         return false;
     };
     // Same canonical containment rule as a wave, plus "exactly one level
-    // down": a cove directory is `<root>/<cove_id>` and nothing else.
-    if real_cove_dir.parent() != Some(real_root.as_path()) {
+    // down": an area directory is `<root>/<area_id>` and nothing else.
+    if real_area_dir.parent() != Some(real_root.as_path()) {
         tracing::error!(
-            cove_id,
-            path = %real_cove_dir.display(),
+            area_id,
+            path = %real_area_dir.display(),
             root = %real_root.display(),
-            "refusing to remove a cove workspace directory that does not resolve to a \
+            "refusing to remove an area workspace directory that does not resolve to a \
              direct child of the managed workspace root"
         );
         return false;
     }
-    match std::fs::remove_dir(&real_cove_dir) {
+    match std::fs::remove_dir(&real_area_dir) {
         Ok(()) => true,
         Err(error) => {
             tracing::info!(
-                cove_id,
-                path = %real_cove_dir.display(),
+                area_id,
+                path = %real_area_dir.display(),
                 error = %error,
-                "left the cove workspace directory in place (not empty, or not removable)"
+                "left the area workspace directory in place (not empty, or not removable)"
             );
             false
         }
@@ -728,7 +728,7 @@ fn trash_entry_timestamp(path: &Path) -> Option<i64> {
 /// Sweep the trash, swallowing failures.
 ///
 /// Called from the delete routes. GC is housekeeping: it must never turn a
-/// successful wave/cove delete into a 500. The trash only grows when something
+/// successful wave/area delete into a 500. The trash only grows when something
 /// is recycled, so sweeping on each recycle keeps it bounded by one retention
 /// window of deletions without any new background-task plumbing.
 pub fn gc_trash_best_effort(workspace_root: &Path, now_ms: i64) {

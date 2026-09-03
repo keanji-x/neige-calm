@@ -611,7 +611,7 @@ where
     let actor = identity.to_actor_id();
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let wave_id_typed = wave.id.clone();
     let message = write_args.message.clone();

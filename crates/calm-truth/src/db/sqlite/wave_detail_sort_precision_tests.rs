@@ -26,10 +26,10 @@
 //! be the right verdict here, but bit comparison states the intent (and
 //! keeps `-0.0` honest).
 
-use super::{SqlxRepo, card_create_tx, cove_create_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_tx, wave_create_tx};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RepoRead;
-use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
 use serde_json::json;
 
 /// f64 values that cannot survive 15-significant-digit rendering.
@@ -52,20 +52,20 @@ const PRECISION_HOSTILE_SORTS: &[f64] = &[
 async fn seed_wave_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<String>) {
     let role_cache = CardRoleCache::new();
     let mut tx = repo.pool().begin().await.expect("begin tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "sort precision".into(),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "sort precision".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -77,7 +77,7 @@ async fn seed_wave_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<St
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");

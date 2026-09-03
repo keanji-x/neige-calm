@@ -1,14 +1,14 @@
 // Kernel-wire → UI-shape adapters.
 //
-// The kernel deliberately stores only structural facts (Cove/Wave/Card).
+// The kernel deliberately stores only structural facts (Area/Wave/Card).
 // Status, progress, ETA — everything semantic — comes from plugin
 // overlays. Until the plugin host lands (M3), we fall back to sane
 // "no plugin" defaults so the UI still has something to render.
 
-import type { Cove, Wave, WaveCardData, WaveLifecycle } from '../types';
+import type { Area, Wave, WaveCardData, WaveLifecycle } from '../types';
 import type {
   KernelCard,
-  KernelCove,
+  KernelArea,
   KernelOverlay,
   KernelWave,
 } from './wire';
@@ -16,23 +16,23 @@ import { adaptKernelCard } from '../cards/registry';
 import { isRunning } from '../shared/lifecycle';
 
 /**
- * Adapt a kernel Cove to the UI shape.
+ * Adapt a kernel Area to the UI shape.
  *
  * The mockup carried a `subtitle` ("Personal site", "Client · e-commerce"),
  * which the kernel does not store. Rather than adding a column for it, we
  * leave the field present but blank — the page can derive a secondary
  * (wave count, running count) when it wants something in the eyebrow.
  */
-export function adaptCove(k: KernelCove): Cove {
+export function adaptArea(k: KernelArea): Area {
   return { id: k.id, name: k.name, subtitle: '', color: k.color };
 }
 
 /**
- * Derive a small text summary suitable for a cove's secondary line, e.g.
- * `"3 waves · 1 running"`. Returns an empty string for an empty cove so
+ * Derive a small text summary suitable for an area's secondary line, e.g.
+ * `"3 waves · 1 running"`. Returns an empty string for an empty area so
  * the renderer can drop the line entirely.
  */
-export function coveSummary(waves: Wave[]): string {
+export function areaSummary(waves: Wave[]): string {
   if (waves.length === 0) return '';
   const running = waves.filter((w) => isRunning(w.lifecycle)).length;
   const noun = waves.length === 1 ? 'wave' : 'waves';
@@ -83,7 +83,7 @@ export function adaptWave(k: KernelWave, overlays: KernelOverlay[] = []): Wave {
 
   return {
     id: k.id,
-    coveId: k.cove_id,
+    areaId: k.area_id,
     title: k.title,
     // Issue #145 — the kernel always stamps a lifecycle on wave rows
     // (defaults to 'draft' on create, advanced explicitly by the Spec

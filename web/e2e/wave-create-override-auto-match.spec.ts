@@ -1,17 +1,17 @@
-// E2E: NewTaskForm "Use a different cove" override on top of an
+// E2E: NewTaskForm "Use a different area" override on top of an
 // auto-matched cwd (#250 PR 3 fix-loop "B2" — the user can reject the
 // auto-match and re-pick).
 //
-// Scenario covered: cove A owns `/srv/proj/foo-<ts>`. The user opens
-// cove A's *own* page and types a cwd under that folder. The form
-// auto-matches to A and locks the cove choice. The user clicks "Use
-// a different cove", the radio picker reappears, they flip to "Create
-// new cove", swap the cwd to a *non-overlapping* path so no 409 fires,
-// fill the new cove name, and submit. The wave should land in the
-// brand-new cove C (NOT A), with the new path attached.
+// Scenario covered: area A owns `/srv/proj/foo-<ts>`. The user opens
+// area A's *own* page and types a cwd under that folder. The form
+// auto-matches to A and locks the area choice. The user clicks "Use
+// a different area", the radio picker reappears, they flip to "Create
+// new area", swap the cwd to a *non-overlapping* path so no 409 fires,
+// fill the new area name, and submit. The wave should land in the
+// brand-new area C (NOT A), with the new path attached.
 //
 // Without B2 the auto-match locks A in permanently and the user has
-// no escape hatch when they want to mint a fresh cove for a path
+// no escape hatch when they want to mint a fresh area for a path
 // that happens to fall under an existing claim.
 //
 // Prereq: `make dev` serving http://localhost:4041 with the default
@@ -24,46 +24,46 @@ import {
   createGitWorkTree,
 } from './helpers/attached-workspace';
 
-// Coves seeded (REST-direct or form-indirect) get tracked here so the
-// afterEach hook can `DELETE /api/coves/<id>` them. Without cleanup,
-// leftover coves accumulate and break specs that assume a zero-cove
+// Areas seeded (REST-direct or form-indirect) get tracked here so the
+// afterEach hook can `DELETE /api/areas/<id>` them. Without cleanup,
+// leftover areas accumulate and break specs that assume a zero-area
 // baseline (notably golden-path.spec.ts; #250 PR5 triage).
-// `DELETE /api/coves/:id` cascades through waves → cards → terminals
-// (see `delete_cove` in crates/calm-server/src/routes/coves.rs).
-const createdCoveIds: string[] = [];
+// `DELETE /api/areas/:id` cascades through waves → cards → terminals
+// (see `delete_area` in crates/calm-server/src/routes/areas.rs).
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} → ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   cleanupAttachedWorkspaces();
 });
 
-test('NewTaskForm "Use a different cove" lets user override auto-match → new cove', async ({
+test('NewTaskForm "Use a different area" lets user override auto-match → new area', async ({
   page,
 }) => {
   const ts = Date.now();
-  const coveAName = `E2E override cove-A ${ts}`;
-  const newCoveName = `E2E override cove-C ${ts}`;
-  // `coveAFolder` / `initialCwd` stay pure path strings on purpose:
+  const areaAName = `E2E override area-A ${ts}`;
+  const newAreaName = `E2E override area-C ${ts}`;
+  // `areaAFolder` / `initialCwd` stay pure path strings on purpose:
   // `initialCwd` is only ever *typed* (to make the auto-match banner
-  // fire) and is swapped out before submit, and a `cove_folders` claim
+  // fire) and is swapped out before submit, and a `area_folders` claim
   // carries no filesystem contract. Only the path that reaches
   // `POST /api/waves` has to exist on disk.
-  const coveAFolder = `/srv/proj/foo-override-${ts}`;
-  const initialCwd = `${coveAFolder}/sub`;
+  const areaAFolder = `/srv/proj/foo-override-${ts}`;
+  const initialCwd = `${areaAFolder}/sub`;
   // Non-overlapping cwd for the actual submit — independent
-  // namespace so it can't collide with cove A's claim or any other
+  // namespace so it can't collide with area A's claim or any other
   // spec's cwds.
   //
   // #1147 S3 — this one IS submitted as an *attached* workspace, so it
@@ -73,32 +73,32 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
     attachedWorkspacePath(`neige-e2e-override-${ts}`),
   );
 
-  // Step 1 — seed cove A + its folder claim via REST. We'll navigate
-  // into A so defaultCoveId === A.id, which is what triggers the
+  // Step 1 — seed area A + its folder claim via REST. We'll navigate
+  // into A so defaultAreaId === A.id, which is what triggers the
   // override fallback path inside `onOverrideAutoMatch` (it picks
-  // defaultCoveId as the "existing" fallback).
-  const coveARes = await page.request.post('/api/coves', {
-    data: { name: coveAName, color: '#79c' },
+  // defaultAreaId as the "existing" fallback).
+  const areaARes = await page.request.post('/api/areas', {
+    data: { name: areaAName, color: '#79c' },
     headers: { 'content-type': 'application/json' },
   });
-  expect(coveARes.ok()).toBeTruthy();
-  const coveA = (await coveARes.json()) as { id: string };
-  createdCoveIds.push(coveA.id);
+  expect(areaARes.ok()).toBeTruthy();
+  const areaA = (await areaARes.json()) as { id: string };
+  createdAreaIds.push(areaA.id);
 
   const folderRes = await page.request.post(
-    `/api/coves/${coveA.id}/folders`,
+    `/api/areas/${areaA.id}/folders`,
     {
-      data: { path: coveAFolder },
+      data: { path: areaAFolder },
       headers: { 'content-type': 'application/json' },
     },
   );
   expect(folderRes.ok()).toBeTruthy();
 
-  // Step 2 — navigate to cove A's page directly (no need to recreate
+  // Step 2 — navigate to area A's page directly (no need to recreate
   // it via the sidebar since we just minted it via REST — the sidebar
-  // refreshes via the coves WS event + useCovesQuery).
-  await page.goto(`/calm/cove/${coveA.id}`);
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  // refreshes via the areas WS event + useAreasQuery).
+  await page.goto(`/calm/area/${areaA.id}`);
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
   // Step 3 — expand the form, type the under-A cwd.
   await page.getByRole('button', { name: /new wave/i }).click();
@@ -111,72 +111,72 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
   await cwdInput.fill(initialCwd);
 
   // Step 4 — auto-match banner shows naming A.
-  const banner = form.getByTestId('cove-auto-match');
+  const banner = form.getByTestId('area-auto-match');
   await expect(banner).toBeVisible({ timeout: 5_000 });
-  await expect(banner).toContainText(coveAName);
+  await expect(banner).toContainText(areaAName);
 
   // Step 5 — the override button exists inside the banner and is
   // clickable.
-  const overrideBtn = form.getByRole('button', { name: 'Use a different cove', exact: true });
+  const overrideBtn = form.getByRole('button', { name: 'Use a different area', exact: true });
   await expect(overrideBtn).toBeVisible();
   await expect(overrideBtn).toBeEnabled();
   await overrideBtn.click();
 
-  // Step 6 — the radio picker reappears. Flip to "Create new cove".
-  const newCoveRadio = form.getByRole('radio', { name: /create new cove/i });
-  await expect(newCoveRadio).toBeVisible();
-  await newCoveRadio.check();
+  // Step 6 — the radio picker reappears. Flip to "Create new area".
+  const newAreaRadio = form.getByRole('radio', { name: /create new area/i });
+  await expect(newAreaRadio).toBeVisible();
+  await newAreaRadio.check();
 
-  // Fill the new cove name (palette color is seeded automatically).
-  const newCoveNameInput = form.getByLabel(/new cove name/i);
-  await expect(newCoveNameInput).toBeVisible();
-  await newCoveNameInput.fill(newCoveName);
+  // Fill the new area name (palette color is seeded automatically).
+  const newAreaNameInput = form.getByLabel(/new area name/i);
+  await expect(newAreaNameInput).toBeVisible();
+  await newAreaNameInput.fill(newAreaName);
 
   // Step 7 — swap the cwd to a path nobody owns. After the override
   // flag is latched, the resolveState transitions (idle/miss/hit) no
-  // longer rewrite coveChoice — so even though this new path will
-  // resolve to a miss, the "new cove" pick stays.
+  // longer rewrite areaChoice — so even though this new path will
+  // resolve to a miss, the "new area" pick stays.
   await cwdInput.fill(finalCwd);
   // Give the debounce window a beat to settle (300ms) so the resolve
   // re-fires against the new cwd and we know the override latch held.
   // Wait for the resolving spinner to clear into the miss-branch
-  // picker, which means the new cove radio still shows checked.
-  await expect(newCoveRadio).toBeChecked();
+  // picker, which means the new area radio still shows checked.
+  await expect(newAreaRadio).toBeChecked();
 
-  // Step 8 — submit. Two-step (POST cove → POST wave with
+  // Step 8 — submit. Two-step (POST area → POST wave with
   // attach_folder=true) should both succeed.
   await form.getByRole('button', { name: 'Create task', exact: true }).click();
 
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/, { timeout: 10_000 });
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
 
-  // Step 9 — REST assert: wave belongs to the brand-new cove C, not A.
+  // Step 9 — REST assert: wave belongs to the brand-new area C, not A.
   //
   // `GET /api/waves/:id` returns a `WaveDetail` envelope
   // `{ wave: {...}, cards, overlays }` — destructure the inner wave.
   const waveRes = await page.request.get(`/api/waves/${waveId}`);
   expect(waveRes.ok()).toBeTruthy();
   const { wave } = (await waveRes.json()) as {
-    wave: { cove_id: string; cwd: string };
+    wave: { area_id: string; cwd: string };
   };
-  // Track the form-minted cove C (distinct from REST-seeded cove A
+  // Track the form-minted area C (distinct from REST-seeded area A
   // already pushed above) for afterEach cleanup.
-  createdCoveIds.push(wave.cove_id);
+  createdAreaIds.push(wave.area_id);
   expect(wave.cwd).toBe(finalCwd);
-  expect(wave.cove_id).not.toBe(coveA.id);
+  expect(wave.area_id).not.toBe(areaA.id);
 
-  // Look up the cove name through GET /api/coves (no GET-by-id route).
-  const covesRes = await page.request.get('/api/coves');
-  expect(covesRes.ok()).toBeTruthy();
-  const allCoves = (await covesRes.json()) as { id: string; name: string }[];
-  const waveCove = allCoves.find((c) => c.id === wave.cove_id);
-  expect(waveCove).toBeTruthy();
-  expect(waveCove!.name).toBe(newCoveName);
+  // Look up the area name through GET /api/areas (no GET-by-id route).
+  const areasRes = await page.request.get('/api/areas');
+  expect(areasRes.ok()).toBeTruthy();
+  const allAreas = (await areasRes.json()) as { id: string; name: string }[];
+  const waveArea = allAreas.find((c) => c.id === wave.area_id);
+  expect(waveArea).toBeTruthy();
+  expect(waveArea!.name).toBe(newAreaName);
 
-  // The new cove's folders list contains the final cwd (attach_folder
+  // The new area's folders list contains the final cwd (attach_folder
   // landed it inside the wave-create tx).
   const foldersRes = await page.request.get(
-    `/api/coves/${wave.cove_id}/folders`,
+    `/api/areas/${wave.area_id}/folders`,
   );
   expect(foldersRes.ok()).toBeTruthy();
   const folders = (await foldersRes.json()) as { path: string }[];

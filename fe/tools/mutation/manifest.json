@@ -789,7 +789,7 @@
       "oracle:GATE-APP-029"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
     "expected_red": [
       "#1253 D5 the write-today’s-progress trigger redraws a report that was already written when it is rewritten",
       "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
@@ -799,7 +799,7 @@
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
       "query invalidation adapter removes mapped keys for a remove effect",
-      "query invalidation adapter turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal",
+      "query invalidation adapter turns a real wave.deleted plan into area-list plus overlay invalidation and a detail removal",
       "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve"
     ],
     "selection_paths": [
@@ -934,14 +934,14 @@
     "why_more_than_one": "T-G1 locks the lookup directly and through the production bridge default context."
   },
   {
-    "mutation_id": "app-adapter-write-through-drops-other-coves",
+    "mutation_id": "app-adapter-write-through-drops-other-areas",
     "defends": [
       "oracle:INV-APP-030"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -73,7 +73,7 @@\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n         if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n         const updated = toCove(write.value);\n-        client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n+        client.setQueryData(mapped, [updated]);\n       }\n       continue;\n     }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -73,7 +73,7 @@\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n         if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n-        client.setQueryData(mapped, existing.map((area) => area.id === updated.id ? updated : area));\n+        client.setQueryData(mapped, [updated]);\n       }\n       continue;\n     }\n",
     "expected_red": [
-      "query invalidation adapter write-through replaces one existing cove and preserves every other row"
+      "query invalidation adapter write-through replaces one existing area and preserves every other row"
     ],
     "selection_paths": [
       "web/src/app/events/query-invalidation-adapter.test.ts"
@@ -954,9 +954,9 @@
       "oracle:INV-APP-031"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -71,7 +71,10 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n-        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n+        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) {\n+          client.setQueryData(mapped, [toCove(write.value)]);\n+          continue;\n+        }\n         const updated = toCove(write.value);\n         client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n       }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -71,7 +71,10 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id ? updated : area));\n       }\n",
     "expected_red": [
-      "query invalidation adapter write-through never creates a phantom cove when the row is absent"
+      "query invalidation adapter write-through never creates a phantom area when the row is absent"
     ],
     "selection_paths": [
       "web/src/app/events/query-invalidation-adapter.test.ts"
@@ -1095,7 +1095,7 @@
       "oracle:CAP-SPECCONVO-017"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   /* The wave's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no wave-id *field*, so\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'waves' && first === 'area' && typeof second === 'string') return queryKeys.wavesInArea(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   /* The wave's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no wave-id *field*, so\n",
     "expected_red": [
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"

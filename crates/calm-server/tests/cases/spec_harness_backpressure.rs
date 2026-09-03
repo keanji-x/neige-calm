@@ -23,7 +23,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> SpecHarness {
             repo: repo_dyn,
             events: EventBus::new(),
             card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-            wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+            wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
             daemon,
             config: HarnessConfig::default(),
             snapshot,

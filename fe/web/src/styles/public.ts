@@ -16,13 +16,13 @@ export type SemanticColorToken =
   | '--warn-text' | '--success-text' | '--error-soft' | '--error-border'
   | '--text-on-accent';
 
-/** Cove identity slots. A cove's colour is a slot name, never a free-form hex (§6.2). */
-export type CoveIdentityToken =
-  | '--cove-1' | '--cove-2' | '--cove-3' | '--cove-4'
-  | '--cove-5' | '--cove-6' | '--cove-7' | '--cove-8';
+/** Area identity slots. An area's colour is a slot name, never a free-form hex (§6.2). */
+export type AreaIdentityToken =
+  | '--area-1' | '--area-2' | '--area-3' | '--area-4'
+  | '--area-5' | '--area-6' | '--area-7' | '--area-8';
 
 export type ColorToken =
-  | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | CoveIdentityToken;
+  | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | AreaIdentityToken;
 
 export type TypeScaleToken =
   | '--text-xs' | '--text-base' | '--text-md'

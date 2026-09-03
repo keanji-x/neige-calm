@@ -202,7 +202,7 @@ pub struct ViewCatalogEntry {
     pub icon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_size: Option<ViewSizeWire>,
-    /// `"card"` for M3 — wave/cove are banned per design §10.
+    /// `"card"` for M3 — wave/area are banned per design §10.
     pub scope: String,
 }
 

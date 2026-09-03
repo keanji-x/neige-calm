@@ -1,35 +1,35 @@
-use super::{SqlxRepo, card_create_with_id_tx, cove_create_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_with_id_tx, wave_create_tx};
 use crate::db::RepoEventWrite;
 use crate::error::CalmError;
 use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
+use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
 use crate::state::WriteContext;
 use serde_json::json;
 
 struct WorkerCardHome {
     card: CardId,
     wave: WaveId,
-    cove: CoveId,
+    area: AreaId,
 }
 
 async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: format!("hp1-b-i {label}"),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: format!("hp1-b-i {label}"),
             sort: None,
             cwd: "/tmp".into(),
@@ -40,7 +40,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave");
@@ -65,7 +65,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
     WorkerCardHome {
         card: card.id,
         wave: wave.id,
-        cove: cove.id,
+        area: area.id,
     }
 }
 
@@ -73,7 +73,7 @@ fn card_scope(home: &WorkerCardHome) -> EventScope {
     EventScope::Card {
         card: home.card.clone(),
         wave: home.wave.clone(),
-        cove: home.cove.clone(),
+        area: home.area.clone(),
     }
 }
 
@@ -94,7 +94,7 @@ async fn card_actor_write_path_allows_self_scope_and_denies_out_of_scope() {
     let bus = EventBus::new();
     let write = WriteContext::new(
         repo.card_role_cache().clone(),
-        repo.wave_cove_cache().clone(),
+        repo.wave_area_cache().clone(),
     );
     let actor = ActorId::AiCodex(own.card.clone());
 
@@ -115,7 +115,7 @@ async fn card_actor_write_path_allows_self_scope_and_denies_out_of_scope() {
     let denied_scope = EventScope::Card {
         card: own.card.clone(),
         wave: other.wave.clone(),
-        cove: other.cove.clone(),
+        area: other.area.clone(),
     };
     let denied_event = codex_hook(&own.card, "hp1-b-i-deny");
     let denied = repo

@@ -99,7 +99,7 @@
   --font-nav-item-active: var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-sans);
   --font-nav-meta: var(--weight-regular) var(--text-xs)/var(--leading-snug) var(--font-sans);
   --font-nav-user: var(--weight-semibold) var(--text-sm)/var(--leading-snug) var(--font-sans);
-  --cove-tint-strength: 10%;
+  --area-tint-strength: 10%;
   --color-nav-primary: var(--text); --color-nav-section: var(--text-label);
   --color-nav-group: var(--text-meta); --color-nav-group-active: var(--text);
   --color-nav-item: var(--text-label); --color-nav-item-active: var(--text);
@@ -251,7 +251,7 @@
   --space-11: 28px;
   --space-12: 32px;
 
-  /* Width of the .side-coves scroll-gutter; .side-section uses it as right padding to keep its content right-edge aligned with .cove-row. */
+  /* Width of the .side-areas scroll-gutter; .side-section uses it as right padding to keep its content right-edge aligned with .area-row. */
   --rail-scrollbar-gutter: var(--space-4);
 
   /* Motion duration scale (slice 5 of #165). Six-tier vocabulary that
@@ -419,7 +419,7 @@ select:-webkit-autofill {
 }
 
 /* Visually hidden but readable by assistive tech. Used for aria-describedby
-   helper spans (e.g. the rename hint on Cove/Wave titles) so the
+   helper spans (e.g. the rename hint on Area/Wave titles) so the
    accessible name stays clean while AT still verbalizes the action. The
    standard "clip pattern" — no display:none (which would hide from AT). */
 .sr-only {
@@ -596,14 +596,14 @@ select:-webkit-autofill {
   gap: var(--space-1);
   min-width: 0;
 }
-/* .side-coves uses scrollbar-gutter: stable which reserves --rail-scrollbar-gutter
+/* .side-areas uses scrollbar-gutter: stable which reserves --rail-scrollbar-gutter
    of right gutter. Match that on .side-section so the pin button x-aligns with
-   the cove-row × and the Coves header + button. */
+   the area-row × and the Areas header + button. */
 .side .side-section {
   padding-right: var(--rail-scrollbar-gutter);
 }
 /* Grouped attention should tint the zone; warn title text is reserved for
-   ungrouped rows (Pinned / inline cove list). `--warn` on `--warn-soft` is
+   ungrouped rows (Pinned / inline area list). `--warn` on `--warn-soft` is
    tight at small title sizes, so titles inside the zone return to `--text`. */
 .side .side-section.attn-zone {
   padding:
@@ -621,24 +621,24 @@ select:-webkit-autofill {
 .side .side-section.attn-zone .side-wave-row.attention .side-wave-title {
   color: var(--text);
 }
-/* The Coves nav grows to fill the column between the Today nav (or the
+/* The Areas nav grows to fill the column between the Today nav (or the
    "Waiting on you" section) and the user menu, then scrolls internally
    when the list overflows. `min-height: 0` is the load-bearing piece —
    without it a flex item's content min-size pins the child to its full
    height and overflow never engages. */
-.side .side-coves {
+.side .side-areas {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
-.side .side-coves::-webkit-scrollbar { width: var(--rail-scrollbar-gutter); }
-.side .side-coves::-webkit-scrollbar-thumb {
+.side .side-areas::-webkit-scrollbar { width: var(--rail-scrollbar-gutter); }
+.side .side-areas::-webkit-scrollbar-thumb {
   background: var(--hairline-strong);
   border-radius: var(--radius-pill);
 }
-.side .side-coves::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
-.side .side-coves::-webkit-scrollbar-track { background: transparent; }
+.side .side-areas::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+.side .side-areas::-webkit-scrollbar-track { background: transparent; }
 .side .nav-item {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-4) var(--space-5);
@@ -697,9 +697,9 @@ select:-webkit-autofill {
   padding: var(--space-6) var(--space-5) var(--space-2);
 }
 .side .nav-label.warn-text { color: var(--warn); }
-/* Row variant — Coves header carries a small `+` icon button on the
-   right so the new-cove trigger sits at the top of the list (stays in
-   view when the cove list overflows). */
+/* Row variant — Areas header carries a small `+` icon button on the
+   right so the new-area trigger sits at the top of the list (stays in
+   view when the area list overflows). */
 .side .nav-label-row {
   display: flex;
   align-items: center;
@@ -756,7 +756,7 @@ select:-webkit-autofill {
 .side .side-wave-row.attention .side-wave-title {
   color: var(--warn);
 }
-/* Wave row group: wraps the wave-nav button, optional cove-nav button,
+/* Wave row group: wraps the wave-nav button, optional area-nav button,
    and pin button so none are nested inside the others (avoids nested-button
    a11y violation). The row itself carries hover/active states. Overflow
    hidden clips child backgrounds to the row's border-radius so per-child
@@ -776,21 +776,21 @@ select:-webkit-autofill {
      absolutely-positioned delete button. */
   padding-right: calc(var(--space-5) + 20px + var(--space-3));
 }
-/* Cove-name plain-text label — inline after the wave title inside the nav button. */
-.side .side-wave-cove {
+/* Area-name plain-text label — inline after the wave title inside the nav button. */
+.side .side-wave-area {
   font: var(--font-nav-meta);
   color: var(--color-nav-meta);
   letter-spacing: var(--track-nav-meta);
   margin-left: var(--space-3);
   flex-shrink: 0;
-  /* 60px chosen empirically to fit ~6 chars of cove name on the 200px sidebar without crowding the wave title. */
+  /* 60px chosen empirically to fit ~6 chars of area name on the 200px sidebar without crowding the wave title. */
   max-width: 60px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.side .side-wave-row:hover .side-wave-cove,
-.side .side-wave.active .side-wave-cove { color: var(--text-label); }
+.side .side-wave-row:hover .side-wave-area,
+.side .side-wave.active .side-wave-area { color: var(--text-label); }
 /* Wave row hover intentionally matches the selected/active gray for a consistent sidebar selection feel. */
 .side .side-wave-row:hover .side-wave { background: var(--overlay-active); color: var(--text); }
 [data-theme="dark"] .side .side-wave-row:hover .side-wave { background: var(--overlay-active); }
@@ -807,8 +807,8 @@ select:-webkit-autofill {
    the click navigates) so selection feels instant. */
 .side .side-wave-row .side-wave:active { background: var(--overlay-active); color: var(--text); }
 /* Pin button: hidden by default; revealed on row hover or when pinned.
-   Sits absolutely at the same x column as .cove-row-chevron so the
-   left-edge wave and cove controls line up vertically. */
+   Sits absolutely at the same x column as .area-row-chevron so the
+   left-edge wave and area controls line up vertically. */
 .side .side-wave-pin {
   position: absolute;
   left: var(--space-3);
@@ -948,23 +948,23 @@ select:-webkit-autofill {
   outline-offset: -2px;
 }
 
-/* nested cove list inside sidebar — each row is a `.cove-row` group
+/* nested area list inside sidebar — each row is a `.area-row` group
    wrapping disclosure, nav, and optional delete sibling buttons. Nesting
    buttons would be invalid HTML and trip axe's `nested-interactive`;
    the wrapper hosts hover/focus-within reveal of the × the same way
-   `.wave-row-wrapper` does on the cove page. */
-/* Outer wrapper that paints the cove tint as a SINGLE background.
-   cove-row + side-coves-waves are transparent children, so there's
-   no inter-element seam at the cove/waves boundary. */
-.side .cove-block {
+   `.wave-row-wrapper` does on the area page. */
+/* Outer wrapper that paints the area tint as a SINGLE background.
+   area-row + side-areas-waves are transparent children, so there's
+   no inter-element seam at the area/waves boundary. */
+.side .area-block {
   margin-bottom: var(--space-2);
-  background-color: color-mix(in oklch, var(--cove-color, transparent) var(--cove-tint-strength), transparent);
+  background-color: color-mix(in oklch, var(--area-color, transparent) var(--area-tint-strength), transparent);
   border-radius: var(--radius-md);
 }
-.side .cove-row {
+.side .area-row {
   position: relative;
 }
-.side .cove-row-chevron {
+.side .area-row-chevron {
   position: absolute;
   left: var(--space-3);
   top: 50%;
@@ -985,18 +985,18 @@ select:-webkit-autofill {
     background var(--motion-quick),
     color var(--motion-quick);
 }
-.side .cove-row-chevron.expanded {
+.side .area-row-chevron.expanded {
   transform: translateY(-50%) rotate(90deg);
 }
-.side .cove-row-chevron:hover {
+.side .area-row-chevron:hover {
   background: var(--overlay-hover);
   color: var(--text);
 }
-.side .cove-row-chevron:focus-visible {
+.side .area-row-chevron:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.side .cove-nav {
+.side .area-nav {
   display: flex; align-items: center; gap: var(--space-3);
   /* Keep 2px after the 20px chevron affordance column (right edge at 26px). */
   padding: var(--space-3) var(--space-5);
@@ -1009,43 +1009,43 @@ select:-webkit-autofill {
   text-align: left;
   transition: background var(--motion-quick), color var(--motion-quick);
 }
-.side .cove-nav:hover { background: var(--overlay-hover-faint); color: var(--text); }
-[data-theme="dark"] .side .cove-nav:hover { background: var(--overlay-hover); }
-.side .cove-nav.active {
+.side .area-nav:hover { background: var(--overlay-hover-faint); color: var(--text); }
+[data-theme="dark"] .side .area-nav:hover { background: var(--overlay-hover); }
+.side .area-nav.active {
   background: var(--overlay-active);
   color: var(--color-nav-group-active);
   font: var(--font-nav-group-active);
 }
-[data-theme="dark"] .side .cove-nav.active { background: var(--overlay-active); }
-.side .cove-nav:active { background: var(--overlay-active); color: var(--text); }
+[data-theme="dark"] .side .area-nav.active { background: var(--overlay-active); }
+.side .area-nav:active { background: var(--overlay-active); color: var(--text); }
 /* `.swatch-wrap` is kept (even though `.swatch` is hidden) so the
-   chevron alignment math at `.cove-nav { padding-left: ... + 22px }`
-   above stays valid. Removing the wrap would shift the cove label
+   chevron alignment math at `.area-nav { padding-left: ... + 22px }`
+   above stays valid. Removing the wrap would shift the area label
    left and break visual alignment with inline waves underneath. */
-.side .cove-nav .swatch-wrap {
+.side .area-nav .swatch-wrap {
   position: relative;
   width: 12px; height: 12px;
   flex-shrink: 0;
 }
-.side .cove-nav .swatch {
-  /* Running-cove pulse is deferred in v1; activity remains in the badge. */
+.side .area-nav .swatch {
+  /* Running-area pulse is deferred in v1; activity remains in the badge. */
   display: none;
   width: 10px; height: 10px;
   border-radius: var(--radius-sm);
 }
-.side .cove-nav .swatch.pulse {
+.side .area-nav .swatch.pulse {
   animation: dot-pulse var(--motion-pulse) ease-in-out infinite;
 }
-.side .cove-nav .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .area-nav .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Single right-edge badge slot — replaces the swatch-overlay pip + the
    gray total count. `.warn` shows the waiting count in red; `.muted`
    shows the total wave count in the decorative tone. The badge is a
    compact 16×16 circle, right-aligned in the same right-edge column as
-   the Coves-header `+` (their right edges align; the badge is
+   the Areas-header `+` (their right edges align; the badge is
    intentionally a touch smaller so the red count reads as a quiet
    reminder, not an alarm). */
-.side .cove-nav-badge {
+.side .area-nav-badge {
   flex-shrink: 0;
   margin-left: var(--space-3);
   width: 16px; height: 16px;
@@ -1056,21 +1056,21 @@ select:-webkit-autofill {
   font-variant-numeric: tabular-nums;
   transition: opacity var(--motion-quick);
 }
-.side .cove-nav-badge.warn { color: white; background: var(--warn); }
-.side .cove-nav-badge.muted {
+.side .area-nav-badge.warn { color: white; background: var(--warn); }
+.side .area-nav-badge.muted {
   color: var(--text-decorative);
   background: transparent;
   font-weight: 500;
 }
-.side .cove-nav:hover .cove-nav-badge.muted,
-.side .cove-nav.active .cove-nav-badge.muted { color: var(--text-3); }
+.side .area-nav:hover .area-nav-badge.muted,
+.side .area-nav.active .area-nav-badge.muted { color: var(--text-3); }
 
-/* Hover-revealed × on each cove row — sits absolutely at the same x
-   column as the right-edge badge and the Coves-header `+`, so the
+/* Hover-revealed × on each area row — sits absolutely at the same x
+   column as the right-edge badge and the Areas-header `+`, so the
    three slots line up vertically. When the row's badge is visible
    we crossfade: badge fades out, × fades in. The delete button is a
    sibling of the nav button (never nested) so HTML stays valid. */
-.side .cove-row-delete {
+.side .area-row-delete {
   position: absolute;
   right: var(--space-5);
   top: 50%;
@@ -1088,50 +1088,50 @@ select:-webkit-autofill {
   opacity: 0;
   transition: opacity var(--motion-quick), color var(--motion-quick), background var(--motion-quick);
 }
-.side .cove-row:hover .cove-row-delete,
-.side .cove-row:focus-within .cove-row-delete { opacity: 1; }
-.side .cove-row:hover .cove-nav-badge,
-.side .cove-row:focus-within .cove-nav-badge { opacity: 0; }
-.side .cove-row-delete:hover {
+.side .area-row:hover .area-row-delete,
+.side .area-row:focus-within .area-row-delete { opacity: 1; }
+.side .area-row:hover .area-nav-badge,
+.side .area-row:focus-within .area-nav-badge { opacity: 0; }
+.side .area-row-delete:hover {
   background: var(--warn-soft);
   color: var(--warn);
 }
-.side .cove-row-delete:focus-visible {
+.side .area-row-delete:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.side .side-coves-waves {
+.side .side-areas-waves {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   padding-left: var(--space-0);
 }
-.side .side-coves-waves .side-wave {
-  /* Match the .cove-nav text column above:
+.side .side-areas-waves .side-wave {
+  /* Match the .area-nav text column above:
      padding-left (var(--space-3) + 22px) + swatch (12px) + gap (var(--space-3)) = 46px */
   padding-left: calc(var(--space-3) + 22px + var(--space-3) + 12px);
 }
-.side .side-coves-waves .side-wave-cove { display: none; }
+.side .side-areas-waves .side-wave-area { display: none; }
 
-/* Inline-edit state — same row geometry as `.cove-nav` but with a text
+/* Inline-edit state — same row geometry as `.area-nav` but with a text
    input instead of a label, so opening the form feels like an in-place
    nudge rather than a popover. The `+` glyph in the swatch slot reads
    as "create" rather than a broken colored chip. */
-.side .cove-nav-edit {
+.side .area-nav-edit {
   display: flex; align-items: center; gap: var(--space-5);
   padding: var(--space-3) var(--space-5);
   width: 100%;
   border-radius: var(--radius-md);
   background: var(--overlay-hover-faint);
 }
-.side .cove-nav-edit .swatch-plus {
+.side .area-nav-edit .swatch-plus {
   width: 10px; height: 10px;
   display: flex; align-items: center; justify-content: center;
   font-size: var(--text-base); line-height: var(--leading-none);
   color: var(--text-decorative);
 }
-[data-theme="dark"] .side .cove-nav-edit { background: var(--overlay-hover); }
-.side .cove-nav-edit input {
+[data-theme="dark"] .side .area-nav-edit { background: var(--overlay-hover); }
+.side .area-nav-edit input {
   flex: 1; min-width: 0;
   background: transparent;
   border: none;
@@ -1142,7 +1142,7 @@ select:-webkit-autofill {
   color: var(--text);
   border-radius: var(--radius-sm);
 }
-.side .cove-nav-edit input::placeholder { color: var(--text-decorative); }
+.side .area-nav-edit input::placeholder { color: var(--text-decorative); }
 
 @keyframes live-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
@@ -1307,7 +1307,7 @@ select:-webkit-autofill {
      itself is `place-items: center start` (below) so its visible left
      edge anchors to the cell-left, not the cell-center. Right padding
      reserves a gutter for the hover-reveal × so it never overlaps the
-     eta/progress cluster (matching width is mirrored on .cove-head). */
+     eta/progress cluster (matching width is mirrored on .area-head). */
   padding: var(--space-7) var(--space-12) var(--space-7) var(--space-0);
   border: none;
   border-bottom: 1px solid var(--hairline);
@@ -1344,11 +1344,11 @@ select:-webkit-autofill {
   color: var(--text-3);
   display: flex; gap: var(--space-5); align-items: center;
 }
-.wave-row .s .cove-tag {
+.wave-row .s .area-tag {
   display: inline-flex; align-items: center; gap: var(--space-3);
   font-weight: 500;
 }
-.wave-row .s .cove-tag i {
+.wave-row .s .area-tag i {
   display: inline-block;
   width: 6px; height: 6px; border-radius: var(--radius-pill);
 }
@@ -1390,10 +1390,10 @@ select:-webkit-autofill {
   color: var(--warn);
 }
 
-/* Per-row pin button in cove-page wave rows. Reuses `.side-wave-pin`
+/* Per-row pin button in area-page wave rows. Reuses `.side-wave-pin`
    visual rules (opacity/color transitions) and sits absolutely so the
    eta/progress cluster isn't displaced. When only the pin is present it
-   lands at right: 0 (matching .cove-head-add); when the delete button
+   lands at right: 0 (matching .area-head-add); when the delete button
    is also present (`:has`) it shifts left to avoid overlap. Always
    visible when pinned. */
 .wave-row-wrapper .side-wave-pin {
@@ -1507,11 +1507,11 @@ select:-webkit-autofill {
   min-width: 0; flex: 0 1 auto;
   font-size: var(--text-md);
 }
-.wave-cove-dot {
+.wave-area-dot {
   width: 9px; height: 9px; border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
-.wave-cove {
+.wave-area {
   color: var(--text-meta);
   cursor: pointer;
   flex-shrink: 0;
@@ -1521,8 +1521,8 @@ select:-webkit-autofill {
      reset (top of file) covers most of this; this rule preserves the
      original anchor's color/hover semantics. */
 }
-.wave-cove:hover { color: var(--text); }
-.wave-cove:focus-visible {
+.wave-area:hover { color: var(--text); }
+.wave-area:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
@@ -1558,7 +1558,7 @@ select:-webkit-autofill {
   min-width: 120px;
   border-radius: var(--radius-sm);
 }
-/* Click-to-rename button on CovePage. The button is nested inside an <h1>
+/* Click-to-rename button on AreaPage. The button is nested inside an <h1>
    so heading semantics are preserved while the interactive role is carried
    by an intrinsic <button>. We strip the default button chrome so it reads
    as plain heading text and pin the typography to the parent (h-display
@@ -1579,13 +1579,13 @@ select:-webkit-autofill {
 .h-display-rename:focus-visible {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
-/* Click-to-rename inputs on CovePage. These reuse `.h-display` for typography
+/* Click-to-rename inputs on AreaPage. These reuse `.h-display` for typography
    and strip default chrome via inline styles; the matching focus indicator
    lives here so keyboard users still get visible focus. The input lives
-   inside `.cove-head` (block-level) and must span the title's reserved
+   inside `.area-head` (block-level) and must span the title's reserved
    width — `display: block` + `width: 100%` keeps the rename input flush
    with the page title's leading edge without needing a flex parent. */
-.cove-title-input {
+.area-title-input {
   display: block;
   width: 100%;
   box-sizing: border-box;
@@ -1597,12 +1597,12 @@ select:-webkit-autofill {
   border-radius: var(--radius-sm);
 }
 
-/* ===== CovePage header =====
-   `.cove-head` is the title row, laid out as a flex row so the inline
+/* ===== AreaPage header =====
+   `.area-head` is the title row, laid out as a flex row so the inline
    icon buttons (`+ New wave`, `×` delete) center against the h1's
    line-box via `align-items: center`. The default
    `.h-display { margin: 0 0 var(--space-10) }` is moved onto
-   `.cove-head` itself; otherwise the flex row's height would inflate to
+   `.area-head` itself; otherwise the flex row's height would inflate to
    (line-height + 24px margin) and `align-items: center` would push the
    icons below the text midline. The 24px breath below the title stays
    the same — it now lives on the header, matching Settings + Wave pages.
@@ -1611,19 +1611,19 @@ select:-webkit-autofill {
    <PlusIcon /> — inline SVGs centered on their viewBox geometric
    center, so flex `align-items: center` lands the visible ink exactly
    on the row midline with no optical correction needed. */
-.cove-head {
+.area-head {
   display: flex;
   align-items: center;
   margin-bottom: var(--space-10);
 }
-.cove-head .h-display { margin: var(--space-0); }
-.cove-head-actions {
+.area-head .h-display { margin: var(--space-0); }
+.area-head-actions {
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--space-3);
 }
-.cove-head-add {
+.area-head-add {
   display: grid; place-items: center;
   width: 28px; height: 28px;
   padding: var(--space-0);
@@ -1636,20 +1636,20 @@ select:-webkit-autofill {
   cursor: pointer;
   transition: background var(--motion-quick), color var(--motion-quick);
 }
-.cove-head-add:hover {
+.area-head-add:hover {
   background: var(--overlay-hover);
   color: var(--text);
 }
-.cove-head-add:focus-visible {
+.area-head-add:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-.cove-head-delete {
+.area-head-delete {
   opacity: 0;
   transition: opacity var(--motion-quick);
 }
-.cove-head:hover .cove-head-delete,
-.cove-head:focus-within .cove-head-delete { opacity: 1; }
+.area-head:hover .area-head-delete,
+.area-head:focus-within .area-head-delete { opacity: 1; }
 .wave-meta {
   display: flex; align-items: center; gap: var(--space-4);
   flex-shrink: 0;
@@ -4094,7 +4094,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
 }
 
 /* ===== NewTaskForm — #250 PR 3 inline configuration card =====
-   Used by CovePage's `+ New wave` (this PR) and the calendar empty-
+   Used by AreaPage's `+ New wave` (this PR) and the calendar empty-
    cell click (PR 6). Per the issue comment "configuration card", this
    sits inline in the page (not a modal Dialog) so the page footprint
    stays the same as the CTA it replaces.
@@ -4103,7 +4103,7 @@ textarea.schema-form-input { font-family: inherit; resize: vertical; }
    row), but the wrapping panel renders a 1px hairline border + tight
    inner padding so the form reads as a distinct card slot within the
    page rather than as flat in-flow content. Heading is small + muted
-   so the surrounding context (the cove title above, the wave list
+   so the surrounding context (the area title above, the wave list
    below) stays the primary focal point. */
 .new-task-form {
   display: flex;
@@ -4153,31 +4153,31 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   font-size: var(--text-sm);
   color: var(--error-text);
 }
-.new-task-form-cove {
+.new-task-form-area {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
-.new-task-form-cove-auto {
+.new-task-form-area-auto {
   margin: var(--space-0);
   font-size: var(--text-sm);
   color: var(--text-2);
 }
-.new-task-form-cove-auto code {
+.new-task-form-area-auto code {
   font-size: 0.9em;
 }
-.new-task-form-cove-resolving {
+.new-task-form-area-resolving {
   margin: var(--space-0);
   font-size: var(--text-sm);
   color: var(--text-3);
   font-style: italic;
 }
-.new-task-form-cove-modes {
+.new-task-form-area-modes {
   display: flex;
   gap: var(--space-7);
   font-size: var(--text-sm);
 }
-.new-task-form-cove-mode {
+.new-task-form-area-mode {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
@@ -4238,7 +4238,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 /* ===== .calm-select — themed dropdown drawer (#891 slice ③) =====
    Reusable customizable-select treatment for native <select>s (live
    design exploration; currently applied to the New-wave dialog's
-   Workflow + Cove selects — one popup system per card). In Chromium,
+   Workflow + Area selects — one popup system per card). In Chromium,
    `appearance: base-select` on both the select and its
    `::picker(select)` opts into an in-page, fully-stylable dropdown
    drawer themed with the app tokens; every other browser ignores the
@@ -6372,7 +6372,7 @@ textarea.new-task-form-rawjson-text {
 }
 /* Issue #250 PR 5 — single-line dense row spec from design (pages.jsx
    L246-261 + styles.css L1490-1539). Time column is a raw numeric stamp,
-   the cove-colour bar carries the cove identity, and waiting/running
+   the area-colour bar carries the area identity, and waiting/running
    states degrade to 6×6 dot flags on the right side of the title (no
    meta line — the row stays single-line ~28px tall). */
 .cal-event {
@@ -6469,7 +6469,7 @@ textarea.new-task-form-rawjson-text {
   font-weight: 500;
 }
 /* Wave variant — drop the hour gutter (waves are day-level, not
-   hour-bucketed) so the 3px cove bar sits flush left and the row
+   hour-bucketed) so the 3px area bar sits flush left and the row
    stops looking head-heavy. `align-items: flex-start` keeps the
    two-line body top-aligned against the bar. */
 .cal-event--wave {

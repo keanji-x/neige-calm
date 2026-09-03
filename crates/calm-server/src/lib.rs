@@ -3,7 +3,7 @@
 //!
 //! Module map:
 //! ```text
-//! model         entity types + DTOs (Cove/Wave/Card/Overlay/Terminal/Plugin)
+//! model         entity types + DTOs (Area/Wave/Card/Overlay/Terminal/Plugin)
 //! error         CalmError + Result alias + IntoResponse
 //! event         Event enum + EventBus (broadcast fan-out)
 //! db            Repo trait
@@ -11,7 +11,7 @@
 //!   └ sqlite.rs SqlxRepo (production + in-memory dev/test default via
 //!               `sqlite::memory:`)
 //! routes        HTTP API
-//!   ├ coves.rs       (track B)
+//!   ├ areas.rs       (track B)
 //!   ├ waves.rs       (track B)
 //!   ├ cards.rs       (track B)
 //!   ├ overlays.rs    (track B)
@@ -48,8 +48,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Kernel-owned purpose marker for the cove's inert conversation wave.
-pub const COVE_CHAT_PURPOSE: &str = "cove-chat";
+/// Kernel-owned purpose marker for the area's inert conversation wave.
+pub const AREA_CHAT_PURPOSE: &str = "area-chat";
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
@@ -211,26 +211,26 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
         .map_err(Into::into)
 }
 
-/// #275 / #1109 — boot fence for overlapping `cove_folders` claims.
+/// #275 / #1109 — boot fence for overlapping `area_folders` claims.
 ///
 /// `find_owner` resolves a cwd by taking the first matching row, which
 /// is only sound because the atomic claim writer makes overlap
 /// unreachable. Legacy databases predate that writer and can hold
 /// overlap; on such a table the answer differs from the longest-prefix
 /// rule those rows were written under, i.e. a wave would silently land
-/// in the wrong cove. `?`-propagated from `main` so serving never starts
+/// in the wrong area. `?`-propagated from `main` so serving never starts
 /// on an unresolvable folder table — see
-/// [`calm_truth::db::sqlite::assert_cove_folders_disjoint`] for why the
+/// [`calm_truth::db::sqlite::assert_area_folders_disjoint`] for why the
 /// fence refuses instead of repairing.
-pub async fn assert_cove_folders_disjoint_on_boot(
+pub async fn assert_area_folders_disjoint_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
     let pool = state.sqlite_pool().ok_or_else(|| {
         crate::error::CalmError::Internal(
-            "cove_folders boot fence requires sqlite-backed Repo".into(),
+            "area_folders boot fence requires sqlite-backed Repo".into(),
         )
     })?;
-    calm_truth::db::sqlite::assert_cove_folders_disjoint(&pool)
+    calm_truth::db::sqlite::assert_area_folders_disjoint(&pool)
         .await
         .map_err(Into::into)
 }
@@ -578,10 +578,10 @@ pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_appserver;
 pub mod config;
-/// Issue #275 — cove folder claim rules (path normalization, overlap
+/// Issue #275 — area folder claim rules (path normalization, overlap
 /// classification, the one covering-scan). Re-exported at the old crate
 /// path so routes and tests don't reach across into `calm_truth`.
-pub use calm_truth::cove_folder_claim;
+pub use calm_truth::area_folder_claim;
 pub mod conversation_keys;
 pub mod db;
 pub mod decision_sink;
@@ -621,7 +621,7 @@ pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
 pub mod validation;
-pub mod wave_cove_cache;
+pub mod wave_area_cache;
 // #1147 S2 — managed workspace root derivation + materialization (D2/D3).
 pub mod workspace_materialize;
 // #1147 S5 — safe recycling of managed wave workspaces (design §生命周期).
@@ -767,23 +767,23 @@ mod boot_order_tests {
         assert!(card_id_assert < recover);
     }
 
-    /// #275 / #1109 — the cove_folders fence must be wired into main and
+    /// #275 / #1109 — the area_folders fence must be wired into main and
     /// must be fatal. A warn-and-continue variant would leave folder
     /// resolution silently picking an arbitrary owner.
     #[test]
-    fn boot_cove_folders_fence_is_wired_and_fatal() {
+    fn boot_area_folders_fence_is_wired_and_fatal() {
         let main_rs = include_str!("main.rs");
         assert!(
-            main_rs.contains("assert_cove_folders_disjoint_on_boot(&state).await?"),
-            "cove_folders overlap fence must ?-propagate so serving never starts on an \
+            main_rs.contains("assert_area_folders_disjoint_on_boot(&state).await?"),
+            "area_folders overlap fence must ?-propagate so serving never starts on an \
              ambiguous folder table"
         );
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
         let folders_fence = main_rs
-            .find("assert_cove_folders_disjoint_on_boot(&state).await?")
-            .expect("main boot fences overlapping cove_folders claims");
+            .find("assert_area_folders_disjoint_on_boot(&state).await?")
+            .expect("main boot fences overlapping area_folders claims");
         let boot_harnesses = main_rs
             .find("boot_harnesses(&state).await")
             .expect("main boot starts daemon and gates spec harness recovery");

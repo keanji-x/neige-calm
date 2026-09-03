@@ -116,10 +116,10 @@ describe('opening the mobile panel', () => {
   });
 
   it('keeps the return surface and the block anchor', async () => {
-    const router = setup(['/wave/w1?from=cove#b3']);
+    const router = setup(['/wave/w1?from=area#b3']);
     await userEvent.click(await screen.findByText('open cards'));
     await waitFor(() => { probe('panel', 'cards'); });
-    expect(href(router)).toBe('/wave/w1?panel=cards&from=cove#b3');
+    expect(href(router)).toBe('/wave/w1?panel=cards&from=area#b3');
   });
 });
 
@@ -172,16 +172,16 @@ describe('closing the mobile panel', () => {
 
 describe('useGoSameWave', () => {
   it('keeps the panel, the return surface and the anchor while dropping the card', async () => {
-    const router = setup(['/wave/w1?card=c1&from=cove#b7']);
+    const router = setup(['/wave/w1?card=c1&from=area#b7']);
     await waitFor(() => { probe('card', 'c1'); });
 
     await userEvent.click(screen.getByText('drop card'));
-    await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=cove#b7'); });
+    await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=area#b7'); });
     expect(router.history.length).toBe(1);
   });
 
   it('clears everything when the wave it was given is not the wave in the URL', async () => {
-    const router = setup(['/wave/w1?card=c1&from=cove#b7']);
+    const router = setup(['/wave/w1?card=c1&from=area#b7']);
     await waitFor(() => { probe('card', 'c1'); });
 
     // `w9` is not this URL's wave, so this is an ordinary navigation and no
@@ -192,8 +192,8 @@ describe('useGoSameWave', () => {
   });
 
   it('distinguishes an explicit clear from a field it was not asked about', async () => {
-    const router = setup(['/wave/w1?panel=tasks&from=cove']);
-    await waitFor(() => { probe('from', 'cove'); });
+    const router = setup(['/wave/w1?panel=tasks&from=area']);
+    await waitFor(() => { probe('from', 'area'); });
 
     await userEvent.click(screen.getByText('drop from'));
     await waitFor(() => { expect(href(router)).toBe('/wave/w1?panel=tasks'); });

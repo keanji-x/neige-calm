@@ -27,7 +27,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { WavePage } from './Wave';
-import type { Cove, Route, Wave, WaveCardSlot } from '../types';
+import type { Area, Route, Wave, WaveCardSlot } from '../types';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB } from '../api/themeRgb';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
@@ -145,14 +145,14 @@ function withClient(ui: ReactNode): ReactNode {
   return <QueryClientProvider client={makeClient()}>{ui}</QueryClientProvider>;
 }
 
-function makeCove(): Cove {
+function makeArea(): Area {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9' };
 }
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1',
-    coveId: 'c1',
+    areaId: 'c1',
     title: 'Migrate auth',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
@@ -216,7 +216,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -237,7 +237,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave({ title: '' })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -255,7 +255,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -275,7 +275,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -302,7 +302,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -323,7 +323,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -354,7 +354,7 @@ describe('WavePage rename keyboard entry', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -368,7 +368,7 @@ describe('WavePage rename keyboard entry', () => {
     const input = screen.getByRole('textbox', { name: 'Wave title' });
     // Drive the input via fireEvent so the controlled-input lifecycle
     // around the Enter-driven commit re-render is deterministic (see
-    // matching note in Cove.test.tsx — userEvent's per-character path
+    // matching note in Area.test.tsx — userEvent's per-character path
     // raced the setEditing(false) → useEffect → focus-restore flush).
     fireEvent.change(input, { target: { value: 'New plan' } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -406,7 +406,7 @@ describe('WavePage schema card create errors', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onCreateCardWithBody={async (waveId, _type, values) => {
@@ -444,7 +444,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot('Default report body')] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -477,7 +477,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -535,7 +535,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot('Default report body')] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -561,7 +561,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -583,7 +583,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -608,7 +608,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave()}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -642,7 +642,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -690,7 +690,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onCreateCardWithBody={async (waveId, _type, values) => {
@@ -734,7 +734,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={onAddCard}
           onRemoveCard={() => {}}
@@ -766,7 +766,7 @@ describe('WavePage report view mode', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot()] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={() => {}}
           onAddCard={() => {}}
           onCreateCardWithBody={async (waveId, _type, values) => {
@@ -807,7 +807,7 @@ describe('WavePage worker-card hash', () => {
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
-          cove={makeCove()}
+          area={makeArea()}
           onGo={onGo}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
@@ -910,7 +910,7 @@ describe('WavePage worker-card hash', () => {
     const tree = (
       <WavePage
         wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
-        cove={makeCove()}
+        area={makeArea()}
         onGo={() => {}}
         onAddCard={() => {}}
         onRemoveCard={() => {}}

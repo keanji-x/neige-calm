@@ -33,12 +33,12 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
   return { ...utils, onCreated, onCancel, qc };
 }
 
-const ATLAS = { id: 'cove-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 };
+const ATLAS = { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 };
 
 function mockCreatedWave() {
   return vi.spyOn(api, 'createWave').mockResolvedValue({
     id: 'w-new',
-    cove_id: 'cove-1',
+    area_id: 'area-1',
     title: 'dev #891',
     cwd: '/Users/me/code/new',
     lifecycle: 'draft',
@@ -49,16 +49,16 @@ function mockCreatedWave() {
   } as unknown as Awaited<ReturnType<typeof api.createWave>>);
 }
 
-/** Drives the shared cwd/cove flow to a submittable state: absolute cwd
- *  typed, resolve misses, defaultCoveId 'cove-1' selected via the
- *  existing-cove branch. Mirrors the plain-variant tests. */
+/** Drives the shared cwd/area flow to a submittable state: absolute cwd
+ *  typed, resolve misses, defaultAreaId 'area-1' selected via the
+ *  existing-area branch. Mirrors the plain-variant tests. */
 async function fillCwd(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/new');
   await act(async () => {
     vi.advanceTimersByTime(400);
   });
   await waitFor(() => {
-    expect(screen.getByRole('radiogroup', { name: /cove selection/i })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: /area selection/i })).toBeTruthy();
   });
 }
 
@@ -75,7 +75,7 @@ afterEach(() => {
 
 describe('NewTaskForm issue-dev — fields + prefill', () => {
   it('renders the issue-dev fields (URL, auto-merge checkbox, raw JSON) with the variant heading — and NO notes field', () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     renderForm();
     expect(screen.getByRole('form', { name: /new issue-dev task/i })).toBeTruthy();
     expect(screen.getByLabelText(/github issue url/i)).toBeTruthy();
@@ -94,7 +94,7 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
   });
 
   it('does NOT render issue-dev fields in the default task variant', () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -110,7 +110,7 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
   });
 
   it('prefills the title as dev #<n> once the URL parses, and defaults to hold-for-ratify (auto-merge unchecked)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
@@ -123,7 +123,7 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
   });
 
   it('stops prefilling after the user edits the title (latch)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     const urlInput = screen.getByLabelText(/github issue url/i);
@@ -141,20 +141,20 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
 });
 
 describe('NewTaskForm issue-dev — validation gating', () => {
-  it('disables submit while the URL is empty even with a valid cwd + cove', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+  it('disables submit while the URL is empty even with a valid cwd + area', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
     await fillCwd(user);
     expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
   });
 
   it('shows an inline error and disables submit for a malformed URL', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
     await fillCwd(user);
     await user.type(
       screen.getByLabelText(/github issue url/i),
@@ -172,11 +172,11 @@ describe('NewTaskForm issue-dev — validation gating', () => {
 
 describe('NewTaskForm issue-dev — submit body', () => {
   it('pins the exact create body: template_id + derived template_input, no notes key ever', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    const { onCreated } = renderForm({ defaultCoveId: 'cove-1' });
+    const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
@@ -188,7 +188,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     // emitted by the form (#891 signoff dropped the field) — only the
     // raw-JSON escape hatch can carry it.
     expect(createSpy.mock.calls[0][0]).toEqual({
-      cove_id: 'cove-1',
+      area_id: 'area-1',
       title: 'dev #891',
       cwd: '/Users/me/code/new',
       attach_folder: true,
@@ -205,11 +205,11 @@ describe('NewTaskForm issue-dev — submit body', () => {
   });
 
   it('checking Auto-merge sends merge_policy auto-merge — still with no notes key', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await user.click(screen.getByRole('checkbox', { name: /auto-merge/i }));
@@ -226,8 +226,8 @@ describe('NewTaskForm issue-dev — submit body', () => {
   });
 
   it('plain task variant sends no workflow keys at all (byte-identical body)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const qc = new QueryClient({
@@ -235,7 +235,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     });
     render(
       <QueryClientProvider client={qc}>
-        <NewTaskForm defaultCoveId="cove-1" onCreated={vi.fn()} onCancel={vi.fn()} />
+        <NewTaskForm defaultAreaId="area-1" onCreated={vi.fn()} onCancel={vi.fn()} />
       </QueryClientProvider>,
     );
     await user.type(screen.getByLabelText(/task description/i), 'do the thing');
@@ -243,7 +243,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
     expect(createSpy.mock.calls[0][0]).toEqual({
-      cove_id: 'cove-1',
+      area_id: 'area-1',
       title: 'do the thing',
       cwd: '/Users/me/code/new',
       attach_folder: true,
@@ -254,7 +254,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
 
 describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   it('prefills the textarea from the parsed fields and live-follows them until edited', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
@@ -275,11 +275,11 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   });
 
   it('an edited raw JSON overrides the derived fields in the submit body — including a notes key, which raw JSON alone can carry (#891 signoff)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
@@ -305,10 +305,10 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   });
 
   it('invalid raw JSON shows an inline error (wired via aria-describedby) and disables submit; reset works directly from the malformed state', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
@@ -339,10 +339,10 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   });
 
   it('reset is also reachable from an emptied textarea (empty string is raw mode, not "no override")', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
@@ -358,11 +358,11 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
   });
 
   it('a stale raw override outlives later form edits: the summary flags it and the OLD blob ships', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     const urlInput = screen.getByLabelText(/github issue url/i);
     await user.type(urlInput, ISSUE_URL);
@@ -399,8 +399,8 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
 
 describe('NewTaskForm issue-dev — server 400 surfacing', () => {
   it('renders the server 400 message (schema validation stays server-side)', async () => {
-    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
-    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    vi.spyOn(api, 'listAreas').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     vi.spyOn(api, 'createWave').mockRejectedValue(
       new CalmApiError(
         400,
@@ -409,7 +409,7 @@ describe('NewTaskForm issue-dev — server 400 surfacing', () => {
       ),
     );
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderForm({ defaultCoveId: 'cove-1' });
+    renderForm({ defaultAreaId: 'area-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);

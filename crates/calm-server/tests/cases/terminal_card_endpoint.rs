@@ -34,7 +34,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::operation::codex_adapter::CodexAdapter;
 use calm_server::operation::terminal_adapter::TerminalAdapter;
 use calm_server::operation::{
@@ -94,8 +94,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "endpoint-test".into(),
             color: "#000".into(),
             sort: None,
@@ -105,7 +105,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "endpoint-test".into(),
             sort: None,
             cwd: FIXTURE_WORKSPACE.into(),
@@ -135,7 +135,7 @@ async fn boot() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -207,7 +207,7 @@ fn install_spawn_runtime_with_hook(
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         hook,
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -217,7 +217,7 @@ fn install_spawn_runtime_with_hook(
         state.pending_codex_threads.clone(),
         state.pending_codex_threads_spawn_serial.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         silent_spawn_hook(),
     ));
     let completion = OperationCompletionBus::new();
@@ -249,8 +249,8 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "endpoint-test".into(),
             color: "#000".into(),
             sort: None,
@@ -260,7 +260,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "endpoint-test".into(),
             sort: None,
             cwd: FIXTURE_WORKSPACE.into(),
@@ -290,7 +290,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

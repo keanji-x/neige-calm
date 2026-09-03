@@ -17,7 +17,7 @@ use calm_server::db::write_in_tx_typed;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{Card, CardPatch, CardRole, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{Card, CardPatch, CardRole, NewArea, NewWave, new_id, now_ms};
 use calm_server::operation::claude_adapter::{
     ClaudeAdapter, ClaudeCreateOperationPayload, PreparedClaudeCreateRequest,
 };
@@ -343,8 +343,8 @@ async fn boot_with_counted_spawn() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let cove = repo_dyn
-        .cove_create(NewCove {
+    let area = repo_dyn
+        .area_create(NewArea {
             name: "operations-test".into(),
             color: "#000".into(),
             sort: None,
@@ -354,7 +354,7 @@ async fn boot_with_counted_spawn() -> Boot {
     let wave = repo_dyn
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "operations-test".into(),
             sort: None,
             cwd: String::new(),
@@ -383,7 +383,7 @@ async fn boot_with_counted_spawn() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -418,7 +418,7 @@ async fn boot_with_counted_spawn() -> Boot {
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -461,8 +461,8 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             .expect("open in-memory sqlite"),
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let cove = repo_dyn
-        .cove_create(NewCove {
+    let area = repo_dyn
+        .area_create(NewArea {
             name: "codex-operations-test".into(),
             color: "#000".into(),
             sort: None,
@@ -472,7 +472,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
     let wave = repo_dyn
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "codex-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -502,7 +502,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -547,7 +547,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
     let terminal_adapter = Arc::new(TerminalAdapter::new(
         route_repo.clone(),
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
     ));
     let codex_adapter = Arc::new(
         CodexAdapter::new_with_spawn_hook(
@@ -557,7 +557,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             state.pending_codex_threads.clone(),
             state.pending_codex_threads_spawn_serial.clone(),
             state.card_role_cache.clone(),
-            state.wave_cove_cache.clone(),
+            state.wave_area_cache.clone(),
             hook,
         )
         .with_initial_turn_lifecycle_timeout(initial_turn_lifecycle_timeout),
@@ -596,8 +596,8 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let cove = repo_dyn
-        .cove_create(NewCove {
+    let area = repo_dyn
+        .area_create(NewArea {
             name: "claude-operations-test".into(),
             color: "#000".into(),
             sort: None,
@@ -607,7 +607,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
     let wave = repo_dyn
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "claude-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -640,7 +640,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         codex.clone(),
@@ -676,7 +676,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         route_repo.clone(),
         codex,
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -755,7 +755,7 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
         boot.state.pending_codex_threads.clone(),
         boot.state.pending_codex_threads_spawn_serial.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -2216,7 +2216,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
     let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -2412,7 +2412,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         SharedCodexAppServer::new_stub(boot.repo.clone()),
         None,
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
@@ -2713,7 +2713,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
         hook,
     ));
     let completion = OperationCompletionBus::new();
@@ -2803,7 +2803,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     let adapter = TerminalAdapter::new(
         route_repo,
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
     );
     let op = pending_operation("terminal-create", &boot.wave_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -2821,7 +2821,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.pending_codex_threads.clone(),
         boot.state.pending_codex_threads_spawn_serial.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
     );
     let op = pending_operation("codex-create", &boot.wave_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -2836,7 +2836,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         route_repo,
         boot.state.codex.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
     );
     let op = pending_operation("claude-create", &boot.wave_id, payload.clone());
     let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -2956,7 +2956,7 @@ fn install_terminal_worker_runtime_with_hook(
     let adapter = Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
-        boot.state.wave_cove_cache.clone(),
+        boot.state.wave_area_cache.clone(),
         hook,
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));

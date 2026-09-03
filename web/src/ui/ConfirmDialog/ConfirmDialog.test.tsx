@@ -40,7 +40,7 @@ describe('ConfirmDialog rendering', () => {
     render(
       <ConfirmDialog
         open
-        title="Remove cove"
+        title="Remove area"
         confirmLabel="Yes, remove"
         cancelLabel="Keep it"
         onConfirm={() => {}}

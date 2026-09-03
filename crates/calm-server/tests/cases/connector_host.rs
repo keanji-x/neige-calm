@@ -528,7 +528,7 @@ impl Boot {
             self.events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         ))
     }
@@ -547,11 +547,11 @@ impl Boot {
 }
 
 impl Boot {
-    /// One cove + one wave, so a test can drive `POST /api/waves/{id}/cards`.
+    /// One area + one wave, so a test can drive `POST /api/waves/{id}/cards`.
     async fn seed_wave(&self) -> String {
-        let cove = self
+        let area = self
             .repo
-            .cove_create(calm_server::model::NewCove {
+            .area_create(calm_server::model::NewArea {
                 name: "demo".into(),
                 color: "#fff".into(),
                 sort: None,
@@ -561,7 +561,7 @@ impl Boot {
         self.repo
             .wave_create(calm_server::model::NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "demo".into(),
                 sort: None,
                 cwd: String::new(),

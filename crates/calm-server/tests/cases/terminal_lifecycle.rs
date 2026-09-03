@@ -1,4 +1,4 @@
-//! Issue #197 — eager-teardown regression tests for card/wave/cove
+//! Issue #197 — eager-teardown regression tests for card/wave/area
 //! delete.
 //!
 //! Unix-only: SIGTERM via `nix::sys::signal::kill` is the cleanup
@@ -38,7 +38,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -63,7 +63,7 @@ fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -85,14 +85,14 @@ async fn fresh_state() -> AppState {
     fresh_state_with_repo().await.0
 }
 
-/// Compose a minimal Axum app with the cards + waves + coves routers
+/// Compose a minimal Axum app with the cards + waves + areas routers
 /// + the `actor_middleware` that the handlers depend on. Same shape
 ///   as `payload_validation.rs::app`.
 fn build_app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(routes::cards::router())
         .merge(routes::waves::router())
-        .merge(routes::coves::router())
+        .merge(routes::areas::router())
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -153,10 +153,10 @@ async fn card_delete_reaps_terminal_process() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: cove → wave → terminal card → terminal row pointing at a
+    // Seed: area → wave → terminal card → terminal row pointing at a
     // real spawned process.
-    let cove = raw
-        .cove_create(NewCove {
+    let area = raw
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -166,7 +166,7 @@ async fn card_delete_reaps_terminal_process() {
     let wave = raw
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -255,10 +255,10 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: cove → wave with TWO terminal cards, each with a live child.
+    // Seed: area → wave with TWO terminal cards, each with a live child.
     // The wave-delete path must reap both.
-    let cove = raw
-        .cove_create(NewCove {
+    let area = raw
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -268,7 +268,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     let wave = raw
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -390,8 +390,8 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
     let (state, repo) = fresh_state_with_repo().await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "writer-probe-owner".into(),
             color: "#000".into(),
             sort: None,
@@ -401,7 +401,7 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "writer-probe-wave".into(),
             sort: None,
             cwd: String::new(),
@@ -440,7 +440,7 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
 
     tokio::time::timeout(
         Duration::from_millis(250),
-        repo.cove_create(NewCove {
+        repo.area_create(NewArea {
             name: "writer-probe-unrelated".into(),
             color: "#111".into(),
             sort: None,
@@ -459,21 +459,21 @@ async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
 }
 
 // ---------------------------------------------------------------------------
-// Cove delete eager teardown
+// Area delete eager teardown
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn cove_delete_reaps_every_terminal_under_cove() {
+async fn area_delete_reaps_every_terminal_under_area() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: cove → wave → terminal card → terminal row pointing at a
-    // real spawned process. The cove-delete
+    // Seed: area → wave → terminal card → terminal row pointing at a
+    // real spawned process. The area-delete
     // path walks waves → cards → terminals and must reap the terminal
     // before the structural delete fires (else `terminals.card_id`'s
     // RESTRICT FK would trip).
-    let cove = raw
-        .cove_create(NewCove {
+    let area = raw
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -483,7 +483,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
     let wave = raw
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -526,13 +526,13 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
         "terminal row exists pre-delete"
     );
 
-    // DELETE /api/coves/{id}
+    // DELETE /api/areas/{id}
     let app = build_app(state.clone());
     let resp = app
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/coves/{}", cove.id.as_str()))
+                .uri(format!("/api/areas/{}", area.id.as_str()))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -541,15 +541,15 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
     assert_eq!(
         resp.status(),
         StatusCode::NO_CONTENT,
-        "cove delete should return 204"
+        "area delete should return 204"
     );
 
     // Post-delete: child process gone and every row
-    // in the terminal/card/wave/cove subtree removed.
+    // in the terminal/card/wave/area subtree removed.
     await_child_killed(&mut child).await;
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
-        "terminal row must be deleted with the cove"
+        "terminal row must be deleted with the area"
     );
     assert!(
         state
@@ -558,7 +558,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
             .await
             .unwrap()
             .is_none(),
-        "card row must be deleted with the cove"
+        "card row must be deleted with the area"
     );
     assert!(
         state
@@ -567,16 +567,16 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
             .await
             .unwrap()
             .is_none(),
-        "wave row must be deleted with the cove"
+        "wave row must be deleted with the area"
     );
     assert!(
         state
             .repo
-            .cove_get(cove.id.as_str())
+            .area_get(area.id.as_str())
             .await
             .unwrap()
             .is_none(),
-        "cove row must be deleted"
+        "area row must be deleted"
     );
 }
 
@@ -590,8 +590,8 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
     // teardown must not bail when `terminal_get_by_card` returns None.
     let state = fresh_state().await;
     let raw = state.raw_repo();
-    let cove = raw
-        .cove_create(NewCove {
+    let area = raw
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -601,7 +601,7 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
     let wave = raw
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),

@@ -1,5 +1,5 @@
-// Calm UI types — Cove (project) / Wave (task) / Today (home).
-// Mirrors the design's seed data shape; renamed Sea → Cove.
+// Calm UI types — Area (project) / Wave (task) / Today (home).
+// Mirrors the design's seed data shape; renamed Sea → Area.
 
 /**
  * Issue #145 — Wave lifecycle state machine.
@@ -41,7 +41,7 @@ export type FsmState =
   | 'Errored'
   | 'Done';
 
-export interface Cove {
+export interface Area {
   id: string;
   name: string;
   subtitle: string;
@@ -106,13 +106,13 @@ export type WaveCardSlot =
 
 export interface Wave {
   id: string;
-  coveId: string;
+  areaId: string;
   title: string;
   /**
    * Issue #145 — explicit lifecycle stamped by the kernel. Required: every
    * kernel-shaped wave carries one (defaulted to `'draft'` server-side).
    * This is the single source of truth for wave-level state — Sidebar's
-   * "Waiting on you", Today's running/waiting counters, Cove's bucket
+   * "Waiting on you", Today's running/waiting counters, Area's bucket
    * sort, and the row/header status pill all derive from it via
    * `shared/lifecycle.ts`. The Spec Agent writes it explicitly; nothing
    * else in the codebase should re-derive it.
@@ -168,6 +168,6 @@ export interface Wave {
 
 export type Route =
   | { name: 'today' }
-  | { name: 'cove'; coveId: string }
+  | { name: 'area'; areaId: string }
   | { name: 'wave'; id: string }
   | { name: 'settings' };

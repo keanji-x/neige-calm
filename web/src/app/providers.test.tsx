@@ -328,8 +328,8 @@ describe('ServerCompatGate — dbInstanceId cache bust', () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
     });
-    client.setQueryData(['coves'], [{ id: 'stale-cove-from-previous-db' }]);
-    expect(client.getQueryData(['coves'])).toBeDefined();
+    client.setQueryData(['areas'], [{ id: 'stale-area-from-previous-db' }]);
+    expect(client.getQueryData(['areas'])).toBeDefined();
 
     render(
       <QueryClientProvider client={client}>
@@ -345,7 +345,7 @@ describe('ServerCompatGate — dbInstanceId cache bust', () => {
     });
 
     // All three persisted artifacts were cleared / rewritten.
-    expect(client.getQueryData(['coves'])).toBeUndefined();
+    expect(client.getQueryData(['areas'])).toBeUndefined();
     expect(localStorage.getItem('calm:sync:cursor')).toBeNull();
     expect(deleteIDB).toHaveBeenCalledWith(IDB_DB_NAME);
     expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_B);

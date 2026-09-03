@@ -94,7 +94,7 @@ use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_ru
 use calm_server::event::{Event, EventBus};
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -105,7 +105,7 @@ use calm_server::shared_codex_appserver::{
 };
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use clap::Parser;
 use serde_json::json;
 // #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
@@ -150,8 +150,8 @@ fn seed_auth_only(home: &SharedCodexHome) {
 }
 
 async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (String, String) {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "codex-worker-mcp-completion".into(),
             color: "#000".into(),
             sort: None,
@@ -161,7 +161,7 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "worker-mcp-completion-wave".into(),
             sort: None,
             cwd: TEST_CWD.into(),
@@ -273,12 +273,12 @@ async fn worker_completes_with_channel3_stripped() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     let events = EventBus::new();
     // Subscribe BEFORE driving the turn so we never miss the commit.
     let mut bus_rx = events.subscribe();
     let (card_id, wave_id) = seed_worker_card(&repo, &card_role_cache).await;
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     eprintln!("[worker-mcp] seeded wave={wave_id} worker_card={card_id} codex={WORKER_CODEX}");
 
     let daemon_token = auth::CardMcpToken::generate().into_inner();
@@ -298,7 +298,7 @@ async fn worker_completes_with_channel3_stripped() {
     let mcp_server = McpServer::spawn(
         repo_dyn.clone(),
         events.clone(),
-        WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         mcp_socket_path.clone(),
         shim_bin,
         build_default_registry(),

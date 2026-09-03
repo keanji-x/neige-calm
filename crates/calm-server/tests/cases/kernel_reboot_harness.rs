@@ -86,7 +86,7 @@ use std::path::PathBuf;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot, Observation};
-use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -120,8 +120,8 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         .await
         .expect("open file db for seeding");
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "reboot-e1".into(),
             color: "#123456".into(),
             sort: None,
@@ -131,7 +131,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "reboot-e1".into(),
             sort: None,
             cwd: "/tmp".into(),

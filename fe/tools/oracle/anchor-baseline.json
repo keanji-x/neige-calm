@@ -888,7 +888,7 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "INV-COVE-EDITTITLE-011",
+    "id": "INV-AREA-EDITTITLE-011",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"

@@ -104,24 +104,24 @@ fn event_name(ev: &Event) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Card, Cove, CoveKind, Overlay, Wave};
+    use crate::model::{Area, AreaKind, Card, Overlay, Wave};
     use serde_json::json;
 
-    fn cove(id: &str) -> Cove {
-        Cove {
+    fn area(id: &str) -> Area {
+        Area {
             id: id.into(),
             name: "n".into(),
             color: "#fff".into(),
             sort: 1.0,
-            kind: CoveKind::User,
+            kind: AreaKind::User,
             created_at: 0,
             updated_at: 0,
         }
     }
-    fn wave(id: &str, cove_id: &str) -> Wave {
+    fn wave(id: &str, area_id: &str) -> Wave {
         Wave {
             id: id.into(),
-            cove_id: cove_id.into(),
+            area_id: area_id.into(),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn empty_filter_matches_everything() {
         let f = SubscriptionFilter::default();
-        assert!(f.matches(&Event::CoveUpdated(cove("c"))));
+        assert!(f.matches(&Event::AreaUpdated(area("c"))));
         assert!(f.matches(&Event::CardAdded(card("k", "w", "terminal"))));
         assert!(f.matches(&Event::PluginState {
             id: "p".into(),

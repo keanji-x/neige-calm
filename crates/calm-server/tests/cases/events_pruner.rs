@@ -15,12 +15,12 @@
 
 use std::sync::Arc;
 
-use calm_server::db::sqlite::{SqlxRepo, card_create_tx, cove_create_tx, wave_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, area_create_tx, card_create_tx, wave_create_tx};
 use calm_server::db::{RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::events_prune::{EVENTS_PRUNE_KINDS, EventsRetentionPolicy, prune_events_once};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewArea, NewCard, NewWave};
 use calm_server::replay::derive_layout_positions;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -93,14 +93,14 @@ async fn event_exists(pool: &sqlx::SqlitePool, id: i64) -> bool {
     n == 1
 }
 
-/// Seed a real cove + wave + card through the production write path
+/// Seed a real area + wave + card through the production write path
 /// (structural events stamped `at = now_ms()`), returning the wave id.
 async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
     let write = calm_server::state::WriteContext::new(
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
     );
-    let (cove, _) = write_with_event_typed(
+    let (area, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
         EventScope::System,
@@ -109,24 +109,24 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
         &write,
         move |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "c".into(),
                         color: "#000".into(),
                         sort: None,
                     },
                 )
                 .await?;
-                Ok((cove.clone(), Event::CoveUpdated(cove)))
+                Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
 
-    let cove_id = cove.id.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let area_id = area.id.clone();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let (wave, _) = write_with_event_typed(
         repo.as_ref(),
         ActorId::User,
@@ -140,7 +140,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                     tx,
                     NewWave {
                         template_input: None,
-                        cove_id,
+                        area_id,
                         title: "w".into(),
                         sort: None,
                         cwd: String::new(),
@@ -151,7 +151,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                     },
                     None,
                     &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &wave_cove_cache,
+                    &wave_area_cache,
                 )
                 .await?;
                 Ok((
@@ -231,7 +231,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     // the horizon — must survive (not allowlisted).
     let structural_old = insert_event(
         pool,
-        "cove.updated",
+        "area.updated",
         r##"{"id":"c-old","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}"##,
         old(60),
     )

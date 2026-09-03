@@ -651,7 +651,7 @@
   family: dialog-childview
   statement: >
     `ModalViewContext` / `useModalView()` 定义在 primitive 层（ui/Dialog）却由
-    业务层组件消费（DirectoryPicker、NewTaskForm、Cove 页面）；新架构必须显式
+    业务层组件消费（DirectoryPicker、NewTaskForm、Area 页面）；新架构必须显式
     处理这条跨层依赖，不能在拆分 primitive 时把它留成隐式耦合。
   why: >
     这是 primitive 层唯一一条【向上暴露状态机】的出口：README "No business logic"

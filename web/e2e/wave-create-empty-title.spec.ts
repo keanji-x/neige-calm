@@ -1,7 +1,7 @@
 // E2E: create a wave with an empty task description.
 //
 // Issue #409 makes NewTaskForm's task description optional. This spec
-// drives the auto-match branch: seed a cove folder claim, open
+// drives the auto-match branch: seed an area folder claim, open
 // "+ New wave", leave the description blank, type a cwd under the
 // claimed folder, submit, and assert the wave detail page renders the
 // shared "Untitled wave" fallback while the persisted title remains "".
@@ -14,22 +14,22 @@ import {
   createWorkTreeSubdir,
 } from './helpers/attached-workspace';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} -> ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   cleanupAttachedWorkspaces();
 });
 
@@ -37,10 +37,10 @@ test('creates a new wave with an empty title and renders the fallback label', as
   page,
 }) => {
   const ts = Date.now();
-  const coveName = `E2E empty-title cove ${ts}`;
+  const areaName = `E2E empty-title area ${ts}`;
   // #1147 S3 — the submitted cwd is an *attached* workspace, so it has
   // to exist and sit inside a Git work tree that the kernel can see.
-  // `folderPath` is the work-tree root (and the cove's folder claim);
+  // `folderPath` is the work-tree root (and the area's folder claim);
   // `cwd` is a real directory beneath it, which is what makes the
   // auto-match banner fire on `folderPath`. See
   // `helpers/attached-workspace.ts` for why these live under `$HOME`.
@@ -49,22 +49,22 @@ test('creates a new wave with an empty title and renders the fallback label', as
   );
   const cwd = createWorkTreeSubdir(folderPath, 'worktree');
 
-  const coveRes = await page.request.post('/api/coves', {
-    data: { name: coveName, color: '#5a9' },
+  const areaRes = await page.request.post('/api/areas', {
+    data: { name: areaName, color: '#5a9' },
     headers: { 'content-type': 'application/json' },
   });
-  expect(coveRes.ok()).toBeTruthy();
-  const cove = (await coveRes.json()) as { id: string };
-  createdCoveIds.push(cove.id);
+  expect(areaRes.ok()).toBeTruthy();
+  const area = (await areaRes.json()) as { id: string };
+  createdAreaIds.push(area.id);
 
-  const folderRes = await page.request.post(`/api/coves/${cove.id}/folders`, {
+  const folderRes = await page.request.post(`/api/areas/${area.id}/folders`, {
     data: { path: folderPath },
     headers: { 'content-type': 'application/json' },
   });
   expect(folderRes.ok()).toBeTruthy();
 
-  await page.goto(`/calm/cove/${cove.id}`);
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  await page.goto(`/calm/area/${area.id}`);
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
   await page.getByRole('button', { name: /new wave/i }).click();
   const form = page.getByRole('form', { name: /new task/i });
@@ -73,9 +73,9 @@ test('creates a new wave with an empty title and renders the fallback label', as
   await expect(form.getByLabel(/task description/i)).toHaveValue('');
   await form.getByLabel(/working directory/i).fill(cwd);
 
-  const banner = form.getByTestId('cove-auto-match');
+  const banner = form.getByTestId('area-auto-match');
   await expect(banner).toBeVisible({ timeout: 5_000 });
-  await expect(banner).toContainText(coveName);
+  await expect(banner).toContainText(areaName);
   await expect(banner).toContainText(folderPath);
 
   await form.getByRole('button', { name: 'Create task', exact: true }).click();
@@ -87,9 +87,9 @@ test('creates a new wave with an empty title and renders the fallback label', as
   const waveRes = await page.request.get(`/api/waves/${waveId}`);
   expect(waveRes.ok()).toBeTruthy();
   const { wave } = (await waveRes.json()) as {
-    wave: { cove_id: string; cwd: string; title: string };
+    wave: { area_id: string; cwd: string; title: string };
   };
-  expect(wave.cove_id).toBe(cove.id);
+  expect(wave.area_id).toBe(area.id);
   expect(wave.cwd).toBe(cwd);
   expect(wave.title).toBe('');
 });

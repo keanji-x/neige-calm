@@ -7,16 +7,16 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -27,7 +27,7 @@ pub struct Boot {
     pub state: AppState,
     pub auth_state: AuthState,
     pub repo: Arc<dyn Repo>,
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub wave_id: WaveId,
     pub spec_card_id: CardId,
     pub worker_card_id: CardId,
@@ -41,8 +41,8 @@ pub async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "wave-file-test".into(),
             color: "#000".into(),
             sort: None,
@@ -52,7 +52,7 @@ pub async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave file test".into(),
             sort: None,
             cwd: String::new(),
@@ -94,8 +94,8 @@ pub async fn boot() -> Boot {
         .await
         .unwrap();
 
-    let cove2 = repo
-        .cove_create(NewCove {
+    let area2 = repo
+        .area_create(NewArea {
             name: "wave-file-other".into(),
             color: "#0f0".into(),
             sort: None,
@@ -105,7 +105,7 @@ pub async fn boot() -> Boot {
     let wave2 = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove2.id.clone(),
+            area_id: area2.id.clone(),
             title: "other wave".into(),
             sort: None,
             cwd: String::new(),
@@ -156,10 +156,10 @@ pub async fn boot() -> Boot {
         .await;
     card_role_cache.insert(other_spec_card.id, CardRole::Spec, wave2.id.clone());
 
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let write =
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
@@ -198,11 +198,11 @@ pub async fn boot() -> Boot {
             plugin_data_dir,
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            calm_server::state::WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let auth_state = AuthState::new(AuthConfig {
         username: Some("alice".into()),
@@ -217,7 +217,7 @@ pub async fn boot() -> Boot {
         state,
         auth_state,
         repo,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -293,7 +293,7 @@ pub fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".to_string(),
     }
 }
@@ -305,12 +305,12 @@ pub async fn request_codex(boot: &Boot, key: &str) -> i64 {
             ActorId::User,
             EventScope::Wave {
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.ctx.events,
             boot.ctx.write.role_cache(),
-            boot.ctx.write.cove_cache(),
+            boot.ctx.write.area_cache(),
             Event::CodexWorkerRequested {
                 idempotency_key: key.into(),
                 goal: format!("goal for {key}"),

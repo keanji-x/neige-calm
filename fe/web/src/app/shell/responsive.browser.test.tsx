@@ -15,13 +15,13 @@ function MobileNavigationProbe() {
   return <div className={styles.shell}>
     <div className={`${styles.navigation} ${styles.navigationOpen}`}>
       <div data-testid="mobile-panel" className={styles.navigationPanel}>
-        <section data-testid="coves-list" style={{ inlineSize: '100%' }}>Coves</section>
+        <section data-testid="areas-list" style={{ inlineSize: '100%' }}>Areas</section>
       </div>
     </div>
     <main />
     <nav data-testid="dock" className={styles.mobileDock} aria-label="Primary">
       <div className={styles.mobileDockItem}>Pages</div>
-      {['Today', 'Coves', 'Me'].map((label) => <button key={label} type="button" className={styles.mobileDockItem}>{label}</button>)}
+      {['Today', 'Areas', 'Me'].map((label) => <button key={label} type="button" className={styles.mobileDockItem}>{label}</button>)}
     </nav>
   </div>;
 }
@@ -58,10 +58,10 @@ describe('responsive shell layout', () => {
     expect(getComputedStyle(document.querySelector('[data-testid="collapsed"]')!).gridTemplateColumns).toBe('44px 1356px');
   });
 
-  it('gives the Coves list page the viewport above the persistent dock', async () => {
+  it('gives the Areas list page the viewport above the persistent dock', async () => {
     render(<MobileNavigationProbe />);
     await page.viewport(390, 844);
-    const list = document.querySelector('[data-testid="coves-list"]')!.getBoundingClientRect();
+    const list = document.querySelector('[data-testid="areas-list"]')!.getBoundingClientRect();
     const panel = document.querySelector('[data-testid="mobile-panel"]')!.getBoundingClientRect();
     const dock = document.querySelector('[data-testid="dock"]')!.getBoundingClientRect();
     expect(panel.left).toBe(0);

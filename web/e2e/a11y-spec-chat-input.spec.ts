@@ -9,7 +9,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import { SPEC_CHAT_COPY, forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
@@ -19,8 +19,8 @@ test.describe('spec chat input path', () => {
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
-    const cove = await createUserCove(request, 'AtlasSpecInput');
-    const wave = await createWaveInCove(request, cove.id, 'Spec input test');
+    const area = await createUserArea(request, 'AtlasSpecInput');
+    const wave = await createWaveInArea(request, area.id, 'Spec input test');
     waveId = wave.id;
     specCardId = await getSpecCardId(request, waveId);
   });

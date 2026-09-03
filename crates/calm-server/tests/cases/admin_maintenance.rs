@@ -127,7 +127,7 @@ fn worker_identity(boot: &support::wave_file::Boot) -> ToolCallIdentity {
         provider: calm_server::session_projection_repo::AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
     }
 }

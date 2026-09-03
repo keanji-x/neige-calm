@@ -124,7 +124,7 @@ Hash 只是变化检测载体，不是权威。真正的判定必须保留可解
 解析必须：
 
 - 使用稳定 block identity；
-- 检测 cycle、missing、cross-cove 和深度上限；
+- 检测 cycle、missing、cross-area 和深度上限；
 - 有固定节点预算，超限 fail closed；
 - 保存每个参与文档的 revision/evidence；
 - 在被引用 block 改动时找到受影响 task。
@@ -196,7 +196,7 @@ Projection 只决定“当前有哪些合法声明”。Scheduler 决定“哪�
 - 删除 in-flight task：不能只删 row；必须走 cancel/withdraw 协议，保留执行历史与诊断。
 - Terminal task row 不因文档重建消失。
 - Fork/模板复制声明，不复制原 wave 的运行身份。
-- Wave/cove 删除仍遵守 operation、workspace 和审计边界。
+- Wave/area 删除仍遵守 operation、workspace 和审计边界。
 
 ## 失败与 sweep
 
@@ -224,7 +224,7 @@ Projection 只决定“当前有哪些合法声明”。Scheduler 决定“哪�
 
 - 任意编辑序列后，incremental projection 与全量 rebuild 字节一致。
 - 人/Agent 权限、归因、墓碑和放行不能被其它写入口绕过。
-- Duplicate key、cycle、missing ref、cross-cove 和闭包超限都 fail closed 且给可行动诊断。
+- Duplicate key、cycle、missing ref、cross-area 和闭包超限都 fail closed 且给可行动诊断。
 - Claim 后修改根块或引用闭包会阻止旧上下文继续成为有效结果。
 - 只改非 material 字段不会误杀执行。
 - Rebuild 不改写 in-flight/terminal 状态和 worker identity。

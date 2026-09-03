@@ -8,7 +8,7 @@
 //! write.
 //!
 //! #1110 S6 wrote this file against the opposite implementation — three seeded
-//! system-cove template waves, discovered through a `template_key` overlay and
+//! system-area template waves, discovered through a `template_key` overlay and
 //! forked on create, hidden from lists but returned by detail. #1300 S2 deleted
 //! all of it (that seeding was the last production writer signing a report as
 //! `EditAuthor::User`). Cases that asserted the seeding are inverted rather
@@ -25,7 +25,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewOverlay, NewPlugin};
+use calm_server::model::{NewArea, NewOverlay, NewPlugin};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -34,7 +34,7 @@ use calm_server::validation::{
     OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
     OVERLAY_TEMPLATE_SCHEMA_VERSION,
 };
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -56,7 +56,7 @@ const INVESTIGATION: &str = "investigation";
 struct Boot {
     app: axum::Router,
     state: AppState,
-    cove_id: String,
+    area_id: String,
     repo: Arc<dyn Repo>,
     _tmp: TempDir,
 }
@@ -68,8 +68,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "template-template-test".into(),
             color: "#000".into(),
             sort: None,
@@ -77,8 +77,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -93,11 +93,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-1110-s6"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
@@ -109,7 +109,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         state,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         _tmp: tmp,
     }
@@ -191,9 +191,9 @@ async fn spec_harness_ops_for_wave(repo: &Arc<dyn Repo>, wave_id: &str) -> i64 {
     .expect("wave spec-harness-start count")
 }
 
-fn create_body(cove_id: &str, title: &str, extra: Value) -> Value {
+fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
     let mut body = json!({
-        "cove_id": cove_id,
+        "area_id": area_id,
         "title": title,
         "cwd": attached_repo_fixture(&format!("1110-s6-{title}")),
         "attach_folder": true,
@@ -312,7 +312,7 @@ fn task_blocks(payload: &WaveReportPayload) -> Vec<&Value> {
 /// ## Why this replaced a test of the opposite property
 ///
 /// This case used to be `matching_template_id_seeds_one_wave_per_template_key`:
-/// it asserted the three hidden system-cove template waves *appeared*, that
+/// it asserted the three hidden system-area template waves *appeared*, that
 /// they stayed out of every wave list, and that a second create did not
 /// duplicate them. All three were properties of the seeding this slice deletes.
 ///
@@ -338,12 +338,12 @@ fn task_blocks(payload: &WaveReportPayload) -> Vec<&Value> {
 async fn creating_from_a_template_mints_no_hidden_wave() {
     let boot = boot().await;
 
-    // A fork source in the user's own cove, so the second leg can pass an
+    // A fork source in the user's own area, so the second leg can pass an
     // explicit `fork_report_from` alongside a `template_id`.
     let (status, source) = post(
         boot.app.clone(),
         "/api/waves",
-        create_body(&boot.cove_id, "fork-source", json!({})),
+        create_body(&boot.area_id, "fork-source", json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "source={source}");
@@ -366,7 +366,7 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/waves",
-            create_body(&boot.cove_id, leg, extra),
+            create_body(&boot.area_id, leg, extra),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
@@ -392,8 +392,8 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
             "{leg}: a `template_key` overlay was minted; the kernel has no writer for one"
         );
         assert!(
-            boot.repo.cove_get_system().await.unwrap().is_none(),
-            "{leg}: creating from a template must not mint the system cove either"
+            boot.repo.area_get_system().await.unwrap().is_none(),
+            "{leg}: creating from a template must not mint the system area either"
         );
     }
 }
@@ -478,7 +478,7 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/waves",
-            create_body(&boot.cove_id, leg, json!({ "template_id": SMALL_CHANGE })),
+            create_body(&boot.area_id, leg, json!({ "template_id": SMALL_CHANGE })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
@@ -782,7 +782,7 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "forked-issue-dev",
             json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
@@ -846,7 +846,7 @@ async fn explicit_fork_report_from_is_not_overwritten() {
     let (status, source) = post(
         boot.app.clone(),
         "/api/waves",
-        create_body(&boot.cove_id, "custom-source", json!({})),
+        create_body(&boot.area_id, "custom-source", json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={source}");
@@ -881,7 +881,7 @@ async fn explicit_fork_report_from_is_not_overwritten() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "explicit-fork",
             json!({
                 "template_id": ISSUE_DEVELOPMENT,
@@ -915,7 +915,7 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
             boot.app.clone(),
             "/api/waves",
             create_body(
-                &boot.cove_id,
+                &boot.area_id,
                 &format!("forked-{key}"),
                 json!({ "template_id": key }),
             ),
@@ -938,23 +938,23 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
     }
 }
 
-/// A forged `template_key` in the user's own cove cannot influence what
+/// A forged `template_key` in the user's own area cannot influence what
 /// `template_id` produces.
 ///
 /// ## What this used to test, and why the property had to be restated
 ///
 /// Before #1300 the create path resolved `template_id` by *searching the
-/// database* for a system-cove wave carrying a matching `template_key` overlay.
+/// database* for a system-area wave carrying a matching `template_key` overlay.
 /// That search is an attack surface: this case forges the overlay on a wave in
-/// the user's own cove, stamps a recognizable plan into its report, and
-/// requires the lookup to reject it on the cove check.
+/// the user's own area, stamps a recognizable plan into its report, and
+/// requires the lookup to reject it on the area check.
 ///
 /// #1300 deletes the lookup — a template is a Rust constant, so there is no
-/// query to poison and no cove check to get wrong. Left as written the case
+/// query to poison and no area check to get wrong. Left as written the case
 /// would be **vacuously green**: the forged wave cannot lose a race that no
 /// longer happens.
 ///
-/// It is restated rather than deleted, because the property is not "the cove
+/// It is restated rather than deleted, because the property is not "the area
 /// check works", it is *where the content comes from*. So the same forgery is
 /// set up, and the assertion becomes: the created report is the recipe, byte
 /// for byte, and carries nothing from the forged wave. That stays falsifiable —
@@ -962,7 +962,7 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
 /// the old form would have stopped being able to fail.
 ///
 /// (The last assertion of the old version was `kernel seed must still mint a
-/// system-cove issue-development`. That one did not go vacuous, it went red,
+/// system-area issue-development`. That one did not go vacuous, it went red,
 /// which is how this case surfaced: it was two properties in one test, and only
 /// one of them was about the attack.)
 #[tokio::test]
@@ -970,12 +970,12 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
 
     // The forgery, exactly as before: an `as_template` wave in the *user's*
-    // cove, wearing the `issue-development` key, holding recognizable content.
+    // area, wearing the `issue-development` key, holding recognizable content.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "forged-template",
             json!({ "as_template": true }),
         ),
@@ -1004,7 +1004,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     // so the deeper invariant this test exists for still gets exercised: even
     // a row that *did* land — via a future internal bug, a restored backup, or
     // a row predating #1297 — must not hijack the auto-fork lookup, because
-    // that lookup also requires the wave to live in the system cove.
+    // that lookup also requires the wave to live in the system area.
     boot.repo
         .overlay_upsert(NewOverlay {
             plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
@@ -1036,7 +1036,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
         stolen_wave,
         report_card,
         current,
-        WaveReportPayload::new("forged template", "# Forged\n\nforged-user-cove-plan\n"),
+        WaveReportPayload::new("forged template", "# Forged\n\nforged-user-area-plan\n"),
         if_doc_rev,
         None,
         None,
@@ -1049,7 +1049,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "after-forged-key",
             json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
@@ -1061,7 +1061,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
 
-    // The positive form, not `!contains("forged-user-cove-plan")`: an
+    // The positive form, not `!contains("forged-user-area-plan")`: an
     // implementation that produced an *empty* report would satisfy the negative
     // and fail this.
     let (summary, expected_body, _) = instantiated_recipe(ISSUE_DEVELOPMENT);
@@ -1079,7 +1079,7 @@ async fn unknown_template_id_still_400s() {
         boot.app,
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "unknown-template",
             json!({ "template_id": "missing-template" }),
         ),
@@ -1124,8 +1124,8 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "template-template-plugin-test".into(),
             color: "#000".into(),
             sort: None,
@@ -1133,8 +1133,8 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     // Mirrors `forge_trust::trusted_forge_plugin`'s default so the stub is
     // trusted without mutating process env.
@@ -1198,7 +1198,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
         plugins_data_dir,
         Vec::new(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
     plugin_host.spawn(&plugin_id).await.expect("spawn plugin");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1225,7 +1225,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
         plugin_host,
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
@@ -1237,7 +1237,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     Boot {
         app,
         state,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         _tmp: tmp,
     }
@@ -1270,7 +1270,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "bound-control",
             json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
@@ -1288,7 +1288,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "plugin-declared-non-template",
             json!({ "template_id": NOT_A_TEMPLATE }),
         ),
@@ -1361,7 +1361,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             boot.app.clone(),
             "/api/waves",
             create_body(
-                &boot.cove_id,
+                &boot.area_id,
                 &format!("listed-{id}"),
                 json!({ "template_id": id }),
             ),
@@ -1379,7 +1379,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             boot.app.clone(),
             "/api/waves",
             create_body(
-                &boot.cove_id,
+                &boot.area_id,
                 &format!("absent-{absent}"),
                 json!({ "template_id": absent }),
             ),
@@ -1408,7 +1408,7 @@ async fn create_accepts_exactly_the_listed_templates() {
 /// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
 /// 201, a null `plugin_scope` and no fork. `unknown_template_id_still_400s`
 /// sends `missing-template` and stays green through that change; this one does
-/// not. The request deliberately carries a valid `cove_id`, no `cwd` and no
+/// not. The request deliberately carries a valid `area_id`, no `cwd` and no
 /// `template_input`, so no other validation can supply the 400.
 #[tokio::test]
 async fn blank_template_id_is_rejected() {
@@ -1418,7 +1418,7 @@ async fn blank_template_id_is_rejected() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "blank template id",
             "theme": theme(),
             "template_id": "   ",
@@ -1439,14 +1439,14 @@ async fn blank_template_id_is_rejected() {
 /// #1209 test #13 — a pre-transaction 4xx leaves no seed behind.
 ///
 /// Template seeding used to run first, so `POST /api/waves` with a good
-/// template id and a bad `cove_id` minted a system cove, three template waves
+/// template id and a bad `area_id` minted a system area, three template waves
 /// and three reports and *then* returned 404. #1209 moves the seed after every
 /// check this handler can make before opening the transaction. All three of
 /// those checks are covered here; the mutation of moving the seed block back to
 /// its old position turns all three red.
 ///
 /// Explicitly **not** covered, and not an oversight: the in-transaction 400s
-/// (an explicit `fork_report_from` that is missing or cross-cove), the
+/// (an explicit `fork_report_from` that is missing or cross-area), the
 /// folder-claim 409, and post-commit materialize failures. Those are decided
 /// after the seed on purpose — the authoritative check has to live inside the
 /// transaction — and asserting "no side effect" for them would pin a promise
@@ -1462,8 +1462,8 @@ async fn assert_pre_transaction_4xx_does_not_seed(
 ) {
     let boot = boot().await;
     let mut body_json = body_json;
-    if body_json["cove_id"] == json!("") {
-        body_json["cove_id"] = json!(boot.cove_id);
+    if body_json["area_id"] == json!("") {
+        body_json["area_id"] = json!(boot.area_id);
     }
     let before = db_snapshot(&boot.repo).await;
     let (status, body) = post(boot.app.clone(), "/api/waves", body_json).await;
@@ -1480,12 +1480,12 @@ async fn assert_pre_transaction_4xx_does_not_seed(
 }
 
 #[tokio::test]
-async fn pre_transaction_404_unknown_cove_with_template_does_not_seed() {
+async fn pre_transaction_404_unknown_area_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
-        "cove 404",
+        "area 404",
         json!({
-            "cove_id": "cove_does_not_exist",
-            "title": "unknown cove",
+            "area_id": "area_does_not_exist",
+            "title": "unknown area",
             "theme": theme(),
             "template_id": SMALL_CHANGE,
         }),
@@ -1499,7 +1499,7 @@ async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
         "relative cwd",
         json!({
-            "cove_id": "",
+            "area_id": "",
             "title": "relative cwd",
             "cwd": "relative/not/absolute",
             "attach_folder": false,
@@ -1521,7 +1521,7 @@ async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
     assert_pre_transaction_4xx_does_not_seed(
         "cwd is not a git repository",
         json!({
-            "cove_id": "",
+            "area_id": "",
             "title": "cwd not a repo",
             "cwd": non_repo.path().display().to_string(),
             "attach_folder": false,
@@ -1631,7 +1631,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
                 boot.app.clone(),
                 "/api/waves",
                 create_body(
-                    &boot.cove_id,
+                    &boot.area_id,
                     "populate",
                     json!({ "template_id": SMALL_CHANGE }),
                 ),
@@ -1710,7 +1710,7 @@ async fn old_template_id_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 18: workflow_id alone",
         json!({
-            "cove_id": "",
+            "area_id": "",
             "title": "old id spelling",
             "attach_folder": false,
             "theme": theme(),
@@ -1730,7 +1730,7 @@ async fn old_template_input_spelling_is_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 19: new template_id + old workflow_input",
         json!({
-            "cove_id": "",
+            "area_id": "",
             "title": "old input spelling",
             "attach_folder": false,
             "theme": theme(),
@@ -1753,7 +1753,7 @@ async fn both_spellings_together_are_an_unknown_field() {
     assert_old_spelling_is_an_unknown_field(
         "row 20: template_id and workflow_id together",
         json!({
-            "cove_id": "",
+            "area_id": "",
             "title": "both spellings",
             "attach_folder": false,
             "theme": theme(),
@@ -1866,7 +1866,7 @@ async fn creating_from_a_template_instantiates_its_recipe() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/waves",
-            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+            create_body(&boot.area_id, key, json!({ "template_id": key })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
@@ -2021,7 +2021,7 @@ async fn each_template_key_names_its_own_recipe() {
         let (status, body) = post(
             boot.app.clone(),
             "/api/waves",
-            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+            create_body(&boot.area_id, key, json!({ "template_id": key })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");

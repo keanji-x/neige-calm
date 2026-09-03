@@ -23,7 +23,7 @@ describe('Today mobile presentation', () => {
     const { container } = render(
       <TodayPage
         waves={[]}
-        coves={[]}
+        areas={[]}
         nowMs={Date.UTC(2026, 7, 31, 9, 30)}
         renderWaveRow={() => null}
       />,

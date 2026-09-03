@@ -26,7 +26,7 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
 
     /// #1147 D2 — root under which server-managed wave workspaces live, one
-    /// git repository per wave at `<root>/<cove_id>/<wave_id>`.
+    /// git repository per wave at `<root>/<area_id>/<wave_id>`.
     /// Defaults to `$HOME/neige-workspaces`.
     ///
     /// Deliberately NOT `CALM_DATA_DIR`: that path is defined as runtime state

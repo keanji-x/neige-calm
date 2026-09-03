@@ -12,10 +12,10 @@ import { createAppRouter, createRouteTree, pendingConversationIds } from './publ
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { pathFor, routeParamFromPath, type NavTarget } from './navigation.ts';
 
-const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-/** The coves list is non-empty on purpose: with zero coves a fan-out in the
+/** The areas list is non-empty on purpose: with zero areas a fan-out in the
  *  loader would be unobservable and the INV-APP-084 assertion vacuous. */
 function recordingTransport(): { transport: ApiTransportPort; paths: string[] } {
   const paths: string[] = [];
@@ -25,7 +25,7 @@ function recordingTransport(): { transport: ApiTransportPort; paths: string[] } 
       return Promise.resolve({
         status: 200,
         statusText: 'OK',
-        body: request.path === '/api/coves' ? [COVE] : [],
+        body: request.path === '/api/areas' ? [AREA] : [],
       });
     },
   };
@@ -41,15 +41,15 @@ function routeByPath(tree: ReturnType<typeof createRouteTree>, path: string) {
   return match;
 }
 
-describe('INV-APP-084 the index loader primes coves and nothing else', () => {
-  it('issues exactly one request — the coves list — when the loader runs', async () => {
+describe('INV-APP-084 the index loader primes areas and nothing else', () => {
+  it('issues exactly one request — the areas list — when the loader runs', async () => {
     const { transport, paths } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
-    expect(paths).toEqual(['/api/coves']);
+    expect(paths).toEqual(['/api/areas']);
   });
 
-  it('leaves the cove → waves fan-out off the loader so one slow cove cannot block the commit', async () => {
+  it('leaves the area → waves fan-out off the loader so one slow area cannot block the commit', async () => {
     const { transport, paths } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
@@ -59,7 +59,7 @@ describe('INV-APP-084 the index loader primes coves and nothing else', () => {
   it('gives the other routes no loader at all', () => {
     const { transport } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    for (const path of ['/cove/$coveId', '/wave/$waveId', '/settings']) {
+    for (const path of ['/area/$areaId', '/wave/$waveId', '/settings']) {
       expect(routeByPath(tree, path).options.loader).toBeUndefined();
     }
   });
@@ -92,7 +92,7 @@ describe('route registration', () => {
 
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
-      '/', '/cove/$coveId', '/cove/$coveId/new', '/wave/$waveId',
+      '/', '/area/$areaId', '/area/$areaId/new', '/wave/$waveId',
       '/settings', '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
@@ -126,8 +126,8 @@ describe('route registration', () => {
      */
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
-      'cove': { name: 'cove', coveId: 'c1' },
-      'new-wave': { name: 'new-wave', coveId: 'c1' },
+      'area': { name: 'area', areaId: 'c1' },
+      'new-wave': { name: 'new-wave', areaId: 'c1' },
       'wave': { name: 'wave', waveId: 'w1' },
       'settings': { name: 'settings' },
       'settings-plugins': { name: 'settings-plugins' },

@@ -28,12 +28,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::db::sqlite::{SqlxRepo, cove_create_tx, overlay_upsert_tx};
+use calm_server::db::sqlite::{SqlxRepo, area_create_tx, overlay_upsert_tx};
 use calm_server::db::{Repo, RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::events_prune::{EventsRetentionPolicy, prune_events_once};
 use calm_server::ids::{ActorId, CardId};
-use calm_server::model::{NewCove, NewOverlay};
+use calm_server::model::{NewArea, NewOverlay};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::ws;
@@ -75,7 +75,7 @@ async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>
             events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -102,9 +102,9 @@ async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>
     (addr, repo, events)
 }
 
-/// Seed a small linear history (3 cove.updated rows). Returns the assigned
-/// `events.id`s in append order, plus the assigned cove IDs (since
-/// `cove_create_tx` generates ids server-side, we don't get to choose
+/// Seed a small linear history (3 area.updated rows). Returns the assigned
+/// `events.id`s in append order, plus the assigned area IDs (since
+/// `area_create_tx` generates ids server-side, we don't get to choose
 /// them — the tests just compare to whatever came back).
 ///
 /// The events table is what the WS replay path actually consumes; bus
@@ -112,12 +112,12 @@ async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>
 async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i64, String)> {
     let mut out = Vec::new();
     for name in names {
-        let p = NewCove {
+        let p = NewArea {
             name: name.to_string(),
             color: "#000".into(),
             sort: None,
         };
-        let (cove, event_id) = write_with_event_typed(
+        let (area, event_id) = write_with_event_typed(
             repo as &dyn Repo,
             ActorId::User,
             EventScope::System,
@@ -125,18 +125,18 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             bus,
             &calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
             move |tx| {
                 Box::pin(async move {
-                    let c = cove_create_tx(tx, p).await?;
-                    Ok((c.clone(), Event::CoveUpdated(c)))
+                    let c = area_create_tx(tx, p).await?;
+                    Ok((c.clone(), Event::AreaUpdated(c)))
                 })
             },
         )
         .await
         .unwrap();
-        out.push((event_id, cove.id.to_string()));
+        out.push((event_id, area.id.to_string()));
     }
     out
 }
@@ -179,11 +179,11 @@ async fn subscribe_with_since_zero_replays_all() {
         .unwrap();
 
     // Three replay frames in id order, then `_replay_complete`.
-    for (event_id, cove_id) in seeded.iter() {
+    for (event_id, area_id) in seeded.iter() {
         let v = recv_json(&mut ws).await;
         assert_eq!(v["_id"], *event_id, "frame ids in order");
-        assert_eq!(v["ev"], "cove.updated");
-        assert_eq!(v["data"]["id"], *cove_id);
+        assert_eq!(v["ev"], "area.updated");
+        assert_eq!(v["data"]["id"], *area_id);
     }
     let done = recv_json(&mut ws).await;
     assert_eq!(done["ev"], "_replay_complete");
@@ -209,8 +209,8 @@ async fn subscribe_with_since_mid_replays_only_newer() {
     .await
     .unwrap();
 
-    // Expect the 2nd and 3rd seeded coves then `_replay_complete`. The
-    // first cove must not appear — its id is at-or-below `since`.
+    // Expect the 2nd and 3rd seeded areas then `_replay_complete`. The
+    // first area must not appear — its id is at-or-below `since`.
     let v = recv_json(&mut ws).await;
     assert_eq!(v["data"]["id"], seeded[1].1);
     let v = recv_json(&mut ws).await;
@@ -247,19 +247,19 @@ async fn subscribe_without_since_only_live() {
     // which is the right behavior for unpersisted broadcasts.)
     bus.emit(
         ActorId::User,
-        Event::CoveUpdated(calm_server::model::Cove {
+        Event::AreaUpdated(calm_server::model::Area {
             id: "live-only".into(),
             name: "n".into(),
             color: "#fff".into(),
             sort: 0.0,
-            kind: calm_server::model::CoveKind::User,
+            kind: calm_server::model::AreaKind::User,
             created_at: 0,
             updated_at: 0,
         }),
     );
 
     let v = recv_json(&mut ws).await;
-    assert_eq!(v["ev"], "cove.updated");
+    assert_eq!(v["ev"], "area.updated");
     assert_eq!(v["data"]["id"], "live-only");
     assert_eq!(v["_id"], 0);
 }
@@ -323,7 +323,7 @@ async fn replay_then_live_no_drop_no_dupe() {
     // While the replay path is mid-stream (or has just finished), fire a
     // brand-new write through the write_with_event path so it's both
     // persisted (in the events table) and broadcast (on the bus).
-    let new_cove = NewCove {
+    let new_area = NewArea {
         name: "live-during-replay".into(),
         color: "#000".into(),
         sort: None,
@@ -336,12 +336,12 @@ async fn replay_then_live_no_drop_no_dupe() {
         &bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
-                let c = cove_create_tx(tx, new_cove).await?;
-                Ok((c.clone(), Event::CoveUpdated(c)))
+                let c = area_create_tx(tx, new_area).await?;
+                Ok((c.clone(), Event::AreaUpdated(c)))
             })
         },
     )
@@ -478,7 +478,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -508,7 +508,7 @@ async fn seed_supported_and_future_overlays(repo: &SqlxRepo, bus: &EventBus) -> 
         bus,
         &calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
         move |tx| {
             Box::pin(async move {
@@ -594,13 +594,13 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
-            Event::CoveUpdated(calm_server::model::Cove {
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            Event::AreaUpdated(calm_server::model::Area {
                 id: "pre-4".into(),
                 name: "n".into(),
                 color: "#000".into(),
                 sort: 0.0,
-                kind: calm_server::model::CoveKind::User,
+                kind: calm_server::model::AreaKind::User,
                 created_at: 0,
                 updated_at: 0,
             }),
@@ -614,13 +614,13 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
-            Event::CoveUpdated(calm_server::model::Cove {
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            Event::AreaUpdated(calm_server::model::Area {
                 id: "pre-5".into(),
                 name: "n".into(),
                 color: "#000".into(),
                 sort: 0.0,
-                kind: calm_server::model::CoveKind::User,
+                kind: calm_server::model::AreaKind::User,
                 created_at: 0,
                 updated_at: 0,
             }),
@@ -670,7 +670,7 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             // leave before their parent waves.
             "DELETE FROM worker_sessions",
             "DELETE FROM waves",
-            "DELETE FROM coves",
+            "DELETE FROM areas",
             "DELETE FROM plugin_kv",
             "DELETE FROM plugin_tokens",
             "DELETE FROM plugins",
@@ -694,13 +694,13 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
-            Event::CoveUpdated(calm_server::model::Cove {
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            Event::AreaUpdated(calm_server::model::Area {
                 id: "post-1".into(),
                 name: "n".into(),
                 color: "#000".into(),
                 sort: 0.0,
-                kind: calm_server::model::CoveKind::User,
+                kind: calm_server::model::AreaKind::User,
                 created_at: 0,
                 updated_at: 0,
             }),
@@ -714,13 +714,13 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
             None,
             &bus,
             &calm_server::card_role_cache::CardRoleCache::new(),
-            &calm_server::wave_cove_cache::WaveCoveCache::new(),
-            Event::CoveUpdated(calm_server::model::Cove {
+            &calm_server::wave_area_cache::WaveAreaCache::new(),
+            Event::AreaUpdated(calm_server::model::Area {
                 id: "post-2".into(),
                 name: "n".into(),
                 color: "#000".into(),
                 sort: 0.0,
-                kind: calm_server::model::CoveKind::User,
+                kind: calm_server::model::AreaKind::User,
                 created_at: 0,
                 updated_at: 0,
             }),
@@ -850,10 +850,10 @@ async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
 //        reconnects cold (landing on the bounded path above).
 // ---------------------------------------------------------------------------
 
-/// Seed `n` `cove.updated` rows via `log_pure_event` (cheaper than the
-/// full `cove_create_tx` write path when only the event log matters).
+/// Seed `n` `area.updated` rows via `log_pure_event` (cheaper than the
+/// full `area_create_tx` write path when only the event log matters).
 /// Returns the assigned `events.id`s in append order.
-async fn seed_n_cove_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i64> {
+async fn seed_n_area_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i64> {
     let mut ids = Vec::with_capacity(n);
     for i in 0..n {
         let id = repo
@@ -863,13 +863,13 @@ async fn seed_n_cove_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i
                 None,
                 bus,
                 &calm_server::card_role_cache::CardRoleCache::new(),
-                &calm_server::wave_cove_cache::WaveCoveCache::new(),
-                Event::CoveUpdated(calm_server::model::Cove {
+                &calm_server::wave_area_cache::WaveAreaCache::new(),
+                Event::AreaUpdated(calm_server::model::Area {
                     id: format!("cap-{i}").into(),
                     name: "n".into(),
                     color: "#000".into(),
                     sort: 0.0,
-                    kind: calm_server::model::CoveKind::User,
+                    kind: calm_server::model::AreaKind::User,
                     created_at: 0,
                     updated_at: 0,
                 }),
@@ -884,7 +884,7 @@ async fn seed_n_cove_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i
 #[tokio::test]
 async fn cold_replay_over_cap_skips_to_tip() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
+    let seeded = seed_n_area_updates(&repo, &bus, 10).await;
     let tip = *seeded.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
@@ -904,9 +904,9 @@ async fn cold_replay_over_cap_skips_to_tip() {
 
     // The connection stays live-forward: a fresh write past the tip must
     // still arrive (the skip must not poison the dedup cursor).
-    let live_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let live_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let live = recv_json(&mut ws).await;
-    assert_eq!(live["ev"], "cove.updated");
+    assert_eq!(live["ev"], "area.updated");
     assert_eq!(live["_id"], live_id);
 }
 
@@ -926,7 +926,7 @@ async fn cold_replay_over_cap_skips_to_tip() {
 async fn cold_skip_acks_live_delivered_row_without_duplicate() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     // Backlog of 10 (> cap 6) exists BEFORE the connection opens.
-    let pre = seed_n_cove_updates(&repo, &bus, 10).await;
+    let pre = seed_n_area_updates(&repo, &bus, 10).await;
     let backlog_tip = *pre.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
@@ -942,10 +942,10 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
 
     // Commit a row AFTER the connection subscribed. Its live arrival below
     // proves it postdates the subscribe AND that it was delivered.
-    let live_row = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let live_row = seed_n_area_updates(&repo, &bus, 1).await[0];
     assert_eq!(live_row, backlog_tip + 1);
     let live = recv_json(&mut ws).await;
-    assert_eq!(live["ev"], "cove.updated");
+    assert_eq!(live["ev"], "area.updated");
     assert_eq!(live["_id"], live_row);
 
     // Cold re-anchor: 11 pending rows > cap → promote to the request-time
@@ -969,9 +969,9 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
 
     // Live-forward keeps working past the cursor: a fresh write arrives
     // exactly once.
-    let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
-    assert_eq!(next["ev"], "cove.updated");
+    assert_eq!(next["ev"], "area.updated");
     assert_eq!(next["_id"], next_id);
 }
 
@@ -989,7 +989,7 @@ async fn cold_skip_acks_live_delivered_row_without_duplicate() {
 #[tokio::test]
 async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    let pre = seed_n_cove_updates(&repo, &bus, 10).await;
+    let pre = seed_n_area_updates(&repo, &bus, 10).await;
     let backlog_tip = *pre.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
@@ -998,7 +998,7 @@ async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
     // the client has not yet sent ANY sub frame (topic set empty →
     // never deliverable live).
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let folded_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let folded_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     assert_eq!(folded_id, backlog_tip + 1);
 
     // First and only sub: cold, over-cap. The request-time promotion
@@ -1016,9 +1016,9 @@ async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
 
     // The cursor is consistent: the next frame is the NEXT live write —
     // nothing below the ack leaks, nothing above it is missed.
-    let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
-    assert_eq!(next["ev"], "cove.updated");
+    assert_eq!(next["ev"], "area.updated");
     assert_eq!(next["_id"], next_id);
 }
 
@@ -1042,7 +1042,7 @@ async fn live_only_client_receives_first_post_connect_commit() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     // Pre-history the live-only client must NOT see (also proves the
     // handler does not sneak in a replay).
-    let _ = seed_n_cove_updates(&repo, &bus, 3).await;
+    let _ = seed_n_area_updates(&repo, &bus, 3).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -1055,10 +1055,10 @@ async fn live_only_client_receives_first_post_connect_commit() {
 
     // The subscription is provably active from here on; this persisted
     // commit must reach the client as its very first frame.
-    let live_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let live_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let first = recv_json(&mut ws).await;
     assert_eq!(
-        first["ev"], "cove.updated",
+        first["ev"], "area.updated",
         "live-only client's first frame must be the live event, got {first}"
     );
     assert_eq!(first["_id"], live_id, "persisted id rides the wire");
@@ -1085,7 +1085,7 @@ async fn cold_over_cap_flood_after_connect_is_absorbed_by_promotion() {
     // The log is empty at accept; the flood lands afterwards, before any
     // sub frame (never-deliverable live: the topic set is still empty).
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let flood = seed_n_cove_updates(&repo, &bus, 7).await;
+    let flood = seed_n_area_updates(&repo, &bus, 7).await;
     let flood_tip = *flood.last().unwrap();
 
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
@@ -1099,16 +1099,16 @@ async fn cold_over_cap_flood_after_connect_is_absorbed_by_promotion() {
     assert_eq!(done["_id"], flood_tip, "terminator acks the flood tip");
 
     // Live-forward continues past the absorbed flood.
-    let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let next_id = seed_n_area_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
-    assert_eq!(next["ev"], "cove.updated");
+    assert_eq!(next["ev"], "area.updated");
     assert_eq!(next["_id"], next_id);
 }
 
 #[tokio::test]
 async fn stale_cursor_over_cap_gets_snapshot_required() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
+    let seeded = seed_n_area_updates(&repo, &bus, 10).await;
 
     // Resume from just past the first row: 9 pending rows > cap of 6.
     let url = format!("ws://{}/api/events", addr);
@@ -1166,7 +1166,7 @@ async fn seed_unknown_kind_row(repo: &SqlxRepo) -> i64 {
 #[tokio::test]
 async fn replay_exactly_at_cap_streams_full_window() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    let seeded = seed_n_cove_updates(&repo, &bus, 6).await;
+    let seeded = seed_n_area_updates(&repo, &bus, 6).await;
     let tip = *seeded.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
@@ -1180,7 +1180,7 @@ async fn replay_exactly_at_cap_streams_full_window() {
     for id in &seeded {
         let v = recv_json(&mut ws).await;
         assert_eq!(
-            v["ev"], "cove.updated",
+            v["ev"], "area.updated",
             "at-cap window must stream, got {v}"
         );
         assert_eq!(v["_id"], *id, "frame ids in order");
@@ -1195,9 +1195,9 @@ async fn over_cap_decision_counts_raw_rows_not_deserialized() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     // Window after `since = head[0]`: 3 good + 1 unknown-kind + 3 good
     // = 7 RAW rows (> cap 6) that deserialize to 6 events (== cap).
-    let head = seed_n_cove_updates(&repo, &bus, 4).await;
+    let head = seed_n_area_updates(&repo, &bus, 4).await;
     let _unknown = seed_unknown_kind_row(&repo).await;
-    let _tail = seed_n_cove_updates(&repo, &bus, 3).await;
+    let _tail = seed_n_area_updates(&repo, &bus, 3).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -1219,9 +1219,9 @@ async fn over_cap_decision_counts_raw_rows_not_deserialized() {
 async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     // 2 good + 1 unknown-kind + 2 good = 5 raw rows <= cap 6: full replay.
-    let head = seed_n_cove_updates(&repo, &bus, 2).await;
+    let head = seed_n_area_updates(&repo, &bus, 2).await;
     let unknown_id = seed_unknown_kind_row(&repo).await;
-    let tail = seed_n_cove_updates(&repo, &bus, 2).await;
+    let tail = seed_n_area_updates(&repo, &bus, 2).await;
     let tip = *tail.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
@@ -1236,7 +1236,7 @@ async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
     expected.extend(&tail);
     for id in &expected {
         let v = recv_json(&mut ws).await;
-        assert_eq!(v["ev"], "cove.updated", "good rows must stream, got {v}");
+        assert_eq!(v["ev"], "area.updated", "good rows must stream, got {v}");
         assert_eq!(
             v["_id"], *id,
             "no event may be skipped around the unknown-kind row"
@@ -1273,7 +1273,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
         None,
         &bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::wave_area_cache::WaveAreaCache::new(),
         Event::ClaudeHook {
             card_id: CardId::from("card-hook"),
             kind: "stop".into(),
@@ -1287,7 +1287,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
 
     // Age the seeded rows past a millisecond horizon, then run the real
     // pruner: it deletes exactly the interior `claude.hook` row (structural
-    // cove.updated rows are not allowlisted).
+    // area.updated rows are not allowlisted).
     tokio::time::sleep(Duration::from_millis(50)).await;
     let policy = EventsRetentionPolicy {
         horizon: Duration::from_millis(1),
@@ -1369,7 +1369,7 @@ async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
         None,
         &bus,
         &calm_server::card_role_cache::CardRoleCache::new(),
-        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        &calm_server::wave_area_cache::WaveAreaCache::new(),
         Event::ClaudeHook {
             card_id: CardId::from("card-hook"),
             kind: "stop".into(),
@@ -1399,7 +1399,7 @@ async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
         "sanity: the live tip now sits below the prune watermark"
     );
 
-    // Cold replay: streams the surviving coves, then the terminator must
+    // Cold replay: streams the surviving areas, then the terminator must
     // ack up to the WATERMARK, not the (lower) live tip.
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();

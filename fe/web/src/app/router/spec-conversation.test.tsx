@@ -12,8 +12,8 @@ import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
-const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const WAVE = { id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const WAVE_B = { ...WAVE, id: 'w2', title: 'Second wave', sort: 2 };
@@ -49,8 +49,8 @@ function setup(reply?: Reply) {
         const response = await reply(request);
         if (response) return response;
       }
-      if (request.path === '/api/coves') return ok([COVE]);
-      if (request.path === '/api/coves/c1/waves') return ok([WAVE, WAVE_B]);
+      if (request.path === '/api/areas') return ok([AREA]);
+      if (request.path === '/api/areas/c1/waves') return ok([WAVE, WAVE_B]);
       if (request.path === '/api/overlays?entity_kind=wave') return ok([]);
       if (request.path === '/api/waves/w1') return ok({ wave: WAVE, cards: [CARD], overlays: [] });
       if (request.path === '/api/waves/w2') return ok({ wave: WAVE_B, cards: [CARD_B], overlays: [] });
@@ -239,7 +239,7 @@ describe('spec conversation regressions', () => {
    * reading is a lie told by a control.
    *
    * #1189 removed the premise. A wave holds as many assistant conversations as
-   * you start, so `/new` here means what it means on a cove, and the composer
+   * you start, so `/new` here means what it means on an area, and the composer
    * becomes the combobox `useTriggerMenu` emits when a trigger is configured.
    * Asserted through the accessibility tree, which is where the difference is
    * visible to a reader.
@@ -305,13 +305,13 @@ describe('spec conversation regressions', () => {
   });
 
   /*
-   * A cove lists its *own* conversations, from the server (#1098) — never the
+   * An area lists its *own* conversations, from the server (#1098) — never the
    * spec conversations of the waves inside it. Those hang off a wave and are
    * read on that wave's page; listing them here would put rows in a panel whose
    * drawer this route deliberately opens in place, on a card it has no scope
    * for. Today is still where a remembered wave conversation shows up.
    */
-  it('does not list a wave spec conversation on that wave\'s cove', async () => {
+  it('does not list a wave spec conversation on that wave\'s area', async () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat' });
     fireEvent.click(screen.getByRole('button', { name: 'Work' }));
@@ -520,7 +520,7 @@ describe('spec conversation regressions', () => {
    * `cancels reset on Escape without also closing the drawer` stood here. The
    * Escape layering it protected — an inner surface eats the key before the
    * drawer does — is unchanged and still needs a guard; its new subject is the
-   * `/` command menu, and that test lives in `cove-conversation.test.tsx`
+   * `/` command menu, and that test lives in `area-conversation.test.tsx`
    * beside the rest of the slash-command behaviour, because the wave route
    * deliberately has no `/` menu (see `startAnother` in the router).
    */

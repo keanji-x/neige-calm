@@ -24,14 +24,14 @@
 //! opposite direction from the mistake above: a wrong *green* rather than a
 //! wrong *cause*.
 //!
-//! and the four refusals (frozen / already attached / system cove / non-empty)
-//! each have one too. The freeze latch's system-cove exclusion has
+//! and the four refusals (frozen / already attached / system area / non-empty)
+//! each have one too. The freeze latch's system-area exclusion has
 //! `a_workspace_lease_never_freezes_the_launchpad`; freeze point 2 (terminal
 //! persistence), which S3 left open as gap N17 and S6 closed, has
 //! `a_terminal_card_lands_in_the_workspace_and_freezes_it`.
 //!
 //! The transition is `managed → attached` and nothing else. There is no
-//! `managed → managed`: a managed path is derived from the wave's cove and id,
+//! `managed → managed`: a managed path is derived from the wave's area and id,
 //! so re-allocating one always re-derives the same directory
 //! (`a_managed_target_is_a_documented_400_not_a_silent_no_op`).
 
@@ -53,7 +53,7 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -78,7 +78,7 @@ struct Boot {
     /// request can reach — see `a_non_user_actor_may_not_change_a_workspace`.
     state: AppState,
     roles: CardRoleCache,
-    waves: WaveCoveCache,
+    waves: WaveAreaCache,
     shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
     #[allow(dead_code)]
     tmp: TempDir,
@@ -90,9 +90,9 @@ async fn boot() -> Boot {
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
+    let waves = WaveAreaCache::new();
     sqlx_repo.seed_card_role_cache(&roles).await.unwrap();
-    sqlx_repo.seed_wave_cove_cache(&waves).await.unwrap();
+    sqlx_repo.seed_wave_area_cache(&waves).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -170,7 +170,7 @@ async fn install_live_harness(b: &Boot, wave_id: &str) -> String {
             repo,
             events: calm_server::event::EventBus::new(),
             card_role_cache: b.roles.clone(),
-            wave_cove_cache: b.waves.clone(),
+            wave_area_cache: b.waves.clone(),
             daemon: b.shared_codex.clone(),
             config: Default::default(),
             snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
@@ -209,26 +209,26 @@ async fn request(
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-async fn create_cove(b: &Boot, name: &str) -> String {
+async fn create_area(b: &Boot, name: &str) -> String {
     let (status, body) = request(
         b.app.clone(),
         "POST",
-        "/api/coves",
+        "/api/areas",
         Some(json!({"name": name, "color": "#abc"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let cove: Value = serde_json::from_str(&body).unwrap();
-    cove["id"].as_str().unwrap().to_string()
+    let area: Value = serde_json::from_str(&body).unwrap();
+    area["id"].as_str().unwrap().to_string()
 }
 
 /// A managed wave: the title-only create the new FE sends.
-async fn managed_wave(b: &Boot, cove_id: &str, title: &str) -> (String, PathBuf) {
+async fn managed_wave(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf) {
     let (status, text) = request(
         b.app.clone(),
         "POST",
         "/api/waves",
-        Some(json!({"cove_id": cove_id, "title": title, "theme": theme()})),
+        Some(json!({"area_id": area_id, "title": title, "theme": theme()})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={text}");
@@ -442,8 +442,8 @@ fn user_repo(at: &Path) -> PathBuf {
 #[tokio::test]
 async fn a_pristine_wave_is_pointed_at_the_users_repository() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, managed_path) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
     let target_before = fingerprint(&target);
 
@@ -495,16 +495,16 @@ async fn a_pristine_wave_is_pointed_at_the_users_repository() {
         "the old managed directory must be gone from its original path"
     );
 
-    // The claim was minted for this cove, so a second wave in the same
+    // The claim was minted for this area, so a second wave in the same
     // repository does not have to re-argue ownership.
-    let claims: Vec<(String, String)> = sqlx::query_as("SELECT path, cove_id FROM cove_folders")
+    let claims: Vec<(String, String)> = sqlx::query_as("SELECT path, area_id FROM area_folders")
         .fetch_all(b.repo.pool())
         .await
         .unwrap();
     assert_eq!(
         claims,
-        vec![(target.to_string_lossy().into_owned(), cove.clone())],
-        "`attach_folder: true` must claim the directory for the wave's cove"
+        vec![(target.to_string_lossy().into_owned(), area.clone())],
+        "`attach_folder: true` must claim the directory for the wave's area"
     );
 }
 
@@ -512,8 +512,8 @@ async fn a_pristine_wave_is_pointed_at_the_users_repository() {
 #[tokio::test]
 async fn a_second_repoint_is_refused_because_the_first_one_froze_it() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     let first = user_repo(&b.tmp.path().join("first"));
     let second = user_repo(&b.tmp.path().join("second"));
 
@@ -532,8 +532,8 @@ async fn a_second_repoint_is_refused_because_the_first_one_froze_it() {
 #[tokio::test]
 async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, managed_path) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
 
     let (status, body) = repoint_to(&b, &wave, &target).await;
@@ -581,8 +581,8 @@ async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
 #[tokio::test]
 async fn the_fence_is_up_before_the_move_not_after_it() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
 
     let active_before: Vec<String> = sqlx::query_scalar(
@@ -667,8 +667,8 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
 #[tokio::test]
 async fn a_write_between_the_fence_and_the_move_is_refused() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
 
     let entered = Arc::new(tokio::sync::Notify::new());
@@ -733,8 +733,8 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
     // …and no claim was minted. The fence transaction COMMITS (it is also what
     // supersedes the runtimes), so its claim pass has to be scan-only: a row
     // written there would outlive this refusal and leave the caller a 409 plus
-    // a `cove_folders` claim they never got a wave for.
-    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+    // a `area_folders` claim they never got a wave for.
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM area_folders")
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -751,8 +751,8 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
 #[tokio::test]
 async fn a_plain_file_in_the_workspace_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     std::fs::write(path.join("notes.md"), b"the agent wrote this\n").unwrap();
 
     let (status, body) = repoint(&b, &wave).await;
@@ -770,8 +770,8 @@ async fn a_plain_file_in_the_workspace_refuses_the_change() {
 #[tokio::test]
 async fn excluded_worker_output_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let lease = path
         .join(".claude")
         .join("worktrees")
@@ -795,8 +795,8 @@ async fn excluded_worker_output_refuses_the_change() {
 #[tokio::test]
 async fn a_commit_on_a_slice_branch_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     with_identity(&path);
     git(&path, &["checkout", "-q", "-b", "neige/slice"]);
     std::fs::write(path.join("work.txt"), b"worker work\n").unwrap();
@@ -818,8 +818,8 @@ async fn a_commit_on_a_slice_branch_refuses_the_change() {
 #[tokio::test]
 async fn a_lease_worktree_at_the_real_lease_path_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let lease = path
         .join(".claude")
         .join("worktrees")
@@ -854,8 +854,8 @@ async fn a_lease_worktree_at_the_real_lease_path_refuses_the_change() {
 #[tokio::test]
 async fn a_worktree_outside_the_workspace_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let elsewhere = b.tmp.path().join("detached-worktree");
     git(
         &path,
@@ -901,14 +901,14 @@ async fn a_worktree_outside_the_workspace_refuses_the_change() {
 #[tokio::test]
 async fn an_attached_workspace_refuses_the_change() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let repo_dir = user_repo(&b.tmp.path().join("user-project"));
     let (status, text) = request(
         b.app.clone(),
         "POST",
         "/api/waves",
         Some(json!({
-            "cove_id": cove,
+            "area_id": area,
             "title": "attached",
             "cwd": repo_dir.to_string_lossy(),
             "attach_folder": true,
@@ -956,9 +956,9 @@ async fn an_attached_workspace_refuses_the_change() {
 #[tokio::test]
 async fn an_unfrozen_attached_workspace_is_still_refused() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let repo_dir = user_repo(&b.tmp.path().join("user-project"));
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     sqlx::query(
         "UPDATE waves SET workspace_kind='attached', workspace_path=?1, \
          workspace_frozen_at=NULL WHERE id=?2",
@@ -988,11 +988,11 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
     assert_eq!(PathBuf::from(path), repo_dir);
 }
 
-/// The system cove's launchpad path is kernel-maintained and is the documented
+/// The system area's launchpad path is kernel-maintained and is the documented
 /// exception to the freeze latch, so it must be unreachable from the PATCH
 /// route — otherwise the exception becomes a hole.
 #[tokio::test]
-async fn a_system_cove_wave_refuses_the_change() {
+async fn a_system_area_wave_refuses_the_change() {
     let b = boot().await;
     let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
     assert!(
@@ -1016,8 +1016,8 @@ async fn a_system_cove_wave_refuses_the_change() {
 #[tokio::test]
 async fn a_managed_target_is_a_documented_400_not_a_silent_no_op() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let (status, body) = request(
         b.app.clone(),
         "PATCH",
@@ -1050,7 +1050,7 @@ async fn a_managed_target_is_a_documented_400_not_a_silent_no_op() {
 #[tokio::test]
 async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let missing = b.tmp.path().join("no-such-directory");
 
     let (status, body) = request(
@@ -1058,7 +1058,7 @@ async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
         "POST",
         "/api/waves",
         Some(json!({
-            "cove_id": cove, "title": "w", "theme": theme(),
+            "area_id": area, "title": "w", "theme": theme(),
             "cwd": missing.to_string_lossy(), "attach_folder": true,
         })),
     )
@@ -1074,7 +1074,7 @@ async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
         .unwrap();
     assert_eq!(waves, 0, "a refused create must leave no wave row");
 
-    let (wave, _) = managed_wave(&b, &cove, "patched").await;
+    let (wave, _) = managed_wave(&b, &area, "patched").await;
     let (status, body) = repoint_to(&b, &wave, &missing).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body.contains("does not exist"), "{body}");
@@ -1085,7 +1085,7 @@ async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
 #[tokio::test]
 async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_routes() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     // A real directory, outside any repository, with no `.git`.
     let plain = b.tmp.path().join("not-a-repo");
     std::fs::create_dir_all(&plain).unwrap();
@@ -1116,7 +1116,7 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
         "POST",
         "/api/waves",
         Some(json!({
-            "cove_id": cove, "title": "w", "theme": theme(),
+            "area_id": area, "title": "w", "theme": theme(),
             "cwd": plain.to_string_lossy(), "attach_folder": true,
         })),
     )
@@ -1127,7 +1127,7 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
         "the response must carry the real reason: {body}"
     );
 
-    let (wave, _) = managed_wave(&b, &cove, "patched").await;
+    let (wave, _) = managed_wave(&b, &area, "patched").await;
     let (status, body) = repoint_to(&b, &wave, &plain).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(body.contains("not inside a Git work tree"), "{body}");
@@ -1138,10 +1138,10 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
 #[tokio::test]
 async fn attaching_a_file_rather_than_a_directory_is_refused() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let file = b.tmp.path().join("a-file");
     std::fs::write(&file, b"not a directory\n").unwrap();
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
 
     let (status, body) = repoint_to(&b, &wave, &file).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
@@ -1157,11 +1157,11 @@ async fn attaching_a_file_rather_than_a_directory_is_refused() {
 #[tokio::test]
 async fn attaching_a_subdirectory_of_a_repository_is_allowed() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
     let sub = repo.join("crates");
     std::fs::create_dir_all(&sub).unwrap();
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
 
     let (status, body) = repoint_to(&b, &wave, &sub).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
@@ -1169,17 +1169,17 @@ async fn attaching_a_subdirectory_of_a_repository_is_allowed() {
 }
 
 // ---------------------------------------------------------------------------
-// The cove_folders claim rules — the same ones `POST /api/waves` uses
+// The area_folders claim rules — the same ones `POST /api/waves` uses
 // ---------------------------------------------------------------------------
 
-/// A directory another cove already claims comes back as the STRUCTURED 409,
+/// A directory another area already claims comes back as the STRUCTURED 409,
 /// with nothing moved. Same body shape the create route returns, because both
 /// go through `enforce_folder_claim_tx`.
 #[tokio::test]
-async fn a_directory_claimed_by_another_cove_is_a_structured_conflict() {
+async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     let b = boot().await;
-    let owner = create_cove(&b, "owner").await;
-    let other = create_cove(&b, "other").await;
+    let owner = create_area(&b, "owner").await;
+    let other = create_area(&b, "other").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
 
     // `owner` claims it first, through the create route.
@@ -1188,7 +1188,7 @@ async fn a_directory_claimed_by_another_cove_is_a_structured_conflict() {
         "POST",
         "/api/waves",
         Some(json!({
-            "cove_id": owner, "title": "first", "theme": theme(),
+            "area_id": owner, "title": "first", "theme": theme(),
             "cwd": repo.to_string_lossy(), "attach_folder": true,
         })),
     )
@@ -1213,9 +1213,9 @@ async fn a_directory_claimed_by_another_cove_is_a_structured_conflict() {
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     let conflict: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        conflict["cove_id"].as_str(),
+        conflict["area_id"].as_str(),
         Some(owner.as_str()),
-        "the 409 must name the cove that owns the directory, not just say \
+        "the 409 must name the area that owns the directory, not just say \
          `conflict`: {body}"
     );
     assert_eq!(
@@ -1257,9 +1257,9 @@ async fn a_directory_claimed_by_another_cove_is_a_structured_conflict() {
 #[tokio::test]
 async fn an_unclaimed_directory_without_attach_folder_is_refused() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
 
     let (status, body) = request(
         b.app.clone(),
@@ -1277,29 +1277,29 @@ async fn an_unclaimed_directory_without_attach_folder_is_refused() {
     assert!(trash_entries(&b.workspace_root).is_empty());
 }
 
-/// A directory this cove already claims is a no-op for the claim table, not a
+/// A directory this area already claims is a no-op for the claim table, not a
 /// duplicate-row 409 — issue #275's rule, inherited for free.
 #[tokio::test]
-async fn a_directory_this_cove_already_claims_needs_no_new_claim() {
+async fn a_directory_this_area_already_claims_needs_no_new_claim() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
+    let area = create_area(&b, "c").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
     let (status, body) = request(
         b.app.clone(),
         "POST",
         "/api/waves",
         Some(json!({
-            "cove_id": cove, "title": "first", "theme": theme(),
+            "area_id": area, "title": "first", "theme": theme(),
             "cwd": repo.to_string_lossy(), "attach_folder": true,
         })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let (wave, _) = managed_wave(&b, &cove, "second").await;
+    let (wave, _) = managed_wave(&b, &area, "second").await;
     let (status, body) = repoint_to(&b, &wave, &repo).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM area_folders")
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -1309,8 +1309,8 @@ async fn a_directory_this_cove_already_claims_needs_no_new_claim() {
 #[tokio::test]
 async fn a_workspace_change_cannot_ride_along_with_row_edits() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     // A target that would otherwise be accepted, so the 400 can only be coming
     // from the mixing rule.
     let target = user_repo(&b.tmp.path().join("my-project"));
@@ -1358,8 +1358,8 @@ async fn a_workspace_change_cannot_ride_along_with_row_edits() {
 #[tokio::test]
 async fn a_terminal_card_lands_in_the_workspace_and_freezes_it() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     assert_eq!(workspace_row(&b, &wave).await.2, None, "premise: unfrozen");
 
     let (status, body) = request(
@@ -1419,8 +1419,8 @@ async fn a_terminal_card_lands_in_the_workspace_and_freezes_it() {
 #[tokio::test]
 async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let elsewhere = b.tmp.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
 
@@ -1452,8 +1452,8 @@ async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
 #[tokio::test]
 async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     assert_eq!(workspace_row(&b, &wave).await.2, None, "premise: unfrozen");
 
     let (status, body) = request(
@@ -1512,8 +1512,8 @@ async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
 #[tokio::test]
 async fn the_first_workspace_lease_freezes_the_workspace() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     assert_eq!(workspace_row(&b, &wave).await.2, None, "premise: unfrozen");
 
     let card: String = sqlx::query_scalar(
@@ -1566,9 +1566,9 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
 #[tokio::test]
 async fn a_child_wave_is_frozen_at_creation_and_cannot_be_repointed() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (parent, _) = managed_wave(&b, &cove, "parent").await;
-    let (child, _) = managed_wave(&b, &cove, "child").await;
+    let area = create_area(&b, "c").await;
+    let (parent, _) = managed_wave(&b, &area, "parent").await;
+    let (child, _) = managed_wave(&b, &area, "child").await;
     // The child adapter's own tests cover the creation path; here the point is
     // the *state* it produces, so the row is put into that state directly and
     // the production PATCH route is what gets tested.
@@ -1683,8 +1683,8 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
 #[tokio::test]
 async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
     let runtime_id = install_live_harness(&b, &wave).await;
 
@@ -1708,8 +1708,8 @@ async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
 #[tokio::test]
 async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
     install_live_harness(&b, &wave).await;
     let starts_before = harness_start_payloads(&b).await.len();
@@ -1784,8 +1784,8 @@ async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
 #[tokio::test]
 async fn a_failed_harness_shutdown_still_completes_the_repoint() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
     install_live_harness(&b, &wave).await;
     let starts_before = harness_start_payloads(&b).await.len();
@@ -1833,8 +1833,8 @@ async fn a_failed_harness_shutdown_still_completes_the_repoint() {
 #[tokio::test]
 async fn a_non_user_actor_may_not_change_a_workspace() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, managed_path) = managed_wave(&b, &area, "w").await;
     let target = user_repo(&b.tmp.path().join("my-project"));
     let target_before = fingerprint(&target);
 

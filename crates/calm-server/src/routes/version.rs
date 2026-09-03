@@ -47,7 +47,14 @@ pub const API_VERSION: &str = "3";
 /// at 17 still renders Settings › Templates, and its Save now 404s. The failure
 /// is worse than the #1209 one it mirrors, because it is silent until the user
 /// has typed an edit and pressed the button.
-pub const WEB_COMPAT_VERSION: u32 = 18;
+///
+/// #1316 S1 bumps 18 -> 19: `Cove` became `Area` across the whole stack, so a
+/// cached bundle at 18 is wrong in three independent ways at once — it calls
+/// `/api/coves*` (now 404), reads a `cove_id` field the server no longer emits,
+/// and gates its event stream on `cove.updated` / `cove.deleted` discriminators
+/// that migration 0080 rewrote. Any one of those alone would justify the bump;
+/// together they would produce a bundle that renders an empty, silent shell.
+pub const WEB_COMPAT_VERSION: u32 = 19;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

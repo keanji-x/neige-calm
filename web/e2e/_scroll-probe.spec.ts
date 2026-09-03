@@ -223,7 +223,7 @@ test('scroll-routing probe — capture wheel behavior across all scroll surfaces
   // PHASE 1B — Navigate to a wave (if any exist), wheel over each card
   // ============================================================
 
-  // Try to find a wave to enter. We look for any wave-row / cove-nav.
+  // Try to find a wave to enter. We look for any wave-row / area-nav.
   // The probe stops here if no wave is reachable — note in findings.
   const firstWaveId = await page.evaluate(async () => {
     const r = await fetch('/api/waves');

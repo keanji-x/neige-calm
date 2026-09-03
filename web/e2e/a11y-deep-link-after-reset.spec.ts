@@ -12,7 +12,7 @@
 // dropped by the `advanceCursor` no-regress guard, so the cache never
 // fills.
 //
-// Symptom in the test harness: deep-linking to `/calm/cove/<id>?trace=1`
+// Symptom in the test harness: deep-linking to `/calm/area/<id>?trace=1`
 // directly after reset would hang on "Connecting to calm-server…" or
 // render a stale React-Query cache. The workaround was to land on
 // Today first then navigate via the sidebar (the Today route's
@@ -26,11 +26,11 @@
 // comes up cold. Direct deep-link works again.
 //
 // This test pins the deep-link-after-reset contract: it would have
-// failed pre-#290 (the cove name never renders within the timeout), and
+// failed pre-#290 (the area name never renders within the timeout), and
 // passes with the fix in place.
 
 import { test, expect } from '@playwright/test';
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import { waitForEvent } from './helpers/trace';
 
 test.describe('a11y · deep-link after reset (issue #290)', () => {
@@ -38,42 +38,42 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     await resetReplayServer(request);
   });
 
-  test('Deep-link to cove directly after resetReplayServer() renders cove name', async ({
+  test('Deep-link to area directly after resetReplayServer() renders area name', async ({
     page,
     request,
   }) => {
-    // Mint cove + wave via REST so the page boots with real rows on
+    // Mint area + wave via REST so the page boots with real rows on
     // the kernel side; the bug we're pinning is purely about the WS
     // sync engine dropping events the kernel already persisted.
-    const cove = await createUserCove(request, 'DeepLinkCove');
-    await createWaveInCove(request, cove.id, 'AnchorWave');
+    const area = await createUserArea(request, 'DeepLinkArea');
+    await createWaveInArea(request, area.id, 'AnchorWave');
 
     // Critically: NO `page.goto('/calm/?trace=1')` first. Deep-link
-    // straight to the cove URL — this is the path that races the
+    // straight to the area URL — this is the path that races the
     // WS resync pre-#290.
-    await page.goto(`/calm/cove/${cove.id}?trace=1`);
+    await page.goto(`/calm/area/${area.id}?trace=1`);
 
-    // The cove header renders the cove name as a button with
+    // The area header renders the area name as a button with
     // `aria-label=<name>` and `aria-describedby` pointing at the
-    // "Rename cove name" sr-only hint (see `Cove.tsx`). Use the same
+    // "Rename area name" sr-only hint (see `Area.tsx`). Use the same
     // role+name+description locator the rename tests use so this
-    // test's assertion lines up with the canonical cove-name surface.
-    // 15s timeout matches `waitForCoveInSidebar` — long enough for a
+    // test's assertion lines up with the canonical area-name surface.
+    // 15s timeout matches `waitForAreaInSidebar` — long enough for a
     // fresh WS connect + bridge mount + initial data refetch, narrow
     // enough that the pre-#290 hang surfaces as a failure.
     await expect(
-      page.getByRole('button', { name: 'DeepLinkCove', description: 'Rename cove name' }),
+      page.getByRole('button', { name: 'DeepLinkArea', description: 'Rename area name' }),
     ).toBeVisible({ timeout: 15_000 });
 
     // Sidebar entry should also be live — pin the cross-surface
     // contract so a regression that only fixes the page-local query
     // (but not the WS-driven sidebar cache) still trips the test.
-    // `exact: true` pins the `.cove-nav` button only — the sidebar
-    // cove row also renders "Expand cove <name>" + "Delete cove
-    // <name>" buttons whose accessible names contain the cove name, so
+    // `exact: true` pins the `.area-nav` button only — the sidebar
+    // area row also renders "Expand area <name>" + "Delete area
+    // <name>" buttons whose accessible names contain the area name, so
     // a loose substring match trips strict mode (3 elements).
     await expect(
-      page.locator('aside.side').getByRole('button', { name: 'DeepLinkCove', exact: true }),
+      page.locator('aside.side').getByRole('button', { name: 'DeepLinkArea', exact: true }),
     ).toBeVisible({ timeout: 5_000 });
   });
 
@@ -81,11 +81,11 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     page,
     request,
   }) => {
-    // Parallel of the cove-deep-link case for the wave URL. The wave
+    // Parallel of the area-deep-link case for the wave URL. The wave
     // page's initial-data query goes through `useWaveDetailQuery` —
     // same WS-resync race surface, same pre-#290 hang risk.
-    const cove = await createUserCove(request, 'DeepLinkWaveCove');
-    const wave = await createWaveInCove(request, cove.id, 'DeepLinkWave');
+    const area = await createUserArea(request, 'DeepLinkWaveArea');
+    const wave = await createWaveInArea(request, area.id, 'DeepLinkWave');
 
     await page.goto(`/calm/wave/${wave.id}?trace=1`);
 
@@ -96,11 +96,11 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
       page.getByRole('button', { name: wave.title, description: 'Rename wave' }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Cross-surface: the wave page's `<button class="wave-cove">`
-    // breadcrumb back-link carries the cove name. Pre-#290 the
+    // Cross-surface: the wave page's `<button class="wave-area">`
+    // breadcrumb back-link carries the area name. Pre-#290 the
     // breadcrumb would render stale (or empty) when the WS-resync
-    // race lost a `cove.updated` event.
-    await expect(page.locator('button.wave-cove', { hasText: 'DeepLinkWaveCove' })).toBeVisible({
+    // race lost a `area.updated` event.
+    await expect(page.locator('button.wave-area', { hasText: 'DeepLinkWaveArea' })).toBeVisible({
       timeout: 5_000,
     });
   });
@@ -115,7 +115,7 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     //      id far above anything the post-reset log can hold — same
     //      effect as a prior test's leftover cursor would have.
     //   2. Open Today so the bridge mounts and the WS connects.
-    //   3. Assert the bus delivered `cove.updated` to the trace ring
+    //   3. Assert the bus delivered `area.updated` to the trace ring
     //      buffer AFTER the reset bounce — pre-#290 the WS would
     //      stick on the stale cursor and the bus would drop every
     //      post-reset event.
@@ -134,8 +134,8 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     // bus-resync contract this test pins. The deep-link contract is
     // covered by the two tests above; this test specifically pins
     // "the WS bus recovers from a stale cursor."
-    const cove = await createUserCove(request, 'StaleCursorCove');
-    await createWaveInCove(request, cove.id, 'AnchorWave');
+    const area = await createUserArea(request, 'StaleCursorArea');
+    await createWaveInArea(request, area.id, 'AnchorWave');
 
     await page.addInitScript(() => {
       // 999999 is well past any id the post-reset replay binary will
@@ -150,19 +150,19 @@ test.describe('a11y · deep-link after reset (issue #290)', () => {
     // bounces the socket, and reconnects cold under `since=0`. The
     // trace ring buffer is set up under `?trace=1`; after the bounce
     // the second WS pass delivers a fresh replay, including
-    // `cove.updated` for the cove we minted above. Pre-#290 the
-    // stale cursor stranded the WS — no `cove.updated` would ever
+    // `area.updated` for the area we minted above. Pre-#290 the
+    // stale cursor stranded the WS — no `area.updated` would ever
     // land on the buffer.
-    await waitForEvent(page, 'cove.updated', 15_000);
+    await waitForEvent(page, 'area.updated', 15_000);
 
     // Sidebar entry should be visible — pin the cross-surface
     // contract: the WS resync feeds the React-Query cache the
     // sidebar reads from.
-    // `exact: true` — see the note in the deep-link-to-cove test: the
-    // cove row's "Expand cove" / "Delete cove" buttons also carry the
+    // `exact: true` — see the note in the deep-link-to-area test: the
+    // area row's "Expand area" / "Delete area" buttons also carry the
     // name, so a loose match resolves to 3 elements under strict mode.
     await expect(
-      page.locator('aside.side').getByRole('button', { name: 'StaleCursorCove', exact: true }),
+      page.locator('aside.side').getByRole('button', { name: 'StaleCursorArea', exact: true }),
     ).toBeVisible({ timeout: 5_000 });
   });
 });

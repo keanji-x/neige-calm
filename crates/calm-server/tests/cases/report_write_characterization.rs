@@ -229,7 +229,7 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_WRITE;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
-use calm_server::model::{NewCard, NewCove, NewWave, WaveLifecycle, WavePatch};
+use calm_server::model::{NewArea, NewCard, NewWave, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -521,7 +521,7 @@ async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
     );
 }
 
-/// Mint a **second** wave in the fixture's cove, with its own Spec card and
+/// Mint a **second** wave in the fixture's area, with its own Spec card and
 /// its own live session bound to that card, and register the new card with
 /// the role cache the way production does at boot
 /// (`Repo::seed_card_role_cache`, the call `AppState::new` makes at
@@ -538,7 +538,7 @@ async fn seed_foreign_wave_spec_session(boot: &Boot, session_id: &str) {
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: "foreign wave".into(),
             sort: None,
             cwd: String::new(),
@@ -613,7 +613,7 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
         // …but the acting session is the foreign wave's.
         session_id: FOREIGN_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "foreign-spec-thread".to_string(),
     };
 
@@ -714,7 +714,7 @@ async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
             provider: AgentProvider::Claude,
             session_id: CLAUDE_SESSION_ID.to_string(),
             wave_id: Some(boot.wave_id.as_str().to_string()),
-            cove_id: boot.cove_id.as_str().to_string(),
+            area_id: boot.area_id.as_str().to_string(),
             thread_id: "claude-assistant-thread".to_string(),
         },
         json!({
@@ -742,7 +742,7 @@ async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
 // the actor extractor and the actor pinning inside the handlers all run.
 //
 // The *state* is not production's. `AppState::from_parts` leaves
-// `card_role_cache` and `wave_cove_cache` empty, where `AppState::new` seeds
+// `card_role_cache` and `wave_area_cache` empty, where `AppState::new` seeds
 // both from the database at boot (`state.rs:996`). It is harmless for what
 // these two tests observe — every write here is `ActorId::User`, which
 // `role_gate::enforce_role` admits without consulting either cache — and it
@@ -788,14 +788,14 @@ impl RestBoot {
     }
 }
 
-/// Fresh in-memory server with one cove → one wave → one wave-report card,
+/// Fresh in-memory server with one area → one wave → one wave-report card,
 /// plus a logged-in owner session. The wave keeps the lifecycle
 /// `wave_create` mints, which the assertion below pins as `Draft` — that is
 /// the precondition the auto-promotion observations need.
 async fn rest_boot() -> RestBoot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "report-characterization".into(),
             color: "#000".into(),
             sort: None,
@@ -805,7 +805,7 @@ async fn rest_boot() -> RestBoot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "report wave".into(),
             sort: None,
             cwd: String::new(),
@@ -844,7 +844,7 @@ async fn rest_boot() -> RestBoot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

@@ -37,14 +37,14 @@ afterEach(() => { document.body.replaceChildren(); });
 
 const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-const COVE = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const OTHER_COVE = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
+const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = {
-  id: 'w1', cove_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: 30, terminal_at: null, created_at: 1, updated_at: 2,
 };
 const OTHER_WAVE = {
-  id: 'w2', cove_id: 'c1', title: 'Remote access', sort: 2, lifecycle: 'draft', cwd: '/tmp',
+  id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, lifecycle: 'draft', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 
@@ -95,9 +95,9 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 function setup(path: string) {
   const transport: ApiTransportPort = {
     send(request) {
-      if (request.path === '/api/coves') return Promise.resolve(ok([COVE, OTHER_COVE]));
-      if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([WAVE, OTHER_WAVE]));
-      if (request.path === '/api/coves/c2/waves') return Promise.resolve(ok([]));
+      if (request.path === '/api/areas') return Promise.resolve(ok([AREA, OTHER_AREA]));
+      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([WAVE, OTHER_WAVE]));
+      if (request.path === '/api/areas/c2/waves') return Promise.resolve(ok([]));
       if (request.path === '/api/waves/w1') {
         return Promise.resolve(ok({ wave: WAVE, cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [] }));
       }
@@ -197,9 +197,9 @@ describe('Wave mobile presentation', () => {
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-pages.png' });
 
-    dockButton('Coves').click();
+    dockButton('Areas').click();
     await Promise.all(navigation.getAnimations().map((animation) => animation.finished));
-    expect(page.getByRole('dialog', { name: 'Coves' })).toBeTruthy();
+    expect(page.getByRole('dialog', { name: 'Areas' })).toBeTruthy();
     const dock = dockElement();
     const dockItems = dock.querySelectorAll<HTMLElement>('button');
     expect(dock.getBoundingClientRect().width).toBeLessThanOrEqual(280);

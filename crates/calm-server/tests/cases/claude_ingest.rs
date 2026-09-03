@@ -12,14 +12,14 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, session_supersede_active_tx};
 use calm_server::event::{Event, EventBus};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -176,8 +176,8 @@ async fn claude_hook_superseded_session_id_falls_back_and_succeeds() {
 
 async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -187,7 +187,7 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -218,8 +218,8 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
     assert_eq!(cache.get(&card.id), Some(CardRole::Worker));
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let state = AppState::from_parts(
@@ -233,11 +233,11 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events.clone(),
-            calm_server::state::WriteContext::new(cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let app = axum::Router::new()
         .merge(routes::router())
@@ -353,7 +353,7 @@ async fn post_and_assert(
     }
 
     let row: (String, String, String, String, String, String, String) = sqlx::query_as(
-        "SELECT kind, actor, payload, scope_kind, scope_card, scope_wave, scope_cove \
+        "SELECT kind, actor, payload, scope_kind, scope_card, scope_wave, scope_area \
          FROM events WHERE id = ?1",
     )
     .bind(env.id)
@@ -372,6 +372,6 @@ async fn post_and_assert(
     assert_eq!(row.3, "card");
     assert_eq!(row.4, card_id);
     assert!(!row.5.is_empty(), "scope_wave should be persisted");
-    assert!(!row.6.is_empty(), "scope_cove should be persisted");
+    assert!(!row.6.is_empty(), "scope_area should be persisted");
     event_id
 }

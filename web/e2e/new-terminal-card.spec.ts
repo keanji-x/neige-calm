@@ -7,34 +7,34 @@
 // useWaveDetailQuery refetches → WaveGrid mounts the new card). This
 // spec pins that contract so a regression has a deterministic repro.
 //
-// Issue #175 — the kernel hides the system cove that hosts the default
-// Today terminal, so we mint our own user cove + wave to test in.
+// Issue #175 — the kernel hides the system area that hosts the default
+// Today terminal, so we mint our own user area + wave to test in.
 //
 // Prereq: `make dev` serving http://localhost:4041 with the default seed.
 
 import { test, expect } from '@playwright/test';
 
 test('newly created terminal card appears without a reload', async ({ page }) => {
-  // Step 1 — mint a fresh user cove via the sidebar (issue #175).
+  // Step 1 — mint a fresh user area via the sidebar (issue #175).
   await page.goto('/calm/');
-  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-  const coveName = `E2E cove ${Date.now()}`;
-  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+  const areaName = `E2E area ${Date.now()}`;
+  await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+  const nameInput = sidebarAreas.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
 
-  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
-  // whose accessible name also contains coveName — without exact match
+  // `exact: true` excludes the per-row "Delete area \"<name>\"" button
+  // whose accessible name also contains areaName — without exact match
   // the locator hits both and trips Playwright's strict mode.
-  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  const areaBtn = sidebarAreas.getByRole('button', { name: areaName, exact: true });
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-  // Step 2 — create a new wave inside this cove via the kernel REST
-  // API directly. PR 3's NewTaskForm wires the cove-page "+ New wave"
+  // Step 2 — create a new wave inside this area via the kernel REST
+  // API directly. PR 3's NewTaskForm wires the area-page "+ New wave"
   // CTA to the same shared flow, but for this spec (which is purely
   // about the AddPanel terminal-card path inside an existing wave)
   // the REST-direct route is faster and decouples this assertion from
@@ -42,16 +42,16 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   // against this project's baseURL (set in playwright.config.ts →
   // 'chromium': http://localhost:4041/calm/). The helpers/reset.ts
   // variant is replay-port-pinned and only safe for the a11y project.
-  const coveId = new URL(page.url()).pathname.split('/').pop()!;
+  const areaId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title: waveTitle,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about the AddPanel terminal-card path, not working
-      // directories. See `helpers/reset.ts::createWaveInCove` for why
-      // the invented `/tmp/playwright-cove-<id>` attached path was
+      // directories. See `helpers/reset.ts::createWaveInArea` for why
+      // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.
       // #177 — `theme` is a required NewWave field. Mirrors
       // `DARK_THEME_RGB` in web/src/api/themeRgb.ts.

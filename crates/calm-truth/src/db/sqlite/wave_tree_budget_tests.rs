@@ -19,15 +19,15 @@ use super::wave_tree::{
     wave_tree_spec_inventory, wave_tree_term,
 };
 use super::{SqlxRepo, evaluate_schedulability, project_tasks_tx, wave_create_tx, wave_update_tx};
-use crate::model::{NewCove, NewWave, RequestTheme, WavePatch};
+use crate::model::{NewArea, NewWave, RequestTheme, WavePatch};
 
-use super::cove_create_tx;
+use super::area_create_tx;
 
-async fn seed_cove(repo: &SqlxRepo) -> String {
+async fn seed_area(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "tree".into(),
             color: "#000".into(),
             sort: None,
@@ -36,17 +36,17 @@ async fn seed_cove(repo: &SqlxRepo) -> String {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    cove.id.to_string()
+    area.id.to_string()
 }
 
 /// Production wave creation. Every wave in these tests is born through the
 /// same writer the `child-wave` operation uses.
-async fn seed_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> String {
+async fn seed_wave(repo: &SqlxRepo, area_id: &str, title: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove_id.to_string().into(),
+            area_id: area_id.to_string().into(),
             title: title.into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -58,7 +58,7 @@ async fn seed_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> String {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();
@@ -200,9 +200,9 @@ async fn share_of(repo: &SqlxRepo, wave: &str) -> TreeShare {
 #[tokio::test]
 async fn every_created_wave_lands_a_null_tree_task_budget() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
 
     for wave in [&root, &child] {
@@ -229,9 +229,9 @@ async fn every_created_wave_lands_a_null_tree_task_budget() {
 #[tokio::test]
 async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -311,11 +311,11 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
 #[tokio::test]
 async fn shares_over_a_real_tree_sum_to_the_budget() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let a = seed_wave(&repo, &cove, "a").await;
-    let b = seed_wave(&repo, &cove, "b").await;
-    let c = seed_wave(&repo, &cove, "c").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let a = seed_wave(&repo, &area, "a").await;
+    let b = seed_wave(&repo, &area, "b").await;
+    let c = seed_wave(&repo, &area, "c").await;
     link(&repo, &a, &root).await;
     link(&repo, &b, &root).await;
     link(&repo, &c, &a).await;
@@ -355,9 +355,9 @@ async fn shares_over_a_real_tree_sum_to_the_budget() {
 #[tokio::test]
 async fn quota_remainder_follows_created_at_not_insertion_order() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root-first").await;
-    let child = seed_wave(&repo, &cove, "child-second").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root-first").await;
+    let child = seed_wave(&repo, &area, "child-second").await;
     // Fix ids opposite to created_at order. Without the final ORDER BY,
     // SQLite is free to return the GROUP BY's id order (`a-child` first), so
     // the oracle does not depend on today's query plan or random UUIDs.
@@ -385,9 +385,9 @@ async fn quota_remainder_follows_created_at_not_insertion_order() {
 #[tokio::test]
 async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root-first").await;
-    let child = seed_wave(&repo, &cove, "child-second").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root-first").await;
+    let child = seed_wave(&repo, &area, "child-second").await;
     sqlx::query("UPDATE waves SET id='z-root' WHERE id=?1")
         .bind(&root)
         .execute(repo.pool())
@@ -414,9 +414,9 @@ async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
 #[tokio::test]
 async fn shares_do_not_move_when_siblings_accumulate_pending_rows() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     stamp_created_at(&repo, &root, 1).await;
     stamp_created_at(&repo, &child, 2).await;
@@ -438,9 +438,9 @@ async fn shares_do_not_move_when_siblings_accumulate_pending_rows() {
 async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
     async fn run(order: [usize; 2]) -> Vec<String> {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = seed_cove(&repo).await;
-        let root = seed_wave(&repo, &cove, "root").await;
-        let child = seed_wave(&repo, &cove, "child").await;
+        let area = seed_area(&repo).await;
+        let root = seed_wave(&repo, &area, "root").await;
+        let child = seed_wave(&repo, &area, "child").await;
         link(&repo, &child, &root).await;
         stamp_created_at(&repo, &root, 1).await;
         stamp_created_at(&repo, &child, 2).await;
@@ -485,9 +485,9 @@ async fn two_rebuild_orders_over_one_tree_agree_byte_for_byte() {
 #[tokio::test]
 async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     set_tree_budget(&repo, &root, 4).await;
 
@@ -525,9 +525,9 @@ async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
 #[tokio::test]
 async fn over_share_declarations_are_diagnosed_against_the_root_wave() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     set_ceiling(&repo, &child, 32).await;
     set_tree_budget(&repo, &root, 2).await;
@@ -579,9 +579,9 @@ async fn over_share_declarations_are_diagnosed_against_the_root_wave() {
 #[tokio::test]
 async fn zero_share_diagnostic_explains_the_shape_and_effective_actions() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     stamp_created_at(&repo, &root, 1).await;
     stamp_created_at(&repo, &child, 2).await;
@@ -607,9 +607,9 @@ async fn zero_share_diagnostic_explains_the_shape_and_effective_actions() {
 #[tokio::test]
 async fn a_tighter_wave_ceiling_still_reports_the_ceiling_diagnostic() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     set_ceiling(&repo, &child, 1).await;
     set_tree_budget(&repo, &root, 32).await;
@@ -697,7 +697,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
     }
 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
+    let area = seed_area(&repo).await;
     let keys = (0..10)
         .map(|index| format!("candidate-{index:02}"))
         .collect::<Vec<_>>();
@@ -712,10 +712,10 @@ async fn the_diagnosed_capacity_action_increases_admission() {
                     let case = format!(
                         "N={members},B={budget},target={target_index},block_inflight={block_inflight}"
                     );
-                    let root = seed_wave(&repo, &cove, &format!("{case} root")).await;
+                    let root = seed_wave(&repo, &area, &format!("{case} root")).await;
                     let mut waves = vec![root.clone()];
                     for index in 1..members {
-                        let child = seed_wave(&repo, &cove, &format!("{case} child {index}")).await;
+                        let child = seed_wave(&repo, &area, &format!("{case} child {index}")).await;
                         link(&repo, &child, &root).await;
                         waves.push(child);
                     }
@@ -843,9 +843,9 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     }
 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
+    let area = seed_area(&repo).await;
 
-    let full = seed_wave(&repo, &cove, "max-budget-full").await;
+    let full = seed_wave(&repo, &area, "max-budget-full").await;
     set_ceiling(&repo, &full, MAX_TREE_TASK_BUDGET + 1).await;
     set_tree_budget(&repo, &full, MAX_TREE_TASK_BUDGET).await;
     let full_keys = (0..MAX_TREE_TASK_BUDGET)
@@ -868,7 +868,7 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     assert!(diagnostic.message.contains("cannot be released by raising"));
     assert!(!diagnostic.message.contains("at least 0"));
 
-    let frozen = seed_wave(&repo, &cove, "max-budget-frozen").await;
+    let frozen = seed_wave(&repo, &area, "max-budget-frozen").await;
     set_ceiling(&repo, &frozen, MAX_TREE_TASK_BUDGET).await;
     set_tree_budget(&repo, &frozen, MAX_TREE_TASK_BUDGET).await;
     let in_flight_keys = (0..33)
@@ -880,7 +880,7 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
         .collect::<Vec<_>>();
     project(&repo, &frozen, &in_flight_refs).await;
     mark_all_tasks_as_running(&repo, &frozen).await;
-    let child = seed_wave(&repo, &cove, "max-budget-frozen-child").await;
+    let child = seed_wave(&repo, &area, "max-budget-frozen-child").await;
     link(&repo, &child, &frozen).await;
     stamp_created_at(&repo, &frozen, 1).await;
     stamp_created_at(&repo, &child, 2).await;
@@ -939,8 +939,8 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
 #[tokio::test]
 async fn a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "occupied-local-bound").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "occupied-local-bound").await;
     set_ceiling(&repo, &root, MAX_TREE_TASK_BUDGET).await;
     set_tree_budget(&repo, &root, MAX_TREE_TASK_BUDGET).await;
     project(&repo, &root, &["live-a", "live-b", "live-c"]).await;
@@ -1029,9 +1029,9 @@ async fn a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds() {
 #[tokio::test]
 async fn unresolvable_root_fails_closed_for_every_declaration() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let a = seed_wave(&repo, &cove, "a").await;
-    let b = seed_wave(&repo, &cove, "b").await;
+    let area = seed_area(&repo).await;
+    let a = seed_wave(&repo, &area, "a").await;
+    let b = seed_wave(&repo, &area, "b").await;
     // A 2-cycle: neither wave has a NULL-parent ancestor.
     link(&repo, &a, &b).await;
     link(&repo, &b, &a).await;
@@ -1068,9 +1068,9 @@ async fn unresolvable_root_fails_closed_for_every_declaration() {
 #[tokio::test]
 async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "root").await;
+    let child = seed_wave(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     project(&repo, &child, &["k1"]).await;
     sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='k1'")
@@ -1115,10 +1115,10 @@ async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() 
 #[tokio::test]
 async fn an_over_deep_chain_fails_closed() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
+    let area = seed_area(&repo).await;
     let mut chain = Vec::new();
     for index in 0..=(MAX_WAVE_TREE_DEPTH + 2) {
-        chain.push(seed_wave(&repo, &cove, &format!("w{index}")).await);
+        chain.push(seed_wave(&repo, &area, &format!("w{index}")).await);
     }
     for index in 1..chain.len() {
         link(&repo, &chain[index], &chain[index - 1]).await;
@@ -1140,8 +1140,8 @@ async fn an_over_deep_chain_fails_closed() {
 #[tokio::test]
 async fn an_explicit_budget_applies_to_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let lonely = seed_wave(&repo, &cove, "lonely").await;
+    let area = seed_area(&repo).await;
+    let lonely = seed_wave(&repo, &area, "lonely").await;
     set_ceiling(&repo, &lonely, 3).await;
     set_tree_budget(&repo, &lonely, 1).await;
     let decls = declarations(&["k1", "k2", "k3"]);
@@ -1169,8 +1169,8 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
 #[tokio::test]
 async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let lonely = seed_wave(&repo, &cove, "lonely").await;
+    let area = seed_area(&repo).await;
+    let lonely = seed_wave(&repo, &area, "lonely").await;
     let mut tx = repo.pool().begin().await.unwrap();
     wave_update_tx(
         &mut tx,
@@ -1221,8 +1221,8 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
 #[tokio::test]
 async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "upgraded-root").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "upgraded-root").await;
     set_ceiling(&repo, &root, 8).await;
     set_tree_budget(&repo, &root, 3).await;
     project(&repo, &root, &["in-flight-a", "in-flight-b", "in-flight-c"]).await;
@@ -1305,8 +1305,8 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
 #[tokio::test]
 async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "upgraded-default-root").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "upgraded-default-root").await;
     set_ceiling(&repo, &root, 64).await;
     project(&repo, &root, &["in-flight-a", "in-flight-b"]).await;
     mark_all_tasks_as_running(&repo, &root).await;
@@ -1332,8 +1332,8 @@ async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() 
 #[tokio::test]
 async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "upgraded-explicit-root").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "upgraded-explicit-root").await;
     set_ceiling(&repo, &root, 8).await;
     set_tree_budget(&repo, &root, 8).await;
     project(
@@ -1363,9 +1363,9 @@ async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission()
 #[tokio::test]
 async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "upgrade-root").await;
-    let child = seed_wave(&repo, &cove, "upgrade-child").await;
+    let area = seed_area(&repo).await;
+    let root = seed_wave(&repo, &area, "upgrade-root").await;
+    let child = seed_wave(&repo, &area, "upgrade-child").await;
     link(&repo, &child, &root).await;
     stamp_created_at(&repo, &root, 1).await;
     stamp_created_at(&repo, &child, 2).await;
@@ -1597,9 +1597,9 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
 #[tokio::test]
 async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let first = seed_wave(&repo, &cove, "equal-time-first").await;
-    let second = seed_wave(&repo, &cove, "equal-time-second").await;
+    let area = seed_area(&repo).await;
+    let first = seed_wave(&repo, &area, "equal-time-first").await;
+    let second = seed_wave(&repo, &area, "equal-time-second").await;
     let (child, root) = if first < second {
         (first, second)
     } else {
@@ -1670,8 +1670,8 @@ async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
 #[tokio::test]
 async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let lonely = seed_wave(&repo, &cove, "lonely").await;
+    let area = seed_area(&repo).await;
+    let lonely = seed_wave(&repo, &area, "lonely").await;
     set_ceiling(&repo, &lonely, 40).await;
     set_tree_budget(&repo, &lonely, 40).await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1736,9 +1736,9 @@ async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
 #[tokio::test]
 async fn a_downward_two_cycle_terminates_quickly() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let a = seed_wave(&repo, &cove, "a").await;
-    let b = seed_wave(&repo, &cove, "b").await;
+    let area = seed_area(&repo).await;
+    let a = seed_wave(&repo, &area, "a").await;
+    let b = seed_wave(&repo, &area, "b").await;
     link(&repo, &a, &b).await;
     link(&repo, &b, &a).await;
 

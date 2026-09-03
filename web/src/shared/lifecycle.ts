@@ -1,6 +1,6 @@
 // Wave lifecycle helpers — single source of truth for "what bucket does
 // this wave belong to right now?". Used by Sidebar's "Waiting on you"
-// section, Today's running/waiting counters, Cove's bucket sort, and the
+// section, Today's running/waiting counters, Area's bucket sort, and the
 // row/glyph/progress-bar treatment on WaveRow / WaveGlyph.
 //
 // The vocabulary mirrors the Rust `WaveLifecycle` enum
@@ -44,7 +44,7 @@ export const sortByLifecycleRank = (waves: readonly Wave[]): Wave[] =>
  * signals have different ownership (Spec Agent vs. kernel) and
  * different storage (column vs. overlay) — keeping the OR here means
  * the pure-lifecycle predicate stays usable for places that genuinely
- * want the lifecycle bucket (e.g. Cove's bucket sort, the lifecycle
+ * want the lifecycle bucket (e.g. Area's bucket sort, the lifecycle
  * badge). See issue #254.
  */
 export const waveNeedsUserAttention = (w: Wave): boolean =>

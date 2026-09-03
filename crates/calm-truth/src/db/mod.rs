@@ -48,7 +48,7 @@
 //! goal is to make "no route handler can reach a raw sync-domain write"
 //! a compile-time invariant, not a grep-time one:
 //!
-//!   * [`RepoRead`] — universal read surface (`coves_list`, `wave_get`,
+//!   * [`RepoRead`] — universal read surface (`areas_list`, `wave_get`,
 //!     `overlays_for`, `plugins_list_all`, `terminal_get`, …). Anyone
 //!     with a `&dyn RepoRead` can fetch anything; no writes.
 //!   * [`RepoEventWrite`] — the audited write surface
@@ -56,11 +56,11 @@
 //!     `events_earliest_id`). Supertrait `RepoRead` because every audited
 //!     write closure typically needs to read a parent row first.
 //!   * [`RepoSyncDomainRaw`] — **gated.** Raw entity writes for the
-//!     in-scope sync domain: coves, waves, cards, overlays. These exist
+//!     in-scope sync domain: areas, waves, cards, overlays. These exist
 //!     on the trait because `SqlxRepo` is the canonical impl and the
 //!     types must be addressable somewhere — but the `RouteRepo` trait
 //!     object route handlers see does **not** include this supertrait,
-//!     so a handler that types `s.repo.cove_create(...)` fails to
+//!     so a handler that types `s.repo.area_create(...)` fails to
 //!     compile. The only legitimate consumers are db-internal helpers,
 //!     tests, and fixtures.
 //!   * [`RepoOutOfDomain`] — operational writes the kernel deliberately
@@ -91,12 +91,12 @@
 use crate::card_role_cache::CardRoleCache;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::model::*;
 use crate::session_projection_repo::WorkerSessionProjectionRepo;
 use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use async_trait::async_trait;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
@@ -238,7 +238,7 @@ pub struct SessionCardIdentity {
     pub card_id: CardId,
     pub role: CardRole,
     pub wave_id: WaveId,
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
 }
 
 #[derive(Debug, Clone)]
@@ -283,43 +283,43 @@ pub struct WorkspaceLease {
 /// permits arbitrary reads; no writes are reachable from here.
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
-    // ---- coves
-    /// Every cove regardless of [`CoveKind`]. Internal callers (replay,
+    // ---- areas
+    /// Every area regardless of [`AreaKind`]. Internal callers (replay,
     /// debug surfaces, integration tests that assert on the system
-    /// cove's existence) use this; the user-facing `GET /api/coves`
-    /// route prefers [`RepoRead::coves_list_user_visible`] so the
-    /// singleton system cove introduced by issue #175 stays hidden
+    /// area's existence) use this; the user-facing `GET /api/areas`
+    /// route prefers [`RepoRead::areas_list_user_visible`] so the
+    /// singleton system area introduced by issue #175 stays hidden
     /// from the sidebar surface.
-    async fn coves_list(&self) -> Result<Vec<Cove>>;
-    /// Issue #175 — `coves_list` filtered to `kind = 'user'`. Default
-    /// read surface for `GET /api/coves` so the system cove that hosts
+    async fn areas_list(&self) -> Result<Vec<Area>>;
+    /// Issue #175 — `areas_list` filtered to `kind = 'user'`. Default
+    /// read surface for `GET /api/areas` so the system area that hosts
     /// the default Today terminal's wave never reaches the sidebar.
     /// Opt back into the full list via `?include_system=true` (calls
-    /// [`RepoRead::coves_list`]).
-    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>>;
-    async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
-    /// Issue #175 — fetch the singleton system cove if one exists.
-    /// Returns `None` until the first call to `POST /api/coves/system`
+    /// [`RepoRead::areas_list`]).
+    async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
+    async fn area_get(&self, id: &str) -> Result<Option<Area>>;
+    /// Issue #175 — fetch the singleton system area if one exists.
+    /// Returns `None` until the first call to `POST /api/areas/system`
     /// mints the row. Backed by the unique partial index on
-    /// `coves(kind) WHERE kind = 'system'` from migration 0009.
-    async fn cove_get_system(&self) -> Result<Option<Cove>>;
+    /// `areas(kind) WHERE kind = 'system'` from migration 0009.
+    async fn area_get_system(&self) -> Result<Option<Area>>;
 
-    // ---- cove_folders
-    /// Issue #250 PR 1 — folders claimed by a single cove, sorted by
+    // ---- area_folders
+    /// Issue #250 PR 1 — folders claimed by a single area, sorted by
     /// path for stable UI ordering.
-    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
-    /// Issue #250 PR 1 — every folder across every cove, `ORDER BY path
+    async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>>;
+    /// Issue #250 PR 1 — every folder across every area, `ORDER BY path
     /// ASC`. Used by the resolve endpoint to find the covering claim
     /// application-side (SQLite has no native prefix function fast enough
     /// to outweigh a Rust-side O(N) scan at the table sizes we expect —
     /// folders are minted manually by users, not auto-discovered).
-    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
+    async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>>;
     /// Issue #250 PR 1 — single-row fetch for the DELETE handler's
     /// existence check.
-    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>>;
+    async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
 
     // ---- waves
-    async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
+    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
     /// #1253 PR1 — the Today launchpad wave, or `None` before it has ever
     /// been minted.
@@ -337,8 +337,8 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Returns every wave whose lifespan overlaps the half-open
     /// `[since, until]` millisecond range (both endpoints inclusive
     /// per the issue spec): `created_at <= until AND (terminal_at IS
-    /// NULL OR terminal_at >= since)`. `cove_id`, when `Some(_)`,
-    /// further restricts the result to a single cove.
+    /// NULL OR terminal_at >= since)`. `area_id`, when `Some(_)`,
+    /// further restricts the result to a single area.
     ///
     /// Any combination of the three filters is legal — when all three
     /// are `None` the query degenerates to "every wave in the DB" so
@@ -347,7 +347,7 @@ pub trait RepoRead: Send + Sync + 'static {
     /// PR 2 returns the full window in one shot.
     async fn waves_window(
         &self,
-        cove_id: Option<&str>,
+        area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<Wave>>;
@@ -388,7 +388,7 @@ pub trait RepoRead: Send + Sync + 'static {
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
-    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>>;
+    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     /// #960 PR2 review — atomic single-row fetch of a card together
     /// with its opaque CRDT blob (`cards.body_crdt`). One SELECT, one
@@ -522,9 +522,9 @@ pub trait RepoRead: Send + Sync + 'static {
     /// this trait method lets `AppState` seed through the dyn-trait alone).
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
 
-    /// #234 — populate the supplied `WaveCoveCache` from the persisted
-    /// `waves.cove_id` column. Mirror of [`seed_card_role_cache`].
-    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()>;
+    /// #234 — populate the supplied `WaveAreaCache` from the persisted
+    /// `waves.area_id` column. Mirror of [`seed_card_role_cache`].
+    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()>;
 
     /// PR7a (#136) — look up the card id bound to a presented MCP
     /// token's `SHA-256` hash. Returns `None` if no row matches. The
@@ -631,7 +631,7 @@ pub trait RepoEventWrite: RepoRead {
     /// TEXT column (`serde_json::to_string(&actor)`) — forward-compatible
     /// with future actor enrichment without a schema bump.
     ///
-    /// `scope` is the event's "home scope" in the cove → wave → card
+    /// `scope` is the event's "home scope" in the area → wave → card
     /// hierarchy. Persisted into the `events.scope_*` columns added in
     /// migration 0007 so PR3/PR5/PR8 can filter / route / authorize
     /// without re-parsing the event payload. Pick the most specific
@@ -724,7 +724,7 @@ pub trait RepoEventWrite: RepoRead {
     /// PR2 of #136: `actor` is now typed [`ActorId`]; `scope` carries the
     /// event's home scope (use [`EventScope::System`] for plugin-state
     /// transitions which have no entity scope; use [`EventScope::Card`]
-    /// for codex hooks when the wave→cove chain is joinable, otherwise
+    /// for codex hooks when the wave→area chain is joinable, otherwise
     /// fall back to [`EventScope::System`]).
     async fn log_pure_event(
         &self,
@@ -733,7 +733,7 @@ pub trait RepoEventWrite: RepoRead {
         correlation: Option<&str>,
         bus: &crate::event::EventBus,
         card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        wave_area_cache: &WaveAreaCache,
         event: Event,
     ) -> Result<i64>;
 
@@ -883,15 +883,15 @@ pub trait RepoEventWrite: RepoRead {
 /// replay lib, and tests via `AppState::raw_repo()`.
 ///
 /// Sync-domain == the per-user/per-AI co-edit shared state surface defined
-/// by the sync engine: coves, waves, cards, overlays. Any direct write here
+/// by the sync engine: areas, waves, cards, overlays. Any direct write here
 /// bypasses `write_with_event` and is therefore invisible to replicas — the
 /// whole reason this surface is gated.
 #[async_trait]
 pub trait RepoSyncDomainRaw: RepoRead {
-    // ---- coves
-    async fn cove_create(&self, p: NewCove) -> Result<Cove>;
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove>;
-    async fn cove_delete(&self, id: &str) -> Result<()>;
+    // ---- areas
+    async fn area_create(&self, p: NewArea) -> Result<Area>;
+    async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
+    async fn area_delete(&self, id: &str) -> Result<()>;
 
     // ---- waves
     async fn wave_create(&self, p: NewWave) -> Result<Wave>;
@@ -1072,42 +1072,42 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
 
-    // ---- cove_folders (issue #250 PR 1)
+    // ---- area_folders (issue #250 PR 1)
     //
     // Operational mapping table — not on the event-sourced sync domain
-    // path (no `Event::CoveFolderAdded`-style variants land in PR 1).
+    // path (no `Event::AreaFolderAdded`-style variants land in PR 1).
     // Treated like terminals / plugins: server-private state, REST writes
     // straight against the row without an event-log entry.
-    /// Insert a folder under `cove_id` with **no** overlap check. The
+    /// Insert a folder under `area_id` with **no** overlap check. The
     /// caller owns path normalization and conflict detection.
     ///
-    /// Not reachable from HTTP: `POST /api/coves/{id}/folders` goes
-    /// through [`Self::cove_folder_create_checked`] because a scan on one
+    /// Not reachable from HTTP: `POST /api/areas/{id}/folders` goes
+    /// through [`Self::area_folder_create_checked`] because a scan on one
     /// pooled connection followed by an INSERT on another lets two
     /// concurrent requests both claim overlapping paths (#275). This
     /// primitive survives for tests and seeds that deliberately want to
     /// build states the checked writer refuses.
-    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
-    /// Issue #275 — atomically claim `path` for `cove_id`: the overlap
+    async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder>;
+    /// Issue #275 — atomically claim `path` for `area_id`: the overlap
     /// scan and the INSERT run inside one `BEGIN IMMEDIATE` transaction,
     /// so no concurrent writer can slip an ancestor/descendant claim
-    /// between them. `UNIQUE(cove_folders.path)` only catches *equal*
+    /// between them. `UNIQUE(area_folders.path)` only catches *equal*
     /// paths and is therefore not sufficient on its own.
     ///
     /// This is what makes "at most one claim covers any path" a real
     /// invariant, which in turn is what lets
-    /// [`crate::cove_folder_claim::find_owner`] serve both resolvers
+    /// [`crate::area_folder_claim::find_owner`] serve both resolvers
     /// without a tiebreak.
     ///
     /// Returns `Conflict` (not `Err`) for overlap so the route can render
-    /// the structured 409 body; a missing `cove_id` is still `Err(NotFound)`.
+    /// the structured 409 body; a missing `area_id` is still `Err(NotFound)`.
     /// The transaction does nothing but two SQL statements — no I/O — so
     /// the writer-lock window stays as short as the plain INSERT's.
     ///
     /// # Precondition
     ///
     /// `path` MUST already be normalized — i.e. the output of
-    /// [`crate::cove_folder_claim::normalize_path`]. The overlap
+    /// [`crate::area_folder_claim::normalize_path`]. The overlap
     /// classification is pure string comparison: `Equal` is `f.path ==
     /// path` and the ancestor/descendant arms are prefix tests. A
     /// non-normalized input is silently *mis*classified rather than
@@ -1123,15 +1123,15 @@ pub trait RepoOutOfDomain: RepoRead {
     /// stored `"/a/b"`. Callers that can produce such segments must
     /// canonicalize before they get here; nothing in this layer catches
     /// it.
-    async fn cove_folder_create_checked(
+    async fn area_folder_create_checked(
         &self,
-        cove_id: &str,
+        area_id: &str,
         path: &str,
-    ) -> Result<crate::cove_folder_claim::CoveFolderClaim>;
+    ) -> Result<crate::area_folder_claim::AreaFolderClaim>;
     /// Delete a folder by integer id. Returns `NotFound` when no row
     /// exists. PR 2 will add a "has live wave referencing this path"
     /// guard at the route layer; the repo primitive stays narrow.
-    async fn cove_folder_delete(&self, id: i64) -> Result<()>;
+    async fn area_folder_delete(&self, id: i64) -> Result<()>;
 }
 
 /// Prelude module that re-exports every sub-trait + `Repo` itself so test

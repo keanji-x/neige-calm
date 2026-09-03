@@ -3,7 +3,7 @@ import {
   SegmentedControlItem as AstryxSegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
 
-import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
+import { areaOf, visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import {
   userVisibleWaves, waveDisplayTitle, type Wave,
 } from '../../../../core/domain/wave.ts';
@@ -15,19 +15,19 @@ import styles from './mobile-pages.module.css';
 
 const RECENT_PAGE_LIMIT = 24;
 
-export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
-  coves: readonly Cove[];
+export function MobilePages({ areas, waves, onOpenWave }: Readonly<{
+  areas: readonly Area[];
   waves: readonly Wave[];
   onOpenWave: (waveId: string) => void;
 }>) {
   /*
    * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
-   * a wave whose cove is not user-visible does not belong on a list a person
+   * a wave whose area is not user-visible does not belong on a list a person
    * reads, and filtering waves alone (what this list used to do) let the
-   * kernel's system cove through if an unfiltered list ever reached here.
+   * kernel's system area through if an unfiltered list ever reached here.
    */
-  const visible = userVisibleWaves(waves, coves);
-  const shownCoves = visibleCoves(coves);
+  const visible = userVisibleWaves(waves, areas);
+  const shownAreas = visibleAreas(areas);
   const pinned = visible
     .filter((wave) => wave.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
@@ -37,7 +37,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
     .slice(0, RECENT_PAGE_LIMIT);
   const [group, setGroup] = useState<'pinned' | 'recent'>(() => (pinned.length > 0 ? 'pinned' : 'recent'));
   const shown = group === 'pinned' ? pinned : recent;
-  const coveFor = (wave: Wave) => coveOf(wave.coveId, shownCoves);
+  const areaFor = (wave: Wave) => areaOf(wave.areaId, shownAreas);
 
   return (
     <MobileListPage title="Pages">
@@ -53,21 +53,21 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
       </AstryxSegmentedControl>
       <MobileList>
         {shown.map((wave) => {
-          const cove = coveFor(wave);
+          const area = areaFor(wave);
           return (
             <MobileListItem
               key={wave.id}
               title={waveDisplayTitle(wave.title)}
               titleVariant="document"
-              meta={cove?.name ?? 'Unknown cove'}
+              meta={area?.name ?? 'Unknown area'}
               startContent={(
                 <span
-                  className={styles.coveInitial}
-                  data-nc-page-cove=""
-                  style={cove === undefined ? undefined : { borderColor: cove.color, color: cove.color }}
+                  className={styles.areaInitial}
+                  data-nc-page-area=""
+                  style={area === undefined ? undefined : { borderColor: area.color, color: area.color }}
                   aria-hidden="true"
                 >
-                  {cove?.name.trim().charAt(0).toLocaleUpperCase() || '?'}
+                  {area?.name.trim().charAt(0).toLocaleUpperCase() || '?'}
                 </span>
               )}
               onSelect={() => onOpenWave(wave.id)}

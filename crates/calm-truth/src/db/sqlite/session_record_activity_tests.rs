@@ -3,15 +3,15 @@
 //! push-fed columns land on an active session WITHOUT bumping
 //! `updated_at_ms` (worker_sessions-only, like `liveness`), and that a
 //! terminal/missing session is a benign `Ok` no-op.
-use super::{SqlxRepo, cove_create_tx, session_insert_tx, wave_create_tx};
-use crate::model::{NewCove, NewWave, RequestTheme};
+use super::{SqlxRepo, area_create_tx, session_insert_tx, wave_create_tx};
+use crate::model::{NewArea, NewWave, RequestTheme};
 use crate::session_repo::SessionRepo;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
 };
 
-/// Seed a real cove → wave and insert one worker session in `state` with a
+/// Seed a real area → wave and insert one worker session in `state` with a
 /// fixed `updated_at_ms`. Returns the session id.
 async fn seed_session(
     repo: &SqlxRepo,
@@ -32,9 +32,9 @@ async fn seed_session_with_thread(
     updated_at_ms: i64,
 ) -> WorkerSessionId {
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -46,7 +46,7 @@ async fn seed_session_with_thread(
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -57,7 +57,7 @@ async fn seed_session_with_thread(
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();

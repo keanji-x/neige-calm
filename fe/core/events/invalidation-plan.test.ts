@@ -49,26 +49,26 @@ function event(value: unknown): WireEvent {
 }
 
 describe('invalidation plan behavior', () => {
-  it('write-through updates only an existing cove before invalidating the list', () => {
-    const value = event({ ev: 'cove.updated', data: { id: 'c1', name: 'new' } });
+  it('write-through updates only an existing area before invalidating the list', () => {
+    const value = event({ ev: 'area.updated', data: { id: 'c1', name: 'new' } });
     expect(invalidationPlanFor(value)).toEqual({
-      invalidate: [['coves']],
+      invalidate: [['areas']],
       remove: [],
-      writeThrough: [{ key: ['coves'], mode: 'replace-existing-cove', value: value.data }],
+      writeThrough: [{ key: ['areas'], mode: 'replace-existing-area', value: value.data }],
     });
   });
 
   it('invalidates all four wave projections for wave updates', () => {
-    expect(invalidationPlanFor(event({ ev: 'wave.updated', data: { id: 'w1', cove_id: 'c1' } }))).toEqual({
-      invalidate: [['waves', 'cove', 'c1'], ['wave', 'w1'], ['wave-files', 'w1'], ['waves-range']],
+    expect(invalidationPlanFor(event({ ev: 'wave.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
+      invalidate: [['waves', 'area', 'c1'], ['wave', 'w1'], ['wave-files', 'w1'], ['waves-range']],
       remove: [],
       writeThrough: [],
     });
   });
 
   it('removes deleted wave detail after invalidating its remaining projections', () => {
-    expect(invalidationPlanFor(event({ ev: 'wave.deleted', data: { id: 'w1', cove_id: 'c1' } }))).toEqual({
-      invalidate: [['waves', 'cove', 'c1'], ['overlays', 'wave'], ['waves-range']],
+    expect(invalidationPlanFor(event({ ev: 'wave.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
+      invalidate: [['waves', 'area', 'c1'], ['overlays', 'wave'], ['waves-range']],
       remove: [['wave', 'w1']],
       writeThrough: [],
     });
@@ -77,7 +77,7 @@ describe('invalidation plan behavior', () => {
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { wave_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['wave', 'w1'], ['wave-files', 'w1'], ['cove-conversations'], ['wave-conversations', 'w1'],
+        ['wave', 'w1'], ['wave-files', 'w1'], ['area-conversations'], ['wave-conversations', 'w1'],
       ],
       remove: [],
       writeThrough: [],
@@ -90,10 +90,10 @@ describe('invalidation plan behavior', () => {
    *
    * `GET /api/waves/{wave_id}/conversations` is per-wave (#1189 §4.1), so the
    * query it backs is `['wave-conversations', waveId]`. Dropping the id here to
-   * copy the cove list's bare prefix would still invalidate the right query, by
+   * copy the area list's bare prefix would still invalidate the right query, by
    * prefix match, and every "contains the key" assertion would stay green while
    * every open wave refetched its list on every runtime tick of every other
-   * wave. The cove list is a prefix because its id is genuinely unrecoverable;
+   * wave. The area list is a prefix because its id is genuinely unrecoverable;
    * this one's is right there in the event.
    */
   it.each([
@@ -117,7 +117,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['wave', 'wave-1'], ['overlays', 'card'], ['wave-files', 'wave-1'], ['wave-report', 'wave-1'],
-        ['cove-conversations'], ['wave-conversations', 'wave-1'],
+        ['area-conversations'], ['wave-conversations', 'wave-1'],
       ],
       remove: [],
       writeThrough: [],
@@ -137,7 +137,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['overlays', 'card'], ['wave-files'], ['wave-report'],
-        ['cove-conversations'], ['wave-conversations'],
+        ['area-conversations'], ['wave-conversations'],
       ],
       remove: [],
       writeThrough: [],
@@ -196,14 +196,14 @@ describe('invalidation plan behavior', () => {
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
     expect(planned('harness.phase.changed')).toEqual([
-      ['spec-run', 'card-1'], ['cove-conversations'], ['wave-conversations', 'wave-1'],
+      ['spec-run', 'card-1'], ['area-conversations'], ['wave-conversations', 'wave-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['spec-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
       ['harness-items', 'card-1'], ['spec-run', 'card-1'],
-      ['cove-conversations'], ['wave-conversations', 'wave-1'],
+      ['area-conversations'], ['wave-conversations', 'wave-1'],
     ]);
   });
 
@@ -215,7 +215,7 @@ describe('invalidation plan behavior', () => {
    * `expected` side is the hand-kept list above, and the point is that the two
    * are maintained separately.
    */
-  it.each(['cove-conversations', 'wave-conversations'] as const)(
+  it.each(['area-conversations', 'wave-conversations'] as const)(
     'refetches the %s list from exactly the seven session-writing kinds',
     (root) => {
       const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);

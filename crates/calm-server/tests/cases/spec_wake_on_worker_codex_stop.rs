@@ -16,8 +16,8 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, HookKind, Observation,
     SpecHarness, SpecHarnessParams,
 };
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -26,7 +26,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -36,8 +36,8 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
-    cove_id: CoveId,
+    wave_area_cache: WaveAreaCache,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -57,8 +57,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = repo_sqlx.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "spec-wake-worker-stop".into(),
             color: "#000".into(),
             sort: None,
@@ -68,7 +68,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "spec wake on worker stop".into(),
             sort: None,
             cwd: String::new(),
@@ -109,8 +109,8 @@ async fn boot() -> Boot {
     )
     .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
 
     let events = EventBus::new();
     let codex = Arc::new(CodexClient::new_stub());
@@ -122,7 +122,7 @@ async fn boot() -> Boot {
         std::env::temp_dir().join(format!("calm-plugins-data-spec-wake-{}", new_id())),
         Vec::new(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     ));
     let state = AppState::from_parts(
         repo.clone(),
@@ -131,7 +131,7 @@ async fn boot() -> Boot {
         plugin_host,
         codex.clone(),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
     let app = axum::Router::new()
         .merge(routes::router())
@@ -174,7 +174,7 @@ async fn boot() -> Boot {
         repo: repo.clone(),
         events: events.clone(),
         card_role_cache: card_role_cache.clone(),
-        wave_cove_cache: wave_cove_cache.clone(),
+        wave_area_cache: wave_area_cache.clone(),
         daemon: shared.clone(),
         config: HarnessConfig::default(),
         snapshot,
@@ -190,8 +190,8 @@ async fn boot() -> Boot {
         repo,
         events,
         card_role_cache,
-        wave_cove_cache,
-        cove_id: cove.id,
+        wave_area_cache,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -211,7 +211,7 @@ fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
         boot.events.clone(),
         calm_server::state::WriteContext::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
         ),
         boot.codex.clone(),
         boot.daemon.clone(),
@@ -337,12 +337,12 @@ async fn live_review_round_event_reaches_spec_harness_and_issues_turn() {
             ActorId::AiSpec(boot.spec_card_id.clone()),
             EventScope::Wave {
                 wave: boot.wave_id.clone(),
-                cove: boot.cove_id.clone(),
+                area: boot.area_id.clone(),
             },
             None,
             &boot.events,
             &boot.card_role_cache,
-            &boot.wave_cove_cache,
+            &boot.wave_area_cache,
             Event::ReviewRound {
                 wave_id: boot.wave_id.clone(),
                 subject: ReviewSubject {

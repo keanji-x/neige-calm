@@ -40,7 +40,7 @@ use calm_server::db::sqlite::{
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{EditAuthor, Event, EventBus};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -50,7 +50,7 @@ use calm_server::mcp_server::tools::wave_report_blocks::{
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
+    CardRole, NewArea, NewCard, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
     TaskStatus, WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::child_wave_adapter::ChildWaveAdapter;
@@ -78,7 +78,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_server::wave_report::{persist_report, resolve_report_for_wave, tasks_rebuild_tx};
 use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
@@ -107,10 +107,10 @@ struct Boot {
     /// Same cache instance `write` wraps — kept so tests can register
     /// extra worker cards minted mid-test.
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
-    cove_id: CoveId,
+    area_id: AreaId,
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
@@ -124,8 +124,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "scheduler-test".into(),
             color: "#000".into(),
             sort: None,
@@ -135,7 +135,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "scheduler-test".into(),
             sort: None,
             // #1147 S6 — a terminal worker with no cwd on its task row lands in
@@ -212,9 +212,9 @@ async fn boot() -> Boot {
         "worker-thread",
     )
     .await;
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
+    let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
@@ -237,10 +237,10 @@ async fn boot() -> Boot {
         events,
         write,
         card_role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         ctx,
         registry: Arc::new(registry),
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
@@ -268,7 +268,7 @@ fn app_state_for_context_events(boot: &Boot) -> AppState {
         )),
         Arc::new(CodexClient::new_stub()),
         Some(boot.card_role_cache.clone()),
-        Some(boot.wave_cove_cache.clone()),
+        Some(boot.wave_area_cache.clone()),
     )
 }
 
@@ -851,7 +851,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "worker-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "worker-thread".into(),
     }
 }
@@ -863,7 +863,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }
@@ -937,7 +937,7 @@ fn context_checked_terminal_adapter(
     Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
         route_repo,
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         hook,
     ))
 }
@@ -1516,7 +1516,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: "template-wave".into(),
             sort: None,
             cwd: String::new(),
@@ -1538,8 +1538,8 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         )
         .await
         .expect("template wave Working + ungated");
-    boot.wave_cove_cache
-        .insert(template_wave.id.clone(), boot.cove_id.clone());
+    boot.wave_area_cache
+        .insert(template_wave.id.clone(), boot.area_id.clone());
     let template_spec = boot
         .repo
         .card_create(NewCard {
@@ -1590,7 +1590,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         provider: AgentProvider::Codex,
         session_id: "template-spec-session".to_string(),
         wave_id: Some(template_wave.id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "template-spec-thread".into(),
     };
     seed_projected_task_for(
@@ -1855,7 +1855,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         boot.shared_codex_appserver.clone(),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
@@ -2852,7 +2852,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         boot.shared_codex_appserver.clone(),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
@@ -2860,12 +2860,12 @@ async fn every_registered_task_adapter_refuses_material_context() {
         Arc::new(CodexClient::new_stub()),
         None,
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
     ));
     let terminal: Arc<dyn ProviderAdapter> = Arc::new(TerminalWorkerAdapter::new(
         route_repo,
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
     ));
 
     let mut cases = Vec::new();
@@ -2915,7 +2915,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
     cases.push((
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
             child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         pending_operation("child-wave", &child_task_id, child_payload),
@@ -2944,7 +2944,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             std::env::temp_dir().join("calm-plugins-data-context-registry"),
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         )),
         Arc::new(CodexClient::new_stub()),
         None,
@@ -3627,7 +3627,7 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
             .repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: boot.cove_id.clone(),
+                area_id: boot.area_id.clone(),
                 title: "fence child".into(),
                 sort: None,
                 cwd: String::new(),
@@ -4383,7 +4383,7 @@ async fn seed_stale_context_copies(
             .repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: source_wave.cove_id.clone(),
+                area_id: source_wave.area_id.clone(),
                 title: format!("restore cursor fixture {key_prefix} {index}"),
                 sort: None,
                 cwd: String::new(),
@@ -5639,13 +5639,13 @@ async fn malformed_stored_report_is_deterministic_and_marks_material_immediately
 }
 
 #[tokio::test]
-async fn storage_unavailable_during_system_cove_lookup_is_retryable() {
+async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "storage-retry").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let task_id = format!("{}:storage-retry", boot.wave_id);
 
-    sqlx::query("ALTER TABLE coves RENAME TO coves_unavailable")
+    sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
         .execute(&pool)
         .await
         .unwrap();
@@ -5671,7 +5671,7 @@ async fn storage_unavailable_during_system_cove_lookup_is_retryable() {
     assert_eq!(row.0, 0, "material winner clears the retry streak");
     assert!(row.1.is_some(), "third consecutive failure is material");
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
-    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
+    sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
         .execute(&pool)
         .await
         .unwrap();
@@ -5683,12 +5683,12 @@ async fn successful_context_verification_resets_retry_streak() {
     let monitor = seed_frozen_context_fixture(&boot, "storage-reset").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let task_id = format!("{}:storage-reset", boot.wave_id);
-    sqlx::query("ALTER TABLE coves RENAME TO coves_unavailable")
+    sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
         .execute(&pool)
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
-    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
+    sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
         .execute(&pool)
         .await
         .unwrap();
@@ -5710,7 +5710,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: deleted_wave_id.into(),
             sort: None,
             cwd: String::new(),
@@ -5806,12 +5806,12 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
     let event = match event {
         Event::WaveDeleted { .. } => Event::WaveDeleted {
             id: referenced.id.clone(),
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
         },
-        Event::CoveDeleted { .. } => Event::CoveDeleted {
-            id: boot.cove_id.clone(),
+        Event::AreaDeleted { .. } => Event::AreaDeleted {
+            id: boot.area_id.clone(),
         },
-        _ => unreachable!("deletion fixture only accepts wave/cove deletion"),
+        _ => unreachable!("deletion fixture only accepts wave/area deletion"),
     };
     boot.events.emit(ActorId::Kernel, event);
     for _ in 0..500 {
@@ -5833,7 +5833,7 @@ async fn wave_deleted_event_runs_context_sweep_end_to_end() {
     assert_deletion_event_runs_context_sweep(
         Event::WaveDeleted {
             id: WaveId::from("deleted-destination"),
-            cove_id: CoveId::from("deleted-destination-cove"),
+            area_id: AreaId::from("deleted-destination-area"),
         },
         "deleted-destination",
         "wave-deleted-event",
@@ -5842,13 +5842,13 @@ async fn wave_deleted_event_runs_context_sweep_end_to_end() {
 }
 
 #[tokio::test]
-async fn cove_deleted_event_runs_context_sweep_end_to_end() {
+async fn area_deleted_event_runs_context_sweep_end_to_end() {
     assert_deletion_event_runs_context_sweep(
-        Event::CoveDeleted {
-            id: CoveId::from("deleted-destination-cove"),
+        Event::AreaDeleted {
+            id: AreaId::from("deleted-destination-area"),
         },
-        "deleted-wave-under-cove",
-        "cove-deleted-event",
+        "deleted-wave-under-area",
+        "area-deleted-event",
     )
     .await;
 }
@@ -6081,7 +6081,7 @@ async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
 }
 
 #[tokio::test]
-async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
+async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
     let boot = boot().await;
     let pool = boot.repo.sqlite_pool().unwrap();
     let blocks: Vec<Value> = (0..5)
@@ -6118,9 +6118,9 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
     assert_eq!(closure.refs.len(), 4, "depth zero through depth three");
     assert!(closure.closure_truncated);
 
-    let foreign_cove = boot
+    let foreign_area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "foreign".into(),
             color: "#111".into(),
             sort: None,
@@ -6131,7 +6131,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: foreign_cove.id,
+            area_id: foreign_area.id,
             title: "foreign".into(),
             sort: None,
             cwd: String::new(),
@@ -6170,8 +6170,8 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
     let error = monitor
         .resolve_closure(boot.wave_id.as_str(), "b_0000")
         .await
-        .expect_err("cross-cove closure must fail closed");
-    assert!(matches!(error, ResolveError::CrossCove(_)));
+        .expect_err("cross-area closure must fail closed");
+    assert!(matches!(error, ResolveError::CrossArea(_)));
 }
 
 #[tokio::test]
@@ -6347,7 +6347,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
 
@@ -7058,7 +7058,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         provider: AgentProvider::Codex,
         session_id: "sibling-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "sibling-thread".into(),
     };
 
@@ -7186,7 +7186,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         provider: AgentProvider::Codex,
         session_id: "forged-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "forged-thread".into(),
     };
 
@@ -7721,7 +7721,7 @@ async fn seed_child_parent(
     let child = boot
         .repo
         .wave_create(NewWave {
-            cove_id: boot.cove_id.clone(),
+            area_id: boot.area_id.clone(),
             title: format!("child {key}"),
             sort: None,
             cwd: "/tmp".into(),
@@ -8213,8 +8213,8 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
                 // `cwd`: a state design D1's single writer cannot produce, and
                 // one S2/S5 would later read to decide materialization and
                 // recycling.
-                "INSERT INTO waves(id,cove_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
-                 SELECT ?1,cove_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
+                "INSERT INTO waves(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
+                 SELECT ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
                    FROM waves WHERE id=?3",
             )
             .bind(&child)
@@ -8308,7 +8308,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     let minted = Arc::new(AtomicUsize::new(0));
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let bootstrap_adapter =
@@ -8352,7 +8352,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     // that row is what the re-drive below has to get past.
     let repointed_cwd = calm_server::workspace_materialize::managed_workspace_path(
         &child_wave_workspace_root(),
-        boot.cove_id.as_str(),
+        boot.area_id.as_str(),
         &child_id,
     )
     .to_string_lossy()
@@ -8426,7 +8426,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let minted = Arc::new(AtomicUsize::new(0));
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let block = BootstrapBlockHook {
@@ -8565,7 +8565,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         vec![
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
-                crash_boot.wave_cove_cache.clone(),
+                crash_boot.wave_area_cache.clone(),
                 child_wave_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new_blocking(
@@ -8605,7 +8605,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         vec![
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
-                crash_boot.wave_cove_cache.clone(),
+                crash_boot.wave_area_cache.clone(),
                 child_wave_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
@@ -8673,7 +8673,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         let minted = Arc::new(AtomicUsize::new(0));
         let child_adapter = Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
             child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
@@ -8787,7 +8787,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     let adapters = vec![
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
             child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
@@ -8864,7 +8864,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     let adapters = vec![
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
             child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
@@ -8907,7 +8907,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let adapters = vec![
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
-            boot.wave_cove_cache.clone(),
+            boot.wave_area_cache.clone(),
             child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
@@ -8982,7 +8982,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
@@ -9072,7 +9072,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
         .bind(op_id).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
-        boot.wave_cove_cache.clone(),
+        boot.wave_area_cache.clone(),
         child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
@@ -9534,7 +9534,7 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     output.data = json!({
         "task_id": task_id,
         "wave_id": boot.wave_id.as_str(),
-        "cove_id": "cove-x",
+        "area_id": "area-x",
         "key": "bootdead",
         "attempt": 1,
         "cwd": dir.to_str().unwrap(),
@@ -9640,7 +9640,7 @@ async fn seed_parked_gate_op(
     output.data = json!({
         "task_id": task_id,
         "wave_id": boot.wave_id.as_str(),
-        "cove_id": "cove-x",
+        "area_id": "area-x",
         "key": key,
         "attempt": 1,
         "cwd": dir.to_str().unwrap(),
@@ -9969,7 +9969,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     output.data = json!({
         "task_id": task_id,
         "wave_id": boot.wave_id.as_str(),
-        "cove_id": "cove-x",
+        "area_id": "area-x",
         "key": "obsdrop",
         "attempt": 1,
         "cwd": dir.to_str().unwrap(),

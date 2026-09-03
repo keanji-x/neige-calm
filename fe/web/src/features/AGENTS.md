@@ -2,7 +2,7 @@
 
 ## 放什么
 
-Wave、Cove、Today、Report、Spec、Settings、Auth 等页面业务行为与端侧业务组合。
+Wave、Area、Today、Report、Spec、Settings、Auth 等页面业务行为与端侧业务组合。
 
 ## 不放什么
 

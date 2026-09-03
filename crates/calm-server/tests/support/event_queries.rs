@@ -26,7 +26,7 @@ type RawEventRow = (
 
 pub async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT id, scope_kind, scope_cove, scope_wave, scope_card, payload \
+        "SELECT id, scope_kind, scope_area, scope_wave, scope_card, payload \
              FROM events WHERE kind = ?1 ORDER BY id ASC",
     )
     .bind(kind)
@@ -35,7 +35,7 @@ pub async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     .expect("event rows");
     rows.into_iter()
         .map(
-            |(id, scope_kind, _scope_cove, scope_wave, scope_card, payload)| EventRow {
+            |(id, scope_kind, _scope_area, scope_wave, scope_card, payload)| EventRow {
                 id,
                 scope_kind,
                 scope_wave,

@@ -7,17 +7,17 @@ CASE_TIER=2
 CASE_TIMEOUT_SECS=1500
 CASE_CHECK_SERVER_LOGS=1
 
-multitask_create_cove() {
-  local body cove_id
+multitask_create_area() {
+  local body area_id
   body="$(E2E_RUN_ID="$RUN_ID" \
     node -e 'process.stdout.write(JSON.stringify({name:`e2e-${process.env.E2E_RUN_ID}`,color:"#4a90d9"}))')"
-  cove_id="$(post_id /api/coves "$body")"
-  printf '%s\n' "$cove_id"
+  area_id="$(post_id /api/areas "$body")"
+  printf '%s\n' "$area_id"
 }
 
 multitask_create_wave() {
-  local cove_id=$1 body wave_id
-  body="$(COVE_ID="$cove_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({cove_id:process.env.COVE_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))')"
+  local area_id=$1 body wave_id
+  body="$(AREA_ID="$area_id" WORKSPACE="$WORKSPACE" node -e 'process.stdout.write(JSON.stringify({area_id:process.env.AREA_ID,cwd:process.env.WORKSPACE,attach_folder:true,theme:{fg:[220,220,220],bg:[30,30,30]},title:"Dispatch exactly 2 parallel codex workers: create src/greet.py greet(name) returning '\''Hello, {name}!'\''; create USAGE.md docs; then summarize report."}))')"
   wave_id="$(post_id /api/waves "$body")"
   printf '%s\n' "$wave_id"
 }
@@ -84,15 +84,15 @@ multitask_poll_wave() {
 }
 
 case_run() {
-  local auth_probe_status cove_id wave_id
+  local auth_probe_status area_id wave_id
 
   autologin_probe
   auth_probe_status="$AUTH_PROBE_STATUS"
   init_workspace
   login_unless_autologin "$auth_probe_status"
 
-  cove_id="$(multitask_create_cove)"
-  wave_id="$(multitask_create_wave "$cove_id")"
-  printf 'Created cove: %s\nCreated wave: %s\n' "$cove_id" "$wave_id"
+  area_id="$(multitask_create_area)"
+  wave_id="$(multitask_create_wave "$area_id")"
+  printf 'Created area: %s\nCreated wave: %s\n' "$area_id" "$wave_id"
   multitask_poll_wave "$wave_id"
 }

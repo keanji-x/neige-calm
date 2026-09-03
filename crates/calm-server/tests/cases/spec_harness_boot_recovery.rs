@@ -13,7 +13,7 @@ use calm_server::harness::{
     recover_harnesses_on_boot, spawn_recovered_harness,
 };
 use calm_server::ids::{ActorId, CardId, WaveId};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::operation::TxOutput;
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -30,7 +30,7 @@ fn app_state_for_boot_test_with_role_cache(
     role_cache: calm_server::card_role_cache::CardRoleCache,
 ) -> AppState {
     let events = EventBus::new();
-    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -42,11 +42,11 @@ fn app_state_for_boot_test_with_role_cache(
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
             events,
-            WriteContext::new(role_cache.clone(), cove_cache.clone()),
+            WriteContext::new(role_cache.clone(), area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache),
-        Some(cove_cache),
+        Some(area_cache),
     )
 }
 
@@ -100,8 +100,8 @@ fn sqlite_url(tmp: &TempDir, name: &str) -> String {
 #[tokio::test]
 async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "plain-chat-recovery".into(),
             color: "#111111".into(),
             sort: None,
@@ -111,7 +111,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "plain chat recovery".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -122,7 +122,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(wave.id.as_str())
         .execute(repo.pool())
         .await
@@ -189,14 +189,14 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_cove_cache().clone(),
+        repo.wave_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
         recovered.into_iter().next().unwrap(),
         ClaimMode::Replace,
     )
     .await
-    .expect("marked Worker plain-chat runtime must pass the cove-chat recovery fence");
+    .expect("marked Worker plain-chat runtime must pass the area-chat recovery fence");
     let handle = outcome
         .installed()
         .expect("plain-chat runtime must install a harness");
@@ -205,10 +205,10 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
 }
 
 #[tokio::test]
-async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
+async fn direct_recovery_boundary_rejects_area_chat_spec_runtime() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "chat-spec-recovery-fence".into(),
             color: "#111111".into(),
             sort: None,
@@ -218,7 +218,7 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "chat spec".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -229,7 +229,7 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(wave.id.as_str())
         .execute(repo.pool())
         .await
@@ -286,7 +286,7 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_cove_cache().clone(),
+        repo.wave_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
         runtime,
@@ -300,11 +300,11 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
     assert!(registry.get(&runtime_id).is_none());
 }
 
-/// Seed a cove/wave/card + recoverable SharedSpec runtime row; returns the
+/// Seed an area/wave/card + recoverable SharedSpec runtime row; returns the
 /// runtime id.
 async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &str) -> String {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: tag.into(),
             color: "#111111".into(),
             sort: None,
@@ -314,7 +314,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: tag.into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -364,7 +364,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
 }
 
 #[tokio::test]
-async fn boot_recovery_skips_cove_chat_spec_and_recovers_later_valid_runtime() {
+async fn boot_recovery_skips_area_chat_spec_and_recovers_later_valid_runtime() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let declined_id = seed_recoverable_runtime(&repo, "declined-first", "thread-declined").await;
     let declined = repo
@@ -383,7 +383,7 @@ async fn boot_recovery_skips_cove_chat_spec_and_recovers_later_valid_runtime() {
         CardRole::Spec,
         declined_card.wave_id.clone(),
     );
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(declined_card.wave_id.as_str())
         .execute(repo.pool())
         .await
@@ -395,7 +395,7 @@ async fn boot_recovery_skips_cove_chat_spec_and_recovers_later_valid_runtime() {
         repo.clone(),
         EventBus::new(),
         repo.card_role_cache().clone(),
-        repo.wave_cove_cache().clone(),
+        repo.wave_area_cache().clone(),
         SharedCodexAppServer::new_stub(repo.clone()),
         &registry,
     )
@@ -413,8 +413,8 @@ async fn boot_recovery_skips_cove_chat_spec_and_recovers_later_valid_runtime() {
 #[tokio::test]
 async fn boot_recovery_respawns_harness_with_snapshot() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot".into(),
             color: "#111111".into(),
             sort: None,
@@ -424,7 +424,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "boot".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -483,7 +483,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         &registry,
     )
@@ -535,7 +535,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
         repo.clone(),
         state.events.clone(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         state.shared_codex_appserver.clone(),
         &state.harness,
         user_runtime,
@@ -616,7 +616,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         repo: repo.clone(),
         events: events.clone(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon: daemon.clone(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::initial(0, vec![]),
@@ -648,7 +648,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         repo: repo.clone(),
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon: daemon.clone(),
         registry: registry.clone(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -714,7 +714,7 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         repo: repo.clone(),
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon: daemon.clone(),
         registry: registry.clone(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -759,8 +759,8 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
 #[tokio::test]
 async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot-deferred".into(),
             color: "#111111".into(),
             sort: None,
@@ -770,7 +770,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "boot-deferred".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -834,7 +834,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon.clone(),
         &registry,
     )
@@ -859,8 +859,8 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
 #[tokio::test]
 async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot-replay".into(),
             color: "#111111".into(),
             sort: None,
@@ -870,7 +870,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "boot-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -884,18 +884,18 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let card = seed_spec_card_row(&repo, &wave.id).await;
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
-    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let missed_id = repo
         .log_pure_event(
             ActorId::User,
             EventScope::Wave {
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &role_cache,
-            &cove_cache,
+            &area_cache,
             Event::WaveReportEdited {
                 wave_id: wave.id.clone(),
                 card_id: card.id.clone(),
@@ -916,12 +916,12 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             ActorId::User,
             EventScope::Wave {
                 wave: wave.id.clone(),
-                cove: cove.id.clone(),
+                area: area.id.clone(),
             },
             None,
             &bus,
             &role_cache,
-            &cove_cache,
+            &area_cache,
             Event::WaveReportEdited {
                 wave_id: wave.id.clone(),
                 card_id: card.id.clone(),
@@ -969,7 +969,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         &registry,
     )
@@ -998,8 +998,8 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
 #[tokio::test]
 async fn boot_recovery_skips_terminal_waves() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot-terminal".into(),
             color: "#111111".into(),
             sort: None,
@@ -1009,7 +1009,7 @@ async fn boot_recovery_skips_terminal_waves() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "boot-terminal".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -1072,7 +1072,7 @@ async fn boot_recovery_skips_terminal_waves() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1085,8 +1085,8 @@ async fn boot_recovery_skips_terminal_waves() {
 #[tokio::test]
 async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot-phantom".into(),
             color: "#111111".into(),
             sort: None,
@@ -1096,7 +1096,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "boot-phantom".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -1161,7 +1161,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         repo,
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1177,8 +1177,8 @@ async fn force_new_thread_recovery_after_phase2_crash() {
     let db_url = sqlite_url(&tmp, "phase2-crash.db");
     let (card_id, wave_id, old_runtime_id, placeholder_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "phase2-crash".into(),
                 color: "#111111".into(),
                 sort: None,
@@ -1188,7 +1188,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "phase2 crash".into(),
                 sort: None,
                 cwd: "/tmp".into(),
@@ -1400,8 +1400,8 @@ async fn force_new_thread_recovery_after_phase2_crash() {
 #[tokio::test]
 async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "gate-replay".into(),
             color: "#111111".into(),
             sort: None,
@@ -1411,7 +1411,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "gate-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -1479,11 +1479,11 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
-    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&area_cache).await.unwrap();
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     for event in [
         Event::TaskCompleted {
@@ -1519,7 +1519,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             None,
             &bus,
             &role_cache,
-            &cove_cache,
+            &area_cache,
             event,
         )
         .await
@@ -1531,7 +1531,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         None,
         &bus,
         &role_cache,
-        &cove_cache,
+        &area_cache,
         Event::TaskGateResult {
             task_id: gated_id.clone(),
             idempotency_key: gated_id.clone(),
@@ -1579,7 +1579,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         repo.clone(),
         EventBus::new(),
         calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         &registry,
     )
@@ -1649,10 +1649,10 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 
 /// #1189 A1 — a kernel restart mid-conversation.
 ///
-/// Two halves of one bug, on one ordinary (non-cove-chat) wave:
+/// Two halves of one bug, on one ordinary (non-area-chat) wave:
 ///
 /// * **the selector.** `session_projection_recover_harnesses_on_boot`'s second
-///   `OR` arm was written for cove chat (`executor` + `role = 'worker'` +
+///   `OR` arm was written for area chat (`executor` + `role = 'worker'` +
 ///   `plain_chat`) and a wave assistant matches none of its three conjuncts. A
 ///   restart during an assistant turn therefore left the `worker_sessions` row
 ///   alive with no run loop behind it: `GET /spec/run` answers dormant and the
@@ -1667,12 +1667,12 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
 ///
 /// The fixture keeps all four recovery classes side by side so a fix that
 /// widened the selector too far is red as well: the real codex worker must stay
-/// out, and the cove chat must stay in.
+/// out, and the area chat must stay in.
 #[tokio::test]
 async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlog() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "assistant-recovery".into(),
             color: "#111111".into(),
             sort: None,
@@ -1682,7 +1682,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "assistant recovery".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -1693,12 +1693,12 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         })
         .await
         .unwrap();
-    // A cove chat wave alongside it: the #1098 recovery class must keep working.
+    // An area chat wave alongside it: the #1098 recovery class must keep working.
     let chat_wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
-            title: "cove chat".into(),
+            area_id: area.id.clone(),
+            title: "area chat".into(),
             sort: None,
             cwd: "/tmp".into(),
             template_id: None,
@@ -1708,7 +1708,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(chat_wave.id.as_str())
         .execute(repo.pool())
         .await
@@ -1829,11 +1829,11 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     // Spec-push backlog accumulated on the wave while the kernel was down.
     let bus = EventBus::new();
     let role_cache = repo.card_role_cache().clone();
-    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&area_cache).await.unwrap();
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     repo.log_pure_event(
         ActorId::User,
@@ -1841,7 +1841,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         None,
         &bus,
         &role_cache,
-        &cove_cache,
+        &area_cache,
         Event::TaskCompleted {
             idempotency_key: format!("{}:only", wave.id.as_str()),
             result: json!({ "ok": true }),
@@ -1857,7 +1857,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         None,
         &bus,
         &role_cache,
-        &cove_cache,
+        &area_cache,
         Event::WaveReportEdited {
             wave_id: wave.id.clone(),
             card_id: spec_card.id.clone(),
@@ -1892,7 +1892,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     assert_eq!(
         selected, expected,
         "boot recovery must select the spec harness, the wave assistant and the \
-         cove chat — and must not select the dispatched codex worker \
+         area chat — and must not select the dispatched codex worker \
          ({worker_runtime_id})"
     );
 
@@ -1901,13 +1901,13 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         repo.clone(),
         EventBus::new(),
         role_cache.clone(),
-        cove_cache.clone(),
+        area_cache.clone(),
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
         &registry,
     )
     .await
     .unwrap();
-    assert_eq!(recovered, 3, "spec + assistant + cove chat");
+    assert_eq!(recovered, 3, "spec + assistant + area chat");
     assert!(
         registry.get(&assistant_runtime_id).is_some(),
         "the assistant must come back REGISTERED; a dormant runtime is a user \
@@ -1965,7 +1965,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     let chat_queue = stored(chat_runtime_id.clone()).await;
     assert!(
         chat_queue.is_empty(),
-        "a cove chat is not a spec-push recipient either: {chat_queue:?}"
+        "an area chat is not a spec-push recipient either: {chat_queue:?}"
     );
 
     for runtime_id in [&spec_runtime_id, &assistant_runtime_id, &chat_runtime_id] {

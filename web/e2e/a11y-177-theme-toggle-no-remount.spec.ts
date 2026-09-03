@@ -41,7 +41,7 @@
 //        (navigation would unmount any wave-page XtermView and defeat
 //        the whole observation).
 //
-//  * We create a real cove + wave via the replay binary's REST surface
+//  * We create a real area + wave via the replay binary's REST surface
 //    (same pattern as `a11y-keyboard.spec.ts`), then rely on the
 //    sync-spawn spec-card path (#136 PR6) to mint an XtermView when
 //    the wave page renders. No `+ Add → terminal` step needed.
@@ -61,8 +61,8 @@
 import { readFileSync } from 'node:fs';
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import {
-  createUserCove,
-  createWaveInCove,
+  createUserArea,
+  createWaveInArea,
   resetReplayServer,
 } from './helpers/reset';
 import { CODEX_BIN_FILE, CODEX_MISSING_SENTINEL } from './_setup/replay-server.shared';
@@ -106,11 +106,11 @@ test('#177 XtermView does not remount on app theme toggle', async ({
   // Step 1 — boot with the `?testMounts=1` instrumentation flag.
   await page.goto('?testMounts=1', { waitUntil: 'domcontentloaded' });
 
-  // Step 2 — mint a user-facing cove + wave via the replay REST API.
-  const cove = await createUserCove(request_(page), `E2E #177 ${Date.now()}`, '#6a8');
-  const wave = await createWaveInCove(
+  // Step 2 — mint a user-facing area + wave via the replay REST API.
+  const area = await createUserArea(request_(page), `E2E #177 ${Date.now()}`, '#6a8');
+  const wave = await createWaveInArea(
     request_(page),
-    cove.id,
+    area.id,
     `E2E #177 wave ${Date.now()}`,
   );
 

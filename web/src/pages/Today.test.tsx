@@ -5,11 +5,11 @@
 //   1. `activeWavesOn` honours the inclusive [createdAt, terminalAt ?? now]
 //      predicate (open waves stay active forever; terminated waves drop
 //      off after their terminal day; still-future waves stay invisible).
-//   2. CalWeek paints one cove-coloured dot per active wave on each
+//   2. CalWeek paints one area-coloured dot per active wave on each
 //      day cell, capped at four.
-//   3. CalMonth paints up to three cove-coloured dots per active day.
+//   3. CalMonth paints up to three area-coloured dots per active day.
 //   4. Selecting a day surfaces that day's active waves in the agenda
-//      list (cove name + title visible, click navigates to the wave).
+//      list (area name + title visible, click navigates to the wave).
 //   5. A day with zero active waves and zero scheduled events shows the
 //      "Nothing scheduled." empty state.
 //
@@ -23,7 +23,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TodayPage, activeWavesOn } from './Today';
-import type { Cove, Wave } from '../types';
+import type { Area, Wave } from '../types';
 
 // A wave whose terminal_at is `null` is "still open"; the calendar uses
 // `Date.now()` to extend its activity through every day up to today.
@@ -34,9 +34,9 @@ import type { Cove, Wave } from '../types';
 const PINNED_NOW = Date.UTC(2026, 4, 24, 12, 0, 0); // 2026-05-24 12:00 UTC
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function makeCove(overrides: Partial<Cove> = {}): Cove {
+function makeArea(overrides: Partial<Area> = {}): Area {
   return {
-    id: 'cove-atlas',
+    id: 'area-atlas',
     name: 'Atlas',
     subtitle: '',
     color: '#5a9',
@@ -47,7 +47,7 @@ function makeCove(overrides: Partial<Cove> = {}): Cove {
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1',
-    coveId: 'cove-atlas',
+    areaId: 'area-atlas',
     title: 'Migrate auth',
     lifecycle: 'working',
     anyCardNeedsInput: false,
@@ -63,7 +63,7 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 }
 
 describe('activeWavesOn', () => {
-  const atlas = makeCove();
+  const atlas = makeArea();
 
   it('includes a still-open wave on every day from createdAt to now (inclusive)', () => {
     const w = makeWave({
@@ -113,25 +113,25 @@ describe('activeWavesOn', () => {
     const today = new Date(PINNED_NOW);
     const out = activeWavesOn([wLate, wEarly, wMid], today, PINNED_NOW);
     expect(out.map((x) => x.id)).toEqual(['a', 'b', 'c']);
-    // Atlas cove implicit through default coveId.
-    expect(out[0].coveId).toBe(atlas.id);
+    // Atlas area implicit through default areaId.
+    expect(out[0].areaId).toBe(atlas.id);
   });
 });
 
 describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   function renderTodayWith({
     waves,
-    coves,
+    areas,
     onGo = () => {},
   }: {
     waves: Wave[];
-    coves: Cove[];
+    areas: Area[];
     onGo?: Parameters<typeof TodayPage>[0]['onGo'];
   }) {
     return render(
       <TodayPage
         waves={waves}
-        coves={coves}
+        areas={areas}
         onGo={onGo}
         todayTerminalId={null}
         todayError={null}
@@ -140,25 +140,25 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     );
   }
 
-  it('paints a cove-coloured dot on each day a wave is active', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+  it('paints an area-coloured dot on each day a wave is active', () => {
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const onGo = vi.fn();
     // Wave open since 2 days ago — should show dots on the day-before-
     // yesterday, yesterday, and today cells (3 cells in this week).
     const w = makeWave({
       id: 'w-open',
-      coveId: atlas.id,
+      areaId: atlas.id,
       createdAt: PINNED_NOW - 2 * DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [w], coves: [atlas], onGo });
+    renderTodayWith({ waves: [w], areas: [atlas], onGo });
 
     // Each .cal-week-day button hosts its own .cal-week-dots span;
     // count how many cells carry a dot. Three days should match (day-
     // before-yesterday, yesterday, today inside the current week).
     const dotCells = document.querySelectorAll('.cal-week-day .cal-week-dot');
     expect(dotCells.length).toBe(3);
-    // Every dot carries the cove colour (inline style). `#5a9` (CSS
+    // Every dot carries the area colour (inline style). `#5a9` (CSS
     // shorthand) expands to `#55aa99` → rgb(85, 170, 153); jsdom
     // normalises the inline value through that expansion.
     dotCells.forEach((dot) => {
@@ -168,26 +168,26 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
 
   it('selecting a day surfaces that day\'s active waves in the agenda', async () => {
     const user = userEvent.setup();
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const onGo = vi.fn();
     const w = makeWave({
       id: 'w-target',
       title: 'Migrate auth',
-      coveId: atlas.id,
+      areaId: atlas.id,
       lifecycle: 'working',
       createdAt: PINNED_NOW - 1 * DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [w], coves: [atlas], onGo });
+    renderTodayWith({ waves: [w], areas: [atlas], onGo });
 
     // Today's cell defaults selected → agenda already lists the wave.
     expect(screen.getByText('Migrate auth')).toBeTruthy();
-    // The compact single-line row no longer prints the cove name as
-    // text (the left coloured bar carries the cove identity); instead
-    // the cove name is folded into the button's aria-label so axe /
+    // The compact single-line row no longer prints the area name as
+    // text (the left coloured bar carries the area identity); instead
+    // the area name is folded into the button's aria-label so axe /
     // screen readers still see it.
     const chip = screen.getByRole('button', { name: /Migrate auth/i });
-    expect(chip.getAttribute('aria-label')).toContain('in cove Atlas');
+    expect(chip.getAttribute('aria-label')).toContain('in area Atlas');
 
     // Clicking the chip should dispatch a navigation event for the
     // wave id.
@@ -196,15 +196,15 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('uses the shared fallback label for active waves with empty titles', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const w = makeWave({
       id: 'w-untitled',
       title: '',
-      coveId: atlas.id,
+      areaId: atlas.id,
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [w], coves: [atlas] });
+    renderTodayWith({ waves: [w], areas: [atlas] });
 
     const chip = screen.getByRole('button', { name: /Untitled wave/i });
     expect(chip).toHaveTextContent('Untitled wave');
@@ -212,11 +212,11 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('renders waiting / running state as a dot flag and folds it into aria-label', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const waiting = makeWave({
       id: 'w-waiting',
       title: 'Needs your input',
-      coveId: atlas.id,
+      areaId: atlas.id,
       anyCardNeedsInput: true,
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
@@ -224,12 +224,12 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     const running = makeWave({
       id: 'w-running',
       title: 'Running build',
-      coveId: atlas.id,
+      areaId: atlas.id,
       lifecycle: 'working',
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [waiting, running], coves: [atlas] });
+    renderTodayWith({ waves: [waiting, running], areas: [atlas] });
 
     // Old `cal-event-meta` row is gone — the lifecycle now renders
     // through `.cal-event-lifecycle` on wave rows (see test below) and
@@ -246,13 +246,13 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('wave rows surface the lifecycle phrase below the title (and apply `cal-event--wave` modifier)', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     // Cover one quiet, one attention-grabbing, and one running lifecycle
     // so we lock in both the text mapping and the `is-attention` class.
     const reviewing = makeWave({
       id: 'w-reviewing',
       title: 'Tighten review loop',
-      coveId: atlas.id,
+      areaId: atlas.id,
       lifecycle: 'reviewing',
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
@@ -260,7 +260,7 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     const working = makeWave({
       id: 'w-working',
       title: 'Plumb new API',
-      coveId: atlas.id,
+      areaId: atlas.id,
       lifecycle: 'working',
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
@@ -268,12 +268,12 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
     const draft = makeWave({
       id: 'w-draft',
       title: 'Sketch follow-up',
-      coveId: atlas.id,
+      areaId: atlas.id,
       lifecycle: 'draft',
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [reviewing, working, draft], coves: [atlas] });
+    renderTodayWith({ waves: [reviewing, working, draft], areas: [atlas] });
 
     // Every wave row carries the `--wave` modifier (no hour gutter); the
     // hour-time gutter element is omitted for wave rows.
@@ -314,19 +314,19 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('renders all overlapping waves into the agenda (CSS clamps height to a scrollable max)', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     // 20 distinct waves, all active today — far more than would fit
     // inside the 360px max-height the rail enforces in CSS.
     const waves: Wave[] = Array.from({ length: 20 }, (_, i) =>
       makeWave({
         id: `w-${i}`,
         title: `Wave number ${i}`,
-        coveId: atlas.id,
+        areaId: atlas.id,
         createdAt: PINNED_NOW - DAY_MS,
         terminalAt: null,
       }),
     );
-    renderTodayWith({ waves, coves: [atlas] });
+    renderTodayWith({ waves, areas: [atlas] });
 
     // All 20 chips should render into the agenda (no virtualisation):
     // overflow is delegated to CSS (`max-height` + `overflow-y: auto`
@@ -341,16 +341,16 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('renders long wave titles without forcing a multi-line layout (ellipsis class)', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const longTitle = 'A'.repeat(200);
     const w = makeWave({
       id: 'w-long',
       title: longTitle,
-      coveId: atlas.id,
+      areaId: atlas.id,
       createdAt: PINNED_NOW - DAY_MS,
       terminalAt: null,
     });
-    renderTodayWith({ waves: [w], coves: [atlas] });
+    renderTodayWith({ waves: [w], areas: [atlas] });
 
     // The `.cal-event-title` element carries the long text exactly
     // once; the CSS rule (`white-space: nowrap; text-overflow: ellipsis;`
@@ -369,16 +369,16 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
 
   it('shows the empty state on a day with no active waves and no events', async () => {
     const user = userEvent.setup();
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     // Wave that terminated 5 days ago — today's cell has no active
     // wave at all.
     const w = makeWave({
       id: 'w-old',
-      coveId: atlas.id,
+      areaId: atlas.id,
       createdAt: PINNED_NOW - 10 * DAY_MS,
       terminalAt: PINNED_NOW - 5 * DAY_MS,
     });
-    renderTodayWith({ waves: [w], coves: [atlas] });
+    renderTodayWith({ waves: [w], areas: [atlas] });
 
     // The default "Today" cell is the one selected at mount. With no
     // active waves on today, the empty state should render.
@@ -396,18 +396,18 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
   });
 
   it('caps week dots at 4 and month dots at 3 per cell', () => {
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     // 6 distinct waves open today → week cap (4) and month cap (3)
     // should apply.
     const waves: Wave[] = Array.from({ length: 6 }, (_, i) =>
       makeWave({
         id: `w-${i}`,
-        coveId: atlas.id,
+        areaId: atlas.id,
         createdAt: PINNED_NOW - DAY_MS,
         terminalAt: null,
       }),
     );
-    renderTodayWith({ waves, coves: [atlas] });
+    renderTodayWith({ waves, areas: [atlas] });
 
     // Find today's cell (the one with the .today class).
     const todayCell = document.querySelector('.cal-week-day.today');
@@ -420,11 +420,11 @@ describe('TodayPage CalendarCard — wave activity dots & agenda', () => {
 describe('TodayPage CalendarCard — month view', () => {
   it('caps month dots at 3 per active cell', async () => {
     const user = userEvent.setup();
-    const atlas = makeCove({ id: 'cove-atlas', name: 'Atlas', color: '#5a9' });
+    const atlas = makeArea({ id: 'area-atlas', name: 'Atlas', color: '#5a9' });
     const waves: Wave[] = Array.from({ length: 5 }, (_, i) =>
       makeWave({
         id: `m-${i}`,
-        coveId: atlas.id,
+        areaId: atlas.id,
         createdAt: PINNED_NOW - DAY_MS,
         terminalAt: null,
       }),
@@ -432,7 +432,7 @@ describe('TodayPage CalendarCard — month view', () => {
     render(
       <TodayPage
         waves={waves}
-        coves={[atlas]}
+        areas={[atlas]}
         onGo={() => {}}
         todayTerminalId={null}
         todayError={null}

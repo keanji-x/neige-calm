@@ -6,7 +6,7 @@ use std::time::Duration;
 use calm_server::db::RouteRepo;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, Terminal};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::terminal_renderer::{
     ClientPumpContext, RendererConfig, RendererEntry, TerminalRendererRegistry, run_client_pump,
@@ -825,21 +825,21 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
     let _ = supervisor.wait().await;
 }
 
-/// Minimal cove → wave → card → terminal chain so `terminal_set_exit` has a row
+/// Minimal area → wave → card → terminal chain so `terminal_set_exit` has a row
 /// to write to.
 async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "renderer-e2e".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "renderer-e2e".into(),
             sort: None,
             cwd: workspace_root().display().to_string(),

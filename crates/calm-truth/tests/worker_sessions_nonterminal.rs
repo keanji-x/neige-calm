@@ -2,7 +2,7 @@ use calm_truth::db::RepoSyncDomainRaw;
 use calm_truth::db::sqlite::{
     SqlxRepo, begin_immediate_tx, session_insert_tx, session_state_transition_tx,
 };
-use calm_truth::model::{NewCove, NewWave, RequestTheme};
+use calm_truth::model::{NewArea, NewWave, RequestTheme};
 use calm_truth::session_repo::SessionRepo;
 use calm_types::ids::{CardId, WaveId};
 use calm_types::worker::{
@@ -14,18 +14,18 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "worker-session-scan".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("seed cove");
+        .expect("seed area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "worker-session-scan".into(),
             sort: None,
             cwd: "/tmp".into(),

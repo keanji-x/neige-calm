@@ -12,21 +12,21 @@ use calm_server::harness::{
     SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::ActorId;
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use serde_json::json;
 
 #[tokio::test]
 async fn harness_drops_foreign_thread_notifications() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "dual".into(),
             color: "#111111".into(),
             sort: None,
@@ -36,7 +36,7 @@ async fn harness_drops_foreign_thread_notifications() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "dual".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -94,7 +94,7 @@ async fn harness_drops_foreign_thread_notifications() {
         repo,
         events,
         card_role_cache: CardRoleCache::new(),
-        wave_cove_cache: WaveCoveCache::new(),
+        wave_area_cache: WaveAreaCache::new(),
         daemon: daemon.clone(),
         config: HarnessConfig::default(),
         snapshot,
@@ -128,8 +128,8 @@ async fn harness_drops_foreign_thread_notifications() {
 #[tokio::test]
 async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "harness-route".into(),
             color: "#111111".into(),
             sort: None,
@@ -139,7 +139,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "harness-route".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -151,8 +151,8 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    let wave_area_cache = WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,
@@ -212,7 +212,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         repo: repo_dyn.clone(),
         events: events.clone(),
         card_role_cache: CardRoleCache::new(),
-        wave_cove_cache: WaveCoveCache::new(),
+        wave_area_cache: WaveAreaCache::new(),
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -226,7 +226,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let _dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn.clone(),
         events.clone(),
-        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         codex,
         Arc::new(DaemonClient {
             data_dir: std::env::temp_dir().join("neige-harness-route-dispatcher"),
@@ -245,12 +245,12 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         ActorId::User,
         EventScope::Wave {
             wave: wave.id.clone(),
-            cove: cove.id,
+            area: area.id,
         },
         None,
         &events,
         &role_cache,
-        &wave_cove_cache,
+        &wave_area_cache,
         Event::WaveReportEdited {
             wave_id: wave.id.clone(),
             card_id: card.id.clone(),
@@ -290,8 +290,8 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
 #[tokio::test]
 async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "harness-full".into(),
             color: "#111111".into(),
             sort: None,
@@ -301,7 +301,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "harness-full".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -313,8 +313,8 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id.clone());
+    let wave_area_cache = WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id.clone());
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,
@@ -375,7 +375,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             repo: repo_dyn.clone(),
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
-            wave_cove_cache: WaveCoveCache::new(),
+            wave_area_cache: WaveAreaCache::new(),
             daemon: daemon.clone(),
             config: HarnessConfig::default(),
             snapshot,
@@ -391,7 +391,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn.clone(),
         events,
-        WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+        WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
             data_dir: std::env::temp_dir().join("neige-harness-full-dispatcher"),
@@ -424,12 +424,12 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             ActorId::User,
             EventScope::Wave {
                 wave: wave.id.clone(),
-                cove: cove.id,
+                area: area.id,
             },
             None,
             &cold_bus,
             &role_cache,
-            &wave_cove_cache,
+            &wave_area_cache,
             event.clone(),
         )
         .await

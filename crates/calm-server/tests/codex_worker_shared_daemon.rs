@@ -13,11 +13,11 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
     Operation, OperationCompletionBus, OperationKey, OperationOutcome, Phase, PhaseTag,
@@ -102,8 +102,8 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     cache: CardRoleCache,
-    wcc: calm_server::wave_cove_cache::WaveCoveCache,
-    cove_id: CoveId,
+    wcc: calm_server::wave_area_cache::WaveAreaCache,
+    area_id: AreaId,
     wave_id: WaveId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
@@ -123,8 +123,8 @@ async fn boot(start_shared: bool) -> Boot {
     init_git_repo(&repo_root);
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "worker-shared".into(),
             color: "#000".into(),
             sort: None,
@@ -134,7 +134,7 @@ async fn boot(start_shared: bool) -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "worker-shared".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
@@ -177,8 +177,8 @@ async fn boot(start_shared: bool) -> Boot {
         wave.id.clone(),
     );
     seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
 
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin();
@@ -248,7 +248,7 @@ async fn boot(start_shared: bool) -> Boot {
         events,
         cache,
         wcc,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         codex,
         daemon,
@@ -325,7 +325,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }
@@ -574,7 +574,7 @@ async fn prepared_worker_operation(
         state.shared_codex_appserver.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let mut tx = repo.pool().begin().await.unwrap();
@@ -629,8 +629,8 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let repo_root = tmp.path().join("wave-repo");
     init_git_repo(&repo_root);
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "worker-recovery".into(),
             color: "#000".into(),
             sort: None,
@@ -640,7 +640,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "worker recovery".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
@@ -654,8 +654,8 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -676,7 +676,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
     let mcp_server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        WriteContext::new(state.card_role_cache.clone(), state.wave_cove_cache.clone()),
+        WriteContext::new(state.card_role_cache.clone(), state.wave_area_cache.clone()),
         tmp.path().join("worker-recovery-mcp.sock"),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -1159,7 +1159,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.shared_codex_appserver.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     insert_pending_operation_row(&repo, &op).await;
@@ -1214,7 +1214,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         recovered_shared.clone(),
         None,
         state.card_role_cache.clone(),
-        state.wave_cove_cache.clone(),
+        state.wave_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));

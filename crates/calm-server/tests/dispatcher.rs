@@ -26,9 +26,9 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope, SubscribeFilter, SubscribeScope};
-use calm_server::ids::{ActorId, CoveId, WaveId};
+use calm_server::ids::{ActorId, AreaId, WaveId};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
+    CardRole, NewArea, NewCard, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
     WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
@@ -42,7 +42,7 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::Value;
 
@@ -52,17 +52,17 @@ async fn boot() -> (
     Arc<dyn Repo>,
     EventBus,
     CardRoleCache,
-    WaveCoveCache,
+    WaveAreaCache,
     WaveId,
-    CoveId,
+    AreaId,
 ) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "dispatcher-test".into(),
             color: "#000".into(),
             sort: None,
@@ -72,7 +72,7 @@ async fn boot() -> (
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "dispatcher-test".into(),
             sort: None,
             cwd: String::new(),
@@ -86,15 +86,15 @@ async fn boot() -> (
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     (
         repo,
         events,
         card_role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         wave.id,
-        cove.id,
+        area.id,
     )
 }
 
@@ -127,16 +127,16 @@ fn codex_req(idem: &str, goal: &str) -> Event {
     }
 }
 
-fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
+fn wave_scope(wave: &WaveId, area: &AreaId) -> EventScope {
     EventScope::Wave {
         wave: wave.clone(),
-        cove: cove.clone(),
+        area: area.clone(),
     }
 }
 
 #[tokio::test]
 async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_updated() {
-    let (repo, events, _cache, _wcc, wave_id, _cove_id) = boot().await;
+    let (repo, events, _cache, _wcc, wave_id, _area_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
@@ -242,7 +242,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
 
 #[tokio::test]
 async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pending() {
-    let (repo, events, _cache, _wcc, wave_id, _cove_id) = boot().await;
+    let (repo, events, _cache, _wcc, wave_id, _area_id) = boot().await;
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
@@ -428,7 +428,7 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
 #[tokio::test(flavor = "current_thread")]
 async fn lagged_context_sweep_precedes_scheduler_resume() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, _cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, _area_id) = boot().await;
     repo.wave_update(
         wave_id.as_str(),
         WavePatch {
@@ -764,7 +764,7 @@ impl ProviderAdapter for CardSpawnAdapter {
 #[tokio::test]
 async fn wave_updated_budget_raise_pokes_scheduler() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
-    let (repo, events, cache, wcc, wave_id, cove_id) = boot().await;
+    let (repo, events, cache, wcc, wave_id, area_id) = boot().await;
     repo.wave_update(
         wave_id.as_str(),
         WavePatch {
@@ -863,7 +863,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
     let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
     repo.log_pure_event(
         ActorId::User,
-        wave_scope(&wave_id, &cove_id),
+        wave_scope(&wave_id, &area_id),
         None,
         &events,
         &cache,
@@ -894,7 +894,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
     let wave = repo.wave_get(wave_id.as_str()).await.unwrap().unwrap();
     repo.log_pure_event(
         ActorId::User,
-        wave_scope(&wave_id, &cove_id),
+        wave_scope(&wave_id, &area_id),
         None,
         &events,
         &cache,

@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -94,20 +94,20 @@ async fn fresh_db_migration_is_no_op_when_no_waves() {
     // no rows to backfill, no errors.
     let (repo, _pool) = fresh_repo().await;
     let waves = repo
-        .waves_by_cove("nonexistent")
+        .waves_by_area("nonexistent")
         .await
-        .expect("waves_by_cove works post-migration");
+        .expect("waves_by_area works post-migration");
     assert!(waves.is_empty(), "no waves means no report cards");
 }
 
 #[tokio::test]
 async fn backfill_mints_report_card_per_wave() {
     let (repo, pool) = fresh_repo().await;
-    // Mint a cove + wave directly via the repo (bypassing the HTTP
+    // Mint an area + wave directly via the repo (bypassing the HTTP
     // route, so no report card is auto-minted). This simulates the
     // pre-0014 storage shape — wave row exists, no report card.
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -117,7 +117,7 @@ async fn backfill_mints_report_card_per_wave() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "legacy".into(),
             sort: None,
             cwd: String::new(),
@@ -169,8 +169,8 @@ async fn backfill_mints_report_card_per_wave() {
 #[tokio::test]
 async fn backfill_skips_waves_that_already_have_a_report_card() {
     let (repo, pool) = fresh_repo().await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -180,7 +180,7 @@ async fn backfill_skips_waves_that_already_have_a_report_card() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "already migrated".into(),
             sort: None,
             cwd: String::new(),
@@ -210,8 +210,8 @@ async fn backfill_skips_waves_that_already_have_a_report_card() {
 #[tokio::test]
 async fn backfill_seeds_layout_overlay_when_absent() {
     let (repo, pool) = fresh_repo().await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -221,7 +221,7 @@ async fn backfill_seeds_layout_overlay_when_absent() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "no-layout-yet".into(),
             sort: None,
             cwd: String::new(),
@@ -264,8 +264,8 @@ async fn backfill_seeds_layout_overlay_when_absent() {
 #[tokio::test]
 async fn backfill_patches_existing_layout_overlay() {
     let (repo, pool) = fresh_repo().await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -275,7 +275,7 @@ async fn backfill_patches_existing_layout_overlay() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "already-has-layout".into(),
             sort: None,
             cwd: String::new(),

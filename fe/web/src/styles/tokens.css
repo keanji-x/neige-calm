@@ -182,8 +182,8 @@
      * Hue 250 and not 258, because `--accent` is 267 and a neutral 9 degrees
      * away from the accent makes the accent read as "the background, but
      * brighter" instead of as a separate colour event. 250 leaves 17 degrees.
-     * The cove ring's claim on 245 does **not** bind here — that rule exists
-     * because the accent and a cove dot sit at comparable L and chroma and
+     * The area ring's claim on 245 does **not** bind here — that rule exists
+     * because the accent and an area dot sit at comparable L and chroma and
      * could be confused; a near-black ground at C=0.015 cannot be mistaken
      * for an `oklch(70% 0.1 245)` identity dot.
      *
@@ -206,9 +206,9 @@
 
     /*
      * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
-     * `--cove-6` — so a cove's identity dot could land on the one colour §7.5
+     * `--area-6` — so an area's identity dot could land on the one colour §7.5
      * reserves for "you are here". 267 is the point farthest from every hue on
-     * the 8-step cove ring (22.5 degrees from its two nearest), so identity and
+     * the 8-step area ring (22.5 degrees from its two nearest), so identity and
      * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
      * spends one accent, sparingly, on a page that is otherwise greyscale.
      */
@@ -469,15 +469,15 @@
 
     --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.05), 0 12px 32px oklch(0% 0 0 / 0.08);
 
-    /* Cove identity slots: id hash mod 8. Never a free-form hex (§6.2). */
-    --cove-1: oklch(62% 0.09 20);
-    --cove-2: oklch(62% 0.09 60);
-    --cove-3: oklch(62% 0.09 110);
-    --cove-4: oklch(62% 0.09 150);
-    --cove-5: oklch(62% 0.09 200);
-    --cove-6: oklch(62% 0.09 245);
-    --cove-7: oklch(62% 0.09 290);
-    --cove-8: oklch(62% 0.09 330);
+    /* Area identity slots: id hash mod 8. Never a free-form hex (§6.2). */
+    --area-1: oklch(62% 0.09 20);
+    --area-2: oklch(62% 0.09 60);
+    --area-3: oklch(62% 0.09 110);
+    --area-4: oklch(62% 0.09 150);
+    --area-5: oklch(62% 0.09 200);
+    --area-6: oklch(62% 0.09 245);
+    --area-7: oklch(62% 0.09 290);
+    --area-8: oklch(62% 0.09 330);
 
     --z-base: 0;
     --z-raised: 2;
@@ -518,7 +518,7 @@
        out-of-gamut oklch is mapped differently by different browsers — the
        hazard fe-design.md §10-7 warns about. Every browser was already
        clipping it to this value; now they agree on purpose. Hue 267 is
-       unchanged and still the point farthest from the cove ring. */
+       unchanged and still the point farthest from the area ring. */
     --accent: oklch(80% 0.10 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
     --warn: oklch(74% 0.15 30);
@@ -550,13 +550,13 @@
     /* Dark shadows are heavier: the surface behind them has less contrast to lose. */
     --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 32px oklch(0% 0 0 / 0.45);
 
-    --cove-1: oklch(70% 0.1 20);
-    --cove-2: oklch(70% 0.1 60);
-    --cove-3: oklch(70% 0.1 110);
-    --cove-4: oklch(70% 0.1 150);
-    --cove-5: oklch(70% 0.1 200);
-    --cove-6: oklch(70% 0.1 245);
-    --cove-7: oklch(70% 0.1 290);
-    --cove-8: oklch(70% 0.1 330);
+    --area-1: oklch(70% 0.1 20);
+    --area-2: oklch(70% 0.1 60);
+    --area-3: oklch(70% 0.1 110);
+    --area-4: oklch(70% 0.1 150);
+    --area-5: oklch(70% 0.1 200);
+    --area-6: oklch(70% 0.1 245);
+    --area-7: oklch(70% 0.1 290);
+    --area-8: oklch(70% 0.1 330);
   }
 }

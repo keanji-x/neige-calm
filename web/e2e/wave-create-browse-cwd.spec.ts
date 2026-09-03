@@ -7,7 +7,7 @@
 // `useModalView()`. The user navigates the host filesystem via the
 // `GET /api/fs/listdir` walker, clicks "Select this directory", and
 // the picked path is written back into the cwd input. We don't test
-// the full cwd → cove resolve flow here (`wave-create.spec.ts` and
+// the full cwd → area resolve flow here (`wave-create.spec.ts` and
 // `wave-create-auto-match.spec.ts` own that); the goal is just the
 // picker → input wiring.
 //
@@ -30,24 +30,24 @@ import { mkdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 const createdDirs: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   createdDirs.length = 0;
 });
 
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) {
-    const res = await request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} → ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} → ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
   // Tear down the temp dirs we minted — leave the host tidy.
   for (const dir of createdDirs) {
     await rm(dir, { recursive: true, force: true });
@@ -59,7 +59,7 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   page,
 }) => {
   const ts = Date.now();
-  const coveName = `E2E browse cove ${ts}`;
+  const areaName = `E2E browse area ${ts}`;
   // Pre-create a real on-disk directory under $HOME so the listdir
   // walker (running inside the kernel container) can find it via the
   // docker-compose $HOME bind-mount. The directory name is unique
@@ -79,21 +79,21 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   // on a fresh empty repository.
   execFileSync('git', ['init', '--quiet', dirPath], { stdio: 'ignore' });
 
-  // Step 1 — seed a cove via REST (no sidebar dependency; this spec
+  // Step 1 — seed an area via REST (no sidebar dependency; this spec
   // doesn't exercise the sidebar create flow).
-  const coveRes = await page.request.post('/api/coves', {
-    data: { name: coveName, color: '#5a9' },
+  const areaRes = await page.request.post('/api/areas', {
+    data: { name: areaName, color: '#5a9' },
     headers: { 'content-type': 'application/json' },
   });
-  expect(coveRes.ok()).toBeTruthy();
-  const cove = (await coveRes.json()) as { id: string };
-  createdCoveIds.push(cove.id);
+  expect(areaRes.ok()).toBeTruthy();
+  const area = (await areaRes.json()) as { id: string };
+  createdAreaIds.push(area.id);
 
-  await page.goto(`/calm/cove/${cove.id}`);
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  await page.goto(`/calm/area/${area.id}`);
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
   // Step 2 — open the New wave dialog. The CTA is the "+ New wave"
-  // button on the cove page; clicking it now opens a Dialog (not an
+  // button on the area page; clicking it now opens a Dialog (not an
   // inline-expanded form). The form heading "New task" still labels
   // the form region inside the dialog.
   await page.getByRole('button', { name: /new wave/i }).click();
@@ -104,10 +104,10 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
 
   // Step 3 — click Browse… next to the cwd input. The button's
   // accessible name is its visible text "Browse…" (U+2026), matched
-  // with `exact: true`. NOT a /browse/i regex: the cove select's
+  // with `exact: true`. NOT a /browse/i regex: the area select's
   // `.calm-select-trigger` button (#891) surfaces in Chromium's AX
-  // tree named by its cloned selected-option content — here the cove
-  // "E2E browse cove ..." — which strict-mode-collides a substring
+  // tree named by its cloned selected-option content — here the area
+  // "E2E browse area ..." — which strict-mode-collides a substring
   // match. `exact: true` is the regression sentinel: it also excludes
   // any future button whose name merely CONTAINS "Browse…". Same rule
   // for every in-dialog button locator — calm-select triggers are
@@ -146,15 +146,15 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   await expect(form.getByLabel(/working directory/i)).toHaveValue(dirPath);
 
   // Step 6 — finish the create flow to prove the picked path goes the
-  // distance. Resolve will miss (no cove claims `/tmp/...`), and the
-  // form defaults the cove choice to "Existing cove" (the surrounding
-  // cove). Submit → land on the wave detail page.
+  // distance. Resolve will miss (no area claims `/tmp/...`), and the
+  // form defaults the area choice to "Existing area" (the surrounding
+  // area). Submit → land on the wave detail page.
   const title = `E2E browse wave ${ts}`;
   await form.getByLabel(/task description/i).fill(title);
-  // The resolve debounce + cove section flicker; wait for the radio
+  // The resolve debounce + area section flicker; wait for the radio
   // group to settle into miss-mode (the picker), then the form is
   // ready to submit.
-  await expect(form.getByRole('radiogroup', { name: /cove selection/i }))
+  await expect(form.getByRole('radiogroup', { name: /area selection/i }))
     .toBeVisible({ timeout: 5_000 });
 
   await form.getByRole('button', { name: /create task/i }).click();
@@ -167,7 +167,7 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   const waveRes = await page.request.get(`/api/waves/${waveId}`);
   expect(waveRes.ok()).toBeTruthy();
   const { wave } = (await waveRes.json()) as {
-    wave: { cove_id: string; cwd: string };
+    wave: { area_id: string; cwd: string };
   };
   expect(wave.cwd).toBe(dirPath);
 });

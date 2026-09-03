@@ -1,10 +1,10 @@
 /**
  * §6.13 — the typed confirmation. The third and heaviest rung of §4.3's
  * confirmation ladder, and the product has exactly **one** operation on it:
- * deleting a cove, which cascades to every wave inside it.
+ * deleting an area, which cascades to every wave inside it.
  *
- * "One" means one *operation*, not one entry point: the rail's cove row and the
- * cove page header both open this, with the same copy and the same strength. An
+ * "One" means one *operation*, not one entry point: the rail's area row and the
+ * area page header both open this, with the same copy and the same strength. An
  * operation with two confirmation strengths is the real hole.
  *
  * Used more widely it stops being a protection and becomes the new normal.
@@ -49,7 +49,7 @@ export function useTypedConfirm(expected: string): TypedConfirm {
 }
 
 /**
- * Two sentences with different typography, which is why `deleteCoveCopy`
+ * Two sentences with different typography, which is why `deleteAreaCopy`
  * returns four fields rather than one `description`: a single slot cannot carry
  * both, and writing the prompt at each call site is exactly what INV-DUP-010
  * exists to prevent.

@@ -4,7 +4,7 @@ use sqlx::Sqlite;
 use sqlx::Transaction;
 
 use super::{SqlxRepo, begin_immediate_tx};
-use crate::cove_folder_claim::CoveFolderClaim;
+use crate::area_folder_claim::AreaFolderClaim;
 use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
@@ -629,56 +629,56 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // ----------------------------------------------------- cove_folders
-    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
-        // Parent cove must exist; surface as NotFound to mirror the
+    // ----------------------------------------------------- area_folders
+    async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder> {
+        // Parent area must exist; surface as NotFound to mirror the
         // terminal_create precedent above (FK error message would be
         // less actionable for the REST caller).
-        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
-            .bind(cove_id)
+        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM areas WHERE id = ?1")
+            .bind(area_id)
             .fetch_optional(&self.pool)
             .await?;
         if exists.is_none() {
-            return Err(CalmError::NotFound(format!("cove {cove_id}")));
+            return Err(CalmError::NotFound(format!("area {area_id}")));
         }
         let now = now_ms();
         // Unchecked primitive: no overlap scan at all (see the trait
         // doc). The UNIQUE constraint on `path` is the only guard, and
         // it only rejects an *equal* path. HTTP callers go through
-        // `cove_folder_create_checked` instead (#275).
+        // `area_folder_create_checked` instead (#275).
         let res =
-            sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
-                .bind(cove_id)
+            sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
+                .bind(area_id)
                 .bind(path)
                 .bind(now)
                 .execute(&self.pool)
                 .await;
         match res {
-            Ok(out) => Ok(CoveFolder {
+            Ok(out) => Ok(AreaFolder {
                 id: out.last_insert_rowid(),
-                cove_id: cove_id.to_string().into(),
+                area_id: area_id.to_string().into(),
                 path: path.to_string(),
                 created_at: now,
             }),
             Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
-                CalmError::Conflict(format!("cove_folders.path already claims `{path}`")),
+                CalmError::Conflict(format!("area_folders.path already claims `{path}`")),
             ),
             Err(e) => Err(e.into()),
         }
     }
 
-    async fn cove_folder_create_checked(
+    async fn area_folder_create_checked(
         &self,
-        cove_id: &str,
+        area_id: &str,
         path: &str,
-    ) -> Result<CoveFolderClaim> {
+    ) -> Result<AreaFolderClaim> {
         // Precondition (see the trait doc): `path` is already normalized.
         // `classify_conflict` is pure string comparison, so a trailing
         // slash would silently *mis*classify rather than error out.
         debug_assert_eq!(
             path,
-            crate::cove_folder_claim::normalize_path(path),
-            "cove_folder_create_checked requires a normalized path; got `{path}`"
+            crate::area_folder_claim::normalize_path(path),
+            "area_folder_create_checked requires a normalized path; got `{path}`"
         );
         // #275 — BEGIN IMMEDIATE takes the writer lock *before* the scan,
         // so the SELECT and the INSERT are one atomic step. Without it the
@@ -690,26 +690,26 @@ impl RepoOutOfDomain for SqlxRepo {
         // no filesystem work, no plugin/network call. The writer-lock hold
         // is the same order of magnitude as the bare INSERT it replaces.
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let existing = super::cove_folders_list_all_tx(&mut tx).await?;
-        if let Some(conflict) = crate::cove_folder_claim::classify_conflict(&existing, path) {
+        let existing = super::area_folders_list_all_tx(&mut tx).await?;
+        if let Some(conflict) = crate::area_folder_claim::classify_conflict(&existing, path) {
             // Read-only tx: rollback is the cheap, explicit close.
             let _ = tx.rollback().await;
-            return Ok(CoveFolderClaim::Conflict(conflict));
+            return Ok(AreaFolderClaim::Conflict(conflict));
         }
-        // Shares the cove-exists check + UNIQUE-to-Conflict mapping with
+        // Shares the area-exists check + UNIQUE-to-Conflict mapping with
         // the wave-create attach path.
-        let folder = super::cove_folder_create_tx(&mut tx, cove_id, path).await?;
+        let folder = super::area_folder_create_tx(&mut tx, area_id, path).await?;
         tx.commit().await?;
-        Ok(CoveFolderClaim::Created(folder))
+        Ok(AreaFolderClaim::Created(folder))
     }
 
-    async fn cove_folder_delete(&self, id: i64) -> Result<()> {
-        let res = sqlx::query("DELETE FROM cove_folders WHERE id = ?1")
+    async fn area_folder_delete(&self, id: i64) -> Result<()> {
+        let res = sqlx::query("DELETE FROM area_folders WHERE id = ?1")
             .bind(id)
             .execute(&self.pool)
             .await?;
         if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("cove_folder {id}")));
+            return Err(CalmError::NotFound(format!("area_folder {id}")));
         }
         Ok(())
     }

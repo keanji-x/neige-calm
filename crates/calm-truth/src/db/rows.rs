@@ -20,29 +20,29 @@
 //! This module is the shim-window home for row mapping; #679 PR2 moves it
 //! into calm-truth together with the repos.
 
-use crate::ids::{CardId, CoveId, WaveId};
+use crate::ids::{AreaId, CardId, WaveId};
 use crate::model::{
-    Card, Cove, CoveFolder, CoveKind, HarnessItem, Overlay, Wave, WaveLifecycle, WaveWorkspace,
+    Area, AreaFolder, AreaKind, Card, HarnessItem, Overlay, Wave, WaveLifecycle, WaveWorkspace,
     WaveWorkspaceKind,
 };
 
-/// Row mirror of [`Cove`].
+/// Row mirror of [`Area`].
 #[derive(Debug, sqlx::FromRow)]
-pub struct CoveRow {
+pub struct AreaRow {
     #[sqlx(try_from = "String")]
-    pub id: CoveId,
+    pub id: AreaId,
     pub name: String,
     pub color: String,
     pub sort: f64,
     #[sqlx(try_from = "String")]
-    pub kind: CoveKind,
+    pub kind: AreaKind,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-impl From<CoveRow> for Cove {
-    fn from(r: CoveRow) -> Self {
-        Cove {
+impl From<AreaRow> for Area {
+    fn from(r: AreaRow) -> Self {
+        Area {
             id: r.id,
             name: r.name,
             color: r.color,
@@ -54,21 +54,21 @@ impl From<CoveRow> for Cove {
     }
 }
 
-/// Row mirror of [`CoveFolder`].
+/// Row mirror of [`AreaFolder`].
 #[derive(Debug, sqlx::FromRow)]
-pub struct CoveFolderRow {
+pub struct AreaFolderRow {
     pub id: i64,
     #[sqlx(try_from = "String")]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub path: String,
     pub created_at: i64,
 }
 
-impl From<CoveFolderRow> for CoveFolder {
-    fn from(r: CoveFolderRow) -> Self {
-        CoveFolder {
+impl From<AreaFolderRow> for AreaFolder {
+    fn from(r: AreaFolderRow) -> Self {
+        AreaFolder {
             id: r.id,
-            cove_id: r.cove_id,
+            area_id: r.area_id,
             path: r.path,
             created_at: r.created_at,
         }
@@ -84,14 +84,14 @@ impl From<CoveFolderRow> for CoveFolder {
 /// production on whichever route happened to keep the stale list — the
 /// `waves` replay of the `CardRow` incident. One const kills the class.
 /// Use [`WAVE_SELECT_COLUMNS_W`] where the query aliases the table as `w`.
-pub const WAVE_SELECT_COLUMNS: &str = "id, cove_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
+pub const WAVE_SELECT_COLUMNS: &str = "id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, \
      plugin_scope, purpose, template_input, terminal_at, workspace_kind, workspace_path, \
      workspace_frozen_at, created_at, updated_at";
 
 /// [`WAVE_SELECT_COLUMNS`] with every column qualified by the `w` table alias.
 /// `#[sqlx(flatten)]` / `FromRow` still resolve the *unqualified* names, so the
 /// two lists must stay in lockstep — `wave_select_columns_lists_agree` pins that.
-pub const WAVE_SELECT_COLUMNS_W: &str = "w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
+pub const WAVE_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, w.terminal_at, \
      w.workspace_kind, w.workspace_path, w.workspace_frozen_at, w.created_at, w.updated_at";
 
@@ -101,7 +101,7 @@ pub struct WaveRow {
     #[sqlx(try_from = "String")]
     pub id: WaveId,
     #[sqlx(try_from = "String")]
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     pub title: String,
     pub sort: f64,
     pub archived_at: Option<i64>,
@@ -132,7 +132,7 @@ impl From<WaveRow> for Wave {
     fn from(r: WaveRow) -> Self {
         Wave {
             id: r.id,
-            cove_id: r.cove_id,
+            area_id: r.area_id,
             title: r.title,
             sort: r.sort,
             archived_at: r.archived_at,

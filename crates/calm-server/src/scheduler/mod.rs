@@ -272,7 +272,7 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
 }
 
 /// Child creation identity is a pure function of the post-claim row. Parent
-/// cove/cwd are copied by the adapter inside its IMMEDIATE transaction so a
+/// area/cwd are copied by the adapter inside its IMMEDIATE transaction so a
 /// later wave patch cannot change this operation's payload hash.
 pub fn build_child_wave_payload(task: &Task) -> Result<Value> {
     Ok(serde_json::to_value(ChildWaveOperationPayload {
@@ -342,7 +342,7 @@ struct TimeoutCleanupSession {
 struct ChildTaskSnapshot {
     task_id: String,
     parent_wave_id: String,
-    parent_cove_id: String,
+    parent_area_id: String,
     child_wave_id: String,
     child_lifecycle: Option<String>,
     gate_json: Option<String>,
@@ -804,7 +804,7 @@ impl Scheduler {
                 Box::pin(async move {
                     let snapshot: Option<ChildTaskSnapshot> = sqlx::query_as(
                         r#"SELECT t.id AS task_id, t.wave_id AS parent_wave_id,
-                                  parent.cove_id AS parent_cove_id,
+                                  parent.area_id AS parent_area_id,
                                   t.child_wave_id AS child_wave_id,
                                   child.lifecycle AS child_lifecycle,
                                   t.gate_json AS gate_json,
@@ -835,7 +835,7 @@ impl Scheduler {
                     }
                     let scope = EventScope::Wave {
                         wave: WaveId::from(snapshot.parent_wave_id.clone()),
-                        cove: snapshot.parent_cove_id.clone().into(),
+                        area: snapshot.parent_area_id.clone().into(),
                     };
                     let now = now_ms();
                     let lifecycle = snapshot
@@ -1146,7 +1146,7 @@ impl Scheduler {
         };
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
@@ -1586,7 +1586,7 @@ impl Scheduler {
         let wave_id = wave.id.clone();
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let code = code.to_string();
         let reason = format!("{code}: {detail}");
@@ -1639,13 +1639,13 @@ impl Scheduler {
                             .await?;
                             let child_scope = EventScope::Wave {
                                 wave: updated.id.clone(),
-                                cove: updated.cove_id.clone(),
+                                area: updated.area_id.clone(),
                             };
                             events.push((
                                 child_scope.clone(),
                                 Event::WaveLifecycleChanged {
                                     id: updated.id.clone(),
-                                    cove_id: updated.cove_id.clone(),
+                                    area_id: updated.area_id.clone(),
                                     from: current.lifecycle,
                                     to: WaveLifecycle::Failed,
                                     agent_message: Some(reason.clone()),
@@ -1782,7 +1782,7 @@ impl Scheduler {
     async fn fail_spawn(&self, task: &Task, wave: &Wave, reason: &str) -> Result<()> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
@@ -2115,7 +2115,7 @@ impl Scheduler {
     ) -> Result<bool> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
@@ -2590,7 +2590,7 @@ impl Scheduler {
         let rctx = GateResultCtx {
             task_id: task.id.clone(),
             wave_id: wave.id.clone(),
-            cove_id: wave.cove_id.clone(),
+            area_id: wave.area_id.clone(),
         };
         let mut tx = begin_immediate_tx(&pool).await?;
         let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
@@ -2760,7 +2760,7 @@ pub async fn complete_terminal_task(
     };
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let success = !signal_killed && exit_code == Some(0);
     let task_id = task_id.to_string();

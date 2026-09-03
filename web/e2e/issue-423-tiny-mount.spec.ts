@@ -15,8 +15,8 @@ test('#423 collapsed Claude xterm mount does not commit tiny geometry', async ({
 }) => {
   await installTinyMountHarness(page);
 
-  const cove = await createCove(page.request, `E2E #423 ${Date.now()}`);
-  const wave = await createWave(page.request, cove.id, `E2E #423 wave ${Date.now()}`);
+  const area = await createArea(page.request, `E2E #423 ${Date.now()}`);
+  const wave = await createWave(page.request, area.id, `E2E #423 wave ${Date.now()}`);
   await createClaudeCard(page.request, wave.id);
   await seedWaveViewMode(page.request, wave.id, 'grid');
 
@@ -316,33 +316,33 @@ async function resizeCommitRecords(page: Page): Promise<ResizeCommitRecord[]> {
   });
 }
 
-async function createCove(
+async function createArea(
   request: APIRequestContext,
   name: string,
 ): Promise<{ id: string }> {
-  const response = await request.post('/api/coves', {
+  const response = await request.post('/api/areas', {
     data: { name, color: '#6a8' },
     headers: { 'content-type': 'application/json' },
   });
   if (!response.ok()) {
-    throw new Error(await formatApiError('create cove', response));
+    throw new Error(await formatApiError('create area', response));
   }
   return (await response.json()) as { id: string };
 }
 
 async function createWave(
   request: APIRequestContext,
-  coveId: string,
+  areaId: string,
   title: string,
 ): Promise<{ id: string }> {
   const response = await request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about tiny-mount card layout, not working
-      // directories. See `helpers/reset.ts::createWaveInCove` for why
-      // the invented `/tmp/playwright-cove-<id>` attached path was
+      // directories. See `helpers/reset.ts::createWaveInArea` for why
+      // the invented `/tmp/playwright-area-<id>` attached path was
       // never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

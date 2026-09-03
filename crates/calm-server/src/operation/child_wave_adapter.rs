@@ -68,7 +68,7 @@ pub fn render_child_seed(payload: &ChildWaveOperationPayload) -> String {
 #[derive(Clone)]
 pub struct ChildWaveAdapter {
     card_role_cache: crate::card_role_cache::CardRoleCache,
-    wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+    wave_area_cache: crate::wave_area_cache::WaveAreaCache,
     /// #1147 D2/D7 — the managed workspace root. The child's own workspace is
     /// derived under it and materialized in `prepare_tx`.
     workspace_root: std::path::PathBuf,
@@ -77,12 +77,12 @@ pub struct ChildWaveAdapter {
 impl ChildWaveAdapter {
     pub fn new(
         card_role_cache: crate::card_role_cache::CardRoleCache,
-        wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+        wave_area_cache: crate::wave_area_cache::WaveAreaCache,
         workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             workspace_root,
         }
     }
@@ -223,16 +223,16 @@ impl ProviderAdapter for ChildWaveAdapter {
         }
 
         // #1147 S4 — the parent's WORKSPACE KIND decides the child's plan, so
-        // it is read here together with the cove and the plugin scope. The
+        // it is read here together with the area and the plugin scope. The
         // parent's *path* is read on exactly one branch (attached) and is
         // otherwise unused; see `child_workspace_plan`.
         let parent: Option<(String, Option<String>, String, String)> = sqlx::query_as(
-            "SELECT cove_id, plugin_scope, workspace_kind, workspace_path FROM waves WHERE id=?1",
+            "SELECT area_id, plugin_scope, workspace_kind, workspace_path FROM waves WHERE id=?1",
         )
         .bind(&payload.parent_wave_id)
         .fetch_optional(&mut **tx)
         .await?;
-        let (cove_id, parent_plugin_scope, parent_workspace_kind, parent_workspace_path) = parent
+        let (area_id, parent_plugin_scope, parent_workspace_kind, parent_workspace_path) = parent
             .ok_or_else(
             || CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id)),
         )?;
@@ -249,7 +249,7 @@ impl ProviderAdapter for ChildWaveAdapter {
         let child = wave_create_tx(
             tx,
             NewWave {
-                cove_id: cove_id.into(),
+                area_id: area_id.into(),
                 title: payload.goal.clone(),
                 sort: None,
                 // Ignored by both plans this adapter can pick: the managed
@@ -267,11 +267,11 @@ impl ProviderAdapter for ChildWaveAdapter {
             },
             None,
             &plan,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         )
         .await?;
         // #1147 S4 — the child-wave adapter, one of the four wave-create entry
-        // points (`POST /api/waves`, cove chat, launchpad, child wave; template
+        // points (`POST /api/waves`, area chat, launchpad, child wave; template
         // seeding was a fifth until #1300 S2 deleted it). The enumeration lives
         // once, in `tests/cases/wave_workspace_materialize.rs`; this comment
         // and `routes/today.rs` both used to call themselves "the fifth",
@@ -295,8 +295,8 @@ impl ProviderAdapter for ChildWaveAdapter {
             &self.workspace_root,
             child.id.as_str(),
         )?;
-        // The child must inherit its parent's cove. A cross-cove parent edge
-        // makes cove deletion fail its NO ACTION self-FK (tripwire test #21c).
+        // The child must inherit its parent's area. A cross-area parent edge
+        // makes area deletion fail its NO ACTION self-FK (tripwire test #21c).
         sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
             .bind(&payload.parent_wave_id)
             .bind(child.id.as_str())
@@ -372,7 +372,7 @@ impl ProviderAdapter for ChildWaveAdapter {
         let actor = ActorId::KernelDispatcher;
         let wave_scope = EventScope::Wave {
             wave: child.id.clone(),
-            cove: child.cove_id.clone(),
+            area: child.area_id.clone(),
         };
         let mut entries = vec![
             (
@@ -385,7 +385,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                 EventScope::Card {
                     card: spec_card.id.clone(),
                     wave: child.id.clone(),
-                    cove: child.cove_id.clone(),
+                    area: child.area_id.clone(),
                 },
                 Event::CardAdded(spec_card),
             ),
@@ -394,7 +394,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                 EventScope::Card {
                     card: report_card.id.clone(),
                     wave: child.id.clone(),
-                    cove: child.cove_id.clone(),
+                    area: child.area_id.clone(),
                 },
                 Event::CardAdded(report_card),
             ),
@@ -406,7 +406,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                     actor.clone(),
                     EventScope::Wave {
                         wave: projected_wave.id.clone(),
-                        cove: projected_wave.cove_id.clone(),
+                        area: projected_wave.area_id.clone(),
                     },
                     Event::PlanUpdated {
                         wave_id: projected_wave.id,
@@ -508,17 +508,17 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::RepoOutOfDomain;
     use crate::db::sqlite::{
-        SqlxRepo, cove_create_tx, cove_delete_tx, task_claim_pending_tx, wave_update_tx,
+        SqlxRepo, area_create_tx, area_delete_tx, task_claim_pending_tx, wave_update_tx,
     };
     use crate::event::EventBus;
     use crate::forge_trust::trusted_forge_plugin;
     use crate::mcp_server::registry::AppContext;
     use crate::mcp_server::tool_visibility::{WavePluginScope, plugin_scope_for_wave};
-    use crate::model::{NewCove, Task, TaskKind, TaskStatus, WavePatch};
+    use crate::model::{NewArea, Task, TaskKind, TaskStatus, WavePatch};
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
     use crate::state::WriteContext;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use crate::wave_report::tasks_rebuild_tx;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -571,9 +571,9 @@ mod tests {
 
     async fn seed_parent(repo: &SqlxRepo, non_default_lifecycle_metadata: bool) -> String {
         let mut tx = repo.pool().begin().await.unwrap();
-        let cove = cove_create_tx(
+        let area = area_create_tx(
             &mut tx,
-            NewCove {
+            NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -584,7 +584,7 @@ mod tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "parent".into(),
                 sort: None,
                 cwd: "/parent-cwd".into(),
@@ -596,7 +596,7 @@ mod tests {
             },
             None,
             &WaveWorkspacePlan::AttachedFromCwd,
-            repo.wave_cove_cache(),
+            repo.wave_area_cache(),
         )
         .await
         .unwrap();
@@ -782,7 +782,7 @@ mod tests {
         .unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -811,7 +811,7 @@ mod tests {
     /// materialize call.
     ///
     /// What is asserted: the child's directory is ITS OWN
-    /// (`<root>/<cove>/<child_id>`, not the parent's), it is frozen at
+    /// (`<root>/<area>/<child_id>`, not the parent's), it is frozen at
     /// creation (design "更换与冻结": freeze before any non-re-anchorable cwd
     /// consumer, and child creation is named there), the row says `managed`,
     /// and the directory is a real repository with a resolvable `HEAD` — i.e.
@@ -824,9 +824,9 @@ mod tests {
         std::fs::create_dir_all(&workspace_root).unwrap();
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let cove = cove_create_tx(
+        let area = area_create_tx(
             &mut tx,
-            NewCove {
+            NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -837,7 +837,7 @@ mod tests {
         let parent = wave_create_tx(
             &mut tx,
             NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "parent".into(),
                 sort: None,
                 cwd: "/ignored-by-managed".into(),
@@ -849,7 +849,7 @@ mod tests {
             },
             None,
             &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
-            repo.wave_cove_cache(),
+            repo.wave_area_cache(),
         )
         .await
         .unwrap();
@@ -869,7 +869,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             workspace_root.clone(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -892,7 +892,7 @@ mod tests {
             path,
             crate::workspace_materialize::managed_workspace_path(
                 &workspace_root,
-                parent.cove_id.as_str(),
+                parent.area_id.as_str(),
                 &child_id,
             )
             .to_string_lossy(),
@@ -964,9 +964,9 @@ mod tests {
         std::fs::create_dir_all(&workspace_root).unwrap();
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let cove = cove_create_tx(
+        let area = area_create_tx(
             &mut tx,
-            NewCove {
+            NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -977,7 +977,7 @@ mod tests {
         let parent = wave_create_tx(
             &mut tx,
             NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "parent".into(),
                 sort: None,
                 cwd: "/ignored-by-managed".into(),
@@ -989,7 +989,7 @@ mod tests {
             },
             None,
             &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
-            repo.wave_cove_cache(),
+            repo.wave_area_cache(),
         )
         .await
         .unwrap();
@@ -1013,7 +1013,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             workspace_root.clone(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn an_attached_path_inside_the_managed_root_cannot_be_inherited() {
         let root = tempfile::TempDir::new().unwrap();
-        let inside = root.path().join("cove").join("some-managed-wave");
+        let inside = root.path().join("area").join("some-managed-wave");
         let error = child_workspace_plan(
             &WaveWorkspace {
                 kind: WaveWorkspaceKind::Attached,
@@ -1155,9 +1155,9 @@ mod tests {
         let user_path = user_repo.path().to_string_lossy().into_owned();
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let cove = cove_create_tx(
+        let area = area_create_tx(
             &mut tx,
-            NewCove {
+            NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -1168,7 +1168,7 @@ mod tests {
         let parent = wave_create_tx(
             &mut tx,
             NewWave {
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "parent".into(),
                 sort: None,
                 cwd: user_path.clone(),
@@ -1180,7 +1180,7 @@ mod tests {
             },
             None,
             &WaveWorkspacePlan::AttachedFromCwd,
-            repo.wave_cove_cache(),
+            repo.wave_area_cache(),
         )
         .await
         .unwrap();
@@ -1191,7 +1191,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1286,7 +1286,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1414,7 +1414,7 @@ mod tests {
             let input = serde_json::to_value(payload(&task)).unwrap();
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
-                repo.wave_cove_cache().clone(),
+                repo.wave_area_cache().clone(),
                 test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
@@ -1436,19 +1436,19 @@ mod tests {
             );
             direct_parent = child;
         }
-        let cross_cove_edges: i64 = sqlx::query_scalar(
+        let cross_area_edges: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM waves child JOIN waves parent \
-             ON parent.id=child.parent_wave_id WHERE child.cove_id<>parent.cove_id",
+             ON parent.id=child.parent_wave_id WHERE child.area_id<>parent.area_id",
         )
         .fetch_one(repo.pool())
         .await
         .unwrap();
-        assert_eq!(cross_cove_edges, 0, "real adapter must inherit parent cove");
+        assert_eq!(cross_area_edges, 0, "real adapter must inherit parent area");
         let task = seed_task(&repo, &direct_parent, false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1460,15 +1460,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acceptance_21c_real_adapter_never_writes_a_cross_cove_edge() {
+    async fn acceptance_21c_real_adapter_never_writes_a_cross_area_edge() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
-        let second_cove = {
+        let second_area = {
             let mut tx = repo.pool().begin().await.unwrap();
-            let cove = cove_create_tx(
+            let area = area_create_tx(
                 &mut tx,
-                NewCove {
-                    name: "unrelated-cove".into(),
+                NewArea {
+                    name: "unrelated-area".into(),
                     color: "#111".into(),
                     sort: None,
                 },
@@ -1476,13 +1476,13 @@ mod tests {
             .await
             .unwrap();
             tx.commit().await.unwrap();
-            cove.id.to_string()
+            area.id.to_string()
         };
         let task = seed_task(&repo, &parent, false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1492,19 +1492,19 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
 
-        let cross_cove_edges: i64 = sqlx::query_scalar(
+        let cross_area_edges: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM waves child JOIN waves parent \
-             ON parent.id=child.parent_wave_id WHERE child.cove_id<>parent.cove_id",
+             ON parent.id=child.parent_wave_id WHERE child.area_id<>parent.area_id",
         )
         .fetch_one(repo.pool())
         .await
         .unwrap();
-        assert_eq!(cross_cove_edges, 0);
+        assert_eq!(cross_area_edges, 0);
 
-        // The unrelated cove is independently deletable: the adapter did not
+        // The unrelated area is independently deletable: the adapter did not
         // accidentally route its child there and create a NO ACTION tripwire.
         let mut tx = repo.pool().begin().await.unwrap();
-        cove_delete_tx(&mut tx, &second_cove).await.unwrap();
+        area_delete_tx(&mut tx, &second_area).await.unwrap();
         tx.commit().await.unwrap();
     }
 
@@ -1517,7 +1517,7 @@ mod tests {
             let input = serde_json::to_value(payload(&task)).unwrap();
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
-                repo.wave_cove_cache().clone(),
+                repo.wave_area_cache().clone(),
                 test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
@@ -1570,7 +1570,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
@@ -1642,7 +1642,7 @@ mod tests {
         let input = serde_json::to_value(payload(&first)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1798,7 +1798,7 @@ mod tests {
         .unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1882,7 +1882,7 @@ mod tests {
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
-            repo.wave_cove_cache().clone(),
+            repo.wave_area_cache().clone(),
             test_workspace_root(),
         );
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
@@ -1955,7 +1955,7 @@ mod tests {
             repo: route_repo,
             wave_vcs: None,
             events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
             plugin_host,
@@ -2006,7 +2006,7 @@ mod tests {
             plugins_data_dir,
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         ));
         (host, tmp)
     }

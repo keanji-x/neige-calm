@@ -24,9 +24,9 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
             .await
             .unwrap(),
     );
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "workspace leases".into(),
             color: "#101010".into(),
             sort: None,
@@ -38,7 +38,7 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
         repo.as_ref(),
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "workspace leases".into(),
             sort: None,
             cwd: repo_root.path().display().to_string(),
@@ -59,7 +59,7 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
             SharedCodexAppServer::new_stub(full_repo),
             None,
             CardRoleCache::new(),
-            WaveCoveCache::new(),
+            WaveAreaCache::new(),
             std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         ),
         repo,

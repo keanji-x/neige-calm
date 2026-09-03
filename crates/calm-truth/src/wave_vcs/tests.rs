@@ -9,7 +9,7 @@ use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::event::{Event, ForgeMergeSubject};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{NewCove, NewWave, RequestTheme};
+use crate::model::{NewArea, NewWave, RequestTheme};
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 use std::time::Duration;
 
@@ -40,18 +40,18 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#336699".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -106,18 +106,18 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#336699".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -168,18 +168,18 @@ async fn review_ratify_only_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let cove = repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#336699".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),

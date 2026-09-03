@@ -56,9 +56,9 @@
 
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-import { createCove, createWave } from './helpers/seed.js';
+import { createArea, createWave } from './helpers/seed.js';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -67,7 +67,7 @@ function captureBrowserErrors(page: Page): string[] {
   return errors;
 }
 
-/** Every POST the page made to any wave/cove conversations endpoint. */
+/** Every POST the page made to any wave/area conversations endpoint. */
 function conversationCreates(requests: Request[]): Request[] {
   return requests.filter((request) => request.method() === 'POST'
     && /\/conversations$/.test(new URL(request.url()).pathname));
@@ -84,17 +84,17 @@ function conversationRows(page: Page) {
   return page.getByRole('button', { name: /^Conversation / });
 }
 
-test.beforeEach(() => { createdCoveIds.length = 0; });
+test.beforeEach(() => { createdAreaIds.length = 0; });
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
-  createdCoveIds.length = 0;
+  for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
+  createdAreaIds.length = 0;
 });
 
 test('starts a conversation from a wave page and sends the first message to that wave', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
-  const wave = await createWave(request, cove.id, `FE e2e conversation wave ${Date.now()}`);
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  const wave = await createWave(request, area.id, `FE e2e conversation wave ${Date.now()}`);
 
   const requests: Request[] = [];
   page.on('request', (pending) => requests.push(pending));
@@ -117,7 +117,7 @@ test('starts a conversation from a wave page and sends the first message to that
   expect(await seeded.json() as unknown[]).toEqual([]);
   await expect(conversationRows(page)).toHaveCount(1);
 
-  // (2) The `+`. On a wave, not a cove: this affordance did not exist here
+  // (2) The `+`. On a wave, not an area: this affordance did not exist here
   // before S5, and `source.kind === 'elsewhere'` still withholds it.
   await page.getByRole('button', { name: 'New conversation' }).click();
   await expect(page.getByRole('complementary', { name: 'Untitled' })).toBeVisible();
@@ -196,9 +196,9 @@ test('starts a conversation from a wave page and sends the first message to that
  * decorative.
  */
 test('the wave conversations endpoint refuses a create it cannot make retryable', async ({ request }) => {
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
-  const wave = await createWave(request, cove.id, `FE e2e conversation guards ${Date.now()}`);
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  const wave = await createWave(request, area.id, `FE e2e conversation guards ${Date.now()}`);
 
   const noKey = await request.post(`/api/waves/${wave.id}/conversations`, { data: { text: 'hello' } });
   expect(noKey.status(), await noKey.text()).toBe(400);

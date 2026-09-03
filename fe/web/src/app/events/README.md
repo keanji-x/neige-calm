@@ -63,8 +63,8 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 
 | Planned key | Mapped key | Note |
 | --- | --- | --- |
-| `['coves']` | `queryKeys.coves()` | |
-| `['waves','cove',id]` | `queryKeys.wavesInCove(id)` = `['waves', id]` | shape differs; this is the only place that knows |
+| `['areas']` | `queryKeys.areas()` | |
+| `['waves','area',id]` | `queryKeys.wavesInArea(id)` = `['waves', id]` | shape differs; this is the only place that knows |
 | `['wave', id]` | `queryKeys.waveDetail(id)` | |
 | `['overlays','wave'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
 | `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
@@ -72,7 +72,7 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['wave-files', …]` | — | **no-op**: no wave-files query is built yet (stub) |
 | `['wave-report', id]` | `queryKeys.waveReport(id)` | the wave's task verdicts (TASKS panel) |
 | `['wave-report']` | `queryKeys.waveReportPrefix()` | prefix; the four `task.*` events carry no wave-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
-| `['cove-conversations']` | `queryKeys.coveConversationsPrefix()` | prefix only; no conversation-writing event carries a `cove_id` and no cached row can supply one, which is why `queryKeys.coveConversations(id)` keeps the id in second position |
+| `['area-conversations']` | `queryKeys.areaConversationsPrefix()` | prefix only; no conversation-writing event carries a `area_id` and no cached row can supply one, which is why `queryKeys.areaConversations(id)` keeps the id in second position |
 | `['wave-conversations', id]` | `queryKeys.waveConversations(id)` | the endpoint is per-wave (#1189 §4.1) and the plan names the wave whenever `derivedWaveId` resolves one |
 | `['wave-conversations']` | `queryKeys.waveConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached wave detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
 | `['waves-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
@@ -82,11 +82,11 @@ Resulting per-kind behavior on the currently-built surfaces:
 
 | Event kind | Effect on cache | Reason |
 | --- | --- | --- |
-| `cove.updated` | invalidate coves | cove list is live |
-| `cove.deleted` | invalidate coves + wave overlays | |
-| `wave.updated` | invalidate that cove's wave list + wave detail | `wave-files`/`waves-range` parts drop (stubs) |
+| `area.updated` | invalidate areas | area list is live |
+| `area.deleted` | invalidate areas + wave overlays | |
+| `wave.updated` | invalidate that area's wave list + wave detail | `wave-files`/`waves-range` parts drop (stubs) |
 | `wave.lifecycle_changed` | same as `wave.updated` | |
-| `wave.deleted` | invalidate cove's wave list + wave overlays; **remove** wave detail | the detail can never resolve again |
+| `wave.deleted` | invalidate area's wave list + wave overlays; **remove** wave detail | the detail can never resolve again |
 | `card.added` / `card.updated` | invalidate wave detail + both conversation lists | |
 | `card.deleted` | invalidate wave detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
 | `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves; plus the wave's task verdicts and both conversation lists | `wave-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
@@ -109,14 +109,14 @@ reconnect.
 
 - `persist-cursor` and `reconnect` are stream lifecycle; the bridge handles
   them, the adapter ignores them.
-- `write-through` (`replace-existing-cove`) explicitly converts the wire cove
-  with `toCove`, then replaces only a matching cached row. Missing rows are not
+- `write-through` (`replace-existing-area`) explicitly converts the wire area
+  with `toArea`, then replaces only a matching cached row. Missing rows are not
   inserted: the accompanying invalidation must refetch authoritative data.
 
 ## Stubs, stated plainly
 
 The legacy app maps 40+ kinds. This slice covers only the kinds that keep the
-built surfaces live — coves, waves in a cove, wave detail, wave overlays.
+built surfaces live — areas, waves in an area, wave detail, wave overlays.
 Everything routed to `wave-files`, `waves-range` or `wave-backlinks` is a stub
 here and becomes real the moment those queries exist: the mapping is one entry
 in `mapPlannedQueryKey`, and the pure plan already emits the key. `wave-report`

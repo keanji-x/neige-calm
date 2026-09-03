@@ -10,7 +10,7 @@
 // openapi-typescript` (writes `generated.ts`). The intermediate
 // `openapi.json` is committed so frontend builds don't require cargo.
 //
-// This file exists to keep the public type names (KernelCove, KernelWave,
+// This file exists to keep the public type names (KernelArea, KernelWave,
 // ...) stable for consumers — only the underlying definition migrated from
 // hand-maintained to generated. A few shapes intentionally diverge from the
 // generated form where the OpenAPI emission lost fidelity:
@@ -37,19 +37,19 @@ type Schemas = components['schemas'];
 
 // ---------------- Domain models (REST responses) ----------------
 
-export type KernelCove = Schemas['Cove'];
+export type KernelArea = Schemas['Area'];
 export type KernelWave = Schemas['Wave'];
 
 /**
- * Issue #250 PR 3 — 200 body for `GET /api/coves/resolve`. The kernel
- * returns the `Option<CoveResolve>` payload directly as the JSON body
+ * Issue #250 PR 3 — 200 body for `GET /api/areas/resolve`. The kernel
+ * returns the `Option<AreaResolve>` payload directly as the JSON body
  * (`null` on no-claim), so the typed alias here matches what the
- * `resolveCovePath` wrapper deserializes into.
+ * `resolveAreaPath` wrapper deserializes into.
  */
-export type CoveResolveBody = Schemas['CoveResolve'];
+export type AreaResolveBody = Schemas['AreaResolve'];
 /** Issue #250 PR 3 — 409 body returned by `POST /api/waves` when the
  *  body's `cwd` collides with an existing folder claim under another
- *  cove (descendant) or already-narrower claims block widening
+ *  area (descendant) or already-narrower claims block widening
  *  (ancestor). NewTaskForm surfaces the kind + path in its inline
  *  error so the user can resolve the conflict without guesswork. */
 export type FolderConflictBody = Schemas['FolderConflict'];
@@ -89,8 +89,8 @@ export type WireEvent = GeneratedEvent;
 
 // ---------------- Request DTOs (mirror `model::NewX` / `XPatch`) ----------------
 
-export type NewCoveBody   = Schemas['NewCove'];
-export type CovePatchBody = Schemas['CovePatch'];
+export type NewAreaBody   = Schemas['NewArea'];
+export type AreaPatchBody = Schemas['AreaPatch'];
 
 /**
  * #1209 PR-2 — `Omit<T, 'k'>` takes a plain string literal, so when the field

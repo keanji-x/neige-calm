@@ -28,8 +28,8 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
-const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
+const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const WAVE = { id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
 /* The wave the old fork left with no way to start anything: no spec card. */
 const BARE_WAVE = { ...WAVE, id: 'w2', title: 'Bare wave', sort: 2 };
 const SPEC_CARD = { id: 'card-spec', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
@@ -103,9 +103,9 @@ function setup(reply?: Reply) {
         const response = await reply(request);
         if (response) return response;
       }
-      if (request.path === '/api/coves') return ok([COVE]);
-      if (request.path === '/api/coves/c1/waves') return ok([WAVE, BARE_WAVE]);
-      if (request.path === '/api/coves/c1/conversations') return ok([]);
+      if (request.path === '/api/areas') return ok([AREA]);
+      if (request.path === '/api/areas/c1/waves') return ok([WAVE, BARE_WAVE]);
+      if (request.path === '/api/areas/c1/conversations') return ok([]);
       if (request.path === '/api/overlays?entity_kind=wave') return ok([]);
       if (request.path === '/api/waves/w1') {
         return ok({ wave: WAVE, cards: [SPEC_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [] });
@@ -166,7 +166,7 @@ function messageField(): HTMLElement {
 }
 
 /* The composer is Astryx's contenteditable div — no value setter, so `change`
-   throws — and it sends on a bare Enter. See `cove-conversation.test.tsx`. */
+   throws — and it sends on a bare Enter. See `area-conversation.test.tsx`. */
 async function typeInto(field: HTMLElement, text: string) {
   field.textContent = text;
   const range = document.createRange();
@@ -237,7 +237,7 @@ describe('wave conversations', () => {
     await screen.findByText('No conversations yet.');
     await openDraft();
     /* Nothing is minted by opening the drawer — the card is minted by the first
-       message, as on a cove. */
+       message, as on an area. */
     expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(0);
     await write('what is in this repo?');
     await waitFor(() => expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(1));
@@ -612,19 +612,19 @@ describe('wave conversations', () => {
 
   /*
    * The other half of the same decision, and the reason it is a wave id rather
-   * than a flag: a cove's rows stay out of the registry. They live on the
-   * cove's hidden chat wave, and Today navigates to `conversation.waveId` when
+   * than a flag: an area's rows stay out of the registry. They live on the
+   * area's hidden chat wave, and Today navigates to `conversation.waveId` when
    * a row is opened.
    */
-  it('[G5] still keeps a cove\'s own conversations off Today', async () => {
-    const { router } = setup((request) => request.path === '/api/coves/c1/conversations'
-      ? ok([{ id: 'chat-1', waveId: 'chat-wave-hidden', title: 'Cove chat', kind: 'shared-chat', state: 'idle', updatedAt: 40 }])
+  it('[G5] still keeps an area\'s own conversations off Today', async () => {
+    const { router } = setup((request) => request.path === '/api/areas/c1/conversations'
+      ? ok([{ id: 'chat-1', waveId: 'chat-wave-hidden', title: 'Area chat', kind: 'shared-chat', state: 'idle', updatedAt: 40 }])
       : undefined);
-    await act(async () => { await router.navigate({ to: '/cove/c1' }); });
-    await screen.findByRole('button', { name: 'Conversation Cove chat' });
+    await act(async () => { await router.navigate({ to: '/area/c1' }); });
+    await screen.findByRole('button', { name: 'Conversation Area chat' });
     await act(async () => { await router.navigate({ to: '/' }); });
     await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: /Conversation Cove chat/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Conversation Area chat/ })).toBeNull();
   });
 
   /*
@@ -730,27 +730,27 @@ describe('wave conversations', () => {
    * ── G7 ─────────────────────────────────────────────────────────────────────
    *
    * A draft belongs to what it was written on, and each route posts to its own
-   * scope: the wave's key and words never reach the cove endpoint, and the
-   * cove's `+` opens a blank draft rather than the wave's failed one.
+   * scope: the wave's key and words never reach the area endpoint, and the
+   * area's `+` opens a blank draft rather than the wave's failed one.
    *
    * **Where the mutation lands is not here**, and the first half of this test
-   * in particular is not a gate on the `scopeId` guard: wave and cove are two
+   * in particular is not a gate on the `scopeId` guard: wave and area are two
    * sibling route components, so the walk between them unmounts the panel and
-   * the wave's draft is gone before the cove's `+` is ever pressed — dropping
+   * the wave's draft is gone before the area's `+` is ever pressed — dropping
    * the `scopeId` comparison from `heldIs` leaves that assertion green (the
-   * cove's `held` is null on arrival either way). What survives one panel
-   * *instance* serving two scopes is the cove → cove walk, where `CoveRoute` is
-   * not remounted across a param change: `cove-conversation.test.tsx` holds it with
-   * `keeps a failed draft to the cove it belongs to` and `leaves another cove's
+   * area's `held` is null on arrival either way). What survives one panel
+   * *instance* serving two scopes is the area → area walk, where `AreaRoute` is
+   * not remounted across a param change: `area-conversation.test.tsx` holds it with
+   * `keeps a failed draft to the area it belongs to` and `leaves another area's
    * draft alone when a late create finally succeeds`, and both go red when the
-   * `scopeId` comparison is dropped. Wave and cove are two different route
+   * `scopeId` comparison is dropped. Wave and area are two different route
    * components, so what this test pins is the layer above — that the two `+`s,
    * the two derivations and the two endpoints are wired to their own scope, and
    * a draft written on one does not surface on the other. Neither claim is
-   * covered by the cove pair, and neither is idle: they are what a shared panel
+   * covered by the area pair, and neither is idle: they are what a shared panel
    * or a copy-pasted `create` would break.
    */
-  it('[G7] keeps a wave draft off a cove, and posts each to its own scope', async () => {
+  it('[G7] keeps a wave draft off an area, and posts each to its own scope', async () => {
     const { requests, router } = setup((request) => request.method === 'POST'
       && request.path.endsWith('/conversations')
       ? { status: 500, statusText: 'Error', body: { code: 'internal', error: 'boom' } }
@@ -763,20 +763,20 @@ describe('wave conversations', () => {
     await screen.findByRole('button', { name: 'Try again' });
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
 
-    await act(async () => { await router.navigate({ to: '/cove/c1' }); });
-    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/cove/c1`));
+    await act(async () => { await router.navigate({ to: '/area/c1' }); });
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1`));
     await openDraft();
     expect(screen.queryByText('words for the wave')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
 
-    await write('words for the cove');
+    await write('words for the area');
     const everyCreate = () => requests.filter((request) => request.method === 'POST'
       && request.path.endsWith('/conversations'));
     await waitFor(() => expect(everyCreate()).toHaveLength(2));
     const [first, second] = everyCreate();
     expect(first?.path).toBe(CONVERSATIONS);
-    expect(second?.path).toBe('/api/coves/c1/conversations');
-    expect(second?.body).toEqual({ text: 'words for the cove' });
+    expect(second?.path).toBe('/api/areas/c1/conversations');
+    expect(second?.body).toEqual({ text: 'words for the area' });
     expect(second?.headers?.['Idempotency-Key']).not.toBe(first?.headers?.['Idempotency-Key']);
   });
 

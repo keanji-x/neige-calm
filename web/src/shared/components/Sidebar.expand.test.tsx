@@ -10,10 +10,10 @@ import {
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { SessionContext } from '../../app/SessionProvider';
-import type { Cove, Route, Wave } from '../../types';
+import type { Area, Route, Wave } from '../../types';
 import { Sidebar } from './Sidebar';
 
-const EXPANDED_COVES_STORAGE_KEY = 'calm:sidebar:expandedCoves';
+const EXPANDED_AREAS_STORAGE_KEY = 'calm:sidebar:expandedAreas';
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'calm:sidebar:collapsed';
 
 afterEach(() => {
@@ -38,13 +38,13 @@ function wrap(children: ReactNode) {
 }
 
 function sidebarNode({
-  coves = [makeCove()],
+  areas = [makeArea()],
   waves,
   route = { name: 'today' },
   onGo = () => {},
   onPinWave,
 }: {
-  coves?: Cove[];
+  areas?: Area[];
   waves: Wave[];
   route?: Route;
   onGo?: (r: Route) => void;
@@ -52,7 +52,7 @@ function sidebarNode({
 }) {
   return wrap(
     <Sidebar
-      coves={coves}
+      areas={areas}
       waves={waves}
       route={route}
       onGo={onGo}
@@ -61,14 +61,14 @@ function sidebarNode({
   );
 }
 
-function makeCove(overrides: Partial<Cove> = {}): Cove {
+function makeArea(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9', ...overrides };
 }
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1',
-    coveId: 'c1',
+    areaId: 'c1',
     title: 'Harbor cleanup',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
@@ -83,22 +83,22 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
 }
 
 function renderSidebar({
-  coves = [makeCove()],
+  areas = [makeArea()],
   waves,
   route = { name: 'today' },
   onGo = () => {},
   onPinWave,
 }: {
-  coves?: Cove[];
+  areas?: Area[];
   waves: Wave[];
   route?: Route;
   onGo?: (r: Route) => void;
   onPinWave?: (waveId: string, pin: boolean) => void | Promise<void>;
 }) {
-  return render(sidebarNode({ coves, waves, route, onGo, onPinWave }));
+  return render(sidebarNode({ areas, waves, route, onGo, onPinWave }));
 }
 
-describe('Sidebar cove expansion', () => {
+describe('Sidebar area expansion', () => {
   it('collapses to a rail and expands from the keyboard-reachable toggle', async () => {
     const user = userEvent.setup();
     renderSidebar({ waves: [makeWave()] });
@@ -143,7 +143,7 @@ describe('Sidebar cove expansion', () => {
     ).toBeNull();
   });
 
-  it('defaults coves to collapsed', () => {
+  it('defaults areas to collapsed', () => {
     renderSidebar({
       waves: [
         makeWave({ id: 'w1', title: 'Harbor cleanup' }),
@@ -151,13 +151,13 @@ describe('Sidebar cove expansion', () => {
       ],
     });
 
-    const chevron = screen.getByRole('button', { name: 'Expand cove Atlas' });
+    const chevron = screen.getByRole('button', { name: 'Expand area Atlas' });
     expect(chevron).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Harbor cleanup')).toBeNull();
     expect(screen.queryByText('Tide report')).toBeNull();
   });
 
-  it('expands a cove from the chevron', () => {
+  it('expands an area from the chevron', () => {
     renderSidebar({
       waves: [
         makeWave({ id: 'w1', title: 'Harbor cleanup' }),
@@ -165,34 +165,34 @@ describe('Sidebar cove expansion', () => {
       ],
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
 
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
     expect(screen.getByText('Tide report')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
       .toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('collapses a cove from the chevron', () => {
+  it('collapses an area from the chevron', () => {
     renderSidebar({ waves: [makeWave({ title: 'Harbor cleanup' })] });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse area Atlas' }));
 
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Harbor cleanup')).toBeNull();
   });
 
-  it('keeps cove row navigation on the nav button without changing expansion', () => {
+  it('keeps area row navigation on the nav button without changing expansion', () => {
     const onGo = vi.fn();
     renderSidebar({ waves: [makeWave()], onGo });
 
-    const covesNav = screen.getByRole('navigation', { name: 'Coves' });
-    fireEvent.click(within(covesNav).getByRole('button', { name: 'Atlas' }));
+    const areasNav = screen.getByRole('navigation', { name: 'Areas' });
+    fireEvent.click(within(areasNav).getByRole('button', { name: 'Atlas' }));
 
-    expect(onGo).toHaveBeenCalledWith({ name: 'cove', coveId: 'c1' });
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(onGo).toHaveBeenCalledWith({ name: 'area', areaId: 'c1' });
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
   });
 
@@ -200,7 +200,7 @@ describe('Sidebar cove expansion', () => {
     const onGo = vi.fn();
     renderSidebar({ waves: [makeWave()], onGo });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
 
     expect(onGo).not.toHaveBeenCalled();
   });
@@ -217,23 +217,23 @@ describe('Sidebar cove expansion', () => {
     expect(within(screen.getByRole('region', { name: 'Pinned' }))
       .getByText('Pinned wave')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
     const inline = screen.getByRole('group', { name: 'Waves in Atlas' });
 
     expect(within(inline).getByText('Open wave')).toBeTruthy();
-    // Pinning is a shortcut, not relocation: the wave remains in its cove.
+    // Pinning is a shortcut, not relocation: the wave remains in its area.
     expect(within(inline).getByText('Pinned wave')).toBeTruthy();
   });
 
-  it('persists expanded coves in localStorage across remounts', () => {
+  it('persists expanded areas in localStorage across remounts', () => {
     const props = { waves: [makeWave({ title: 'Harbor cleanup' })] };
     const { unmount } = renderSidebar(props);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
     unmount();
     renderSidebar(props);
 
-    expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
       .toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
   });
@@ -244,16 +244,16 @@ describe('Sidebar cove expansion', () => {
     });
     renderSidebar({ waves: [makeWave({ title: 'Harbor cleanup' })] });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand area Atlas' }));
 
-    expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
       .toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
   });
 
-  it('highlights the active wave inside an expanded cove', () => {
+  it('highlights the active wave inside an expanded area', () => {
     window.localStorage.setItem(
-      EXPANDED_COVES_STORAGE_KEY,
+      EXPANDED_AREAS_STORAGE_KEY,
       JSON.stringify({ c1: true }),
     );
     const wave = makeWave({ id: 'w-active', title: 'Active wave' });
@@ -270,7 +270,7 @@ describe('Sidebar cove expansion', () => {
     expect(row).toHaveClass('active');
   });
 
-  it('auto-expands the active wave cove on wave route navigation', async () => {
+  it('auto-expands the active wave area on wave route navigation', async () => {
     const waves = [
       makeWave({ id: 'w1', title: 'Harbor cleanup' }),
       makeWave({ id: 'w2', title: 'Tide report' }),
@@ -280,14 +280,14 @@ describe('Sidebar cove expansion', () => {
     rerender(sidebarNode({ waves, route: { name: 'wave', id: 'w1' } }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+      expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
         .toHaveAttribute('aria-expanded', 'true');
     });
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
     expect(screen.getByText('Tide report')).toBeTruthy();
   });
 
-  it('keeps a manually collapsed active cove collapsed on same-wave rerender', async () => {
+  it('keeps a manually collapsed active area collapsed on same-wave rerender', async () => {
     const wave = makeWave({ id: 'w1', title: 'Harbor cleanup' });
     const { rerender } = renderSidebar({
       waves: [wave],
@@ -295,18 +295,18 @@ describe('Sidebar cove expansion', () => {
     });
 
     await screen.findByText('Harbor cleanup');
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse area Atlas' }));
     rerender(sidebarNode({
       waves: [wave],
       route: { name: 'wave', id: 'w1' },
     }));
 
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Harbor cleanup')).toBeNull();
   });
 
-  it('re-expands a manually collapsed cove when navigating to another wave in it', async () => {
+  it('re-expands a manually collapsed area when navigating to another wave in it', async () => {
     const waves = [
       makeWave({ id: 'w1', title: 'Harbor cleanup' }),
       makeWave({ id: 'w2', title: 'Tide report' }),
@@ -317,44 +317,44 @@ describe('Sidebar cove expansion', () => {
     });
 
     await screen.findByText('Harbor cleanup');
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse area Atlas' }));
     rerender(sidebarNode({ waves, route: { name: 'wave', id: 'w2' } }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+      expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
         .toHaveAttribute('aria-expanded', 'true');
     });
     expect(screen.getByText('Tide report')).toBeTruthy();
   });
 
-  it('expands the new active cove without changing the previous cove state', async () => {
-    const coves = [
-      makeCove({ id: 'c1', name: 'Atlas' }),
-      makeCove({ id: 'c2', name: 'Boreal' }),
+  it('expands the new active area without changing the previous area state', async () => {
+    const areas = [
+      makeArea({ id: 'c1', name: 'Atlas' }),
+      makeArea({ id: 'c2', name: 'Boreal' }),
     ];
     const waves = [
-      makeWave({ id: 'w1', coveId: 'c1', title: 'Harbor cleanup' }),
-      makeWave({ id: 'w2', coveId: 'c2', title: 'Ice survey' }),
+      makeWave({ id: 'w1', areaId: 'c1', title: 'Harbor cleanup' }),
+      makeWave({ id: 'w2', areaId: 'c2', title: 'Ice survey' }),
     ];
     const { rerender } = renderSidebar({
-      coves,
+      areas,
       waves,
       route: { name: 'wave', id: 'w1' },
     });
 
     await screen.findByText('Harbor cleanup');
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse area Atlas' }));
     rerender(sidebarNode({
-      coves,
+      areas,
       waves,
       route: { name: 'wave', id: 'w2' },
     }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Collapse cove Boreal' }))
+      expect(screen.getByRole('button', { name: 'Collapse area Boreal' }))
         .toHaveAttribute('aria-expanded', 'true');
     });
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Ice survey')).toBeTruthy();
     expect(screen.queryByText('Harbor cleanup')).toBeNull();
@@ -368,15 +368,15 @@ describe('Sidebar cove expansion', () => {
     });
 
     await screen.findByText('Harbor cleanup');
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse cove Atlas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse area Atlas' }));
     rerender(sidebarNode({ waves: [wave], route: { name: 'today' } }));
 
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Harbor cleanup')).toBeNull();
   });
 
-  it('persists auto-expanded coves in localStorage across remounts', async () => {
+  it('persists auto-expanded areas in localStorage across remounts', async () => {
     const props = {
       waves: [makeWave({ id: 'w1', title: 'Harbor cleanup' })],
       route: { name: 'wave', id: 'w1' } as Route,
@@ -387,7 +387,7 @@ describe('Sidebar cove expansion', () => {
     unmount();
     renderSidebar({ waves: props.waves });
 
-    expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
       .toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
   });
@@ -399,7 +399,7 @@ describe('Sidebar cove expansion', () => {
       route: { name: 'wave', id: 'w1' },
     });
 
-    expect(screen.getByRole('button', { name: 'Expand cove Atlas' }))
+    expect(screen.getByRole('button', { name: 'Expand area Atlas' }))
       .toHaveAttribute('aria-expanded', 'false');
 
     rerender(sidebarNode({
@@ -408,7 +408,7 @@ describe('Sidebar cove expansion', () => {
     }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Collapse cove Atlas' }))
+      expect(screen.getByRole('button', { name: 'Collapse area Atlas' }))
         .toHaveAttribute('aria-expanded', 'true');
     });
     expect(screen.getByText('Harbor cleanup')).toBeTruthy();
@@ -416,7 +416,7 @@ describe('Sidebar cove expansion', () => {
 
   it('scrolls the active wave row into view', async () => {
     window.localStorage.setItem(
-      EXPANDED_COVES_STORAGE_KEY,
+      EXPANDED_AREAS_STORAGE_KEY,
       JSON.stringify({ c1: true }),
     );
     const scrolledElements: Element[] = [];

@@ -68,7 +68,7 @@ describe('CODEX_CARD_ENTRY', () => {
   });
 
   /*
-   * `INV-CHAT-016` — the *third* shape under kind `'codex'`. A cove plain-chat
+   * `INV-CHAT-016` — the *third* shape under kind `'codex'`. An area plain-chat
    * conversation card carries `harness_profile: "plain_chat"` and deliberately
    * no `spec_harness` key, and has no PTY at all: the adapter writes
    * `terminal_run_id: None`, so `terminal_id` is never projected for it.
@@ -78,7 +78,7 @@ describe('CODEX_CARD_ENTRY', () => {
    * Refusing it is behaviour-preserving: it resolves to nothing and lands in
    * the `unknown` branch, exactly where it sat before this adapter existed.
    */
-  it('[INV-CHAT-016] refuses cove plain-chat cards, which have no PTY to render', () => {
+  it('[INV-CHAT-016] refuses area plain-chat cards, which have no PTY to render', () => {
     expect(CODEX_CARD_ENTRY.fromKernel?.({
       id: 'chat1', kind: 'codex', payload: { schemaVersion: 1, harness_profile: 'plain_chat' },
     })).toBeNull();

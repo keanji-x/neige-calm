@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
-use crate::model::{NewCove, NewWave, new_id, now_ms};
+use crate::model::{NewArea, NewWave, new_id, now_ms};
 use crate::operation::{
     OperationKey, OperationOutcome, OperationRepo, OperationResult, OperationRuntime,
     ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -17,7 +17,7 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 fn frozen_forge_six_shape_defaults_new_optional_fields() {
     let frozen: FrozenForge = serde_json::from_value(json!({
         "wave_id": "wave-01",
-        "cove_id": "cove-01",
+        "area_id": "area-01",
         "card_id": "card-01",
         "subject": {
             "phase": "impl",
@@ -191,7 +191,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
         .expect("insert operation");
     let frozen = FrozenForge {
         wave_id: payload.wave_id,
-        cove_id: "cove-1".into(),
+        area_id: "area-1".into(),
         card_id: payload.card_id,
         subject: payload.subject,
         argv: payload.argv,
@@ -670,18 +670,18 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "forge-action-adapter-test".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "forge-action-adapter-test".into(),
             sort: None,
             cwd: cwd.path().display().to_string(),

@@ -23,9 +23,9 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
             .await
             .unwrap(),
     );
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "claude workspace leases".into(),
             color: "#101010".into(),
             sort: None,
@@ -37,7 +37,7 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
         repo.as_ref(),
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "claude workspace leases".into(),
             sort: None,
             cwd: String::new(),
@@ -56,7 +56,7 @@ async fn claude_worker_harness() -> ClaudeWorkerHarness {
             Arc::new(CodexClient::new_stub()),
             None,
             CardRoleCache::new(),
-            WaveCoveCache::new(),
+            WaveAreaCache::new(),
         ),
         repo,
         wave_id: wave.id.to_string(),
@@ -298,7 +298,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveCoveCache::new(),
+        WaveAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -583,7 +583,7 @@ async fn claude_worker_recovery_already_live_returns_noop_without_respawn_or_tok
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveCoveCache::new(),
+        WaveAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -695,7 +695,7 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
         Arc::new(CodexClient::new_stub()),
         Some(mcp_server),
         CardRoleCache::new(),
-        WaveCoveCache::new(),
+        WaveAreaCache::new(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =

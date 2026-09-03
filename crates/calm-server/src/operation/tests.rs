@@ -21,9 +21,9 @@ async fn legacy_compensation_harness(
             .await
             .unwrap(),
     );
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "legacy compensation".into(),
             color: "#101010".into(),
             sort: None,
@@ -35,7 +35,7 @@ async fn legacy_compensation_harness(
         repo.as_ref(),
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "legacy compensation".into(),
             sort: None,
             cwd: String::new(),
@@ -181,7 +181,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         ),
         Arc::new(Mutex::new(())),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_cove_cache::WaveCoveCache::new(),
+        crate::wave_area_cache::WaveAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 
@@ -195,7 +195,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         harness.route_repo.clone(),
         Arc::new(crate::state::CodexClient::new_stub()),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_cove_cache::WaveCoveCache::new(),
+        crate::wave_area_cache::WaveAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 
@@ -209,7 +209,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         harness.route_repo.clone(),
         Arc::new(crate::state::CodexClient::new_stub()),
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_cove_cache::WaveCoveCache::new(),
+        crate::wave_area_cache::WaveAreaCache::new(),
     );
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 }
@@ -483,7 +483,7 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     };
     use crate::event::{Event, EventScope};
     use crate::ids::{ActorId, CardId};
-    use crate::model::{CardRole, NewCard, NewCove, NewWave};
+    use crate::model::{CardRole, NewArea, NewCard, NewWave};
     use crate::routes::theme::RequestTheme;
     use crate::wave_report::WaveReportPayload;
     use calm_truth::decision_gate::PermissiveGate;
@@ -491,9 +491,9 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = sqlx_repo
-        .cove_create(NewCove {
-            name: "cove".into(),
+    let area = sqlx_repo
+        .area_create(NewArea {
+            name: "area".into(),
             color: "#abcdef".into(),
             sort: None,
         })
@@ -502,7 +502,7 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     let wave = sqlx_repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -535,7 +535,7 @@ async fn operation_event_append_creates_wave_vcs_commit() {
     let scope = EventScope::Card {
         card: CardId::from(card_id),
         wave: wave.id.clone(),
-        cove: cove.id.clone(),
+        area: area.id.clone(),
     };
     let event = Event::CardAdded(report);
     let event_id = append_decision_event_in_tx(
@@ -835,9 +835,9 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease reclaim".into(),
             color: "#101010".into(),
             sort: None,
@@ -849,7 +849,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
         &sqlx_repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease reclaim".into(),
             sort: None,
             cwd: String::new(),
@@ -953,9 +953,9 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease reclaim removal failure".into(),
             color: "#101010".into(),
             sort: None,
@@ -967,7 +967,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
         &sqlx_repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease reclaim removal failure".into(),
             sort: None,
             cwd: String::new(),
@@ -1088,9 +1088,9 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease same boot".into(),
             color: "#101010".into(),
             sort: None,
@@ -1102,7 +1102,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
         &sqlx_repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease same boot".into(),
             sort: None,
             cwd: String::new(),
@@ -1207,9 +1207,9 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease recoverable".into(),
             color: "#101010".into(),
             sort: None,
@@ -1221,7 +1221,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
         &sqlx_repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease recoverable".into(),
             sort: None,
             cwd: String::new(),
@@ -1374,9 +1374,9 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease releasing".into(),
             color: "#101010".into(),
             sort: None,
@@ -1388,7 +1388,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
         &sqlx_repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease releasing".into(),
             sort: None,
             cwd: String::new(),

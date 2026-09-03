@@ -21,14 +21,14 @@ use std::time::Duration;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use serde_json::json;
 use tokio::time::{Instant, sleep};
 
 const CALLER_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-caller");
 
-/// Boot a host with one caller-stub plugin installed and a cove+wave already
+/// Boot a host with one caller-stub plugin installed and an area+wave already
 /// seeded in the repo. Returns the host, the repo (so the test can assert on
 /// state directly), the demo wave id (also baked into the plugin's env), and
 /// the tempdir guard.
@@ -49,8 +49,8 @@ async fn boot_with_wave(
             .await
             .expect("open in-memory sqlite repo"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -60,7 +60,7 @@ async fn boot_with_wave(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
@@ -119,7 +119,7 @@ async fn boot_with_wave(
         events,
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
     (host, repo, wave.id.to_string(), tmp)

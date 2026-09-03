@@ -11,10 +11,10 @@ use calm_truth::db::RepoEventWrite;
 use calm_truth::db::sqlite::SqlxRepo;
 use calm_truth::event::{Event, EventBus, EventScope};
 use calm_truth::ids::ActorId;
-use calm_truth::model::{Cove, CoveKind};
-use calm_truth::wave_cove_cache::WaveCoveCache;
+use calm_truth::model::{Area, AreaKind};
+use calm_truth::wave_area_cache::WaveAreaCache;
 
-async fn seed_cove_updates(repo: &SqlxRepo, n: usize) -> Vec<i64> {
+async fn seed_area_updates(repo: &SqlxRepo, n: usize) -> Vec<i64> {
     let bus = EventBus::new();
     let mut ids = Vec::with_capacity(n);
     for i in 0..n {
@@ -25,13 +25,13 @@ async fn seed_cove_updates(repo: &SqlxRepo, n: usize) -> Vec<i64> {
                 None,
                 &bus,
                 &CardRoleCache::new(),
-                &WaveCoveCache::new(),
-                Event::CoveUpdated(Cove {
+                &WaveAreaCache::new(),
+                Event::AreaUpdated(Area {
                     id: format!("c-{i}").into(),
                     name: "n".into(),
                     color: "#000".into(),
                     sort: 0.0,
-                    kind: CoveKind::User,
+                    kind: AreaKind::User,
                     created_at: 0,
                     updated_at: 0,
                 }),
@@ -48,7 +48,7 @@ async fn events_since_enforces_caller_bound() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let seeded = seed_cove_updates(&repo, 8).await;
+    let seeded = seed_area_updates(&repo, 8).await;
 
     let rows = repo.events_since(0, 5).await.expect("events_since");
     assert_eq!(
@@ -77,7 +77,7 @@ async fn events_since_non_positive_limit_returns_no_rows() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    seed_cove_updates(&repo, 3).await;
+    seed_area_updates(&repo, 3).await;
 
     // Negative values must clamp to empty, never fall through to sqlite's
     // `LIMIT -1` "no limit" sentinel.
@@ -180,7 +180,7 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let before = seed_cove_updates(&repo, 1).await;
+    let before = seed_area_updates(&repo, 1).await;
     sqlx::query(
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
@@ -194,7 +194,7 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
     .execute(repo.pool())
     .await
     .expect("insert retired workflow.registered");
-    let after = seed_cove_updates(&repo, 1).await;
+    let after = seed_area_updates(&repo, 1).await;
 
     let rows = repo
         .events_since(0, 100)
@@ -222,7 +222,7 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    let seeded = seed_cove_updates(&repo, 4).await;
+    let seeded = seed_area_updates(&repo, 4).await;
     // A raw row whose kind matches no `Event` variant: invisible to
     // `events_since`, but the raw probe must include it. Seeded LAST so
     // the window's `max_id` assertion below proves the probe sees past

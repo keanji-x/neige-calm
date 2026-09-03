@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type {
-  CoveConversationSummary, HarnessItem, WaveConversationSummary,
+  AreaConversationSummary, HarnessItem, WaveConversationSummary,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
@@ -15,16 +15,16 @@ import { sha256Hex } from './sha256.js';
  *
  * The first four spellings match `WorkerSessionKind` in
  * `core/api/generated/wire.ts`; `'shared-chat'` deliberately does **not**. A
- * cove chat runs on an ordinary codex-card session, so the session kind says
+ * area chat runs on an ordinary codex-card session, so the session kind says
  * nothing about it — the server derives `'shared-chat'` from the card's own
- * persisted marker (`CoveConversationSummary.kind`). Do not "fix" this union
+ * persisted marker (`AreaConversationSummary.kind`). Do not "fix" this union
  * back into a mirror of `WorkerSessionKind` by deleting the last members.
  *
  * `'wave-assistant'` (#1189) is the same arrangement one layer over: an
  * assistant conversation is also an ordinary codex-card session, and the server
  * derives the value from that card's own marker. It is a value distinct from
  * `'shared-chat'` on purpose — the two lists have different contracts, and
- * collapsing them would route assistant rows through the cove chat's
+ * collapsing them would route assistant rows through the area chat's
  * presentation.
  */
 export type ConversationKind =
@@ -41,9 +41,9 @@ export type Conversation = Readonly<{
    * The wave's title, resolved by whoever knows about waves — absent when
    * nobody does.
    *
-   * Optional because a cove conversation lives on the cove's hidden chat wave:
+   * Optional because an area conversation lives on the area's hidden chat wave:
    * the server withholds that wave's title on purpose
-   * (`CoveConversationSummary`), so there is no title to resolve rather than an
+   * (`AreaConversationSummary`), so there is no title to resolve rather than an
    * empty one. A surface that names waves must therefore handle its absence;
    * `undefined` is what makes that a type error instead of `", on undefined"`.
    */
@@ -60,7 +60,7 @@ export type Conversation = Readonly<{
   /**
    * The live session's state, or `null` when there is no live session to read.
    *
-   * `null` is a fact, not a gap: the cove list is a LEFT JOIN restricted to the
+   * `null` is a fact, not a gap: the area list is a LEFT JOIN restricted to the
    * four live states, so a card whose session exited, failed or was superseded
    * — and a card minted seconds ago that has none yet — both arrive as `null`.
    * Rendering it must therefore say only "nothing is happening in it right
@@ -74,9 +74,9 @@ export type Conversation = Readonly<{
   /**
    * Turn count, or absent when the surface that produced the row cannot count.
    *
-   * Optional because the cove list will not: counting turns means re-parsing
+   * Optional because the area list will not: counting turns means re-parsing
    * every `harness_items.params` blob, and a count that silently disagrees with
-   * the drawer is worse than no count (`CoveConversationSummary`). Zero is
+   * the drawer is worse than no count (`AreaConversationSummary`). Zero is
    * still legal and still means zero.
    */
   turns?: number;
@@ -89,7 +89,7 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   codex: 'Codex',
   claude: 'Claude',
   'shared-spec': 'Spec',
-  /* Every cove conversation reads "Chat" until one is named: the server mints
+  /* Every area conversation reads "Chat" until one is named: the server mints
      the card with no title and nothing writes one yet (#1098 §7). */
   'shared-chat': 'Chat',
   /* Same, on a wave. "Assistant" rather than "Chat" because a wave already
@@ -249,16 +249,16 @@ export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: 
  * `POST /api/cards/:id/spec/reset` still exists on the server and is not going
  * anywhere; what was removed is every *front-end* way to reach it. Clearing one
  * conversation in place has no value here, because conversations are not
- * singular: a cove's chat wave carries as many `harness_profile: plain_chat`
+ * singular: an area's chat wave carries as many `harness_profile: plain_chat`
  * cards as you like, side by side. A thread that has gone wrong is answered by
  * opening a new one — the old one stays in the list, readable — which is the
  * model codex and Claude Code both use. "Empty this one" only makes sense when
  * "this one" is all you get.
  */
 
-/* ── Cove conversations (#1098) ─────────────────────────────────────────────
+/* ── Area conversations (#1098) ─────────────────────────────────────────────
  *
- * A cove's conversations are ordinary plain-chat harness cards on a hidden chat
+ * An area's conversations are ordinary plain-chat harness cards on a hidden chat
  * wave. Everything *inside* one is the spec-harness surface unchanged — items,
  * phase, input, interrupt all take a card id and do not care how the
  * card was made. Only two things are new: where the list comes from, and how
@@ -274,7 +274,7 @@ const conversationStateSchema = z.enum([
   'starting', 'running', 'idle', 'turn_pending', 'exited', 'failed', 'superseded',
 ]);
 
-const coveConversationSummarySchema: z.ZodType<CoveConversationSummary> = z.object({
+const areaConversationSummarySchema: z.ZodType<AreaConversationSummary> = z.object({
   id: z.string(),
   waveId: z.string(),
   title: z.string().nullable(),
@@ -292,7 +292,7 @@ const coveConversationSummarySchema: z.ZodType<CoveConversationSummary> = z.obje
  * because that is the only value this endpoint produces — the wire's `string`
  * is a ts-rs artefact, not a variation point.
  */
-export function toCoveConversation(row: CoveConversationSummary): Conversation {
+export function toAreaConversation(row: AreaConversationSummary): Conversation {
   return {
     id: row.id,
     waveId: row.waveId,
@@ -303,11 +303,11 @@ export function toCoveConversation(row: CoveConversationSummary): Conversation {
   };
 }
 
-export function coveConversationsOperation(coveId: string): ApiOperation<Conversation[]> {
+export function areaConversationsOperation(areaId: string): ApiOperation<Conversation[]> {
   return {
     method: 'GET',
-    path: `/api/coves/${encodeURIComponent(coveId)}/conversations`,
-    responseSchema: z.array(coveConversationSummarySchema).transform((rows) => rows.map(toCoveConversation)),
+    path: `/api/areas/${encodeURIComponent(areaId)}/conversations`,
+    responseSchema: z.array(areaConversationSummarySchema).transform((rows) => rows.map(toAreaConversation)),
   };
 }
 
@@ -321,33 +321,33 @@ export function coveConversationsOperation(coveId: string): ApiOperation<Convers
  * call would be a new key per attempt, which is exactly the guarantee it
  * exists to provide.
  */
-export function createCoveConversationOperation(
-  coveId: string, text: string, idempotencyKey: string,
+export function createAreaConversationOperation(
+  areaId: string, text: string, idempotencyKey: string,
 ): ApiOperation<Conversation> {
   return {
     method: 'POST',
-    path: `/api/coves/${encodeURIComponent(coveId)}/conversations`,
+    path: `/api/areas/${encodeURIComponent(areaId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
     body: { text },
-    responseSchema: coveConversationSummarySchema.transform(toCoveConversation),
+    responseSchema: areaConversationSummarySchema.transform(toAreaConversation),
   };
 }
 
 /** The longest first message the server accepts, checked before it is sent so a
- *  rejected message costs no round trip (`NewCoveConversationBody`). */
-export const COVE_CONVERSATION_TEXT_MAX = 32768;
+ *  rejected message costs no round trip (`NewAreaConversationBody`). */
+export const AREA_CONVERSATION_TEXT_MAX = 32768;
 
 /* ── Wave conversations (#1189) ─────────────────────────────────────────────
  *
  * A wave's conversations are `harness_profile: assistant` cards on the wave
  * itself — its own list, its own endpoint (`§4.1`), and its own row type on the
- * wire, which the server explains at `WaveConversationSummary`: the cove row's
+ * wire, which the server explains at `WaveConversationSummary`: the area row's
  * contract says `waveTitle` is absent *because every row lives on one hidden
  * wave*, and on a real wave that reasoning is simply false. The fields coincide
  * today; the contracts do not, so the schema is written out rather than aliased
- * to the cove one — an alias would make the next divergence a silent one.
+ * to the area one — an alias would make the next divergence a silent one.
  *
- * Same reason as the cove block above for living here and not in
+ * Same reason as the area block above for living here and not in
  * `core/api/schemas.ts`: that module mirrors the kernel's *event* vocabulary,
  * and `kind: 'wave-assistant'` is not in it — the wire spells the field as a
  * bare string derived from a card marker, and narrowing it is this layer's job.
@@ -365,12 +365,12 @@ const waveConversationSummarySchema: z.ZodType<WaveConversationSummary> = z.obje
 /**
  * The wire row as this app's own `Conversation`.
  *
- * `waveTitle` is absent for a different reason than the cove list's: the wave
+ * `waveTitle` is absent for a different reason than the area list's: the wave
  * is real and does have a title, but this endpoint does not send it (every row
  * belongs to the wave in the request path, so whoever asked already knows it).
  * Inventing one here would be this function's fiction; a caller that names
  * waves resolves it from the wave it asked about. `turns` is absent because the
- * server will not count them, as on the cove list.
+ * server will not count them, as on the area list.
  *
  * `kind` is pinned to `'wave-assistant'` because that is the only value this
  * endpoint produces — the wire's `string` is a ts-rs artefact, not a variation
@@ -396,13 +396,13 @@ export function waveConversationsOperation(waveId: string): ApiOperation<Convers
 }
 
 /**
- * The card id a create under `(coveId, idempotencyKey)` will have — computed
+ * The card id a create under `(areaId, idempotencyKey)` will have — computed
  * here, before the server answers.
  *
  * It is a pure, **public** function of those two strings, and the server says
  * so in as many words: `derive_conversation_keys`
- * (`crates/calm-server/src/routes/cove_conversations.rs`) is
- * `"conv-" + sha256("cove-chat-conversation:{cove_id}:{idempotency_key}")[..32]`,
+ * (`crates/calm-server/src/routes/area_conversations.rs`) is
+ * `"conv-" + sha256("area-chat-conversation:{area_id}:{idempotency_key}")[..32]`,
  * with a doc comment stating that anyone holding both inputs can compute it and
  * that nothing may be built on it being secret. Nothing here is: this recomputes
  * a *name*, so a draft can recognise **its own** row.
@@ -417,14 +417,14 @@ export function waveConversationsOperation(waveId: string): ApiOperation<Convers
  * operation touches only the *operation* key, never this one — a fact of the
  * server function's signature, which takes no such parameter.
  */
-export function coveConversationCardId(coveId: string, idempotencyKey: string): string {
-  return `conv-${sha256Hex(`cove-chat-conversation:${coveId}:${idempotencyKey}`).slice(0, 32)}`;
+export function areaConversationCardId(areaId: string, idempotencyKey: string): string {
+  return `conv-${sha256Hex(`cove-chat-conversation:${areaId}:${idempotencyKey}`).slice(0, 32)}`;
 }
 
 /**
  * Mint a wave assistant conversation and deliver its first message (#1189 §4.1).
  *
- * The cove twin's contract holds verbatim, including the four retry arms the
+ * The area twin's contract holds verbatim, including the four retry arms the
  * server documents on the endpoint, so the reason `idempotencyKey` is a
  * parameter is the same: it identifies the *draft*, and a key minted per call
  * would be a new key per attempt.
@@ -444,7 +444,7 @@ export function createWaveConversationOperation(
 }
 
 /**
- * The wave flavour of `coveConversationCardId`, and it exists for exactly the
+ * The wave flavour of `areaConversationCardId`, and it exists for exactly the
  * same reason: a failed create has to be able to ask "is **my** row there?"
  * rather than "did the list grow?".
  *
@@ -455,10 +455,10 @@ export function createWaveConversationOperation(
  * (`conversation.test.ts`), because two implementations of one formula that
  * agree only by inspection agree until one of them is edited.
  *
- * **The namespace is the load-bearing difference.** A cove id and a wave id are
- * drawn from the same id space, so sharing the `cove-chat-conversation:` prefix
+ * **The namespace is the load-bearing difference.** An area id and a wave id are
+ * drawn from the same id space, so sharing the `area-chat-conversation:` prefix
  * would let one `(id, key)` pair name one card from two endpoints — a wave
- * draft could adopt a cove chat's row and open somebody else's conversation.
+ * draft could adopt an area chat's row and open somebody else's conversation.
  * The visible `conv-` prefix is deliberately identical; the separation lives
  * inside the hashed string.
  */
@@ -474,7 +474,7 @@ export function waveConversationCardId(waveId: string, idempotencyKey: string): 
  * here is four distinguishable situations and three of them still have no
  * conversation behind them.
  */
-export type CoveConversationFailure = Readonly<
+export type AreaConversationFailure = Readonly<
   | {
     /** Ambiguous: the attempt may have committed. Keep the key and the text,
      *  re-read the list, and adopt a row if one appeared. */
@@ -503,7 +503,7 @@ export type CoveConversationFailure = Readonly<
      * say the request never committed, and on this endpoint it usually means
      * the opposite.
      *
-     * `create_cove_conversation` mints the card through the operation runtime
+     * `create_area_conversation` mints the card through the operation runtime
      * first and only then delivers the first message; every 503 the route can
      * raise comes from that second half (`send_spec_input` → "spec harness is
      * starting", "app-server not running", "observation queue full"), by which
@@ -531,7 +531,7 @@ export type CoveConversationFailure = Readonly<
     message: string;
   }
   | {
-    /** The cove is gone; there is nowhere to put the draft. */
+    /** The area is gone; there is nowhere to put the draft. */
     kind: 'gone';
     message: string;
   }
@@ -540,7 +540,7 @@ export type CoveConversationFailure = Readonly<
 const NO_CLAIMED_FOLDER = 'has no claimed folder';
 const DIFFERENT_PAYLOAD = 'already used with different payload';
 
-export function coveConversationFailure(failure: ApiFailure): CoveConversationFailure {
+export function areaConversationFailure(failure: ApiFailure): AreaConversationFailure {
   if (failure.kind === 'transport' || failure.kind === 'decode') {
     // The request may have been served and the answer lost on the way back.
     return { kind: 'retry', message: failure.message };

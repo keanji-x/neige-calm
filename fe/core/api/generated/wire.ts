@@ -7,6 +7,78 @@ export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "Ker
 
 export type AgentProvider = "codex" | "claude";
 
+export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, created_at: number, updated_at: number, };
+
+/**
+ * One row of `GET /api/areas/{area_id}/conversations` (#1098 §5.5).
+ *
+ * Deliberately absent:
+ * * `waveTitle` — every row belongs to the same hidden area chat wave, so
+ *   returning its title would leak an object the user is never shown.
+ * * `turns` — the server cannot produce a turn count that agrees with the
+ *   drawer without re-parsing every `harness_items.params` blob; a number
+ *   that silently disagrees is worse than no number.
+ */
+export type AreaConversationSummary = { 
+/**
+ * The chat card's id. This is the conversation's identity everywhere.
+ */
+id: string, waveId: string, 
+/**
+ * The conversation's own name, or null before it has one. Never the
+ * wave's title.
+ */
+title: string | null, 
+/**
+ * Always `"shared-chat"`, derived from the card's persisted marker rather
+ * than from the session kind (the session is an ordinary codex-card
+ * session and says nothing about the conversation being an area chat).
+ */
+kind: string, 
+/**
+ * The live session's state, or **null when the card has no session row**.
+ *
+ * This must stay nullable and must never be filled with an invented
+ * value. The list is a LEFT JOIN precisely so a card whose session is
+ * gone (failed start, superseded runtime, shut-down harness) stays
+ * visible; substituting `idle` or `exited` here would report a session
+ * state that was never read.
+ */
+state: WorkerSessionState | null, 
+/**
+ * The session's last update, falling back to the card's own — a card
+ * minted seconds ago with no session yet still sorts sensibly.
+ */
+updatedAt: number, };
+
+/**
+ * One row per claimed directory; `path` is absolute and globally
+ * unique across the table. A folder transparently covers every
+ * descendant path — the kernel resolves a `cwd` to its owning area by
+ * finding the claim that covers it (see `GET /api/areas/resolve`).
+ * The create endpoint rejects ancestor/descendant overlap with a 409,
+ * so at most one claim can cover any given path.
+ */
+export type AreaFolder = { id: number, area_id: AreaId, path: string, created_at: number, };
+
+/**
+ * Area identifier. UUID-shaped (32 hex, no dashes) in practice, but the
+ * kernel treats the value as opaque; never parses it.
+ */
+export type AreaId = string;
+
+/**
+ * Whether an area is user-visible or kernel-owned storage scaffolding.
+ */
+export type AreaKind = "user" | "system";
+
+/**
+ * Issue #250 PR 1 — 200 body for `GET /api/areas/resolve`. The
+ * resolve endpoint returns `null` (not 404) on miss; this struct is
+ * the `Some(_)` payload.
+ */
+export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: string, };
+
 /**
  * Opaque identifier for a worker-produced artifact.
  */
@@ -44,7 +116,7 @@ payload: unknown, title?: string, runtime?: CardRuntimeView,
 deletable: boolean, created_at: number, updated_at: number, };
 
 /**
- * Card identifier. See [`CoveId`] for the opacity contract.
+ * Card identifier. See [`AreaId`] for the opacity contract.
  */
 export type CardId = string;
 
@@ -72,78 +144,6 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
-export type Cove = { id: CoveId, name: string, color: string, sort: number, kind: CoveKind, created_at: number, updated_at: number, };
-
-/**
- * One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
- *
- * Deliberately absent:
- * * `waveTitle` — every row belongs to the same hidden cove chat wave, so
- *   returning its title would leak an object the user is never shown.
- * * `turns` — the server cannot produce a turn count that agrees with the
- *   drawer without re-parsing every `harness_items.params` blob; a number
- *   that silently disagrees is worse than no number.
- */
-export type CoveConversationSummary = { 
-/**
- * The chat card's id. This is the conversation's identity everywhere.
- */
-id: string, waveId: string, 
-/**
- * The conversation's own name, or null before it has one. Never the
- * wave's title.
- */
-title: string | null, 
-/**
- * Always `"shared-chat"`, derived from the card's persisted marker rather
- * than from the session kind (the session is an ordinary codex-card
- * session and says nothing about the conversation being a cove chat).
- */
-kind: string, 
-/**
- * The live session's state, or **null when the card has no session row**.
- *
- * This must stay nullable and must never be filled with an invented
- * value. The list is a LEFT JOIN precisely so a card whose session is
- * gone (failed start, superseded runtime, shut-down harness) stays
- * visible; substituting `idle` or `exited` here would report a session
- * state that was never read.
- */
-state: WorkerSessionState | null, 
-/**
- * The session's last update, falling back to the card's own — a card
- * minted seconds ago with no session yet still sorts sensibly.
- */
-updatedAt: number, };
-
-/**
- * One row per claimed directory; `path` is absolute and globally
- * unique across the table. A folder transparently covers every
- * descendant path — the kernel resolves a `cwd` to its owning cove by
- * finding the claim that covers it (see `GET /api/coves/resolve`).
- * The create endpoint rejects ancestor/descendant overlap with a 409,
- * so at most one claim can cover any given path.
- */
-export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
-
-/**
- * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
- * kernel treats the value as opaque; never parses it.
- */
-export type CoveId = string;
-
-/**
- * Whether a cove is user-visible or kernel-owned storage scaffolding.
- */
-export type CoveKind = "user" | "system";
-
-/**
- * Issue #250 PR 1 — 200 body for `GET /api/coves/resolve`. The
- * resolve endpoint returns `null` (not 404) on miss; this struct is
- * the `Some(_)` payload.
- */
-export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: string, };
-
 /**
  * Producer of a wave-report edit. Existing variants are persisted wire values.
  */
@@ -158,11 +158,11 @@ export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
  * honored — the emitted TS uses the same `{ ev, data }` envelope.
  *
  * Note for future variants: ts-rs requires every payload type referenced
- * here to also derive `TS`. Inline struct variants (e.g. `CoveDeleted { id }`)
+ * here to also derive `TS`. Inline struct variants (e.g. `AreaDeleted { id }`)
  * are emitted directly; tuple variants over a named struct (e.g.
- * `CoveUpdated(Cove)`) pull in the struct's own export.
+ * `AreaUpdated(Area)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, 
+export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, area_id: AreaId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, area_id: AreaId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, 
 /**
  * Number of `harness_items` rows deleted by this reset.
  * `None` on pre-#1252 rows only.
@@ -266,25 +266,25 @@ note: string,
 idem_key: string, } } | { "ev": "proposal.resolved", "data": { wave_id: WaveId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { wave_id: WaveId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { wave_id: WaveId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { wave_id: WaveId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { wave_id: WaveId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { wave_id: WaveId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { wave_id: WaveId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { wave_id: WaveId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
 
 /**
- * Where an event lives in the cove → wave → card hierarchy.
+ * Where an event lives in the area → wave → card hierarchy.
  *
  * `EventScope::System` is the catch-all for events that genuinely don't
- * belong to a single cove/wave/card (`Event::PluginState`, the
- * CoveCreated case where the cove doesn't exist before the event, and
+ * belong to a single area/wave/card (`Event::PluginState`, the
+ * AreaCreated case where the area doesn't exist before the event, and
  * malformed legacy rows). Prefer the narrowest available scope.
  */
-export type EventScope = { "kind": "System" } | { "kind": "Cove", "id": { cove: CoveId, } } | { "kind": "Wave", "id": { wave: WaveId, cove: CoveId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, cove: CoveId, } };
+export type EventScope = { "kind": "System" } | { "kind": "Area", "id": { area: AreaId, } } | { "kind": "Wave", "id": { wave: WaveId, area: AreaId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, area: AreaId, } };
 
 /**
  * Issue #250 PR 1 — 409 body for the folder-create conflict case.
  * Hand-written DTO so the frontend gets a structured shape rather
  * than the generic `{error, code}` envelope.
  */
-export type FolderConflict = { folder_id: number, cove_id: CoveId, conflict_path: string, conflict_kind: FolderConflictKind, };
+export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path: string, conflict_kind: FolderConflictKind, };
 
 /**
  * Issue #250 PR 1 — kind of overlap detected by the
- * `POST /api/coves/:cove_id/folders` conflict check. Surfaces in the
+ * `POST /api/areas/:area_id/folders` conflict check. Surfaces in the
  * 409 response body so the frontend can render a precise message
  * without re-parsing strings.
  */
@@ -378,7 +378,7 @@ export type TaskContextChangedRef = { wave_id: WaveId, block_id: string, from_re
  */
 export type TaskContextRef = { wave_id: WaveId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
+export type Wave = { id: WaveId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
@@ -431,9 +431,9 @@ terminal_at: number | null, workspace: WaveWorkspace, created_at: number, update
 /**
  * One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
  *
- * Its own type rather than a reuse of [`CoveConversationSummary`], which is
+ * Its own type rather than a reuse of [`AreaConversationSummary`], which is
  * what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
- * the cove type's contract says "`waveTitle` is absent because every row lives
+ * the area type's contract says "`waveTitle` is absent because every row lives
  * on one hidden wave", and on a wave that reasoning is simply not true. Two
  * lists with different contracts should not share one name just because their
  * current fields coincide.
@@ -457,15 +457,15 @@ waveId: string,
 title: string | null, 
 /**
  * Always `"wave-assistant"`, derived from the card's persisted marker.
- * A distinct value from the cove list's `"shared-chat"` on purpose: the
+ * A distinct value from the area list's `"shared-chat"` on purpose: the
  * frontend branches on it, and a shared value would route assistant rows
- * through the cove chat's presentation.
+ * through the area chat's presentation.
  */
 kind: string, 
 /**
  * The live session's state, or **null when the card has no session row**.
  *
- * Nullable for the same reason as the cove list's: the query LEFT JOINs so
+ * Nullable for the same reason as the area list's: the query LEFT JOINs so
  * a card whose session is gone (failed start, superseded runtime, shut
  * down harness) stays visible. Never fill it with an invented value.
  */
@@ -494,7 +494,7 @@ export type WaveFsRunVerdict = { at: number, reason: string | null, status: stri
 export type WaveFsRunVerdictSummary = { at: number, status: string, };
 
 /**
- * Wave identifier. See [`CoveId`] for the opacity contract.
+ * Wave identifier. See [`AreaId`] for the opacity contract.
  */
 export type WaveId = string;
 
@@ -584,7 +584,7 @@ blocks?: Array<ReportBlock> | null, };
  * `wave` is flattened to preserve the historical wire shape: the event data
  * remains the full wave row at top level.
  */
-export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
+export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
@@ -646,7 +646,7 @@ path: string,
  * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
  * again.
  *
- * The system-cove launchpad remains unfrozen because it is repointed by
+ * The system-area launchpad remains unfrozen because it is repointed by
  * `today_launchpad_ensure_tx`.
  */
 frozen_at: number | null, };

@@ -1,13 +1,13 @@
 // INV-DUP-009 — the one wave row.
 //
-// Three surfaces render it: the sidebar rail, the cove page list, and Today.
+// Three surfaces render it: the sidebar rail, the area page list, and Today.
 // They must agree on what a wave *looks* like, so the row is declared once here
 // and consumed through this entry.
 //
 // It stays under `features/wave` and not in `ui/`: `ui/` is deliberately
 // domain-free (it may import core *types* only), and this row reads lifecycle
 // predicates and display rules. The two surfaces outside this domain receive it
-// by injection instead — `app/router` composes the cove page's list, and hands
+// by injection instead — `app/router` composes the area page's list, and hands
 // Today a `renderWaveRow` callback. `app/**` may import features; siblings may not.
 //
 // §6.3 gives it four variants. They differ in height, in what the leading 6px
@@ -26,8 +26,8 @@ export type WaveRowVariant = 'default' | 'compact' | 'panel' | 'rail';
 export type WaveRowProps = Readonly<{
   wave: Wave;
   variant?: WaveRowVariant;
-  /** Cove name, when the surface does not already group by cove. */
-  coveName?: string;
+  /** Area name, when the surface does not already group by area. */
+  areaName?: string;
   /** Agenda rows only: the hour bucket of a `ScheduledEvent`. */
   hourLabel?: string;
   active?: boolean;
@@ -83,7 +83,7 @@ export function relativeTime(atMs: number, nowMs: number): string {
  * INV-A11Y-061 — navigation is this button plus `onOpen`, never an `<a href>`.
  */
 export function WaveRow({
-  wave, variant = 'default', coveName, hourLabel, active = false, nowMs,
+  wave, variant = 'default', areaName, hourLabel, active = false, nowMs,
   onOpen, onSetPinned, onDelete,
 }: WaveRowProps) {
   const attention = needsUserAttention(wave);
@@ -97,7 +97,7 @@ export function WaveRow({
 
   const bits = [attention ? 'waiting on you' : '', running ? 'running' : ''].filter(Boolean);
   const label = `Wave ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
-    + (coveName === undefined ? '' : `, in cove ${coveName}`);
+    + (areaName === undefined ? '' : `, in area ${areaName}`);
 
   const dotClass = `${styles.dot} ${attention ? styles.dotWaiting : running ? styles.dotRunning : ''}`;
 
@@ -106,7 +106,7 @@ export function WaveRow({
    * take its place on hover. §3.1 already assigns that edge to status ("右边缘
    * = 状态"), so this is the row finally obeying it — and it buys three things
    * at once: the title starts 10px further left (116px of text in a 200px rail
-   * became 126px), the cove row stops having to reserve an empty 6px cell for a
+   * became 126px), the area row stops having to reserve an empty 6px cell for a
    * status it does not have, and the trailing zone holds exactly one thing at a
    * time instead of two.
    *

@@ -10,11 +10,11 @@
 // mounted inside `AppProviders` so it sees the same QueryClient.
 //
 // What this component still owns:
-//   * the Sidebar's data shape: it wants `Cove[]` and `Wave[]` (across
-//     all coves) for the "running / waiting" badges. We fetch coves
+//   * the Sidebar's data shape: it wants `Area[]` and `Wave[]` (across
+//     all areas) for the "running / waiting" badges. We fetch areas
 //     once and fan out wave queries with `useQueries`, then adapt to
 //     UI shapes inline. The result is shallow-stable enough for the
-//     Sidebar; per-cove invalidations naturally roll up.
+//     Sidebar; per-area invalidations naturally roll up.
 //
 // Theme is no longer local to CalmApp — it lives in `app/theme.tsx`
 // (`ThemeProvider` mounted by `AppProviders`) and is read via the
@@ -28,13 +28,13 @@ import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useQueries } from '@tanstack/react-query';
 import { Sidebar } from './shared/components/Sidebar';
 import { TitleBar } from './shared/components/TitleBar';
-import { adaptCove, adaptWave } from './api/adapt';
+import { adaptArea, adaptWave } from './api/adapt';
 import * as api from './api/calm';
 import {
   queryKeys,
-  useCovesQuery,
-  useCreateCoveMutation,
-  useDeleteCoveMutation,
+  useAreasQuery,
+  useCreateAreaMutation,
+  useDeleteAreaMutation,
   useDeleteWaveMutation,
   useOverlaysByKindQuery,
   useUpdateWaveMutation,
@@ -43,7 +43,7 @@ import { useGo } from './app/navigation';
 import { logout } from './api/auth';
 import { useWheelRouter } from './input/useWheelRouter';
 import type { KernelOverlay } from './api/wire';
-import type { Cove, Route as AppRoute, Wave } from './types';
+import type { Area, Route as AppRoute, Wave } from './types';
 
 export function CalmApp() {
   const go = useGo();
@@ -59,42 +59,42 @@ export function CalmApp() {
 
   // ----- Sidebar data -----------------------------------------------------
   //
-  // Sidebar wants a flat list of all waves so it can render per-cove
+  // Sidebar wants a flat list of all waves so it can render per-area
   // counts and the "Waiting on you" bucket. We fan out one query per
-  // cove and adapt the results. Each query has its own cache entry, so
-  // a single-cove invalidation only refetches that cove's wave list.
+  // area and adapt the results. Each query has its own cache entry, so
+  // a single-area invalidation only refetches that area's wave list.
 
-  const covesQ = useCovesQuery();
+  const areasQ = useAreasQuery();
   // Memoise the fallback to a stable empty array — without this, the
   // `?? []` allocates a fresh `[]` on every render, which would make
-  // `kernelCoves` (and any downstream memo keyed on it) change identity
+  // `kernelAreas` (and any downstream memo keyed on it) change identity
   // every render. The eslint-plugin-react-hooks `exhaustive-deps` check
   // explicitly flags this pattern.
   //
   // Belt-and-suspenders for issue #175: the server already filters
-  // `kind='system'` out of `GET /api/coves` by default, but we re-filter
+  // `kind='system'` out of `GET /api/areas` by default, but we re-filter
   // here so a future regression on the server side (or a debug build
   // that opts into `?include_system=true`) never accidentally surfaces
-  // the system cove in the sidebar.
-  const kernelCoves = useMemo(
-    () => (covesQ.data ?? []).filter((c) => c.kind === 'user'),
-    [covesQ.data],
+  // the system area in the sidebar.
+  const kernelAreas = useMemo(
+    () => (areasQ.data ?? []).filter((c) => c.kind === 'user'),
+    [areasQ.data],
   );
 
   const waveQueries = useQueries({
-    queries: kernelCoves.map((c) => ({
-      queryKey: queryKeys.wavesInCove(c.id),
-      queryFn: () => api.wavesInCove(c.id),
+    queries: kernelAreas.map((c) => ({
+      queryKey: queryKeys.wavesInArea(c.id),
+      queryFn: () => api.wavesInArea(c.id),
     })),
   });
 
-  const coves: Cove[] = useMemo(() => kernelCoves.map(adaptCove), [kernelCoves]);
+  const areas: Area[] = useMemo(() => kernelAreas.map(adaptArea), [kernelAreas]);
 
   // Workspace-wide wave overlays — one cheap query that the Sidebar
   // reads to render accurate per-wave status indicators ("Waiting on
-  // you", "X running") for every cove, not just whichever wave the
+  // you", "X running") for every area, not just whichever wave the
   // user has currently opened. eventBridge invalidates this snapshot
-  // on overlay.set/.deleted (and on wave/cove deletes where the kernel
+  // on overlay.set/.deleted (and on wave/area deletes where the kernel
   // may not cascade individual events).
   const waveOverlaysQ = useOverlaysByKindQuery('wave');
 
@@ -123,11 +123,11 @@ export function CalmApp() {
     // is structurally equal, so this re-derives only on real changes.
   }, [waveQueries, overlaysByWaveId]);
 
-  const loading = covesQ.isLoading;
-  const error = covesQ.error;
+  const loading = areasQ.isLoading;
+  const error = areasQ.error;
 
-  const createCove = useCreateCoveMutation();
-  const deleteCove = useDeleteCoveMutation();
+  const createArea = useCreateAreaMutation();
+  const deleteArea = useDeleteAreaMutation();
   const deleteWave = useDeleteWaveMutation();
   const updateWave = useUpdateWaveMutation();
 
@@ -150,32 +150,32 @@ export function CalmApp() {
       <TitleBar />
       <div className="stage">
         <Sidebar
-          coves={coves}
+          areas={areas}
           waves={waves}
           route={route}
           onGo={go}
-          onCreateCove={async (name, color) => {
-            await createCove.mutateAsync({ name, color });
+          onCreateArea={async (name, color) => {
+            await createArea.mutateAsync({ name, color });
           }}
-          onDeleteCove={async (cId) => {
+          onDeleteArea={async (cId) => {
             try {
-              await deleteCove.mutateAsync(cId);
-              // Active-cove deletion: bounce to Today so we don't get
-              // stranded on a now-missing /cove/:id route.
-              if (route.name === 'cove' && route.coveId === cId) {
+              await deleteArea.mutateAsync(cId);
+              // Active-area deletion: bounce to Today so we don't get
+              // stranded on a now-missing /area/:id route.
+              if (route.name === 'area' && route.areaId === cId) {
                 go({ name: 'today' });
               }
             } catch (err) {
-              console.warn('[Calm] cove delete failed:', err);
+              console.warn('[Calm] area delete failed:', err);
             }
           }}
           onDeleteWave={async (waveId) => {
             const wave = waves.find((w) => w.id === waveId);
             if (!wave) return;
             try {
-              await deleteWave.mutateAsync({ id: waveId, coveId: wave.coveId });
+              await deleteWave.mutateAsync({ id: waveId, areaId: wave.areaId });
               if (route.name === 'wave' && route.id === waveId) {
-                go({ name: 'cove', coveId: wave.coveId });
+                go({ name: 'area', areaId: wave.areaId });
               }
             } catch (err) {
               console.warn('[Calm] wave delete failed:', err);
@@ -212,9 +212,9 @@ export function CalmApp() {
 }
 
 function parseAppRoute(pathname: string): AppRoute {
-  if (pathname.startsWith('/cove/')) {
-    const id = decodeURIComponent(pathname.slice('/cove/'.length).replace(/\/$/, ''));
-    if (id) return { name: 'cove', coveId: id };
+  if (pathname.startsWith('/area/')) {
+    const id = decodeURIComponent(pathname.slice('/area/'.length).replace(/\/$/, ''));
+    if (id) return { name: 'area', areaId: id };
   }
   if (pathname.startsWith('/wave/')) {
     const id = decodeURIComponent(pathname.slice('/wave/'.length).replace(/\/$/, ''));

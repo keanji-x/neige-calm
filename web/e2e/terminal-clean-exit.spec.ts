@@ -20,22 +20,22 @@ import { test, expect } from '@playwright/test';
 import { seedWaveViewMode } from './helpers/reset';
 
 test('terminal worker that exits cleanly shows the exit 0 header badge, no overlay', async ({ page }) => {
-  // Step 1 — mint a fresh user cove via the sidebar (issue #175).
+  // Step 1 — mint a fresh user area via the sidebar (issue #175).
   await page.goto('/calm/');
-  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-  const coveName = `E2E clean-exit ${Date.now()}`;
-  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+  const areaName = `E2E clean-exit ${Date.now()}`;
+  await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+  const nameInput = sidebarAreas.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
-  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
-  const coveId = new URL(page.url()).pathname.split('/').pop()!;
+  const areaBtn = sidebarAreas.getByRole('button', { name: areaName, exact: true });
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
+  const areaId = new URL(page.url()).pathname.split('/').pop()!;
 
-  // Step 2 — mint a wave inside the cove via REST. Same shape as
+  // Step 2 — mint a wave inside the area via REST. Same shape as
   // `new-terminal-card.spec.ts`.
   const waveTitle = `E2E clean-exit ${Date.now()}`;
   // The terminal card below spawns in this directory. `/tmp` exists
@@ -45,12 +45,12 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   const cwd = '/tmp';
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title: waveTitle,
       // #1147 S3 — no `cwd` on the wave: take the kernel-managed
       // workspace branch. This spec is about the terminal clean-exit
       // race, not working directories. See
-      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-clean-exit-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

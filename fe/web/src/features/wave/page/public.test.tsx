@@ -45,12 +45,12 @@ describe('WavePage header', () => {
 
   /* The header is one row now. It used to carry "Today / ● atlas" above the
      title, restating in chrome what the rail states permanently — so the crumb,
-     its back button and the cove dot are gone, and with them the page's whole
-     reason to know which cove it is in. This asserts the *absence*, because the
+     its back button and the area dot are gone, and with them the page's whole
+     reason to know which area it is in. This asserts the *absence*, because the
      row is the kind of thing that gets added back by reflex. */
   it('carries no ancestor navigation of its own', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite' }) });
-    expect(screen.queryByRole('button', { name: 'Back to cove' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back to area' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Today' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Back to wave' })).toBeNull();
   });
@@ -94,7 +94,7 @@ describe('WavePage task inventory', () => {
     blockId: `b-${key}`, key, state: 'ready', workerCardId, status, statusDetail, kind, declaration: null,
   });
 
-  /* FOLDER used to hold this slot and was removed, not moved: `cove/new-wave`
+  /* FOLDER used to hold this slot and was removed, not moved: `area/new-wave`
      omits `cwd` from the create POST, so the kernel persists `$HOME` and every
      wave this front-end makes reported the same constant. The assertion is on
      the *label* rather than on the path, because the defect it guards against

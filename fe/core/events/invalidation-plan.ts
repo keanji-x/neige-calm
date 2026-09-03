@@ -1,10 +1,10 @@
-import type { Cove, WireEvent } from '../api/schemas.js';
+import type { Area, WireEvent } from '../api/schemas.js';
 
 export type EventKind = WireEvent['ev'];
 export type EventOf<K extends EventKind> = Extract<WireEvent, { ev: K }>;
 export type QueryKey = readonly unknown[];
 
-export type CacheWrite = Readonly<{ key: QueryKey; mode: 'replace-existing-cove'; value: Cove }>;
+export type CacheWrite = Readonly<{ key: QueryKey; mode: 'replace-existing-area'; value: Area }>;
 export type InvalidationPlan = Readonly<{
   invalidate: readonly QueryKey[];
   remove: readonly QueryKey[];
@@ -71,14 +71,14 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
 ] as const);
 
 /**
- * The cove conversation list, invalidated without a cove id (#1098 §5.5).
+ * The area conversation list, invalidated without an area id (#1098 §5.5).
  *
  * The id is not omitted for convenience — it is not derivable here.
  * `InvalidationContext` can resolve a card to its wave and nothing further, and
- * a cove chat wave's detail is never fetched (the wave is hidden), so there is
- * no cached row to read a cove id out of either. A prefix key is the honest
- * shape for "some cove's list may have changed"; it also costs nothing when no
- * cove route is mounted, because an invalidated key with no active query only
+ * an area chat wave's detail is never fetched (the wave is hidden), so there is
+ * no cached row to read an area id out of either. A prefix key is the honest
+ * shape for "some area's list may have changed"; it also costs nothing when no
+ * area route is mounted, because an invalidated key with no active query only
  * marks cache entries stale.
  *
  * Deliberately *not* invalidated from `harness.item.added` — it writes only
@@ -87,16 +87,16 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
  * `harness.transcript.cleared`: a reset always emits `harness.phase.changed`
  * too, so a second trigger would only make the first impossible to disprove.
  */
-export const COVE_CONVERSATIONS: QueryKey = Object.freeze(['cove-conversations']);
+export const AREA_CONVERSATIONS: QueryKey = Object.freeze(['area-conversations']);
 
 /**
  * The wave conversation list (#1189 §5.5), keyed by the wave it belongs to.
  *
- * Unlike the cove list above, the id is NOT omitted, because here it *is*
+ * Unlike the area list above, the id is NOT omitted, because here it *is*
  * derivable: every event this key hangs off carries either a `wave_id` or a
  * `card_id` an `InvalidationContext` can resolve, and the endpoint itself is
- * per-wave (`GET /api/waves/{wave_id}/conversations`, §4.1). The cove list's
- * prefix shape is a concession to a cove id that cannot be recovered, not a
+ * per-wave (`GET /api/waves/{wave_id}/conversations`, §4.1). The area list's
+ * prefix shape is a concession to an area id that cannot be recovered, not a
  * house style to copy — invalidating `['wave-conversations']` wholesale on
  * every runtime tick would refetch the list of every wave the user has open.
  *
@@ -114,13 +114,13 @@ function waveConversations(waveId: string | null): QueryKey {
  * Both conversation lists, which are invalidated together and never apart.
  *
  * They are one key set because they were one defect (#1189 §5.5). A row's
- * `state` in either list is read from `worker_sessions.state` — the cove query
- * in `cove_conversations.rs`, the wave one mirroring it — and until this slice
+ * `state` in either list is read from `worker_sessions.state` — the area query
+ * in `area_conversations.rs`, the wave one mirroring it — and until this slice
  * both lists hung off card and harness events only. The three `runtime.*`
  * kinds are what actually move that column, `runtime.started` being the
  * `null → starting` transition that turns the dot on at all, so a session
  * could start, change status and be superseded with the list still showing
- * whatever it had. Adding the wave list without fixing the cove one would have
+ * whatever it had. Adding the wave list without fixing the area one would have
  * left the older list with the same stale `state`.
  *
  * `wave.lifecycle_changed` is deliberately NOT a caller. It does not write
@@ -137,7 +137,7 @@ function waveConversations(waveId: string | null): QueryKey {
  * can land silently.
  */
 function conversationLists(waveId: string | null): readonly QueryKey[] {
-  return [COVE_CONVERSATIONS, waveConversations(waveId)];
+  return [AREA_CONVERSATIONS, waveConversations(waveId)];
 }
 
 function derivedWaveId(data: unknown, context: InvalidationContext): string | null {
@@ -204,22 +204,22 @@ export function defineInvalidationPolicies<T extends PolicyMap>(value: T): T {
 
 function policies(): PolicyMap {
   return defineInvalidationPolicies({
-  'cove.updated': plan((event) => result(
-    [['coves']],
+  'area.updated': plan((event) => result(
+    [['areas']],
     [],
-    [{ key: ['coves'], mode: 'replace-existing-cove', value: event.data }],
+    [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
-  'cove.deleted': plan(() => result([['coves'], ['overlays', 'wave']])),
+  'area.deleted': plan(() => result([['areas'], ['overlays', 'wave']])),
   'wave.updated': plan((event) => result([
-    ['waves', 'cove', event.data.cove_id], ['wave', event.data.id],
+    ['waves', 'area', event.data.area_id], ['wave', event.data.id],
     ['wave-files', event.data.id], ['waves-range'],
   ])),
   'wave.deleted': plan((event) => result(
-    [['waves', 'cove', event.data.cove_id], ['overlays', 'wave'], ['waves-range']],
+    [['waves', 'area', event.data.area_id], ['overlays', 'wave'], ['waves-range']],
     [['wave', event.data.id]],
   )),
   'wave.lifecycle_changed': plan((event) => result([
-    ['waves', 'cove', event.data.cove_id], ['wave', event.data.id],
+    ['waves', 'area', event.data.area_id], ['wave', event.data.id],
     ['wave-files', event.data.id], ['waves-range'],
   ])),
   'card.added': plan((event) => result([

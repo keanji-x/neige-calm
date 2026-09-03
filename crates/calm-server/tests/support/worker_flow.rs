@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use calm_exec::flow::WorkerFlowSource;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, cove_create_tx, session_start_runtime_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx, wave_create_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, RequestTheme};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
@@ -82,10 +82,10 @@ pub async fn seed_claude_card_and_runtime_with_status(
 
 pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
-            name: "cove".into(),
+        NewArea {
+            name: "area".into(),
             color: "#fff".into(),
             sort: None,
         },
@@ -96,7 +96,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -107,7 +107,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
         },
         None,
         &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();
@@ -133,10 +133,10 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
 
 pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) -> Card {
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
-            name: "cove".into(),
+        NewArea {
+            name: "area".into(),
             color: "#fff".into(),
             sort: None,
         },
@@ -147,7 +147,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: cwd.into(),
@@ -158,7 +158,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
         },
         None,
         &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();
@@ -622,7 +622,7 @@ pub fn app_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {
             events,
             WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

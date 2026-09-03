@@ -694,9 +694,9 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         &repo,
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "lease fixture".into(),
             color: "#101010".into(),
             sort: None,
@@ -708,7 +708,7 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
         &repo,
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "lease fixture".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),

@@ -89,7 +89,7 @@ describe('invalidation plan contract', () => {
     const compileOnly = false as boolean;
     if (compileOnly) {
       // @ts-expect-error -- GATE-APP-028: deleting this whole line must expose the missing-event error.
-      defineInvalidationPolicies({ 'cove.deleted': noop('fixture') });
+      defineInvalidationPolicies({ 'area.deleted': noop('fixture') });
     }
     expectTypeOf<EventKind>().toEqualTypeOf<WireEvent['ev']>();
     expectTypeOf<InvalidationPolicy>().toMatchTypeOf<{ type: string }>();

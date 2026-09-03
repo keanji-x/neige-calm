@@ -29,7 +29,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, CardId, WaveId};
-use calm_server::model::{CardRole, NewCove};
+use calm_server::model::{CardRole, NewArea};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::role_gate::enforce_role;
 use calm_server::routes;
@@ -43,7 +43,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     events: EventBus,
     repo: Arc<dyn Repo>,
     card_role_cache: CardRoleCache,
@@ -60,8 +60,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "spec-card-test".into(),
             color: "#000".into(),
             sort: None,
@@ -75,8 +75,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -88,7 +88,7 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the
@@ -101,7 +101,7 @@ async fn boot() -> Boot {
             Arc::new(codex)
         },
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -112,7 +112,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         events,
         repo,
         card_role_cache,
@@ -192,7 +192,7 @@ async fn post_api_waves_mints_spec_card_atomically() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "first wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "first wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // Issue #293 / PR #311: the spec-push app-server boot is non-fatal.
@@ -319,7 +319,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
     let evt = Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
         calm_server::model::Wave {
             id: "w".into(),
-            cove_id: "c".into(),
+            area_id: "c".into(),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,
@@ -339,9 +339,9 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
     ));
     let scope = EventScope::Wave {
         wave: "w".into(),
-        cove: "c".into(),
+        area: "c".into(),
     };
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
     let res = enforce_role(
         &ActorId::AiSpec(spec_id.clone()),
         &evt,
@@ -361,9 +361,9 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
 
 #[tokio::test]
 async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
-    use calm_server::db::sqlite::{cove_create_tx, wave_create_tx};
+    use calm_server::db::sqlite::{area_create_tx, wave_create_tx};
     use calm_server::db::write_with_events_typed;
-    use calm_server::model::{NewCove, NewWave};
+    use calm_server::model::{NewArea, NewWave};
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -372,12 +372,12 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
 
     let mut rx = events.subscribe_filtered();
 
-    // The closure emits two distinct events: CoveUpdated under
-    // EventScope::Cove, and WaveUpdated under EventScope::Wave.
+    // The closure emits two distinct events: AreaUpdated under
+    // EventScope::Area, and WaveUpdated under EventScope::Wave.
     let event_ids: Vec<i64> = write_with_events_typed(
         repo.as_ref(),
         ActorId::User,
@@ -386,9 +386,9 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "plural".into(),
                         color: "#fff".into(),
                         sort: None,
@@ -399,7 +399,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     tx,
                     NewWave {
                         template_input: None,
-                        cove_id: cove.id.clone(),
+                        area_id: area.id.clone(),
                         title: "plural-wave".into(),
                         sort: None,
                         cwd: String::new(),
@@ -410,20 +410,20 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                     },
                     None,
                     &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-                    &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                    &calm_server::wave_area_cache::WaveAreaCache::new(),
                 )
                 .await?;
-                let cove_scope = EventScope::Cove {
-                    cove: cove.id.clone(),
+                let area_scope = EventScope::Area {
+                    area: area.id.clone(),
                 };
                 let wave_scope = EventScope::Wave {
                     wave: wave.id.clone(),
-                    cove: cove.id.clone(),
+                    area: area.id.clone(),
                 };
                 Ok((
                     (),
                     vec![
-                        (cove_scope, Event::CoveUpdated(cove)),
+                        (area_scope, Event::AreaUpdated(area)),
                         (
                             wave_scope,
                             Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
@@ -454,18 +454,18 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
         .await
         .expect("second envelope arrives")
         .unwrap();
-    assert!(matches!(env1.event, Event::CoveUpdated(_)));
-    assert!(matches!(env1.scope, EventScope::Cove { .. }));
+    assert!(matches!(env1.event, Event::AreaUpdated(_)));
+    assert!(matches!(env1.scope, EventScope::Area { .. }));
     assert!(matches!(env2.event, Event::WaveUpdated(_)));
     assert!(matches!(env2.scope, EventScope::Wave { .. }));
 }
 
 #[tokio::test]
 async fn write_with_events_typed_rolls_back_when_closure_errors() {
-    use calm_server::db::sqlite::cove_create_tx;
+    use calm_server::db::sqlite::area_create_tx;
     use calm_server::db::write_with_events_typed;
     use calm_server::error::CalmError;
-    use calm_server::model::NewCove;
+    use calm_server::model::NewArea;
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -474,12 +474,12 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
     );
     let events = EventBus::new();
     let cache = CardRoleCache::new();
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
 
-    // Pre-check: no coves exist.
-    assert!(repo.coves_list().await.unwrap().is_empty());
+    // Pre-check: no areas exist.
+    assert!(repo.areas_list().await.unwrap().is_empty());
 
-    // Closure writes a cove then explodes — the cove row must vanish
+    // Closure writes an area then explodes — the area row must vanish
     // and no event must broadcast.
     let mut rx = events.subscribe_filtered();
     let res = write_with_events_typed::<(), _>(
@@ -490,9 +490,9 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         |tx| {
             Box::pin(async move {
-                let _cove = cove_create_tx(
+                let _area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "doomed".into(),
                         color: "#000".into(),
                         sort: None,
@@ -507,8 +507,8 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
 
     assert!(res.is_err(), "closure error must bubble");
     assert!(
-        repo.coves_list().await.unwrap().is_empty(),
-        "cove row must be rolled back",
+        repo.areas_list().await.unwrap().is_empty(),
+        "area row must be rolled back",
     );
     // No envelope should be in flight.
     assert!(
@@ -519,9 +519,9 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
 
 #[tokio::test]
 async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
-    use calm_server::db::sqlite::{cove_create_tx, wave_create_tx};
+    use calm_server::db::sqlite::{area_create_tx, wave_create_tx};
     use calm_server::db::write_with_events_typed;
-    use calm_server::model::{NewCove, NewWave};
+    use calm_server::model::{NewArea, NewWave};
 
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -541,9 +541,9 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         CardRole::Worker,
         WaveId::from("worker-wave"),
     );
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
 
-    assert!(repo.coves_list().await.unwrap().is_empty());
+    assert!(repo.areas_list().await.unwrap().is_empty());
 
     let mut rx = events.subscribe_filtered();
     let wcc_for_tx = wcc.clone();
@@ -555,9 +555,9 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
-                let cove = cove_create_tx(
+                let area = area_create_tx(
                     tx,
-                    NewCove {
+                    NewArea {
                         name: "gated".into(),
                         color: "#000".into(),
                         sort: None,
@@ -568,7 +568,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                     tx,
                     NewWave {
                         template_input: None,
-                        cove_id: cove.id.clone(),
+                        area_id: area.id.clone(),
                         title: "gated-wave".into(),
                         sort: None,
                         cwd: String::new(),
@@ -582,20 +582,20 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                     &wcc_for_tx,
                 )
                 .await?;
-                let cove_scope = EventScope::Cove {
-                    cove: cove.id.clone(),
+                let area_scope = EventScope::Area {
+                    area: area.id.clone(),
                 };
                 let wave_scope = EventScope::Wave {
                     wave: wave.id.clone(),
-                    cove: cove.id.clone(),
+                    area: area.id.clone(),
                 };
                 Ok((
                     (),
                     vec![
-                        // First event passes the gate (CoveUpdated +
-                        // Cove scope — section 2 of enforce_role only
+                        // First event passes the gate (AreaUpdated +
+                        // Area scope — section 2 of enforce_role only
                         // gates WaveUpdated). Second one violates.
-                        (cove_scope, Event::CoveUpdated(cove)),
+                        (area_scope, Event::AreaUpdated(area)),
                         (
                             wave_scope,
                             Event::WaveUpdated(calm_server::event::WaveUpdatedPayload::new(
@@ -610,11 +610,11 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
     .await;
 
     assert!(res.is_err(), "role violation must surface as Err");
-    // No rows survive — the violation rolled back BOTH the cove
-    // and the wave even though the cove emit itself was legal.
+    // No rows survive — the violation rolled back BOTH the area
+    // and the wave even though the area emit itself was legal.
     assert!(
-        repo.coves_list().await.unwrap().is_empty(),
-        "cove must be rolled back when any later event in the batch trips the gate",
+        repo.areas_list().await.unwrap().is_empty(),
+        "area must be rolled back when any later event in the batch trips the gate",
     );
     // No broadcast either — commit-then-emit means the rollback
     // suppresses every event, not just the violating one.

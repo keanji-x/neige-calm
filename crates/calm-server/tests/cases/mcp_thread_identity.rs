@@ -23,7 +23,7 @@ use calm_server::mcp_server::registry::{
     ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -64,8 +64,8 @@ async fn boot_with_registry_and_daemon_hash(
     let socket_path = tmp.path().join("kernel.sock");
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-thread-identity-test".into(),
             color: "#000".into(),
             sort: None,
@@ -75,7 +75,7 @@ async fn boot_with_registry_and_daemon_hash(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-thread-identity-test".into(),
             sort: None,
             cwd: String::new(),
@@ -124,12 +124,12 @@ async fn boot_with_registry_and_daemon_hash(
         .unwrap();
     card_role_cache.insert(worker.id.clone(), CardRole::Worker, wave.id.clone());
 
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -241,8 +241,8 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
 #[tokio::test]
 async fn card_mcp_token_set_tx_replaces_hash() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-token-wrapper".into(),
             color: "#000".into(),
             sort: None,
@@ -252,7 +252,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "mcp-token-wrapper".into(),
             sort: None,
             cwd: String::new(),
@@ -334,8 +334,8 @@ async fn session_mcp_token_set_tx_fails_closed_without_mirror_row() {
 #[tokio::test]
 async fn remint_updates_one_worker_session_hash_row() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-token-remint".into(),
             color: "#000".into(),
             sort: None,
@@ -345,7 +345,7 @@ async fn remint_updates_one_worker_session_hash_row() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "mcp-token-remint".into(),
             sort: None,
             cwd: String::new(),

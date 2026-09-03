@@ -750,15 +750,15 @@ pub(crate) async fn persist_report_with_shadow(
 ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
-    let cove_id = wave.cove_id.clone();
+    let area_id = wave.area_id.clone();
     let scope = EventScope::Card {
         card: report_card_id.clone(),
         wave: wave_id.clone(),
-        cove: cove_id.clone(),
+        area: area_id.clone(),
     };
     let wave_scope = EventScope::Wave {
         wave: wave_id.clone(),
-        cove: cove_id,
+        area: area_id,
     };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();

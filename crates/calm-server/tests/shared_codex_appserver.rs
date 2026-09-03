@@ -11,7 +11,7 @@ use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
 use calm_server::mcp_server::{McpShimConfig, auth};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -757,9 +757,9 @@ fn force_cleanup_process_group(child: tokio::process::Child, pgid: i32) {
 }
 
 async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
-    let cove = repo
-        .cove_create(NewCove {
-            name: format!("cove-{idx}"),
+    let area = repo
+        .area_create(NewArea {
+            name: format!("area-{idx}"),
             color: "#abc".into(),
             sort: None,
         })
@@ -768,7 +768,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: format!("wave-{idx}"),
             sort: None,
             cwd: "/tmp".into(),

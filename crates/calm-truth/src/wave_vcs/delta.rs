@@ -417,8 +417,8 @@ pub(super) fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDel
             delta.add("wave.json");
         }
         Event::WaveDeleted { .. }
-        | Event::CoveUpdated(_)
-        | Event::CoveDeleted { .. }
+        | Event::AreaUpdated(_)
+        | Event::AreaDeleted { .. }
         | Event::OverlaySet(_)
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
@@ -495,7 +495,7 @@ mod tests {
     use super::*;
     use crate::db::prelude::*;
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
-    use crate::model::{NewCove, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewWave, RequestTheme};
 
     #[tokio::test]
     async fn report_path_disappears_when_report_card_kind_changes() {
@@ -503,18 +503,18 @@ mod tests {
         let repo = SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open sqlite repo");
-        let cove = repo
-            .cove_create(NewCove {
-                name: "cove".into(),
+        let area = repo
+            .area_create(NewArea {
+                name: "area".into(),
                 color: "#336699".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id,
+                area_id: area.id,
                 title: "wave".into(),
                 sort: None,
                 cwd: "/tmp".into(),

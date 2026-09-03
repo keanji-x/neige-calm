@@ -9,7 +9,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
     SpecHarness, SpecHarnessParams,
 };
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -23,8 +23,8 @@ async fn fresh_repo() -> Arc<SqlxRepo> {
 }
 
 async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "harness".into(),
             color: "#111111".into(),
             sort: None,
@@ -34,7 +34,7 @@ async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "goal".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -122,7 +122,7 @@ async fn harness_with(
         repo: repo.clone(),
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         config,
         snapshot,
@@ -171,7 +171,7 @@ async fn harness_from_snapshot(
         repo,
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon,
         config: HarnessConfig::default(),
         snapshot,
@@ -801,7 +801,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
         repo,
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        wave_area_cache: calm_server::wave_area_cache::WaveAreaCache::new(),
         daemon: daemon.clone(),
         config,
         snapshot,
