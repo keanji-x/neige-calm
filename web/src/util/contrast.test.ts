@@ -1,7 +1,7 @@
 // Tests for pickFgForBg — the colour the Calendar's wave bars use for
-// title + cove subscript. The contract is "always passes WCAG AA against
+// title + area subscript. The contract is "always passes WCAG AA against
 // the bar's painted background"; the cases below pin the common-case
-// inputs that a user-picked cove colour might be, plus the malformed
+// inputs that a user-picked area colour might be, plus the malformed
 // fallback path.
 
 import { describe, expect, it } from 'vitest';
@@ -34,8 +34,8 @@ describe('pickFgForBg', () => {
     expect(pickFgForBg('#808080')).toBe('#000');
   });
 
-  it('handles 3-digit hex (e.g. cove fixture "#5a9")', () => {
-    // The Calendar test fixture uses `#5a9` for the Atlas cove.
+  it('handles 3-digit hex (e.g. area fixture "#5a9")', () => {
+    // The Calendar test fixture uses `#5a9` for the Atlas area.
     // 0x55, 0xaa, 0x99 → Y ≈ 0.30 → black is the higher-contrast pick.
     expect(pickFgForBg('#5a9')).toBe('#000');
   });
@@ -46,7 +46,7 @@ describe('pickFgForBg', () => {
   });
 
   it('handles rgba() function form and ignores alpha for the luminance calc', () => {
-    // Alpha is intentionally ignored — the bar paints `cove.color` as
+    // Alpha is intentionally ignored — the bar paints `area.color` as
     // a fully opaque fill; the text just needs to read against that
     // perceived colour. Same RGB → same fg regardless of alpha.
     expect(pickFgForBg('rgba(0, 102, 204, 0.5)')).toBe('#fff');
@@ -58,8 +58,8 @@ describe('pickFgForBg', () => {
 
   it('falls back to black for an unparseable string (defensive)', () => {
     // CSS variables like `var(--text-3)` reach the helper via
-    // Calendar.tsx's `cove?.color ?? 'var(--text-3)'` fallback when a
-    // cove is missing; we can't compute luminance from that, but the
+    // Calendar.tsx's `area?.color ?? 'var(--text-3)'` fallback when a
+    // area is missing; we can't compute luminance from that, but the
     // bar is using a token surface in that case so the default-light
     // `#000` reads correctly anyway.
     expect(pickFgForBg('var(--text-3)')).toBe('#000');

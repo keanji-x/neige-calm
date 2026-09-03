@@ -41,11 +41,11 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
-use calm_server::ids::{CardId, CoveId, WaveId};
+use calm_server::ids::{AreaId, CardId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -97,8 +97,8 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     cache: CardRoleCache,
-    wcc: calm_server::wave_cove_cache::WaveCoveCache,
-    cove_id: CoveId,
+    wcc: calm_server::wave_area_cache::WaveAreaCache,
+    area_id: AreaId,
     wave_id: WaveId,
     codex: Arc<CodexClient>,
     daemon: Arc<DaemonClient>,
@@ -117,8 +117,8 @@ async fn boot() -> Boot {
     init_git_repo(&repo_root);
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "worker-shared".into(),
             color: "#000".into(),
             sort: None,
@@ -128,7 +128,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "worker-shared".into(),
             sort: None,
             cwd: repo_root.display().to_string(),
@@ -171,8 +171,8 @@ async fn boot() -> Boot {
         wave.id.clone(),
     );
     seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
 
     let mut codex = CodexClient::new_stub();
     codex.codex_bin = fake_codex_bin();
@@ -225,7 +225,7 @@ async fn boot() -> Boot {
         events,
         cache,
         wcc,
-        cove_id: cove.id,
+        area_id: area.id,
         wave_id: wave.id,
         codex,
         daemon,
@@ -285,8 +285,8 @@ async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
 async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
     let tmp = TempDir::new().expect("mcp socket tempdir");
     let socket_path = tmp.path().join("mcp.sock");
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
-    boot.repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = calm_server::wave_area_cache::WaveAreaCache::new();
+    boot.repo.seed_wave_area_cache(&wcc).await.unwrap();
     let server = McpServer::spawn(
         boot.repo.clone(),
         boot.events.clone(),
@@ -324,7 +324,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: "spec-session".to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
-        cove_id: boot.cove_id.as_str().to_string(),
+        area_id: boot.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }

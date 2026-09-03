@@ -33,7 +33,7 @@ use calm_server::harness::{
     SpecHarnessParams,
 };
 use calm_server::ids::WaveId;
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::{
@@ -63,8 +63,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "spec-card-interrupt".into(),
             color: "#000".into(),
             sort: None,
@@ -74,7 +74,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "interrupt route".into(),
             sort: None,
             cwd: "/tmp/spec-card-interrupt".into(),
@@ -88,9 +88,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -105,11 +105,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-card-interrupt"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     // Swap in the fixture fake shared app-server: it records
     // `turn/interrupt` calls (`interrupted_turns_for_test`) instead of
@@ -236,7 +236,7 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, String, SpecHarne
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        wave_area_cache: boot.state.wave_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig::default(),
         snapshot,

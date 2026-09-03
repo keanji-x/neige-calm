@@ -102,7 +102,7 @@
    * trailing column stamps `data-nc-panel` on its `<aside>`. `.main` scopes it
    * so this is a statement about one main region, not about the document.
    *
-   * The marker is on all three of them — Today, cove, wave — and the set is
+   * The marker is on all three of them — Today, area, wave — and the set is
    * exactly the set of routes that render `chat.drawer`, which is the invariant
    * to re-check when a fourth route grows a panel column. Settings has neither
    * and needs neither.
@@ -361,16 +361,16 @@
    * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
    * a 24px label slot:
    *
-   *   cove name  -> its first wave    --space-0    0px   ->  9.6px
+   *   area name  -> its first wave    --space-0    0px   ->  9.6px
    *   row        -> row               --space-1    2px   -> 11.6px
    *   section lb -> its first row     --space-2    4px   -> 15.3px
-   *   cove group -> cove group        --space-6   12px   -> 21.6px
+   *   area group -> area group        --space-6   12px   -> 21.6px
    *   section    -> section           --space-8   16px   -> 27.3px
    *
    * 9.6 < 11.6 < 15.3 < 21.6 < 27.3. Monotonic, and each step is a clear jump
    * rather than a nudge.
    *
-   * The two zeroes-and-fours are not arbitrary and not interchangeable: a cove
+   * The two zeroes-and-fours are not arbitrary and not interchangeable: an area
    * name gets 0 while a section label gets 4 because their boxes donate
    * different amounts of their own leading (4.8px vs 6.5px). Equal gaps there
    * would produce unequal distances, which is the whole reason this table is
@@ -378,7 +378,7 @@
    *
    * A previous round stated this as "every container's gap is half its
    * parent's". That is a tidier sentence and it is wrong: it ranks by DOM
-   * nesting, and DOM nesting is not structural-break size. It handed the cove
+   * nesting, and DOM nesting is not structural-break size. It handed the area
    * name the same 4px a section label gets, putting it 13.6px from its own
    * first wave while the waves sat 11.6px apart — grouping stated backwards.
    *
@@ -394,7 +394,7 @@
     gap: var(--space-2);
   }
 
-  .coveGroup {
+  .areaGroup {
     display: flex;
     flex-direction: column;
     gap: var(--space-0);
@@ -407,7 +407,7 @@
     gap: var(--space-1);
   }
 
-  .coveGroups {
+  .areaGroups {
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
@@ -420,7 +420,7 @@
     block-size: var(--row-h-sm);
   }
 
-  /* §6.1: "标签占一个 --row-h-sm 槽". Only the Coves label used to — it
+  /* §6.1: "标签占一个 --row-h-sm 槽". Only the Areas label used to — it
      inherited the slot from `.sectionHead`, which needs the height for its 28px
      `+`. The other two were bare 11px boxes, which is why the same rank of
      label sat at two different distances above its own rows.
@@ -428,7 +428,7 @@
      The only "decoration" in the app: uppercase plus tracking, standing in for
      a font size the rail does not have room to spend. 11px uppercase without
      added tracking is not readable, so the two always travel together. It is
-     also now the *only* thing separating a section label from a cove name,
+     also now the *only* thing separating a section label from an area name,
      which is a device doing exactly one job. */
   .sectionTitle {
     display: flex;
@@ -461,30 +461,30 @@
     color: var(--text);
   }
 
-  .coveRowWrap {
+  .areaRowWrap {
     position: relative;
     display: grid;
   }
 
   /*
-   * The cove name starts exactly where every wave title starts: one 28px
+   * The area name starts exactly where every wave title starts: one 28px
    * leading gutter (4px inset + 20px box + 4px clearance) for the chevron,
    * which is the same arithmetic as the wave row's pin gutter, and then text.
    *
    * The empty 6px cell that used to sit between them is gone with the wave
    * row's leading status dot — that dot moved to the trailing edge, so there is
-   * no longer a column for a cove to reserve space in for a status it does not
+   * no longer a column for an area to reserve space in for a status it does not
    * have. Removing an apology is usually a better fix than writing a better
    * apology for it.
    */
-  .coveRow {
+  .areaRow {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: center;
 
     /* --row-h-sm, not §6.2's --row-h. That 28 was sized for a row carrying an
        8px identity dot and a 12.5px name; the dot is gone, and §2.5 lists
-       --row-h-sm for "rail 里的 wave 行、菜单项、树行" — a cove row is a tree
+       --row-h-sm for "rail 里的 wave 行、菜单项、树行" — an area row is a tree
        row. 24 still clears the 20px chevron, and it is what lets the name sit
        closer to its first wave than the waves sit to each other. */
     min-block-size: var(--row-h-sm);
@@ -506,20 +506,20 @@
     transition: background-color var(--motion-quick) ease-out;
   }
 
-  .coveRow:hover {
+  .areaRow:hover {
     background: var(--overlay-hover);
   }
 
-  .coveRow:focus-visible {
+  .areaRow:focus-visible {
     outline-offset: -2px;
   }
 
   /* Fill + weight only; see the same note in wave-row's row.module.css. */
-  .coveRowActive {
+  .areaRowActive {
     background: var(--accent-soft);
   }
 
-  .coveRowActive:hover {
+  .areaRowActive:hover {
     background: var(--accent-soft);
     background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
   }
@@ -574,10 +574,10 @@
    * What actually carries the hierarchy now is everything that is free (§3.2
    * rule 6 — 位置是免费通道，先用它): the disclosure chevron this row alone
    * owns, the 12px above it and 0 below it, and the empty status column that
-   * every wave fills and no cove does. Type only has to stay out of the way,
+   * every wave fills and no area does. Type only has to stay out of the way,
    * so it spends one step of tone and nothing else (§3.2 rule 7 — 降低优于抬高).
    */
-  .coveName {
+  .areaName {
     min-inline-size: 0;
     overflow: hidden;
     font-size: var(--text-base);
@@ -597,7 +597,7 @@
 
   /* Fill + tone: §5.1's two channels. Weight stays out of it — rest is 400
      here and 400 on the waves, so a weight step would be the row's third. */
-  .coveRowActive .coveName {
+  .areaRowActive .areaName {
     color: var(--text);
   }
 
@@ -613,8 +613,8 @@
    * the rail on one column. The same 4px is applied in
    * `features/wave/row/row.module.css`; both derive it, neither hardcodes it.
    */
-  .coveDelete,
-  .coveNew {
+  .areaDelete,
+  .areaNew {
     position: absolute;
     inset-block-start: 50%;
     display: grid;
@@ -637,14 +637,14 @@
    * step `features/wave/row/row.module.css` puts between its pin and its
    * delete, derived from the same two tokens.
    *
-   * Both slots are reserved by `.coveRow`'s trailing padding, so revealing the
+   * Both slots are reserved by `.areaRow`'s trailing padding, so revealing the
    * `×` moves nothing.
    */
-  .coveNew {
+  .areaNew {
     inset-inline-end: var(--space-2);
   }
 
-  .coveDelete {
+  .areaDelete {
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
 
     /* Hover-revealed, unlike its neighbour. `opacity: 0` is the *visual* state
@@ -654,16 +654,16 @@
     pointer-events: none;
   }
 
-  .coveDelete:hover,
-  .coveDelete:focus-visible {
+  .areaDelete:hover,
+  .areaDelete:focus-visible {
     opacity: 1;
     pointer-events: auto;
     background: var(--overlay-hover-strong);
     color: var(--error-text);
   }
 
-  .coveRowWrap:hover .coveDelete,
-  .coveRowWrap:focus-within .coveDelete {
+  .areaRowWrap:hover .areaDelete,
+  .areaRowWrap:focus-within .areaDelete {
     opacity: 1;
     pointer-events: auto;
   }
@@ -671,8 +671,8 @@
   /* Permanent, so it gets the quiet tone at rest and only picks up a fill on
      hover — the rail is greyscale apart from §7.5's two exceptions, and a
      create action is neither of them. */
-  .coveNew:hover,
-  .coveNew:focus-visible {
+  .areaNew:hover,
+  .areaNew:focus-visible {
     background: var(--overlay-hover-strong);
     color: var(--text);
   }
@@ -681,16 +681,16 @@
   /*
    * §5.3's most important rule: when a region's emptiness has exactly one
    * remedy, render that remedy's own interface in the position and at the size
-   * the content would have had. This input opens on the first cove row's spot
-   * and is therefore a cove row's height.
+   * the content would have had. This input opens on the first area row's spot
+   * and is therefore an area row's height.
    */
   .inlineCreate {
     min-block-size: var(--row-h);
     padding-block: 0;
 
     /* The one field in the app that is deliberately *inset* rather than flush:
-       it opens where a cove row would be, and a cove row's text starts 28px in.
-       See the `.coveRow` note — this input is standing in for that row. */
+       it opens where an area row would be, and an area row's text starts 28px in.
+       See the `.areaRow` note — this input is standing in for that row. */
     padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
     font-size: var(--text-base);
     line-height: var(--leading-none);
@@ -819,9 +819,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .coveRow,
-    .coveDelete,
-    .coveNew,
+    .areaRow,
+    .areaDelete,
+    .areaNew,
     .iconButton,
     .chevron {
       transition: none;

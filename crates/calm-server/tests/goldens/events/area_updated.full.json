@@ -1,0 +1,15 @@
+{
+  "description": "area.updated with every field present (kind=system pins the AreaKind lowercase wire shape).",
+  "wire": {
+    "ev": "area.updated",
+    "data": {
+      "id": "area-01",
+      "name": "Golden Area",
+      "color": "#aabbcc",
+      "sort": 1.5,
+      "kind": "system",
+      "created_at": 1000,
+      "updated_at": 2000
+    }
+  }
+}

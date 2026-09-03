@@ -1,27 +1,27 @@
 // Resolves the "Today terminal" — a singleton kernel-owned Today PTY
 // mounted on the home page so the user always lands in a live shell.
-// Lives inside the hidden system cove (issue #175) — the sidebar never
+// Lives inside the hidden system area (issue #175) — the sidebar never
 // renders it, but the same Terminal row backs every browser tab. Strategy:
 //
 //   1. Read `calm.todayCardId` from localStorage.
 //   2. If present, GET /api/cards/:id/terminal to validate the card still
 //      has a terminal row. Returns `{cardId, terminalId}` on success.
 //   3. On miss / 404 / network fail: bootstrap a fresh one inside the
-//      kernel-owned **system cove** (issue #175 — hidden from the
-//      sidebar, lookup via `POST /api/coves/system`), hosting a single
+//      kernel-owned **system area** (issue #175 — hidden from the
+//      sidebar, lookup via `POST /api/areas/system`), hosting a single
 //      internal "Today" wave + terminal card.
 //
 // Browser-scoped (not per-user) by design — auth and per-user state come
 // with M3. Clearing site data costs you the binding; the underlying
-// Terminal row stays in the system cove until you delete the card.
+// Terminal row stays in the system area until you delete the card.
 //
 // This hook is the one place in the app that performs an imperative
 // bootstrap sequence rather than a single mutation. We could decompose
-// it into `useCreateCoveMutation` etc., but the "ensureSystemCove → ensure
+// it into `useCreateAreaMutation` etc., but the "ensureSystemArea → ensure
 // TodayWave → ensureTerminalCard" chain is read-then-write three times
 // over, and modeling it as a single async resolver keeps the idempotency
 // invariants in one place. After mutating, we invalidate the affected
-// query keys so other consumers (Sidebar, Cove page) see the new rows.
+// query keys so other consumers (Sidebar, Area page) see the new rows.
 
 import { useCallback, useEffect, useRef } from 'react';
 import { useState } from '../shared/state';
@@ -31,11 +31,11 @@ import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { queryKeys } from '../api/queries';
 
 const STORAGE_KEY = 'calm.todayCardId';
-// Internal wave title inside the system cove. The user never sees this —
-// `GET /api/coves` filters the system cove out by default (kind='system'),
+// Internal wave title inside the system area. The user never sees this —
+// `GET /api/areas` filters the system area out by default (kind='system'),
 // so the only consumer is this hook's `ensureTodayWave` lookup. The label
 // can stay human-readable for debugging without colliding with anything
-// the user names a wave (different cove, no name collision possible).
+// the user names a wave (different area, no name collision possible).
 const TODAY_WAVE_TITLE = 'Today';
 
 export interface TodayTerminal {
@@ -84,21 +84,21 @@ export function useTodayTerminal(): UseTodayTerminalResult {
       }
 
       // 2. Bootstrap path. Reuse existing infra where possible:
-      //    same system cove (singleton enforced by the kernel — issue
+      //    same system area (singleton enforced by the kernel — issue
       //    #175), same Today wave, same first terminal card (across
       //    browsers / cleared-storage cycles) so the kernel doesn't
       //    accumulate orphan cards.
       //
-      //    Per #175 we cheaply invalidate the coves query unconditionally
-      //    rather than tracking a "created" flag — the system cove is
+      //    Per #175 we cheaply invalidate the areas query unconditionally
+      //    rather than tracking a "created" flag — the system area is
       //    filtered out of the user-facing list by default, so the
       //    invalidation is a no-op cache refresh in the common case and
       //    not worth the round-trip parsing to gate.
-      const cove = await api.getOrCreateSystemCove();
-      void qc.invalidateQueries({ queryKey: queryKeys.coves() });
-      const { wave, created: waveCreated } = await ensureTodayWave(cove.id);
+      const area = await api.getOrCreateSystemArea();
+      void qc.invalidateQueries({ queryKey: queryKeys.areas() });
+      const { wave, created: waveCreated } = await ensureTodayWave(area.id);
       if (waveCreated) {
-        void qc.invalidateQueries({ queryKey: queryKeys.wavesInCove(cove.id) });
+        void qc.invalidateQueries({ queryKey: queryKeys.wavesInArea(area.id) });
       }
       const detail = await api.getWaveDetail(wave.id);
       const existingCard = detail.cards.find((c) => {
@@ -163,15 +163,15 @@ export function useTodayTerminal(): UseTodayTerminalResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Look up the single "Today" wave inside the kernel-owned system cove,
+ * Look up the single "Today" wave inside the kernel-owned system area,
  * minting it if absent. Identifying the wave by `title === 'Today'`
- * inside the system cove is safe because the user can't reach this cove
- * — `GET /api/coves` filters it out by default (issue #175) and the
- * sidebar's "+ New wave" affordance always targets a user-visible cove.
+ * inside the system area is safe because the user can't reach this area
+ * — `GET /api/areas` filters it out by default (issue #175) and the
+ * sidebar's "+ New wave" affordance always targets a user-visible area.
  * No collision risk with whatever a user names their own waves.
  */
-async function ensureTodayWave(coveId: string) {
-  const waves = await api.wavesInCove(coveId);
+async function ensureTodayWave(areaId: string) {
+  const waves = await api.wavesInArea(areaId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
   if (existing) return { wave: existing, created: false };
   // #1147 S3 — `cwd` is OMITTED, and that is the fix, not a shortcut.
@@ -181,7 +181,7 @@ async function ensureTodayWave(coveId: string) {
   // cwd". Two things have changed since:
   //
   //  * Since #1131/S2 an omitted `cwd` is the *managed* branch: the kernel
-  //    allocates `<workspace-root>/<cove>/<wave>`, creates it, `git init`s it
+  //    allocates `<workspace-root>/<area>/<wave>`, creates it, `git init`s it
   //    and owns it. That is a directory a worker can actually lease — `/` was
   //    never one, so any `kind: codex` task on this wave died in
   //    `git_repo_root_for_wave_cwd` with nothing but `spawn-failed`. That is
@@ -193,11 +193,11 @@ async function ensureTodayWave(coveId: string) {
   //    bootstrap outright.
   //
   // `attach_folder` goes with it: with no cwd there is nothing to claim, and
-  // the system cove was exempt from the `cove_folders` namespace anyway.
+  // the system area was exempt from the `area_folders` namespace anyway.
   // A subsequent call into this helper finds the existing wave and never
   // re-mints (the `existing` short-circuit above).
   const wave = await api.createWave({
-    cove_id: coveId,
+    area_id: areaId,
     title: TODAY_WAVE_TITLE,
     // #177 — same `readHostThemeRgb()` source as the terminal-card
     // create below. The spec daemon that the wave-create txn spawns

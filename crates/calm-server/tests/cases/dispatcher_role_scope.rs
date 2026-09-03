@@ -39,9 +39,9 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::ids::{ActorId, AreaId, CardId, WaveId};
+use calm_server::model::{CardRole, NewArea, NewCard, NewWave};
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -50,31 +50,31 @@ use tower::ServiceExt;
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
-async fn boot_repo() -> (Arc<SqlxRepo>, EventBus, CardRoleCache, WaveCoveCache) {
+async fn boot_repo() -> (Arc<SqlxRepo>, EventBus, CardRoleCache, WaveAreaCache) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let bus = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    let wcc = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let wcc = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wcc).await.unwrap();
     (repo, bus, cache, wcc)
 }
 
-/// Seed a cove + wave + Worker-roled card. The worker's role lands in
+/// Seed an area + wave + Worker-roled card. The worker's role lands in
 /// both the cards row (so a future cache-reseed picks it up) and the
-/// in-memory cache (so the gate sees it now). The wave's cove also
-/// lands in the supplied `wcc` so the gate's #234 cove check passes
+/// in-memory cache (so the gate sees it now). The wave's area also
+/// lands in the supplied `wcc` so the gate's #234 area check passes
 /// for the home wave.
 async fn seed_worker_in_wave(
     repo: &SqlxRepo,
     cache: &CardRoleCache,
-    wcc: &WaveCoveCache,
-    cove_name: &str,
+    wcc: &WaveAreaCache,
+    area_name: &str,
     wave_title: &str,
-) -> (CoveId, WaveId, CardId) {
-    let cove = repo
-        .cove_create(NewCove {
-            name: cove_name.into(),
+) -> (AreaId, WaveId, CardId) {
+    let area = repo
+        .area_create(NewArea {
+            name: area_name.into(),
             color: "#000".into(),
             sort: None,
         })
@@ -83,7 +83,7 @@ async fn seed_worker_in_wave(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: wave_title.into(),
             sort: None,
             cwd: String::new(),
@@ -114,15 +114,15 @@ async fn seed_worker_in_wave(
         CardRole::Worker,
         WaveId::from(wave.id.as_str()),
     );
-    // #234 — bind the wave's cove into the cache the gate consults, so
-    // the cove cross-check has a populated entry for the worker's home
+    // #234 — bind the wave's area into the cache the gate consults, so
+    // the area cross-check has a populated entry for the worker's home
     // wave.
     wcc.insert(
         WaveId::from(wave.id.as_str()),
-        CoveId::from(cove.id.as_str()),
+        AreaId::from(area.id.as_str()),
     );
     (
-        CoveId::from(cove.id.as_str()),
+        AreaId::from(area.id.as_str()),
         WaveId::from(wave.id.as_str()),
         CardId::from(card.id.as_str()),
     )
@@ -153,14 +153,14 @@ async fn count_events(repo: &SqlxRepo, kind: &str) -> i64 {
 #[tokio::test]
 async fn worker_emitting_wave_scope_is_rejected() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let (cove, wave, worker) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
+    let (area, wave, worker) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
     let mut sub = bus.subscribe();
 
     let baseline_total = count_events(&repo, "task.completed").await;
 
     let scope = EventScope::Wave {
         wave: wave.clone(),
-        cove: cove.clone(),
+        area: area.clone(),
     };
     let res = repo
         .log_pure_event(
@@ -203,13 +203,13 @@ async fn worker_emitting_wave_scope_is_rejected() {
 #[tokio::test]
 async fn worker_emitting_own_card_scope_is_accepted() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let (cove, wave, worker) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
+    let (area, wave, worker) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
     let mut sub = bus.subscribe();
 
     let scope = EventScope::Card {
         card: worker.clone(),
         wave: wave.clone(),
-        cove: cove.clone(),
+        area: area.clone(),
     };
     let res = repo
         .log_pure_event(
@@ -242,7 +242,7 @@ async fn worker_emitting_own_card_scope_is_accepted() {
 #[tokio::test]
 async fn worker_emitting_other_card_scope_is_rejected() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let (cove, wave, worker_a) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
+    let (area, wave, worker_a) = seed_worker_in_wave(&repo, &cache, &wcc, "c", "w").await;
 
     // A second card in the same wave — also Worker-roled to ensure the
     // refusal hinges on the *scope.card != actor.card* mismatch, not on a
@@ -267,7 +267,7 @@ async fn worker_emitting_other_card_scope_is_rejected() {
     let scope = EventScope::Card {
         card: CardId::from(card_b.id.as_str()),
         wave: wave.clone(),
-        cove: cove.clone(),
+        area: area.clone(),
     };
     let res = repo
         .log_pure_event(
@@ -363,10 +363,10 @@ async fn missing_actor_header_defaults_to_user() {
 #[tokio::test]
 async fn worker_with_mismatched_wave_in_card_scope_is_rejected() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let (cove_a, _wave_a, worker_a) =
-        seed_worker_in_wave(&repo, &cache, &wcc, "cove-a", "wave-a").await;
-    let (_cove_b, wave_b, _worker_b) =
-        seed_worker_in_wave(&repo, &cache, &wcc, "cove-b", "wave-b").await;
+    let (area_a, _wave_a, worker_a) =
+        seed_worker_in_wave(&repo, &cache, &wcc, "area-a", "wave-a").await;
+    let (_area_b, wave_b, _worker_b) =
+        seed_worker_in_wave(&repo, &cache, &wcc, "area-b", "wave-b").await;
 
     let baseline_total = count_events(&repo, "task.completed").await;
     let mut sub = bus.subscribe();
@@ -378,7 +378,7 @@ async fn worker_with_mismatched_wave_in_card_scope_is_rejected() {
     let scope = EventScope::Card {
         card: worker_a.clone(),
         wave: wave_b.clone(),
-        cove: cove_a.clone(),
+        area: area_a.clone(),
     };
     let res = repo
         .log_pure_event(
@@ -426,36 +426,36 @@ async fn worker_with_mismatched_wave_in_card_scope_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5b — cross-cove: Worker in Cove A emitting into Cove B
+// Test 5b — cross-area: Worker in Area A emitting into Area B
 // ---------------------------------------------------------------------------
 //
 // Issue #234 (same shape as #232 one level up): the role gate now also
-// cross-checks `scope.cove == wave_cove_cache.cove_of(home_wave)` for
+// cross-checks `scope.area == wave_area_cache.area_of(home_wave)` for
 // Worker actors, so a Worker with the right `scope.card` + `scope.wave`
-// but a forged `scope.cove` is refused before the event row lands. This
+// but a forged `scope.area` is refused before the event row lands. This
 // closes the last fan-out spoof axis — pre-#234 the row would still
-// carry a fake `cove_id` and any client filtering on cove would see
+// carry a fake `area_id` and any client filtering on area would see
 // the event.
 
 #[tokio::test]
-async fn worker_with_mismatched_cove_in_card_scope_is_rejected() {
+async fn worker_with_mismatched_area_in_card_scope_is_rejected() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let (_cove_a, wave_a, worker_a) =
-        seed_worker_in_wave(&repo, &cache, &wcc, "cove-a", "wave-a").await;
-    let (cove_b, _wave_b, _worker_b) =
-        seed_worker_in_wave(&repo, &cache, &wcc, "cove-b", "wave-b").await;
+    let (_area_a, wave_a, worker_a) =
+        seed_worker_in_wave(&repo, &cache, &wcc, "area-a", "wave-a").await;
+    let (area_b, _wave_b, _worker_b) =
+        seed_worker_in_wave(&repo, &cache, &wcc, "area-b", "wave-b").await;
 
     let baseline_total = count_events(&repo, "task.completed").await;
     let mut sub = bus.subscribe();
 
     // Forge an `EventScope::Card` whose `card` is Worker A's id and
-    // whose `wave` is Wave A (matches), but whose `cove` is Cove B.
+    // whose `wave` is Wave A (matches), but whose `area` is Area B.
     // Pre-#234 the gate only matched card + wave; #234 closes the gap
-    // by also matching cove.
+    // by also matching area.
     let scope = EventScope::Card {
         card: worker_a.clone(),
         wave: wave_a.clone(),
-        cove: cove_b.clone(),
+        area: area_b.clone(),
     };
     let res = repo
         .log_pure_event(
@@ -465,16 +465,16 @@ async fn worker_with_mismatched_cove_in_card_scope_is_rejected() {
             &bus,
             &cache,
             &wcc,
-            task_completed("worker-a-into-cove-b"),
+            task_completed("worker-a-into-area-b"),
         )
         .await;
     assert!(
         matches!(
             res,
             Err(calm_server::error::CalmError::Forbidden(ref msg))
-                if msg.contains("out of scope") && msg.contains("scope.cove mismatch")
+                if msg.contains("out of scope") && msg.contains("scope.area mismatch")
         ),
-        "Worker A forging scope.cove = Cove B must be refused (#234): {res:?}",
+        "Worker A forging scope.area = Area B must be refused (#234): {res:?}",
     );
 
     // Event row count is unchanged — the transaction rolled back.
@@ -484,16 +484,16 @@ async fn worker_with_mismatched_cove_in_card_scope_is_rejected() {
         "rejected worker write must not append an event row",
     );
     let forged_row: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT scope_cove FROM events \
+        "SELECT scope_area FROM events \
          WHERE kind = 'task.completed' \
-           AND json_extract(payload, '$.idempotency_key') = 'worker-a-into-cove-b'",
+           AND json_extract(payload, '$.idempotency_key') = 'worker-a-into-area-b'",
     )
     .fetch_optional(repo.pool())
     .await
     .unwrap();
     assert!(
         forged_row.is_none(),
-        "no event row should exist for the forged scope.cove: {forged_row:?}",
+        "no event row should exist for the forged scope.area: {forged_row:?}",
     );
 
     // Bus subscription saw nothing — broadcast-after-commit invariant.
@@ -513,8 +513,8 @@ async fn worker_with_mismatched_cove_in_card_scope_is_rejected() {
 #[tokio::test]
 async fn spec_emitting_wave_scope_is_accepted() {
     let (repo, bus, cache, wcc) = boot_repo().await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#000".into(),
             sort: None,
@@ -524,7 +524,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -558,7 +558,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
 
     let scope = EventScope::Wave {
         wave: WaveId::from(wave.id.as_str()),
-        cove: CoveId::from(cove.id.as_str()),
+        area: AreaId::from(area.id.as_str()),
     };
     let res = repo
         .log_pure_event(

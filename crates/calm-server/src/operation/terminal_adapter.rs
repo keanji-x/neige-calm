@@ -22,7 +22,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
@@ -46,7 +46,7 @@ const TERMINAL_PHASES: &[PhaseTag] = &[
 pub struct TerminalAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -54,7 +54,7 @@ pub struct TerminalAdapter {
 pub struct TerminalWorkerAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     spawn_hook: Option<SpawnHook>,
 }
 
@@ -62,12 +62,12 @@ impl TerminalAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: None,
         }
     }
@@ -75,13 +75,13 @@ impl TerminalAdapter {
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -113,12 +113,12 @@ impl TerminalWorkerAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: None,
         }
     }
@@ -126,13 +126,13 @@ impl TerminalWorkerAdapter {
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
-        wave_cove_cache: WaveCoveCache,
+        wave_area_cache: WaveAreaCache,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
             repo,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -316,7 +316,7 @@ impl ProviderAdapter for TerminalAdapter {
             &event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -325,7 +325,7 @@ impl ProviderAdapter for TerminalAdapter {
             &runtime_event,
             &scope,
             &self.card_role_cache,
-            &self.wave_cove_cache,
+            &self.wave_area_cache,
         ) {
             return Err(CalmError::Forbidden(violation.to_string()));
         }
@@ -426,7 +426,7 @@ impl ProviderAdapter for TerminalAdapter {
                             .await?;
                     let write = WriteContext::new(
                         self.card_role_cache.clone(),
-                        self.wave_cove_cache.clone(),
+                        self.wave_area_cache.clone(),
                     );
                     let card_id_for_tx = card_id.clone();
                     let (_unit, _ids) = write_with_events_typed(
@@ -566,7 +566,7 @@ impl ProviderAdapter for TerminalAdapter {
         let cache = self.card_role_cache.clone();
         let write = crate::state::WriteContext::new(
             self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
+            self.wave_area_cache.clone(),
         );
         ctx.repo
             .write_with_event(
@@ -751,7 +751,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             log_terminal_worker_card_added(
                 ctx,
                 &self.card_role_cache,
-                &self.wave_cove_cache,
+                &self.wave_area_cache,
                 &card_id,
                 &wave_id,
             )
@@ -800,7 +800,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 log_terminal_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &wave_id,
                 )
@@ -826,7 +826,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 log_terminal_worker_card_added(
                     ctx,
                     &self.card_role_cache,
-                    &self.wave_cove_cache,
+                    &self.wave_area_cache,
                     &card_id,
                     &wave_id,
                 )
@@ -934,7 +934,7 @@ pub(crate) async fn terminal_worker_env(repo: &dyn crate::db::RouteRepo) -> Resu
 async fn log_terminal_worker_card_added(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
     card_id: &str,
     wave_id: &WaveId,
 ) -> Result<()> {
@@ -956,7 +956,7 @@ async fn log_terminal_worker_card_added(
             None,
             &ctx.events,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             Event::CardAdded(card),
         )
         .await?;

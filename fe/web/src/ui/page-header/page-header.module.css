@@ -2,7 +2,7 @@
   /*
    * `--header-h` is derived from the rows actually rendered: the title row is
    * always 32, and each extra row adds a 24px slot plus the 6px inter-row gap.
-   * The four routes land on Today 32 / cove 62 / Settings 62 / wave 92.
+   * The four routes land on Today 32 / area 62 / Settings 62 / wave 92.
    */
   /*
    * These land on the header's **parent**, not on the header.
@@ -23,7 +23,7 @@
    * the conversation drawer — a sibling of the page, positioned against `.main`,
    * which then started on the panel card's line. The drawer now covers the
    * header rather than starting below it and reads neither variable, and every
-   * remaining consumer (the sticky panel in `features/{cove,wave}/page`, the
+   * remaining consumer (the sticky panel in `features/{area,wave}/page`, the
    * report outline's sticky list) is *inside* the page, where the child form
    * already reaches. A publisher with no reader outside the page should not
    * publish outside the page.

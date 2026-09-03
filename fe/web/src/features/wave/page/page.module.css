@@ -394,7 +394,7 @@
    *
    * CONVERSATIONS is not listed here because it already does this —
    * `features/chat/list`'s `.list` carries the identical cap, and its note
-   * ("one busy cove pushed the conversation module below the fold") is this
+   * ("one busy area pushed the conversation module below the fold") is this
    * same defect found from the other end. CARDS was the module that never got
    * the treatment; TASKS is new and would have repeated the omission.
    *

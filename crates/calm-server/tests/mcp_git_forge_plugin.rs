@@ -16,7 +16,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveId, now_ms};
+use calm_server::model::{CardRole, NewArea, NewPlugin, NewWave, WaveId, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -226,21 +226,21 @@ async fn boot_fixture() -> Fixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     let events = EventBus::new();
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-git-forge-plugin".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-git-forge-plugin".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
@@ -251,9 +251,9 @@ async fn boot_fixture() -> Fixture {
         })
         .await
         .expect("create wave");
-    repo.seed_wave_cove_cache(&wave_cove_cache)
+    repo.seed_wave_area_cache(&wave_area_cache)
         .await
-        .expect("seed wave/cove cache");
+        .expect("seed wave/area cache");
 
     let caller = create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone()).await;
     init_git_repo(&caller.lease_abs);
@@ -263,7 +263,7 @@ async fn boot_fixture() -> Fixture {
         plugins_dir.clone(),
         plugins_data_dir.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
@@ -299,7 +299,7 @@ async fn boot_fixture() -> Fixture {
     let server = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
@@ -549,7 +549,7 @@ async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
 
 async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT scope_kind, scope_cove, scope_wave, scope_card, payload \
+        "SELECT scope_kind, scope_area, scope_wave, scope_card, payload \
              FROM events WHERE kind = ?1 ORDER BY id ASC",
     )
     .bind(kind)
@@ -558,10 +558,10 @@ async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
     .expect("event rows");
     rows.into_iter()
         .map(
-            |(scope_kind, scope_cove, scope_wave, scope_card, payload)| {
+            |(scope_kind, scope_area, scope_wave, scope_card, payload)| {
                 (
                     scope_kind,
-                    scope_cove,
+                    scope_area,
                     scope_wave,
                     scope_card,
                     serde_json::from_str(&payload).expect("event payload json"),
@@ -597,7 +597,7 @@ async fn operation_payload_by_idem(repo: &SqlxRepo, idem_key: &str) -> Option<Va
 }
 
 fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str, target: &str) {
-    let (scope_kind, _scope_cove, scope_wave, scope_card, payload) = row;
+    let (scope_kind, _scope_area, scope_wave, scope_card, payload) = row;
     assert_eq!(scope_kind, "card");
     assert_eq!(scope_wave.as_deref(), Some(wave_id));
     assert_eq!(scope_card.as_deref(), Some(card_id));
@@ -607,7 +607,7 @@ fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str, target: &
 }
 
 fn assert_worktree_committed_event(row: &EventRow, wave_id: &str, card_id: &str, branch: &str) {
-    let (scope_kind, _scope_cove, scope_wave, scope_card, payload) = row;
+    let (scope_kind, _scope_area, scope_wave, scope_card, payload) = row;
     assert_eq!(scope_kind, "card");
     assert_eq!(scope_wave.as_deref(), Some(wave_id));
     assert_eq!(scope_card.as_deref(), Some(card_id));

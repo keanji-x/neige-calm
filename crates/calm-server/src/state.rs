@@ -31,7 +31,7 @@ use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state_clients::resolve_mcp_stdio_shim_bin;
 use crate::terminal_renderer::TerminalRendererRegistry;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use crate::worker_flow::WorkerFlowDriver;
 use axum::extract::FromRef;
 use std::collections::{HashSet, VecDeque};
@@ -94,7 +94,7 @@ pub use calm_truth::state::WriteContext;
 pub struct RouteState {
     pub repo: Arc<dyn RouteRepo>,
     /// #1147 D2 — root for server-managed wave workspaces
-    /// (`<root>/<cove_id>/<wave_id>`). Resolved once at boot from
+    /// (`<root>/<area_id>/<wave_id>`). Resolved once at boot from
     /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
     /// request time.
     pub workspace_root: PathBuf,
@@ -117,7 +117,7 @@ pub struct RouteState {
     /// against it.
     pub(crate) spec_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// #1098 §5.6 — per-card claim serializing the "send the conversation's
-    /// first message" step of `POST /api/coves/{id}/conversations`. Two
+    /// first message" step of `POST /api/areas/{id}/conversations`. Two
     /// concurrent POSTs under one `Idempotency-Key` share one operation, so
     /// without this both would observe "no user message yet" and send the same
     /// instruction twice.
@@ -143,7 +143,7 @@ pub struct RouteState {
     ///    map.
     /// 2. *One permitted lock order:* `conversation_first_message_locks` →
     ///    `spec_recovery_locks`, and never the reverse. The only nesting in
-    ///    the tree is `create_cove_conversation` holding this claim across
+    ///    the tree is `create_area_conversation` holding this claim across
     ///    `send_spec_input` → `ensure_live_spec_harness`. Two distinct facts,
     ///    kept apart because round 3 caught them conflated:
     ///    * *Sharing ONE map* for both purposes self-deadlocks a single
@@ -152,7 +152,7 @@ pub struct RouteState {
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
     ///    * *There are now THREE forward-order nestings, not one.*
-    ///      `create_cove_conversation` was the first; `create_wave_conversation`
+    ///      `create_area_conversation` was the first; `create_wave_conversation`
     ///      (#1189) and `routes::today_summary`'s bootstrap recovery (#1253 PR2)
     ///      are the others, and all three hold this claim across
     ///      `send_spec_input` → `ensure_live_spec_harness`. The Today path also
@@ -215,7 +215,7 @@ pub struct BootState {
     pub codex: Arc<CodexClient>,
     pub db_instance_id: Arc<String>,
     pub card_role_cache: CardRoleCache,
-    pub wave_cove_cache: WaveCoveCache,
+    pub wave_area_cache: WaveAreaCache,
     /// #477 PR5 — kernel card-kind handler registry. Substate placement is
     /// left to PR2/PR3 once call sites migrate; for PR1 it stays on `AppState`
     /// alongside the other 17 compat fields and rides through `BootState`.
@@ -233,7 +233,7 @@ pub struct BootState {
 impl BootState {
     pub fn into_app_state(self) -> AppState {
         let route_repo: Arc<dyn RouteRepo> = self.repo.clone();
-        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+        let write = WriteContext::new(self.card_role_cache.clone(), self.wave_area_cache.clone());
         let hook_ingest_cache = Arc::new(StdMutex::new(HookIngestCache::new(
             HOOK_INGEST_CACHE_CAPACITY,
         )));
@@ -270,8 +270,8 @@ impl BootState {
         AppState {
             repo: route_repo,
             events: self.events,
-            system_cove_mint: Arc::new(crate::routes::today::SystemCoveMintCounters::default()),
-            system_cove_mint_rendezvous: None,
+            system_area_mint: Arc::new(crate::routes::today::SystemAreaMintCounters::default()),
+            system_area_mint_rendezvous: None,
             today_summary_create: Arc::new(
                 crate::routes::today_summary::TodaySummaryCreateCounters::default(),
             ),
@@ -284,7 +284,7 @@ impl BootState {
             db_instance_id: self.db_instance_id,
             ws_replay_cap: crate::ws::events::ws_replay_max_events_from_env(),
             card_role_cache: self.card_role_cache,
-            wave_cove_cache: self.wave_cove_cache,
+            wave_area_cache: self.wave_area_cache,
             card_kind_registry: self.card_kind_registry,
             dispatcher: self.dispatcher,
             mcp_server: self.mcp_server,
@@ -314,20 +314,20 @@ impl BootState {
 #[derive(Clone)]
 pub struct AppState {
     /// Narrow trait object: reads + eventized writes + out-of-domain writes.
-    /// Sync-domain raw writes (`cove_create`, `wave_update`, `card_delete`,
+    /// Sync-domain raw writes (`area_create`, `wave_update`, `card_delete`,
     /// `overlay_upsert`, etc.) are unreachable from this handle — handlers
     /// must funnel them through `db::write_with_event_typed`.
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
     /// #1253 — per-server observation of the one race in `routes::today` that
-    /// is reachable. See [`crate::routes::today::SystemCoveMintCounters`] for
+    /// is reachable. See [`crate::routes::today::SystemAreaMintCounters`] for
     /// why it lives on the state rather than in a `static`, and why it is not
     /// gated behind `fixtures`.
-    pub system_cove_mint: Arc<crate::routes::today::SystemCoveMintCounters>,
-    /// #1253 — `None` in production. Armed by the system-cove concurrency case
+    pub system_area_mint: Arc<crate::routes::today::SystemAreaMintCounters>,
+    /// #1253 — `None` in production. Armed by the system-area concurrency case
     /// so that race is created rather than waited for; see
-    /// [`crate::routes::today::SystemCoveMintRendezvous`].
-    pub system_cove_mint_rendezvous: crate::routes::today::SystemCoveMintRendezvous,
+    /// [`crate::routes::today::SystemAreaMintRendezvous`].
+    pub system_area_mint_rendezvous: crate::routes::today::SystemAreaMintRendezvous,
     /// #1253 PR2 — per-server observation of `POST /api/today/summary`'s create
     /// arm. See [`crate::routes::today_summary::TodaySummaryCreateCounters`]
     /// for why it is not `fixtures`-gated.
@@ -373,13 +373,13 @@ pub struct AppState {
     /// into every `_tx`-suffixed card helper so the insert/delete path
     /// stays write-through inside the surrounding transaction.
     pub card_role_cache: CardRoleCache,
-    /// #234 — `WaveId -> CoveId` cache the role gate consults alongside
-    /// `card_role_cache` to cross-check `scope.cove` against a Worker
-    /// card's home cove. Mirrors the shape + clone semantics of
+    /// #234 — `WaveId -> AreaId` cache the role gate consults alongside
+    /// `card_role_cache` to cross-check `scope.area` against a Worker
+    /// card's home area. Mirrors the shape + clone semantics of
     /// `card_role_cache`. Production builds seed this from the waves
     /// table in [`AppState::new`]; tests use the empty default via
     /// [`AppState::from_parts`] or pre-populate it manually.
-    pub wave_cove_cache: WaveCoveCache,
+    pub wave_area_cache: WaveAreaCache,
     /// #477 PR5 — registry of kernel-owned card kind handlers. Unknown card
     /// kinds stay opaque; built-ins expose validation + metadata for future
     /// OpenAPI / metrics readers.
@@ -457,7 +457,7 @@ struct OperationAdapterInputs {
     pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     terminal_spawn_hook: Option<SpawnHook>,
     harness: HarnessRegistry,
     mcp_server: Option<Arc<McpServer>>,
@@ -472,14 +472,14 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             Arc::new(TerminalAdapter::new_with_spawn_hook(
                 input.route_repo.clone(),
                 input.card_role_cache.clone(),
-                input.wave_cove_cache.clone(),
+                input.wave_area_cache.clone(),
                 spawn_hook,
             ))
         } else {
             Arc::new(TerminalAdapter::new(
                 input.route_repo.clone(),
                 input.card_role_cache.clone(),
-                input.wave_cove_cache.clone(),
+                input.wave_area_cache.clone(),
             ))
         };
     let terminal_worker_adapter: Arc<dyn ProviderAdapter> =
@@ -487,14 +487,14 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
                 input.route_repo.clone(),
                 input.card_role_cache.clone(),
-                input.wave_cove_cache.clone(),
+                input.wave_area_cache.clone(),
                 spawn_hook,
             ))
         } else {
             Arc::new(TerminalWorkerAdapter::new(
                 input.route_repo.clone(),
                 input.card_role_cache.clone(),
-                input.wave_cove_cache.clone(),
+                input.wave_area_cache.clone(),
             ))
         };
     let codex_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexAdapter::new(
@@ -504,7 +504,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.pending_codex_threads.clone(),
         input.pending_codex_threads_spawn_serial.clone(),
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
     ));
     let codex_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
         input.route_repo.clone(),
@@ -512,27 +512,27 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.shared_codex_appserver.clone(),
         input.mcp_server.clone(),
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
         input.workspace_root.clone(),
     ));
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
     ));
     let claude_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
         input.mcp_server.clone(),
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
     ));
     let claude_restart_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeRestartAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
     ));
     let spec_harness_start_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(SpecHarnessStartAdapter::new(
@@ -541,7 +541,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             input.harness.clone(),
             input.plugin.clone(),
             input.card_role_cache.clone(),
-            input.wave_cove_cache.clone(),
+            input.wave_area_cache.clone(),
             input
                 .mcp_server
                 .as_ref()
@@ -557,7 +557,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
     let child_wave_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildWaveAdapter::new(
         input.card_role_cache.clone(),
-        input.wave_cove_cache.clone(),
+        input.wave_area_cache.clone(),
         input.workspace_root.clone(),
     ));
 
@@ -634,7 +634,7 @@ impl AppState {
         self
     }
 
-    /// #1253 — arm the system-cove mint rendezvous so the concurrency case can
+    /// #1253 — arm the system-area mint rendezvous so the concurrency case can
     /// *create* that race instead of hoping for it.
     ///
     /// **These builders are an attribute-sensitive run: adding a function
@@ -655,16 +655,16 @@ impl AppState {
     /// `with_workspace_root` above.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
-    pub fn with_system_cove_mint_rendezvous(
+    pub fn with_system_area_mint_rendezvous(
         mut self,
         barrier: std::sync::Arc<tokio::sync::Barrier>,
     ) -> Self {
-        self.system_cove_mint_rendezvous = Some(barrier);
+        self.system_area_mint_rendezvous = Some(barrier);
         self
     }
 
     /// #1253 PR2 — arm the create-race rendezvous. Same shape, same reasons as
-    /// [`Self::with_system_cove_mint_rendezvous`]: the field is unconditional
+    /// [`Self::with_system_area_mint_rendezvous`]: the field is unconditional
     /// and the `if let Some(..)` is compiled into every build; only the ability
     /// to arm it is test-only.
     #[cfg(feature = "fixtures")]
@@ -694,7 +694,7 @@ impl AppState {
             self.raw.clone(),
             self.events.clone(),
             self.card_role_cache.clone(),
-            self.wave_cove_cache.clone(),
+            self.wave_area_cache.clone(),
             self.shared_codex_appserver.clone(),
             &self.harness,
         )
@@ -715,7 +715,7 @@ impl AppState {
                 repo: self.raw.clone(),
                 events: self.events.clone(),
                 card_role_cache: self.card_role_cache.clone(),
-                wave_cove_cache: self.wave_cove_cache.clone(),
+                wave_area_cache: self.wave_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
                 registry: self.harness.clone(),
                 #[cfg(feature = "fixtures")]
@@ -738,9 +738,9 @@ impl AppState {
     /// are seeded via `log_pure_event` from `ActorId::User` (which the
     /// gate lets through without a cache lookup).
     ///
-    /// #234: `wave_cove_cache` follows the same shape — `None` yields
-    /// an empty cache. Tests that exercise the Worker cove-cross-check
-    /// pre-populate the cache via `WaveCoveCache::insert` before
+    /// #234: `wave_area_cache` follows the same shape — `None` yields
+    /// an empty cache. Tests that exercise the Worker area-cross-check
+    /// pre-populate the cache via `WaveAreaCache::insert` before
     /// calling this. Most existing tests don't touch the Worker path,
     /// so an empty cache is fine.
     pub fn from_parts(
@@ -750,7 +750,7 @@ impl AppState {
         plugin: Arc<PluginHost>,
         codex: Arc<CodexClient>,
         card_role_cache: Option<CardRoleCache>,
-        wave_cove_cache: Option<WaveCoveCache>,
+        wave_area_cache: Option<WaveAreaCache>,
     ) -> Self {
         Self::from_parts_inner(
             repo,
@@ -759,7 +759,7 @@ impl AppState {
             plugin,
             codex,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             None,
         )
     }
@@ -776,7 +776,7 @@ impl AppState {
         plugin: Arc<PluginHost>,
         codex: Arc<CodexClient>,
         card_role_cache: Option<CardRoleCache>,
-        wave_cove_cache: Option<WaveCoveCache>,
+        wave_area_cache: Option<WaveAreaCache>,
         terminal_spawn_hook: SpawnHook,
     ) -> Self {
         Self::from_parts_inner(
@@ -786,7 +786,7 @@ impl AppState {
             plugin,
             codex,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             Some(terminal_spawn_hook),
         )
     }
@@ -799,13 +799,13 @@ impl AppState {
         plugin: Arc<PluginHost>,
         codex: Arc<CodexClient>,
         card_role_cache: Option<CardRoleCache>,
-        wave_cove_cache: Option<WaveCoveCache>,
+        wave_area_cache: Option<WaveAreaCache>,
         terminal_spawn_hook: Option<SpawnHook>,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
-        let wave_cove_cache = wave_cove_cache.unwrap_or_default();
+        let wave_area_cache = wave_area_cache.unwrap_or_default();
         let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
@@ -834,7 +834,7 @@ impl AppState {
             pending_codex_threads: pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
             card_role_cache: card_role_cache.clone(),
-            wave_cove_cache: wave_cove_cache.clone(),
+            wave_area_cache: wave_area_cache.clone(),
             terminal_spawn_hook,
             harness: harness.clone(),
             mcp_server: None,
@@ -858,7 +858,7 @@ impl AppState {
             .with_shared_codex_appserver(shared_codex_appserver.clone()),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
-        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+        let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -908,7 +908,7 @@ impl AppState {
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             card_kind_registry,
             dispatcher,
             // `from_parts` is the test / replay-lib hatch — no live MCP
@@ -975,7 +975,7 @@ impl AppState {
             pending_codex_threads: self.pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial.clone(),
             card_role_cache: self.card_role_cache.clone(),
-            wave_cove_cache: self.wave_cove_cache.clone(),
+            wave_area_cache: self.wave_area_cache.clone(),
             terminal_spawn_hook: None,
             harness: self.harness.clone(),
             mcp_server: self.mcp_server.clone(),
@@ -1086,15 +1086,15 @@ impl AppState {
         // map.
         let card_role_cache = CardRoleCache::new();
         repo.seed_card_role_cache(&card_role_cache).await?;
-        // #234 — boot-time wave→cove cache. Same seed-then-spawn order
+        // #234 — boot-time wave→area cache. Same seed-then-spawn order
         // as the role cache: every background task that runs the role
         // gate downstream (FSM, sweeper, dispatcher, plugin host, MCP
         // server) needs both caches populated before it can authorize
         // a write.
-        let wave_cove_cache = WaveCoveCache::new();
-        repo.seed_wave_cove_cache(&wave_cove_cache).await?;
+        let wave_area_cache = WaveAreaCache::new();
+        repo.seed_wave_area_cache(&wave_area_cache).await?;
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
-        let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
+        let write = WriteContext::new(card_role_cache.clone(), wave_area_cache.clone());
 
         // Per-card FSM (phase 1: codex cards only). Subscribes to the bus
         // and projects `codex.hook` events onto a 6-state FSM, writing
@@ -1235,7 +1235,7 @@ impl AppState {
             pending_codex_threads: pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
             card_role_cache: card_role_cache.clone(),
-            wave_cove_cache: wave_cove_cache.clone(),
+            wave_area_cache: wave_area_cache.clone(),
             terminal_spawn_hook: None,
             harness: harness.clone(),
             mcp_server: Some(mcp_server.clone()),
@@ -1310,7 +1310,7 @@ impl AppState {
                         None,
                         &events,
                         &card_role_cache,
-                        &wave_cove_cache,
+                        &wave_area_cache,
                         Event::PluginToolRegistered {
                             plugin_id: plugin_id.clone(),
                             tool_name: tool_name.clone(),
@@ -1349,7 +1349,7 @@ impl AppState {
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             card_kind_registry,
             dispatcher,
             mcp_server: Some(mcp_server),
@@ -1371,7 +1371,7 @@ impl AppState {
         crate::terminal_sweeper::spawn(state.clone());
 
         // Wave VCS objects are content-addressed and can be shared by multiple
-        // waves, so wave/cove deletion only removes refs + commits. Reclaim
+        // waves, so wave/area deletion only removes refs + commits. Reclaim
         // unreferenced objects on a slower hourly cadence with a one-hour
         // grace window; see `wave_vcs::sweep_unreferenced_objects_once`.
         if let Some(pool) = state.raw.sqlite_pool() {

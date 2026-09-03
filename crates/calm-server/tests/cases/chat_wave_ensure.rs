@@ -11,11 +11,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewTerminal, NewWave, RequestTheme};
+use calm_server::model::{NewArea, NewTerminal, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -23,7 +23,7 @@ use tower::ServiceExt;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
     _tmp: TempDir,
@@ -32,8 +32,8 @@ struct Boot {
 async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "chat-wave-test".into(),
             color: "#000".into(),
             sort: None,
@@ -43,8 +43,8 @@ async fn boot() -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    let waves = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&waves).await.unwrap();
     let state = AppState::from_parts(
         repo_dyn.clone(),
         events,
@@ -82,7 +82,7 @@ async fn boot() -> Boot {
         .with_state(state);
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         workspace_root: tmp.path().join("workspaces"),
         _tmp: tmp,
@@ -143,12 +143,12 @@ async fn request_json(
 
 async fn ensure_chat_wave(b: &Boot) -> Value {
     b.repo
-        .cove_folder_create(&b.cove_id, "/workspace")
+        .area_folder_create(&b.area_id, "/workspace")
         .await
         .unwrap();
     let (status, body) = post(
         b.app.clone(),
-        format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+        format!("/api/areas/{}/chat-wave/ensure", b.area_id),
         Value::Null,
     )
     .await;
@@ -162,15 +162,15 @@ async fn concurrent_ensure_creates_one_inert_structurally_complete_wave() {
     for path in ["/a/b/c", "/zzzzzzzzzzzz"] {
         let (status, _) = post(
             b.app.clone(),
-            format!("/api/coves/{}/folders", b.cove_id),
+            format!("/api/areas/{}/folders", b.area_id),
             json!({"path": path}),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
     }
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    calm_server::routes::waves::install_chat_wave_ensure_barrier_for_test(&b.cove_id, barrier);
-    let uri = format!("/api/coves/{}/chat-wave/ensure", b.cove_id);
+    calm_server::routes::waves::install_chat_wave_ensure_barrier_for_test(&b.area_id, barrier);
+    let uri = format!("/api/areas/{}/chat-wave/ensure", b.area_id);
     let (a, b_response) = tokio::join!(
         post(b.app.clone(), uri.clone(), Value::Null),
         post(b.app.clone(), uri, Value::Null)
@@ -183,7 +183,7 @@ async fn concurrent_ensure_creates_one_inert_structurally_complete_wave() {
         matches!(b_response.0, StatusCode::OK | StatusCode::CREATED),
         "second ensure: {b_response:?}"
     );
-    calm_server::routes::waves::remove_chat_wave_ensure_barrier_for_test(&b.cove_id);
+    calm_server::routes::waves::remove_chat_wave_ensure_barrier_for_test(&b.area_id);
     let mut statuses = [a.0, b_response.0];
     statuses.sort();
     assert_eq!(statuses, [StatusCode::OK, StatusCode::CREATED]);
@@ -193,8 +193,8 @@ async fn concurrent_ensure_creates_one_inert_structurally_complete_wave() {
     let wave_id = a.1["id"].as_str().unwrap();
 
     let wave_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE cove_id=?1 AND purpose='cove-chat'")
-            .bind(&b.cove_id)
+        sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE area_id=?1 AND purpose='area-chat'")
+            .bind(&b.area_id)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
@@ -238,12 +238,12 @@ async fn chat_wave_unique_index_and_error_matcher_are_pinned() {
             // #1147 S1 — `cwd` dropped from the column list. Seeding it here
             // without the matching `workspace_path` produced a row production
             // cannot produce (design D1 writes both from one value); this test
-            // is about the `purpose='cove-chat'` unique index and never reads
+            // is about the `purpose='area-chat'` unique index and never reads
             // either column, so the honest fix is to name neither.
-            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, purpose, created_at, updated_at) VALUES (?1, ?2, 'chat', 1, 'draft', 'cove-chat', 1, 1)",
+            "INSERT INTO waves (id, area_id, title, sort, lifecycle, purpose, created_at, updated_at) VALUES (?1, ?2, 'chat', 1, 'draft', 'area-chat', 1, 1)",
         )
         .bind(id)
-        .bind(&b.cove_id)
+        .bind(&b.area_id)
         .execute(b.repo.pool())
     };
     insert("chat-wave-winner").await.unwrap();
@@ -251,12 +251,12 @@ async fn chat_wave_unique_index_and_error_matcher_are_pinned() {
     let error: calm_server::error::CalmError = sqlx_error.into();
     let message = error.to_string();
     assert!(
-        message.contains("UNIQUE constraint failed: waves.cove_id"),
+        message.contains("UNIQUE constraint failed: waves.area_id"),
         "unexpected unique error: {message}"
     );
     assert!(calm_server::routes::waves::is_unique_constraint_for_test(
         &error,
-        "waves.cove_id"
+        "waves.area_id"
     ));
 }
 
@@ -265,17 +265,17 @@ async fn repeated_ensure_preserves_original_cwd_after_shallower_claim() {
     let b = boot().await;
     let (status, _) = post(
         b.app.clone(),
-        format!("/api/coves/{}/folders", b.cove_id),
+        format!("/api/areas/{}/folders", b.area_id),
         json!({"path": "/original/deep/path"}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let uri = format!("/api/coves/{}/chat-wave/ensure", b.cove_id);
+    let uri = format!("/api/areas/{}/chat-wave/ensure", b.area_id);
     let (status, first) = post(b.app.clone(), uri.clone(), Value::Null).await;
     assert_eq!(status, StatusCode::CREATED);
     let (status, _) = post(
         b.app.clone(),
-        format!("/api/coves/{}/folders", b.cove_id),
+        format!("/api/areas/{}/folders", b.area_id),
         json!({"path": "/shallow"}),
     )
     .await;
@@ -287,23 +287,23 @@ async fn repeated_ensure_preserves_original_cwd_after_shallower_claim() {
 }
 
 #[tokio::test]
-async fn ensure_unknown_cove_returns_not_found() {
+async fn ensure_unknown_area_returns_not_found() {
     let b = boot().await;
     let (status, body) = post(
         b.app,
-        "/api/coves/unknown/chat-wave/ensure".into(),
+        "/api/areas/unknown/chat-wave/ensure".into(),
         Value::Null,
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body.to_string().contains("cove unknown"), "{body}");
+    assert!(body.to_string().contains("area unknown"), "{body}");
 }
 
-/// #1147 D10 — a cove with no `cove_folders` claim used to 409 here.
+/// #1147 D10 — an area with no `area_folders` claim used to 409 here.
 ///
-/// Since #1109 made coves pure namespaces, "no claim" is the normal state of
-/// every new cove, so that 409 meant `POST /api/coves/{id}/conversations`
-/// (which calls this unconditionally) failed by definition for every new cove.
+/// Since #1109 made areas pure namespaces, "no claim" is the normal state of
+/// every new area, so that 409 meant `POST /api/areas/{id}/conversations`
+/// (which calls this unconditionally) failed by definition for every new area.
 /// The branch now allocates a managed workspace instead, and materializes it —
 /// otherwise the conversation's first codex task dies with `spawn-failed`,
 /// which is #1147 itself.
@@ -312,16 +312,16 @@ async fn ensure_without_claimed_folder_allocates_a_managed_workspace() {
     let b = boot().await;
     let (status, body) = post(
         b.app,
-        format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+        format!("/api/areas/{}/chat-wave/ensure", b.area_id),
         Value::Null,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let (kind, path, frozen): (String, String, Option<i64>) = sqlx::query_as(
-        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE cove_id=?1",
+        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE area_id=?1",
     )
-    .bind(&b.cove_id)
+    .bind(&b.area_id)
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
@@ -329,7 +329,7 @@ async fn ensure_without_claimed_folder_allocates_a_managed_workspace() {
     assert_eq!(
         path,
         b.workspace_root
-            .join(&b.cove_id)
+            .join(&b.area_id)
             .join(body["id"].as_str().unwrap())
             .to_string_lossy()
     );
@@ -354,7 +354,7 @@ async fn ensure_without_claimed_folder_allocates_a_managed_workspace() {
     );
 }
 
-/// A cove that *does* have a claim keeps attached semantics: the user pointed
+/// An area that *does* have a claim keeps attached semantics: the user pointed
 /// at that directory, so the server uses it and never `git init`s it.
 #[tokio::test]
 async fn ensure_with_a_claimed_folder_stays_attached() {
@@ -364,7 +364,7 @@ async fn ensure_with_a_claimed_folder_stays_attached() {
     let claimed = claimed.to_string_lossy().into_owned();
     let (status, _) = post(
         b.app.clone(),
-        format!("/api/coves/{}/folders", b.cove_id),
+        format!("/api/areas/{}/folders", b.area_id),
         json!({"path": claimed}),
     )
     .await;
@@ -372,14 +372,14 @@ async fn ensure_with_a_claimed_folder_stays_attached() {
 
     let (status, body) = post(
         b.app,
-        format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+        format!("/api/areas/{}/chat-wave/ensure", b.area_id),
         Value::Null,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let (kind, path): (String, String) =
-        sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE cove_id=?1")
-            .bind(&b.cove_id)
+        sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE area_id=?1")
+            .bind(&b.area_id)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
@@ -421,7 +421,7 @@ async fn patch_lifecycle_rejects_chat_but_allows_ordinary_wave() {
     let ordinary = b
         .repo
         .wave_create(NewWave {
-            cove_id: b.cove_id.clone().into(),
+            area_id: b.area_id.clone().into(),
             title: "ordinary".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -461,9 +461,9 @@ async fn report_backlinks_still_sees_hidden_chat_wave() {
 }
 
 /// INV-CHAT-005 delete counterexample: the terminal's RESTRICT FK makes this
-/// fail if delete_cove's repository enumeration ever hides the chat wave.
+/// fail if delete_area's repository enumeration ever hides the chat wave.
 #[tokio::test]
-async fn delete_cove_still_enumerates_hidden_chat_wave_for_terminal_teardown() {
+async fn delete_area_still_enumerates_hidden_chat_wave_for_terminal_teardown() {
     let b = boot().await;
     let chat = ensure_chat_wave(&b).await;
     let card_id: String = sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 LIMIT 1")
@@ -485,10 +485,10 @@ async fn delete_cove_still_enumerates_hidden_chat_wave_for_terminal_teardown() {
     let (status, body) = request_json(
         b.app,
         "DELETE",
-        format!("/api/coves/{}", b.cove_id),
+        format!("/api/areas/{}", b.area_id),
         Value::Null,
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
-    assert!(b.repo.cove_get(&b.cove_id).await.unwrap().is_none());
+    assert!(b.repo.area_get(&b.area_id).await.unwrap().is_none());
 }

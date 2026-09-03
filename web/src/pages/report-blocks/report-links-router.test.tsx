@@ -31,7 +31,7 @@ vi.mock('../../api/queries', () => ({
     isLoading: false,
   })),
   useWaveReportQuery: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
-  useWavesByCoveQuery: vi.fn(() => ({ data: [] })),
+  useWavesByAreaQuery: vi.fn(() => ({ data: [] })),
 }));
 
 vi.mock('../../cards/useCardOverlay', () => ({
@@ -92,7 +92,7 @@ describe('report links with the real router', () => {
         <WaveReportPage
           wave={{
             id: 'wave_1',
-            coveId: 'cove_1',
+            areaId: 'area_1',
             title: 'Flat report',
             lifecycle: 'draft',
             anyCardNeedsInput: false,

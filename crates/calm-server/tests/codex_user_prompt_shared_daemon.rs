@@ -10,7 +10,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave};
 use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -76,8 +76,8 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "prompt-shared".into(),
             color: "#000".into(),
             sort: None,
@@ -87,7 +87,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "prompt-shared".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -119,7 +119,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         codex,

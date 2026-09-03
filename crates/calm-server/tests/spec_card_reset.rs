@@ -16,7 +16,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::WaveId;
 use calm_server::model::{
-    Card, CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
+    Card, CardRole, NewArea, NewCard, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
 };
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
@@ -153,8 +153,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "spec-card-reset".into(),
             color: "#000".into(),
             sort: None,
@@ -164,7 +164,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "reset route auth".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset".into(),
@@ -178,9 +178,9 @@ async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -195,11 +195,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-spec-card-reset"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -223,8 +223,8 @@ async fn boot_shared() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "spec-card-reset-shared".into(),
             color: "#000".into(),
             sort: None,
@@ -234,7 +234,7 @@ async fn boot_shared() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "shared reset goal".into(),
             sort: None,
             cwd: "/tmp/spec-card-reset-shared".into(),
@@ -248,9 +248,9 @@ async fn boot_shared() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
     repo.seed_card_role_cache(&card_role_cache).await.unwrap();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -265,11 +265,11 @@ async fn boot_shared() -> Boot {
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
 
     let cfg = Config::parse_from([
@@ -324,7 +324,7 @@ fn install_failing_spec_start_runtime(boot: &mut Boot) {
             boot.state.harness.clone(),
             boot.state.plugin.clone(),
             boot.state.card_role_cache.clone(),
-            boot.state.wave_cove_cache.clone(),
+            boot.state.wave_area_cache.clone(),
             None,
         ),
     });
@@ -590,7 +590,7 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        wave_area_cache: boot.state.wave_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -657,7 +657,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, SpecHarness
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        wave_area_cache: boot.state.wave_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -856,13 +856,13 @@ async fn send_spec_input_emits_audit_event() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let cove_id = boot
+    let area_id = boot
         .repo
         .wave_get(card.wave_id.as_str())
         .await
         .unwrap()
         .unwrap()
-        .cove_id;
+        .area_id;
     let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let found = events.iter().any(|(_id, _version, scope, event)| {
         matches!(
@@ -871,7 +871,7 @@ async fn send_spec_input_emits_audit_event() {
                 calm_server::event::EventScope::Card {
                     card: scope_card,
                     wave: scope_wave,
-                    cove: scope_cove
+                    area: scope_area
                 },
                 calm_server::event::Event::HarnessUserMessageEnqueued {
                     runtime_id: ev_rt,
@@ -884,7 +884,7 @@ async fn send_spec_input_emits_audit_event() {
                 && ev_wave == &card.wave_id
                 && scope_card == &card.id
                 && scope_wave == &card.wave_id
-                && scope_cove == &cove_id
+                && scope_area == &area_id
                 && *char_count == text.chars().count() as u32
         )
     });
@@ -1664,9 +1664,9 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
 #[tokio::test]
 async fn wave_delete_shuts_down_active_spec_harness() {
     let boot = boot_shared().await;
-    let cove = boot
+    let area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "harness-wave-delete".into(),
             color: "#000".into(),
             sort: None,
@@ -1677,7 +1677,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": cove.id,
+            "area_id": area.id,
             "title": "delete harness",
             "cwd": attached_repo_fixture("spec-card-reset-harness-delete"),
             "attach_folder": true,
@@ -1719,9 +1719,9 @@ async fn wave_delete_shuts_down_active_spec_harness() {
 #[tokio::test]
 async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal() {
     let boot = boot_shared().await;
-    let cove = boot
+    let area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "descendant-refusal-runtime".into(),
             color: "#000".into(),
             sort: None,
@@ -1732,7 +1732,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": cove.id,
+            "area_id": area.id,
             "title": "live parent",
             "cwd": attached_repo_fixture("descendant-refusal-runtime"),
             "attach_folder": true,
@@ -1796,7 +1796,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
     let child = boot
         .repo
         .wave_create(NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "child".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -2186,7 +2186,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        wave_area_cache: boot.state.wave_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -2309,7 +2309,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
         repo: repo_dyn,
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
-        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        wave_area_cache: boot.state.wave_area_cache.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -2611,9 +2611,9 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
 #[tokio::test]
 async fn wave_create_without_title_seeds_no_wave_goal() {
     let boot = boot_shared().await;
-    let cove = boot
+    let area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "no-goal-untitled".into(),
             color: "#000".into(),
             sort: None,
@@ -2624,7 +2624,7 @@ async fn wave_create_without_title_seeds_no_wave_goal() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": cove.id,
+            "area_id": area.id,
             "cwd": attached_repo_fixture("issue-1211-untitled"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
@@ -2650,9 +2650,9 @@ async fn wave_create_without_title_seeds_no_wave_goal() {
 #[tokio::test]
 async fn wave_create_with_title_seeds_no_wave_goal() {
     let boot = boot_shared().await;
-    let cove = boot
+    let area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "no-goal-titled".into(),
             color: "#000".into(),
             sort: None,
@@ -2664,7 +2664,7 @@ async fn wave_create_with_title_seeds_no_wave_goal() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": cove.id,
+            "area_id": area.id,
             "title": title,
             "cwd": attached_repo_fixture("issue-1211-titled"),
             "attach_folder": true,
@@ -2699,9 +2699,9 @@ async fn wave_create_with_title_seeds_no_wave_goal() {
 #[tokio::test]
 async fn spec_reset_seeds_no_wave_goal() {
     let boot = boot_shared().await;
-    let cove = boot
+    let area = boot
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: "no-goal-reset".into(),
             color: "#000".into(),
             sort: None,
@@ -2712,7 +2712,7 @@ async fn spec_reset_seeds_no_wave_goal() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": cove.id,
+            "area_id": area.id,
             "title": "reset keeps quiet",
             "cwd": attached_repo_fixture("issue-1211-reset"),
             "attach_folder": true,

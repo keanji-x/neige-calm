@@ -1432,7 +1432,7 @@ impl View {
             return Err(ManifestError::invalid(path("title"), "must be non-empty"));
         }
         // §10 #1 + #5: M3 scope enum is exactly `["card"]`. Be explicit about
-        // rejecting "wave" and "cove" so the error message points at the
+        // rejecting "wave" and "area" so the error message points at the
         // design doc, not just "unknown enum value".
         match self.scope.as_str() {
             "card" => {}
@@ -1443,10 +1443,10 @@ impl View {
                      only \"card\" is accepted",
                 ));
             }
-            "cove" => {
+            "area" => {
                 return Err(ManifestError::invalid(
                     path("scope"),
-                    "cove-scope views are banned for M3 (design doc §10 #1); \
+                    "area-scope views are banned for M3 (design doc §10 #1); \
                      only \"card\" is accepted",
                 ));
             }
@@ -2421,13 +2421,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_cove_rejected() {
-        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"cove\"");
+    fn scope_area_rejected() {
+        let json = hello_world().replace("\"scope\": \"card\"", "\"scope\": \"area\"");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, reason } => {
                 assert_eq!(field, "views[0].scope");
-                assert!(reason.contains("cove"), "reason: {reason}");
+                assert!(reason.contains("area"), "reason: {reason}");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -2502,7 +2502,7 @@ mod tests {
 
     #[test]
     fn bad_overlay_kind_rejected() {
-        let json = hello_world().replace("[\"wave\", \"card\"]", "[\"wave\", \"cove\"]");
+        let json = hello_world().replace("[\"wave\", \"card\"]", "[\"wave\", \"area\"]");
         let err = Manifest::parse(&json).unwrap_err();
         match err {
             ManifestError::Invalid { field, .. } => {

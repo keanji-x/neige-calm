@@ -5,7 +5,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-use crate::ids::{CardId, CoveId, WaveId};
+use crate::ids::{AreaId, CardId, WaveId};
 use crate::runtime::TimestampMs;
 
 /// Opaque execution-session identifier.
@@ -53,7 +53,7 @@ pub enum Principal {
     Agent {
         session_id: WorkerSessionId,
         wave_id: WaveId,
-        cove_id: CoveId,
+        area_id: AreaId,
     },
 }
 

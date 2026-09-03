@@ -40,9 +40,9 @@ const fail = (message: string): ApiTransportResponse => ({ status: 500, statusTe
 const refuse = (status: number, code: string, message: string): ApiTransportResponse =>
   ({ status, statusText: 'Conflict', body: { error: message, code } });
 
-const coves = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
+const areas = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
 const wave = {
-  id: 'w1', cove_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1,
 };
 const launchpadWave = { ...wave, id: 'lp', title: 'Today' };
@@ -109,8 +109,8 @@ function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
         return Promise.resolve(summary ?? ok({ wave_id: 'lp', card_id: 'conv-1' }));
       }
       if (request.path === '/api/today/launchpad') return Promise.resolve(resolve);
-      if (request.path === '/api/coves') return Promise.resolve(ok(coves));
-      if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+      if (request.path === '/api/areas') return Promise.resolve(ok(areas));
+      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
       if (request.path === '/api/waves/lp') {
         if (detail === 'hung') return new Promise<ApiTransportResponse>(() => undefined);
         return Promise.resolve(detail === 'seeded' ? detailOk() : detail);
@@ -352,8 +352,8 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
         requests.push(request);
         if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(hasContent));
-        if (request.path === '/api/coves') return Promise.resolve(ok(coves));
-        if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+        if (request.path === '/api/areas') return Promise.resolve(ok(areas));
+        if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
         if (request.path === '/api/waves/lp') {
           return Promise.resolve(ok({
             wave: launchpadWave,
@@ -410,8 +410,8 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
       send: (request) => {
         if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
         if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(true));
-        if (request.path === '/api/coves') return Promise.resolve(ok(coves));
-        if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+        if (request.path === '/api/areas') return Promise.resolve(ok(areas));
+        if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([wave]));
         if (request.path === '/api/waves/lp') {
           return Promise.resolve(ok({ wave: launchpadWave, cards: [reportCard(body)], overlays: [] }));
         }

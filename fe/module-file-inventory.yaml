@@ -65,7 +65,7 @@
 # Feature domains are the closed §4 set; each prefix contains its public entry,
 # colocated behavior/contract tests, render components, and *.module.css files.
 - { path: fe/web/src/features/wave, type: directory, owner: features/wave, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
-- { path: fe/web/src/features/cove, type: directory, owner: features/cove, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
+- { path: fe/web/src/features/area, type: directory, owner: features/area, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
 - { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
 - { path: fe/web/src/features/spec, type: directory, owner: features/spec, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
@@ -116,7 +116,7 @@
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
 - { path: fe/web/src/ui/viewport, type: directory, owner: ui/viewport, readonly: false, basis: "#1191 §3.2 唯一的 compact viewport 判据；architecture/single-viewport-source 的豁免目录" }
 - { path: fe/web/src/ui/icon, type: directory, owner: ui/icon, readonly: false, basis: "design §6.7 描边图标集；字形墨迹在同字号下差 1.75 倍 (#997)" }
-- { path: fe/web/src/ui/brand, type: directory, owner: ui/brand, readonly: false, basis: "#1211 品牌资产；neige-mark.svg 由 app/shell 的工作区栏与 features/cove 的新建页共同引用，放在 ui 是因为 features/** 不得进入 app/**" }
+- { path: fe/web/src/ui/brand, type: directory, owner: ui/brand, readonly: false, basis: "#1211 品牌资产；neige-mark.svg 由 app/shell 的工作区栏与 features/area 的新建页共同引用，放在 ui 是因为 features/** 不得进入 app/**" }
 - { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).

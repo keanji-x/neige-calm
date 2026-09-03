@@ -94,7 +94,7 @@ describe('core/api client behavior', () => {
   it('decodes a 204 as an explicit void response even if transport supplies a body', async () => {
     const result = await performApiRequest(
       { send: () => Promise.resolve({ status: 204, statusText: 'No Content', body: { stale: true } }) },
-      { method: 'DELETE', path: '/api/coves/cove-1', responseSchema: z.void() },
+      { method: 'DELETE', path: '/api/areas/area-1', responseSchema: z.void() },
     );
 
     expect(result).toEqual({ status: 'ready', value: undefined });

@@ -12,7 +12,7 @@
     font-weight: var(--weight-normal) !important;
   }
 
-  .coveInitial {
+  .areaInitial {
     display: grid;
     place-items: center;
     inline-size: var(--row-h-sm);

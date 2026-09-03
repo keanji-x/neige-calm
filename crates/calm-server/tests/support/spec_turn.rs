@@ -68,7 +68,7 @@ pub fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
         provider: AgentProvider::Codex,
         session_id: SPEC_SESSION_ID.to_string(),
         wave_id: Some(fx.wave_id.as_str().to_string()),
-        cove_id: fx.cove_id.as_str().to_string(),
+        area_id: fx.area_id.as_str().to_string(),
         thread_id: "spec-thread".into(),
     }
 }

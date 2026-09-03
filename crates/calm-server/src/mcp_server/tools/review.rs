@@ -163,7 +163,7 @@ async fn review_round(
     let actor = identity.to_actor_id();
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let wave_id = wave.id.clone();
     let subject = args.subject.clone();
@@ -242,7 +242,7 @@ async fn ratify_request(
     let actor = identity.to_actor_id();
     let scope = EventScope::Wave {
         wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
+        area: wave.area_id.clone(),
     };
     let wave_id = wave.id.clone();
     let reason = args.reason;

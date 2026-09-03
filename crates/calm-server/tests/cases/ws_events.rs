@@ -17,7 +17,7 @@ use std::time::Duration;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{Cove, CoveKind, Overlay};
+use calm_server::model::{Area, AreaKind, Overlay};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::ws;
@@ -47,7 +47,7 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
             events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -71,13 +71,13 @@ async fn boot() -> (std::net::SocketAddr, EventBus) {
     (addr, events)
 }
 
-fn sample_cove(id: &str) -> Cove {
-    Cove {
+fn sample_area(id: &str) -> Area {
+    Area {
         id: id.into(),
         name: "n".into(),
         color: "#fff".into(),
         sort: 0.0,
-        kind: CoveKind::User,
+        kind: AreaKind::User,
         created_at: 0,
         updated_at: 0,
     }
@@ -89,8 +89,8 @@ async fn forwards_matching_event() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // Subscribe to cove:c-001 only.
-    ws.send(TMessage::Text(r#"{"sub":["cove:c-001"]}"#.to_string()))
+    // Subscribe to area:c-001 only.
+    ws.send(TMessage::Text(r#"{"sub":["area:c-001"]}"#.to_string()))
         .await
         .unwrap();
 
@@ -98,9 +98,9 @@ async fn forwards_matching_event() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Non-matching event first; must NOT arrive.
-    bus.emit(ActorId::User, Event::CoveUpdated(sample_cove("c-other")));
+    bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-other")));
     // Matching event; must arrive.
-    bus.emit(ActorId::User, Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-001")));
 
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
@@ -114,7 +114,7 @@ async fn forwards_matching_event() {
     };
 
     // The body should be the *matching* event (c-001), not c-other.
-    assert!(text.contains("cove.updated"), "got: {}", text);
+    assert!(text.contains("area.updated"), "got: {}", text);
     assert!(text.contains("c-001"), "got: {}", text);
     assert!(!text.contains("c-other"), "got: {}", text);
 }
@@ -131,7 +131,7 @@ async fn empty_sub_drops_everything() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    bus.emit(ActorId::User, Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-001")));
 
     // Expect a timeout (no message arrives).
     let res = timeout(Duration::from_millis(300), ws.next()).await;
@@ -149,7 +149,7 @@ async fn firehose_receives_all() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    bus.emit(ActorId::User, Event::CoveDeleted { id: "c-x".into() });
+    bus.emit(ActorId::User, Event::AreaDeleted { id: "c-x".into() });
 
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
@@ -157,7 +157,7 @@ async fn firehose_receives_all() {
         .expect("closed")
         .expect("err");
     if let TMessage::Text(t) = msg {
-        assert!(t.contains("cove.deleted"));
+        assert!(t.contains("area.deleted"));
         assert!(t.contains("c-x"));
     } else {
         panic!("not text");
@@ -170,20 +170,20 @@ async fn replaces_not_extends() {
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // First sub: cove:c-001.
-    ws.send(TMessage::Text(r#"{"sub":["cove:c-001"]}"#.to_string()))
+    // First sub: area:c-001.
+    ws.send(TMessage::Text(r#"{"sub":["area:c-001"]}"#.to_string()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Now replace with cove:c-002.
-    ws.send(TMessage::Text(r#"{"sub":["cove:c-002"]}"#.to_string()))
+    // Now replace with area:c-002.
+    ws.send(TMessage::Text(r#"{"sub":["area:c-002"]}"#.to_string()))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Emit c-001: should be dropped (we replaced, not extended).
-    bus.emit(ActorId::User, Event::CoveUpdated(sample_cove("c-001")));
+    bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-001")));
     let res = timeout(Duration::from_millis(300), ws.next()).await;
     assert!(
         res.is_err(),
@@ -192,7 +192,7 @@ async fn replaces_not_extends() {
     );
 
     // Emit c-002: should arrive.
-    bus.emit(ActorId::User, Event::CoveUpdated(sample_cove("c-002")));
+    bus.emit(ActorId::User, Event::AreaUpdated(sample_area("c-002")));
     let msg = timeout(Duration::from_secs(2), ws.next())
         .await
         .expect("timeout")

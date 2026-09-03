@@ -73,34 +73,34 @@ test.describe.serial('tui theme protocol', () => {
     page,
   }) => {
     await page.goto('/calm/?testMounts=1');
-    const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-    const coveName = `E2E tui-theme cove ${Date.now()}`;
-    await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-    const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+    const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+    const areaName = `E2E tui-theme area ${Date.now()}`;
+    await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+    const nameInput = sidebarAreas.getByPlaceholder(/name/i);
     await expect(nameInput).toBeVisible();
-    await nameInput.fill(coveName);
+    await nameInput.fill(areaName);
     await nameInput.press('Enter');
 
-    const coveBtn = sidebarCoves.getByRole('button', {
-      name: coveName,
+    const areaBtn = sidebarAreas.getByRole('button', {
+      name: areaName,
       exact: true,
     });
-    await expect(coveBtn).toBeVisible();
-    await coveBtn.click();
-    await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+    await expect(areaBtn).toBeVisible();
+    await areaBtn.click();
+    await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-    const coveId = new URL(page.url()).pathname.split('/').pop()!;
+    const areaId = new URL(page.url()).pathname.split('/').pop()!;
     const waveTitle = `E2E tui-theme ${Date.now()}`;
     const waveRes = await page.request.post('/api/waves', {
       data: {
-        cove_id: coveId,
+        area_id: areaId,
         title: waveTitle,
         // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
         // This spec is about the OSC theme protocol, not working
         // directories (the terminal card below still passes its own
         // `cwd: '/tmp'`, which is a real directory inside the kernel).
-        // See `helpers/reset.ts::createWaveInCove` for why the invented
-        // `/tmp/playwright-cove-<id>` attached path was never valid.
+        // See `helpers/reset.ts::createWaveInArea` for why the invented
+        // `/tmp/playwright-area-<id>` attached path was never valid.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },
       headers: { 'content-type': 'application/json' },
@@ -205,12 +205,12 @@ test.describe.serial('tui theme protocol', () => {
     //      so the daemon's persisted set_default_colors survives WS reconnect.
     const waveBRes = await page.request.post('/api/waves', {
       data: {
-        cove_id: coveId,
+        area_id: areaId,
         title: `E2E tui-theme wave-B ${Date.now()}`,
         // #1147 S3 — no `cwd` (see wave A above). The `-B` suffix on
         // the old cwd existed only to keep this second wave in the
-        // same cove from colliding with wave A's claim on
-        // `cove_folders.UNIQUE(path)`; with no claim there is no
+        // same area from colliding with wave A's claim on
+        // `area_folders.UNIQUE(path)`; with no claim there is no
         // collision to dodge.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },

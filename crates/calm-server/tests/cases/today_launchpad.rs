@@ -7,7 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::db::RepoRead;
-use calm_server::routes::today::SystemCoveMintCounters;
+use calm_server::routes::today::SystemAreaMintCounters;
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
@@ -17,7 +17,7 @@ use calm_server::{
     routes,
     shared_codex_appserver::SharedCodexAppServer,
     state::{AppState, CodexClient, DaemonClient, WriteContext},
-    wave_cove_cache::WaveCoveCache,
+    wave_area_cache::WaveAreaCache,
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -33,7 +33,7 @@ struct Boot {
     /// #1253 — this server's own mint counters. Per instance, so a sibling
     /// case in the same binary cannot move them (which a process-global let
     /// happen under a threaded `cargo test`).
-    system_cove_mint: Arc<SystemCoveMintCounters>,
+    system_area_mint: Arc<SystemAreaMintCounters>,
     /// #1147 S2 — the managed workspace root this boot was pinned to.
     workspace_root: PathBuf,
     _tmp: TempDir,
@@ -53,7 +53,7 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     boot_with_rendezvous(tmp, repo, root_name, None).await
 }
 
-/// #1253 — `boot_with`, plus the option to arm the system-cove mint
+/// #1253 — `boot_with`, plus the option to arm the system-area mint
 /// rendezvous. Only the concurrency case passes `Some`.
 async fn boot_with_rendezvous(
     tmp: TempDir,
@@ -63,13 +63,13 @@ async fn boot_with_rendezvous(
 ) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
+    let waves = WaveAreaCache::new();
     // Seeded from the DB, not left empty: `boot_with` is also used to build a
     // SECOND server over an existing database (the B1 upgrade fixture), and an
     // empty role cache would make `ensure` fail to recognise the existing spec
     // card and try to mint a second one.
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    repo.seed_wave_area_cache(&waves).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -102,10 +102,10 @@ async fn boot_with_rendezvous(
     // sandbox, and make the root's location assertable.
     .with_workspace_root(tmp.path().join(root_name));
     let state = match rendezvous {
-        Some(barrier) => state.with_system_cove_mint_rendezvous(barrier),
+        Some(barrier) => state.with_system_area_mint_rendezvous(barrier),
         None => state,
     };
-    let system_cove_mint = Arc::clone(&state.system_cove_mint);
+    let system_area_mint = Arc::clone(&state.system_area_mint);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -114,18 +114,18 @@ async fn boot_with_rendezvous(
     Boot {
         app,
         repo,
-        system_cove_mint,
+        system_area_mint,
         workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
     }
 }
 
-async fn create_cove(b: &Boot, name: &str) -> Value {
+async fn create_area(b: &Boot, name: &str) -> Value {
     let response = b
         .app
         .clone()
         .oneshot(
-            Request::post("/api/coves")
+            Request::post("/api/areas")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({"name": name, "color": "#abc"}).to_string(),
@@ -383,7 +383,7 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
         // to 99 to keep the assertion non-vacuous, but S3's freeze latch makes
         // a frozen launchpad row un-repointable, so a 99 here would fake a
         // state nothing can produce (`wave_workspace_freeze_tx` excludes the
-        // system cove precisely so this row never gets a stamp) and would turn
+        // system area precisely so this row never gets a stamp) and would turn
         // the adopt branch into a 409. `kind` and `path` still carry the
         // scramble, so the rewrite assertions below still bite.
         "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
@@ -424,15 +424,15 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // A user cove with both shapes of wave, minted through the production
+    // A user area with both shapes of wave, minted through the production
     // route: a managed one (title-only) and an attached one (explicit cwd), so
     // the property below is neither empty nor all-launchpad.
-    let cove = create_cove(&b, "Atlas").await;
+    let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-under-root");
     create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "managed wave",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -441,7 +441,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "attached wave",
             "cwd": attached_dir.clone(),
             "attach_folder": true,
@@ -488,7 +488,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     }
 }
 
-/// `(wave id, workspace_kind, workspace_frozen_at, purpose, cove kind)` —
+/// `(wave id, workspace_kind, workspace_frozen_at, purpose, area kind)` —
 /// named so `no_attached_wave_is_ever_unfrozen`'s query stays inside clippy's
 /// `type_complexity` budget.
 type WorkspaceFreezeRow = (String, String, Option<i64>, Option<String>, String);
@@ -519,14 +519,14 @@ async fn no_attached_wave_is_ever_unfrozen() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // Both shapes in a *user* cove, minted through the production route —
+    // Both shapes in a *user* area, minted through the production route —
     // otherwise the property is only tested against the row that motivated it.
-    let cove = create_cove(&b, "Atlas").await;
+    let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-never-unfrozen");
     create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "user wave",
             "cwd": attached_dir.clone(),
             "attach_folder": true,
@@ -537,7 +537,7 @@ async fn no_attached_wave_is_ever_unfrozen() {
     create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "managed wave",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -546,7 +546,7 @@ async fn no_attached_wave_is_ever_unfrozen() {
 
     let rows: Vec<WorkspaceFreezeRow> = sqlx::query_as(
         "SELECT w.id, w.workspace_kind, w.workspace_frozen_at, w.purpose, c.kind \
-         FROM waves w JOIN coves c ON c.id = w.cove_id",
+         FROM waves w JOIN areas c ON c.id = w.area_id",
     )
     .fetch_all(b.repo.pool())
     .await
@@ -575,16 +575,16 @@ async fn no_attached_wave_is_ever_unfrozen() {
 
     // And every surviving unfrozen row is managed — the launchpad plus
     // whatever the managed default minted.
-    for (id, kind, frozen_at, purpose, cove_kind) in rows.iter().filter(|r| r.2.is_none()) {
+    for (id, kind, frozen_at, purpose, area_kind) in rows.iter().filter(|r| r.2.is_none()) {
         assert_eq!(
             kind, "managed",
-            "wave {id} (purpose={purpose:?}, cove={cove_kind}, frozen_at={frozen_at:?})"
+            "wave {id} (purpose={purpose:?}, area={area_kind}, frozen_at={frozen_at:?})"
         );
     }
     assert!(
         rows.iter()
             .any(|r| r.3.as_deref() == Some("launchpad") && r.2.is_none() && r.4 == "system"),
-        "the kernel-owned launchpad must still be the unfrozen system-cove \
+        "the kernel-owned launchpad must still be the unfrozen system-area \
          wave design D9 carved out: {rows:?}"
     );
 }
@@ -599,15 +599,15 @@ async fn launchpad_workspace_is_materialized() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let (path, kind, frozen_at, cove_id): (String, String, Option<i64>, String) = sqlx::query_as(
-        "SELECT workspace_path, workspace_kind, workspace_frozen_at, cove_id FROM waves \
+    let (path, kind, frozen_at, area_id): (String, String, Option<i64>, String) = sqlx::query_as(
+        "SELECT workspace_path, workspace_kind, workspace_frozen_at, area_id FROM waves \
          WHERE purpose='launchpad'",
     )
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
     // #1147 S2 review ruling ① — a managed workspace like any other, at
-    // `<root>/<system_cove_id>/<wave_id>`, and still never frozen (design D9).
+    // `<root>/<system_area_id>/<wave_id>`, and still never frozen (design D9).
     assert_eq!(kind, "managed");
     assert_eq!(
         frozen_at, None,
@@ -617,7 +617,7 @@ async fn launchpad_workspace_is_materialized() {
     assert_eq!(
         std::path::PathBuf::from(&path),
         b.workspace_root
-            .join(cove_id)
+            .join(area_id)
             .join(body["wave_id"].as_str().unwrap())
     );
     let path = std::path::Path::new(&path);
@@ -756,15 +756,15 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
     // --- the upgrade, with materialization obstructed ---
     let tmp = TempDir::new().unwrap();
     let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
-    let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE purpose='launchpad'")
+    let area_id: String = sqlx::query_scalar("SELECT area_id FROM waves WHERE purpose='launchpad'")
         .fetch_one(repo.pool())
         .await
         .unwrap();
     std::fs::create_dir_all(&after.workspace_root).unwrap();
-    // A plain file where `<root>/<cove_id>` must be a directory: `mkdir` gets
+    // A plain file where `<root>/<area_id>` must be a directory: `mkdir` gets
     // ENOTDIR. (Not a read-only parent — CI runs as root, for whom mode bits
     // are advisory, and that injection would pass vacuously.)
-    std::fs::write(after.workspace_root.join(&cove_id), "not a directory").unwrap();
+    std::fs::write(after.workspace_root.join(&area_id), "not a directory").unwrap();
 
     let (status, _) = ensure(after.app.clone()).await;
     assert!(
@@ -772,7 +772,7 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
         "materialization was obstructed, so this ensure must fail"
     );
 
-    std::fs::remove_file(after.workspace_root.join(&cove_id)).unwrap();
+    std::fs::remove_file(after.workspace_root.join(&area_id)).unwrap();
     let (status, body) = ensure(after.app.clone()).await;
     assert!(status.is_success(), "body={body}");
 
@@ -903,7 +903,7 @@ async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
     };
     let adapter = ChildWaveAdapter::new(
         b.repo.card_role_cache().clone(),
-        b.repo.wave_cove_cache().clone(),
+        b.repo.wave_area_cache().clone(),
         b.workspace_root.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();
@@ -944,12 +944,12 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let cove = create_cove(&b, "Atlas").await;
+    let area = create_area(&b, "Atlas").await;
     let attached_dir = attached_repo_fixture("today-launchpad-shared-path");
     let managed_parent = create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "managed parent",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -958,7 +958,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     let attached_parent = create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "attached parent",
             "cwd": attached_dir.clone(),
             "attach_folder": true,
@@ -1023,11 +1023,11 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let cove = create_cove(&b, "Atlas").await;
+    let area = create_area(&b, "Atlas").await;
     let first = create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "first",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -1036,7 +1036,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     let second = create_wave(
         &b,
         serde_json::json!({
-            "cove_id": cove["id"],
+            "area_id": area["id"],
             "title": "second",
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -1119,7 +1119,7 @@ async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
 
 /// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
 /// exists it answers `200 null` and leaves the database and the workspace root
-/// exactly as it found them: no cove, no wave, no card, and above all no
+/// exactly as it found them: no area, no wave, no card, and above all no
 /// `spec-harness-start` operation, because submitting one is what would make
 /// Today's first paint depend on codex being up.
 ///
@@ -1140,7 +1140,7 @@ async fn resolve_is_a_pure_read_and_answers_null_before_the_launchpad_exists() {
         "routine absence must be a null body, not an error status: {body}"
     );
     assert_eq!(count(&b, "SELECT COUNT(*) FROM waves").await, 0);
-    assert_eq!(count(&b, "SELECT COUNT(*) FROM coves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM areas").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
     assert!(
         !b.workspace_root.exists(),
@@ -1271,10 +1271,10 @@ async fn an_unreadable_report_payload_reads_as_having_content() {
 /// The `is_unique_constraint` fix, exercised on the route path rather than on
 /// the helper.
 ///
-/// Both `ensure` calls read `cove_get_system()` — `None` for both — before
-/// either opens a write transaction, so both try to mint the system cove and
-/// the loser hits `idx_coves_one_system`. SQLite words that as
-/// `UNIQUE constraint failed: coves.kind`, so while this module matched on the
+/// Both `ensure` calls read `area_get_system()` — `None` for both — before
+/// either opens a write transaction, so both try to mint the system area and
+/// the loser hits `idx_areas_one_system`. SQLite words that as
+/// `UNIQUE constraint failed: areas.kind`, so while this module matched on the
 /// *index* name the retry arm was dead code and the loser returned 500. The
 /// assertion is therefore about the losing request's status, not about the
 /// singleton (which the index enforces either way and which was already true
@@ -1284,7 +1284,7 @@ async fn an_unreadable_report_payload_reads_as_having_content() {
 /// hand-built `CalmError` to the helper tests the helper, and the helper was
 /// never the defect — the call sites were.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_first_ensure_retries_the_system_cove_race() {
+async fn concurrent_first_ensure_retries_the_system_area_race() {
     // ── This case asserts the MECHANISM, not just the outcome. ──
     //
     // Its previous form checked only that both requests succeeded and that the
@@ -1298,7 +1298,7 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // Two halves, and both are needed.
     //
     // The RENDEZVOUS *creates* the race: armed on this server only, it parks
-    // each request after its `cove_get_system()` has returned `None` and before
+    // each request after its `area_get_system()` has returned `None` and before
     // it opens a write transaction, so the second request provably cannot read
     // the first one's committed row. Without it the case merely hoped —
     // `tokio::join!` imposes no order, and on a CI runner request A finished
@@ -1333,7 +1333,7 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // its entire mint before the second one reads, so the second reads `Some`,
     // never mints, and `attempts` is 1 — measured, this reproduces the CI
     // failure exactly ("the race did not happen: 1 of the 2 requests found no
-    // system cove"). With the rendezvous the first request is parked before it
+    // system area"). With the rendezvous the first request is parked before it
     // can write, so the skew cannot suppress the race and the case passes.
     //
     // Keeping the skew permanently means removing the rendezvous fails here
@@ -1357,21 +1357,21 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     for (status, body) in [&first, &second] {
         assert!(
             status.is_success(),
-            "a concurrent first ensure must retry the system-cove race, not 500: {status} {body}"
+            "a concurrent first ensure must retry the system-area race, not 500: {status} {body}"
         );
     }
     // Absolute, not a delta: these counters belong to THIS server instance and
     // nothing else touched it.
-    let attempts = b.system_cove_mint.attempts.load(Ordering::Relaxed);
-    let retries = b.system_cove_mint.retries.load(Ordering::Relaxed);
-    // Both requests read "no system cove" before either wrote — i.e. the race
+    let attempts = b.system_area_mint.attempts.load(Ordering::Relaxed);
+    let retries = b.system_area_mint.retries.load(Ordering::Relaxed);
+    // Both requests read "no system area" before either wrote — i.e. the race
     // this case exists for actually occurred. Without this, every assertion
     // below is satisfied by a run in which the second request simply read the
     // first one's committed row and no retry was ever needed.
     assert_eq!(
         attempts, 2,
         "the race did not happen: {attempts} of the 2 requests found no system \
-         cove, so nothing exercised the retry arm and the assertions below \
+         area, so nothing exercised the retry arm and the assertions below \
          prove nothing"
     );
     // …and exactly one of them lost and went through the retry arm.
@@ -1383,12 +1383,12 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // `retries` increment fails here with "got 0 (attempts=2)", measured.
     assert_eq!(
         retries, 1,
-        "expected exactly one loser to take the system-cove retry arm, got \
+        "expected exactly one loser to take the system-area retry arm, got \
          {retries} (attempts={attempts})"
     );
     assert_eq!(first.1["wave_id"], second.1["wave_id"]);
     assert_eq!(
-        count(&b, "SELECT COUNT(*) FROM coves WHERE kind='system'").await,
+        count(&b, "SELECT COUNT(*) FROM areas WHERE kind='system'").await,
         1
     );
     assert_eq!(
@@ -1456,21 +1456,21 @@ async fn today_launchpad_mint_branch_survives_the_column_rename() {
 async fn today_launchpad_adopt_branch_survives_the_column_rename() {
     let b = boot().await;
 
-    // The launchpad lives in the system cove; mint it directly.
+    // The launchpad lives in the system area; mint it directly.
     let mut tx = b.repo.pool().begin().await.unwrap();
-    let cove = calm_server::db::sqlite::cove_create_system_tx(&mut tx)
+    let area = calm_server::db::sqlite::area_create_system_tx(&mut tx)
         .await
-        .expect("system cove");
+        .expect("system area");
     tx.commit().await.unwrap();
 
     let wave_id = "legacy-today-wave".to_string();
     sqlx::query(
-        "INSERT INTO waves (id, cove_id, title, sort, lifecycle, template_id, template_input, \
+        "INSERT INTO waves (id, area_id, title, sort, lifecycle, template_id, template_input, \
          created_at, updated_at) \
          VALUES (?1, ?2, 'Today', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
     )
     .bind(&wave_id)
-    .bind(cove.id.as_str())
+    .bind(area.id.as_str())
     .execute(b.repo.pool())
     .await
     .expect("seed a legacy Today row carrying both template columns");

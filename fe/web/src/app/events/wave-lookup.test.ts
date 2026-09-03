@@ -10,7 +10,7 @@ describe('wave lookup context', () => {
     client.setQueryData(queryKeys.waveDetail('wave-1'), {
       wave: {}, overlays: [], cards: [{ id: 'card-1' }],
     });
-    client.setQueryData(queryKeys.coves(), [{ id: 'card-2' }]);
+    client.setQueryData(queryKeys.areas(), [{ id: 'card-2' }]);
 
     const context = waveLookupContext(client);
     expect(context.findWaveOwningCard('card-1')).toBe('wave-1');

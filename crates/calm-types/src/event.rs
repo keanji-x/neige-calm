@@ -4,8 +4,8 @@
 //! transport and broadcast behavior live outside this IO-free crate.
 
 use crate::harness::HarnessPhaseTag;
-use crate::ids::{CardId, CoveId, WaveId};
-use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
+use crate::ids::{AreaId, CardId, WaveId};
+use crate::model::{Area, Card, Overlay, Wave, WaveLifecycle};
 use crate::proposal::{ProposalDecision, ProposalOp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -150,11 +150,11 @@ impl EditAuthor {
     }
 }
 
-/// Where an event lives in the cove → wave → card hierarchy.
+/// Where an event lives in the area → wave → card hierarchy.
 ///
 /// `EventScope::System` is the catch-all for events that genuinely don't
-/// belong to a single cove/wave/card (`Event::PluginState`, the
-/// CoveCreated case where the cove doesn't exist before the event, and
+/// belong to a single area/wave/card (`Event::PluginState`, the
+/// AreaCreated case where the area doesn't exist before the event, and
 /// malformed legacy rows). Prefer the narrowest available scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "id")]
@@ -162,17 +162,17 @@ impl EditAuthor {
 pub enum EventScope {
     /// No entity scope — server-internal or cross-entity event.
     System,
-    /// Scoped to one cove. No wave or card context.
-    Cove { cove: CoveId },
-    /// Scoped to one wave. Carries the owning cove for filter ergonomics
-    /// (`scope_cove IS NOT NULL` already narrows the rowset for cove-level
+    /// Scoped to one area. No wave or card context.
+    Area { area: AreaId },
+    /// Scoped to one wave. Carries the owning area for filter ergonomics
+    /// (`scope_area IS NOT NULL` already narrows the rowset for area-level
     /// subscribers without a join).
-    Wave { wave: WaveId, cove: CoveId },
-    /// Scoped to one card. Carries wave + cove for the same reason.
+    Wave { wave: WaveId, area: AreaId },
+    /// Scoped to one card. Carries wave + area for the same reason.
     Card {
         card: CardId,
         wave: WaveId,
-        cove: CoveId,
+        area: AreaId,
     },
 }
 
@@ -183,25 +183,25 @@ impl EventScope {
     pub fn kind(&self) -> &'static str {
         match self {
             EventScope::System => "system",
-            EventScope::Cove { .. } => "cove",
+            EventScope::Area { .. } => "area",
             EventScope::Wave { .. } => "wave",
             EventScope::Card { .. } => "card",
         }
     }
 
-    pub fn cove_id(&self) -> Option<&CoveId> {
+    pub fn area_id(&self) -> Option<&AreaId> {
         match self {
             EventScope::System => None,
-            EventScope::Cove { cove } => Some(cove),
-            EventScope::Wave { cove, .. } => Some(cove),
-            EventScope::Card { cove, .. } => Some(cove),
+            EventScope::Area { area } => Some(area),
+            EventScope::Wave { area, .. } => Some(area),
+            EventScope::Card { area, .. } => Some(area),
         }
     }
 
     /// Owning wave id, if the scope is wave-or-narrower.
     pub fn wave_id(&self) -> Option<&WaveId> {
         match self {
-            EventScope::System | EventScope::Cove { .. } => None,
+            EventScope::System | EventScope::Area { .. } => None,
             EventScope::Wave { wave, .. } => Some(wave),
             EventScope::Card { wave, .. } => Some(wave),
         }
@@ -218,29 +218,29 @@ impl EventScope {
     /// Malformed or incomplete rows fall back to `System` so replay continues.
     pub fn from_row(
         kind: Option<&str>,
-        cove: Option<&str>,
+        area: Option<&str>,
         wave: Option<&str>,
         card: Option<&str>,
     ) -> EventScope {
         match kind.unwrap_or("system") {
-            "cove" => match cove {
-                Some(c) => EventScope::Cove {
-                    cove: CoveId::from(c),
+            "area" => match area {
+                Some(c) => EventScope::Area {
+                    area: AreaId::from(c),
                 },
                 None => EventScope::System,
             },
-            "wave" => match (wave, cove) {
+            "wave" => match (wave, area) {
                 (Some(w), Some(c)) => EventScope::Wave {
                     wave: WaveId::from(w),
-                    cove: CoveId::from(c),
+                    area: AreaId::from(c),
                 },
                 _ => EventScope::System,
             },
-            "card" => match (card, wave, cove) {
+            "card" => match (card, wave, area) {
                 (Some(card), Some(w), Some(c)) => EventScope::Card {
                     card: CardId::from(card),
                     wave: WaveId::from(w),
-                    cove: CoveId::from(c),
+                    area: AreaId::from(c),
                 },
                 _ => EventScope::System,
             },
@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 13;
+pub const SYNC_EVENT_VERSION: u32 = 14;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -307,29 +307,29 @@ pub enum RatifyDecision {
 /// honored — the emitted TS uses the same `{ ev, data }` envelope.
 ///
 /// Note for future variants: ts-rs requires every payload type referenced
-/// here to also derive `TS`. Inline struct variants (e.g. `CoveDeleted { id }`)
+/// here to also derive `TS`. Inline struct variants (e.g. `AreaDeleted { id }`)
 /// are emitted directly; tuple variants over a named struct (e.g.
-/// `CoveUpdated(Cove)`) pull in the struct's own export.
+/// `AreaUpdated(Area)`) pull in the struct's own export.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "ev", content = "data")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum Event {
-    #[serde(rename = "cove.updated")]
-    CoveUpdated(Cove),
-    #[serde(rename = "cove.deleted")]
-    CoveDeleted { id: CoveId },
+    #[serde(rename = "area.updated")]
+    AreaUpdated(Area),
+    #[serde(rename = "area.deleted")]
+    AreaDeleted { id: AreaId },
 
     #[serde(rename = "wave.updated")]
     WaveUpdated(WaveUpdatedPayload),
     #[serde(rename = "wave.deleted")]
-    WaveDeleted { id: WaveId, cove_id: CoveId },
+    WaveDeleted { id: WaveId, area_id: AreaId },
 
     /// Issue #145 — explicit Wave lifecycle transition.
     ///
     /// Emitted exactly once per (validated) `from → to` change. Carries
     /// the wave id + the typed `from` / `to` so reducers downstream can
     /// drive UI updates without re-parsing every `WaveUpdated` payload.
-    /// Wave-scoped: routes to `wave:<id>` and `cove:<cove>` subscribers.
+    /// Wave-scoped: routes to `wave:<id>` and `area:<area>` subscribers.
     ///
     /// The state machine that gates which (from, to, actor) triples
     /// produce this envelope lives in `crate::wave_lifecycle`. Illegal
@@ -344,7 +344,7 @@ pub enum Event {
     #[serde(rename = "wave.lifecycle_changed")]
     WaveLifecycleChanged {
         id: WaveId,
-        cove_id: CoveId,
+        area_id: AreaId,
         from: WaveLifecycle,
         to: WaveLifecycle,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -648,7 +648,7 @@ pub enum Event {
     /// card. PR4 schema-only; PR5's `Dispatcher` was the consumer until
     /// #644 PR-D removed that live dispatch arm.
     ///
-    /// `cwd` is `None` when the spec card defers to the wave/cove default
+    /// `cwd` is `None` when the spec card defers to the wave/area default
     /// working directory.
     #[serde(rename = "terminal.worker_requested", alias = "terminal.job_requested")]
     TerminalWorkerRequested {
@@ -1072,13 +1072,13 @@ impl Event {
     pub fn metadata(&self) -> EventMetadata {
         let kind_tag = self.kind_tag();
         match self {
-            Event::CoveUpdated(c) => EventMetadata {
+            Event::AreaUpdated(c) => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
                 entity_id: Some(c.id.to_string()),
             },
-            Event::CoveDeleted { id } => EventMetadata {
+            Event::AreaDeleted { id } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1299,8 +1299,8 @@ impl Event {
     /// on spelling without re-parsing the serialized envelope.
     pub fn kind_tag(&self) -> &'static str {
         match self {
-            Event::CoveUpdated(_) => "cove.updated",
-            Event::CoveDeleted { .. } => "cove.deleted",
+            Event::AreaUpdated(_) => "area.updated",
+            Event::AreaDeleted { .. } => "area.deleted",
             Event::WaveUpdated(_) => "wave.updated",
             Event::WaveDeleted { .. } => "wave.deleted",
             Event::WaveLifecycleChanged { .. } => "wave.lifecycle_changed",
@@ -1388,7 +1388,7 @@ impl Event {
 /// each client's `sub` filter to decide forward-or-drop.
 ///
 /// **Topic grammar** (mirror in frontend):
-///   - `cove:<id>`           — events touching a specific cove
+///   - `area:<id>`           — events touching a specific area
 ///   - `wave:<id>`           — events touching a specific wave
 ///   - `card:<id>`           — events touching a specific card
 ///   - `plugin:<id>`         — events emitted by/about a specific plugin
@@ -1396,23 +1396,23 @@ impl Event {
 ///   - `*`                   — firehose (debug only)
 pub fn topics(ev: &Event) -> Vec<String> {
     match ev {
-        Event::CoveUpdated(c) => vec![format!("cove:{}", c.id), "*".into()],
-        Event::CoveDeleted { id } => vec![format!("cove:{}", id), "*".into()],
+        Event::AreaUpdated(c) => vec![format!("area:{}", c.id), "*".into()],
+        Event::AreaDeleted { id } => vec![format!("area:{}", id), "*".into()],
 
         Event::WaveUpdated(w) => vec![
             format!("wave:{}", w.id),
-            format!("cove:{}", w.cove_id),
+            format!("area:{}", w.area_id),
             "*".into(),
         ],
-        Event::WaveDeleted { id, cove_id } => vec![
+        Event::WaveDeleted { id, area_id } => vec![
             format!("wave:{}", id),
-            format!("cove:{}", cove_id),
+            format!("area:{}", area_id),
             "*".into(),
         ],
 
-        Event::WaveLifecycleChanged { id, cove_id, .. } => vec![
+        Event::WaveLifecycleChanged { id, area_id, .. } => vec![
             format!("wave:{}", id),
-            format!("cove:{}", cove_id),
+            format!("area:{}", area_id),
             "*".into(),
         ],
 
@@ -1500,7 +1500,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         }
 
         // PR4 of #136: kernel-internal dispatcher / task-lifecycle signals.
-        // No card/wave/cove ids on the payload itself (the BroadcastEnvelope
+        // No card/wave/area ids on the payload itself (the BroadcastEnvelope
         // carries the originating `EventScope` instead — see `Dispatcher`).
         // Subscribers identify these via the firehose plus the dispatcher's
         // `kinds=` filter (PR5).
@@ -1568,7 +1568,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
 
         // Issue #644 — plan revisions are wave-scoped on the payload, so
         // wave subscribers (future UI task list) can filter without the
-        // firehose. No cove id on the payload; the BroadcastEnvelope's
+        // firehose. No area id on the payload; the BroadcastEnvelope's
         // EventScope carries the full ancestor chain.
         Event::PlanUpdated { wave_id, .. } => vec![format!("wave:{}", wave_id), "*".into()],
     }
@@ -1596,16 +1596,16 @@ mod scope_tests {
         // them is a wire break. Pin against accidental rename.
         assert_eq!(EventScope::System.kind(), "system");
         assert_eq!(
-            EventScope::Cove {
-                cove: CoveId::from("c")
+            EventScope::Area {
+                area: AreaId::from("c")
             }
             .kind(),
-            "cove"
+            "area"
         );
         assert_eq!(
             EventScope::Wave {
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             }
             .kind(),
             "wave"
@@ -1614,7 +1614,7 @@ mod scope_tests {
             EventScope::Card {
                 card: CardId::from("k"),
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             }
             .kind(),
             "card"
@@ -1626,45 +1626,45 @@ mod scope_tests {
         let s = EventScope::Card {
             card: CardId::from("k"),
             wave: WaveId::from("w"),
-            cove: CoveId::from("c"),
+            area: AreaId::from("c"),
         };
         assert_eq!(s.card_id().map(|x| x.as_str()), Some("k"));
         assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
-        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+        assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
         let s = EventScope::Wave {
             wave: WaveId::from("w"),
-            cove: CoveId::from("c"),
+            area: AreaId::from("c"),
         };
         assert_eq!(s.card_id(), None);
         assert_eq!(s.wave_id().map(|x| x.as_str()), Some("w"));
-        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+        assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
-        let s = EventScope::Cove {
-            cove: CoveId::from("c"),
+        let s = EventScope::Area {
+            area: AreaId::from("c"),
         };
         assert!(s.card_id().is_none() && s.wave_id().is_none());
-        assert_eq!(s.cove_id().map(|x| x.as_str()), Some("c"));
+        assert_eq!(s.area_id().map(|x| x.as_str()), Some("c"));
 
         let s = EventScope::System;
-        assert!(s.card_id().is_none() && s.wave_id().is_none() && s.cove_id().is_none());
+        assert!(s.card_id().is_none() && s.wave_id().is_none() && s.area_id().is_none());
     }
 
     #[test]
     fn serde_round_trip_all_variants() {
         for s in [
             EventScope::System,
-            EventScope::Cove {
-                cove: CoveId::from("c"),
+            EventScope::Area {
+                area: AreaId::from("c"),
             },
             EventScope::Wave {
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             },
             EventScope::Card {
                 card: CardId::from("k"),
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             },
         ] {
             let json = serde_json::to_string(&s).expect("serialize");
@@ -1682,13 +1682,13 @@ mod scope_tests {
         let s = EventScope::Card {
             card: CardId::from("k"),
             wave: WaveId::from("w"),
-            cove: CoveId::from("c"),
+            area: AreaId::from("c"),
         };
         let v: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v["kind"], "Card");
         assert_eq!(v["id"]["card"], "k");
         assert_eq!(v["id"]["wave"], "w");
-        assert_eq!(v["id"]["cove"], "c");
+        assert_eq!(v["id"]["area"], "c");
 
         // `System` unit variant: just the `kind` discriminator, no `id`.
         let v: serde_json::Value = serde_json::to_value(EventScope::System).unwrap();
@@ -1702,16 +1702,16 @@ mod scope_tests {
             EventScope::System,
         );
         assert_eq!(
-            EventScope::from_row(Some("cove"), Some("c"), None, None),
-            EventScope::Cove {
-                cove: CoveId::from("c"),
+            EventScope::from_row(Some("area"), Some("c"), None, None),
+            EventScope::Area {
+                area: AreaId::from("c"),
             },
         );
         assert_eq!(
             EventScope::from_row(Some("wave"), Some("c"), Some("w"), None),
             EventScope::Wave {
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             },
         );
         assert_eq!(
@@ -1719,7 +1719,7 @@ mod scope_tests {
             EventScope::Card {
                 card: CardId::from("k"),
                 wave: WaveId::from("w"),
-                cove: CoveId::from("c"),
+                area: AreaId::from("c"),
             },
         );
     }
@@ -2743,21 +2743,21 @@ mod scope_tests {
 
     fn metadata_coverage_events() -> Vec<Event> {
         vec![
-            Event::CoveUpdated(cove_sample("cove-updated")),
-            Event::CoveDeleted {
-                id: CoveId::from("cove-deleted"),
+            Event::AreaUpdated(area_sample("area-updated")),
+            Event::AreaDeleted {
+                id: AreaId::from("area-deleted"),
             },
             Event::WaveUpdated(WaveUpdatedPayload::new(
-                wave_sample("wave-updated", "cove-1"),
+                wave_sample("wave-updated", "area-1"),
                 None,
             )),
             Event::WaveDeleted {
                 id: WaveId::from("wave-deleted"),
-                cove_id: CoveId::from("cove-1"),
+                area_id: AreaId::from("area-1"),
             },
             Event::WaveLifecycleChanged {
                 id: WaveId::from("wave-lifecycle"),
-                cove_id: CoveId::from("cove-1"),
+                area_id: AreaId::from("area-1"),
                 from: WaveLifecycle::Draft,
                 to: WaveLifecycle::Planning,
                 agent_message: None,
@@ -2982,22 +2982,22 @@ mod scope_tests {
         ]
     }
 
-    fn cove_sample(id: &str) -> Cove {
-        Cove {
-            id: CoveId::from(id),
+    fn area_sample(id: &str) -> Area {
+        Area {
+            id: AreaId::from(id),
             name: "n".into(),
             color: "#fff".into(),
             sort: 1.0,
-            kind: crate::model::CoveKind::User,
+            kind: crate::model::AreaKind::User,
             created_at: 0,
             updated_at: 0,
         }
     }
 
-    fn wave_sample(id: &str, cove_id: &str) -> Wave {
+    fn wave_sample(id: &str, area_id: &str) -> Wave {
         Wave {
             id: WaveId::from(id),
-            cove_id: CoveId::from(cove_id),
+            area_id: AreaId::from(area_id),
             title: "t".into(),
             sort: 1.0,
             archived_at: None,

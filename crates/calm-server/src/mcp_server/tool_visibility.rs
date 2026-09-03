@@ -137,11 +137,11 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::forge_trust::trusted_forge_plugin;
-    use crate::model::{NewCove, NewWave};
+    use crate::model::{NewArea, NewWave};
     use crate::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
     use crate::state::WriteContext;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -202,7 +202,7 @@ mod tests {
         let leftover_template = repo
             .wave_create(crate::model::NewWave {
                 template_input: None,
-                cove_id: unbound_wave.cove_id.clone(),
+                area_id: unbound_wave.area_id.clone(),
                 title: "template-id leftover".into(),
                 sort: None,
                 cwd: String::new(),
@@ -319,7 +319,7 @@ mod tests {
             repo: route_repo,
             wave_vcs: None,
             events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
             plugin_host,
@@ -328,17 +328,17 @@ mod tests {
     }
 
     async fn make_wave(repo: &SqlxRepo, plugin_scope: Option<&str>) -> crate::model::Wave {
-        let cove = repo
-            .cove_create(NewCove {
-                name: format!("cove-{plugin_scope:?}"),
+        let area = repo
+            .area_create(NewArea {
+                name: format!("area-{plugin_scope:?}"),
                 color: "#101010".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         repo.wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "tool visibility".into(),
             sort: None,
             cwd: String::new(),
@@ -397,7 +397,7 @@ mod tests {
             plugins_data_dir,
             Vec::new(),
             EventBus::new(),
-            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
         ));
         (host, tmp)
     }

@@ -22,7 +22,7 @@
    * same trailing page pad (`--space-10`). Vertically it is not, any more.
    *
    * It used to start at `--header-band + --header-h + --space-8` — the offset
-   * `features/{cove,wave}/page` gives the sticky PanelCard — so that the two
+   * `features/{area,wave}/page` gives the sticky PanelCard — so that the two
    * cards began on one line. Measured at 1512×950 that put the top edge at
    * **y 68.3** while the bottom sat 28 off the window: 68 above, 28 below, for
    * an object whose whole job is to be read. The alignment was real and the
@@ -271,7 +271,7 @@
    * edges puts it on the same 8px column the transcript and the composer start
    * on. The 16px stroked SVG comes from the shared `<Icon>` line-work, so its
    * optical weight stays stable instead of depending on a font's arrow metrics
-   * — the same system the rail collapse and the cove chevron draw from.
+   * — the same system the rail collapse and the area chevron draw from.
    *
    * The full 28px hit area is §5 (2.5.8).
    */

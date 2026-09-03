@@ -17,15 +17,15 @@ describe('event protocol contract', () => {
 
   it('keeps cursor and version as envelope metadata, not payload fields', () => {
     const result = decodeEventFrame({
-      ev: 'cove.deleted',
-      data: { id: 'cove-1' },
+      ev: 'area.deleted',
+      data: { id: 'area-1' },
       _id: 23,
       eventVersion: 4,
     });
     expect(result.status).toBe('ready');
     if (result.status === 'ready' && result.frame.type === 'event') {
       expect(result.frame.meta).toEqual({ id: 23, eventVersion: 4 });
-      expect(result.frame.event).toEqual({ ev: 'cove.deleted', data: { id: 'cove-1' } });
+      expect(result.frame.event).toEqual({ ev: 'area.deleted', data: { id: 'area-1' } });
       expect(result.frame.event).not.toHaveProperty('_id');
       expect(result.frame.event).not.toHaveProperty('eventVersion');
     }
@@ -37,7 +37,7 @@ describe('event protocol contract', () => {
       sub: readonly Topic[];
       since: number;
     }>>();
-    expectTypeOf<Topic>().toEqualTypeOf<'*' | `cove:${string}` | `wave:${string}` | `card:${string}`>();
+    expectTypeOf<Topic>().toEqualTypeOf<'*' | `area:${string}` | `wave:${string}` | `card:${string}`>();
     expectTypeOf<EventFrame['type']>().toEqualTypeOf<
       'event' | 'malformed-event' | 'replay-complete' | 'snapshot-required'
     >();

@@ -133,7 +133,7 @@ use calm_server::db::{RepoEventWrite, write_with_events_typed};
 use calm_server::error::{CalmError, Result};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave};
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -194,18 +194,18 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
             .expect("open in-memory sqlite (shared cache)"),
     );
 
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "deadlock-repro".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("cove_create");
+        .expect("area_create");
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "deadlock repro".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -267,10 +267,10 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
 
     let bus = EventBus::new();
     let role_cache = CardRoleCache::new();
-    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&cove_cache)
+    let area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&area_cache)
         .await
-        .expect("seed wave->cove cache");
+        .expect("seed wave->area cache");
 
     let (overlays_locked_tx, overlays_locked_rx) = oneshot::channel::<()>();
     let (go_tx, go_rx) = oneshot::channel::<()>();
@@ -279,8 +279,8 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
     // ---- writer: the DELETE /api/waves/:id transaction, verbatim --------
     let repo_w = Arc::clone(&repo);
     let wave_id_w = wave_id.clone();
-    let cove_cache_w = cove_cache.clone();
-    let write_ctx = calm_server::state::WriteContext::new(role_cache.clone(), cove_cache.clone());
+    let area_cache_w = area_cache.clone();
+    let write_ctx = calm_server::state::WriteContext::new(role_cache.clone(), area_cache.clone());
     let writer = tokio::spawn(async move {
         write_with_events_typed(
             repo_w.as_ref() as &dyn RepoEventWrite,
@@ -300,7 +300,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
                         .expect("test task must still be listening");
                     go_rx.await.expect("test task must release the writer");
 
-                    let res = wave_delete_tx(tx, &wave_id_w, &cove_cache_w)
+                    let res = wave_delete_tx(tx, &wave_id_w, &area_cache_w)
                         .await
                         .map_err(CalmError::from);
                     let outcome = match &res {

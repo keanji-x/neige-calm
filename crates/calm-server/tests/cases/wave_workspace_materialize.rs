@@ -27,7 +27,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::NewCove;
+use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -40,7 +40,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
     _tmp: TempDir,
@@ -51,8 +51,8 @@ async fn boot() -> Boot {
     let workspace_root = tmp.path().join("workspaces");
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "ws-materialize".into(),
             color: "#000".into(),
             sort: None,
@@ -60,8 +60,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -76,11 +76,11 @@ async fn boot() -> Boot {
             tmp.path().join("plugins-data"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     )
     .with_workspace_root(workspace_root.clone());
     let app = routes::router()
@@ -90,7 +90,7 @@ async fn boot() -> Boot {
         .with_state(state);
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo: sqlx_repo,
         workspace_root,
         _tmp: tmp,
@@ -147,7 +147,7 @@ async fn workspace_row(repo: &SqlxRepo, wave_id: &str) -> (String, String, Optio
 /// `child_wave_adapter.rs` both called themselves "the fifth"):
 ///
 ///   1. `POST /api/waves` — this case and the two below it;
-///   2. cove chat (`ensure_cove_chat_wave_inner`), which shares
+///   2. area chat (`ensure_area_chat_wave_inner`), which shares
 ///      `create_wave_structure` with 1 and therefore its materialize call;
 ///   3. Today/launchpad (`routes::today`), which raw-`INSERT`s and carries its
 ///      own materialize call;
@@ -175,7 +175,7 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     let (status, body) = post(
         b.app.clone(),
         "/api/waves",
-        json!({"cove_id": b.cove_id, "title": "research", "theme": theme()}),
+        json!({"area_id": b.area_id, "title": "research", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -186,8 +186,8 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     assert_eq!(kind, "managed");
     assert_eq!(
         PathBuf::from(&path),
-        b.workspace_root.join(&b.cove_id).join(wave_id),
-        "D2 layout is `<root>/<cove_id>/<wave_id>`, ids only"
+        b.workspace_root.join(&b.area_id).join(wave_id),
+        "D2 layout is `<root>/<area_id>/<wave_id>`, ids only"
     );
     assert!(
         frozen.is_none(),
@@ -215,7 +215,7 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
 /// ## Why this is a separate case and not a parameter of the one above
 ///
 /// #1300 deleted `seeded_template_waves_are_materialized`, and rightly: its
-/// subject — the three hidden system-cove template waves — no longer exists.
+/// subject — the three hidden system-area template waves — no longer exists.
 /// But that case was two properties in one, and only one of them died with the
 /// seeding. The survivor is this: the wave the **user** asked for, when it
 /// carries a `template_id` and no `cwd`, must still come out of create with a
@@ -237,7 +237,7 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
         b.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": b.cove_id,
+            "area_id": b.area_id,
             "title": "from template",
             "template_id": "small-change",
             "theme": theme(),
@@ -275,8 +275,8 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
     );
     assert_eq!(
         PathBuf::from(&path),
-        b.workspace_root.join(&b.cove_id).join(wave_id),
-        "D2 layout is `<root>/<cove_id>/<wave_id>`, ids only"
+        b.workspace_root.join(&b.area_id).join(wave_id),
+        "D2 layout is `<root>/<area_id>/<wave_id>`, ids only"
     );
     assert!(
         frozen.is_none(),
@@ -312,7 +312,7 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
         b.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": b.cove_id,
+            "area_id": b.area_id,
             "title": "attached",
             "cwd": target.to_string_lossy(),
             "attach_folder": true,
@@ -341,7 +341,7 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
 /// §5 test 5 — materialization failure must surface as a non-2xx carrying the
 /// real error, not a 201 whose first worker then dies with `spawn-failed`.
 ///
-/// The injection is a **plain file** where `<root>/<cove_id>` must be a
+/// The injection is a **plain file** where `<root>/<area_id>` must be a
 /// directory, so `mkdir` returns `ENOTDIR`. Deliberately not a read-only
 /// parent (`chmod 0555`): CI runs as root, for whom mode bits are advisory,
 /// and that injection would pass vacuously.
@@ -349,12 +349,12 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
 async fn materialize_failure_fails_the_create() {
     let b = boot().await;
     std::fs::create_dir_all(&b.workspace_root).unwrap();
-    std::fs::write(b.workspace_root.join(&b.cove_id), "not a directory").unwrap();
+    std::fs::write(b.workspace_root.join(&b.area_id), "not a directory").unwrap();
 
     let (status, body) = post(
         b.app.clone(),
         "/api/waves",
-        json!({"cove_id": b.cove_id, "title": "doomed", "theme": theme()}),
+        json!({"area_id": b.area_id, "title": "doomed", "theme": theme()}),
     )
     .await;
     assert!(
@@ -400,11 +400,11 @@ async fn materialize_failure_fails_the_create() {
 
     // And the injection really is what broke it: with the obstruction removed
     // the identical request succeeds.
-    std::fs::remove_file(b.workspace_root.join(&b.cove_id)).unwrap();
+    std::fs::remove_file(b.workspace_root.join(&b.area_id)).unwrap();
     let (status, body) = post(
         b.app,
         "/api/waves",
-        json!({"cove_id": b.cove_id, "title": "fine", "theme": theme()}),
+        json!({"area_id": b.area_id, "title": "fine", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -426,7 +426,7 @@ async fn an_unmaterialized_managed_wave_heals_when_a_worker_takes_its_lease() {
     let (status, body) = post(
         b.app.clone(),
         "/api/waves",
-        json!({"cove_id": b.cove_id, "title": "orphan", "theme": theme()}),
+        json!({"area_id": b.area_id, "title": "orphan", "theme": theme()}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");

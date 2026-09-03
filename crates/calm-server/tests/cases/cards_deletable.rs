@@ -33,7 +33,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CardRole, NewCard, NewCove, NewOverlay, NewWave};
+use calm_server::model::{CardRole, NewArea, NewCard, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -46,7 +46,7 @@ use crate::common;
 use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<dyn Repo>,
     tmp: TempDir,
 }
@@ -58,8 +58,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "deletable-test".into(),
             color: "#000".into(),
             sort: None,
@@ -73,8 +73,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -86,11 +86,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-deletable-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()
@@ -101,7 +101,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         tmp,
     }
@@ -211,8 +211,8 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -222,7 +222,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: String::new(),
@@ -317,7 +317,7 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create returned: {body}");
@@ -369,7 +369,7 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -406,7 +406,7 @@ async fn delete_card_returns_204_for_deletable_worker_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -442,7 +442,7 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -498,7 +498,7 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -535,7 +535,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
     let parent = boot
         .repo
         .wave_create(NewWave {
-            cove_id: boot.cove_id.clone().into(),
+            area_id: boot.area_id.clone().into(),
             title: "parent".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -550,7 +550,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
     let child = boot
         .repo
         .wave_create(NewWave {
-            cove_id: boot.cove_id.clone().into(),
+            area_id: boot.area_id.clone().into(),
             title: "child".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -589,7 +589,7 @@ async fn rest_wave_create_cannot_set_parent_wave_id() {
         boot.app,
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "forged child",
             "cwd": attached_repo_fixture("forged-child"),
             "attach_folder": true,
@@ -612,7 +612,7 @@ async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-wave-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-wave-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -647,12 +647,12 @@ async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
 }
 
 #[tokio::test]
-async fn cove_delete_releases_wave_workspace_lease_rows_before_cascade() {
+async fn area_delete_releases_wave_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-cove-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-760-area-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -665,12 +665,12 @@ async fn cove_delete_releases_wave_workspace_lease_rows_before_cascade() {
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let (status, body) =
-        delete_with_body(boot.app.clone(), &format!("/api/coves/{}", boot.cove_id)).await;
+        delete_with_body(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "delete body: {body}");
 
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
-        "cove delete does not remove non-wave-root lease artifacts"
+        "area delete does not remove non-wave-root lease artifacts"
     );
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE lease_id = ?1")
@@ -678,7 +678,7 @@ async fn cove_delete_releases_wave_workspace_lease_rows_before_cascade() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(remaining, 0, "cove cascade removes released lease row");
+    assert_eq!(remaining, 0, "area cascade removes released lease row");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
             .fetch_one(&pool)
@@ -693,7 +693,7 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -764,7 +764,7 @@ async fn patch_card_with_deletable_returns_400() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");

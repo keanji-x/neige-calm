@@ -28,7 +28,7 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "gate_required",
     "reference_needs_block",
     "reference_missing",
-    "reference_cross_cove",
+    "reference_cross_area",
     "declare_and_wait",
     "declaration_changed_in_flight",
     "task_key_completed",
@@ -50,7 +50,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("gate_required", "gate"),
     ("reference_needs_block", "refs"),
     ("reference_missing", "refs"),
-    ("reference_cross_cove", "refs"),
+    ("reference_cross_area", "refs"),
     ("declare_and_wait", "released_by_user"),
     ("declaration_changed_in_flight", "key"),
     ("task_key_completed", "key"),
@@ -241,8 +241,8 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             "reference target `{}` does not exist",
             arg(args, "reference")
         ),
-        "reference_cross_cove" => format!(
-            "cross-cove reference `{}` is not schedulable",
+        "reference_cross_area" => format!(
+            "cross-area reference `{}` is not schedulable",
             arg(args, "reference")
         ),
         "declare_and_wait" => "this wave requires user release before spec tasks are queued".into(),
@@ -965,7 +965,7 @@ mod tests {
             ("gate_required", "gate"),
             ("reference_needs_block", "refs"),
             ("reference_missing", "refs"),
-            ("reference_cross_cove", "refs"),
+            ("reference_cross_area", "refs"),
             ("declare_and_wait", "released_by_user"),
             ("declaration_changed_in_flight", "key"),
             ("task_key_completed", "key"),

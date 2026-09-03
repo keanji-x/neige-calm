@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 function bodyFor(path: string): unknown {
-  if (path === '/api/coves') return [];
+  if (path === '/api/areas') return [];
   if (path === '/api/settings') return { settings: {} };
   if (path === '/api/plugins') return [];
   if (path === '/api/wave-templates') return [];

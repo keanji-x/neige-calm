@@ -25,9 +25,9 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
             .await
             .unwrap(),
     );
-    let cove = crate::db::RepoSyncDomainRaw::cove_create(
+    let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
-        crate::model::NewCove {
+        crate::model::NewArea {
             name: "terminal workers".into(),
             color: "#101010".into(),
             sort: None,
@@ -39,7 +39,7 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
         repo.as_ref(),
         crate::model::NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "terminal workers".into(),
             sort: None,
             cwd: workspace.to_string(),
@@ -53,7 +53,7 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
     .unwrap();
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     TerminalWorkerHarness {
-        adapter: TerminalWorkerAdapter::new(route_repo, CardRoleCache::new(), WaveCoveCache::new()),
+        adapter: TerminalWorkerAdapter::new(route_repo, CardRoleCache::new(), WaveAreaCache::new()),
         repo,
         wave_id: wave.id.to_string(),
     }

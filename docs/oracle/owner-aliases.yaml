@@ -7,7 +7,7 @@
 #   core/     api · domain · schemas · keys · state · markdown · events-protocol
 #   ui/       dialog · menu · focus · roving · directory-browser · atoms · …
 #   systems/  cards · terminal · wheel · fs-viewers · editor · events-transport
-#   features/ wave · cove · today · report · spec · settings · auth
+#   features/ wave · area · today · report · spec · settings · auth
 #   app/      router · providers · theme · shell · events-glue · di
 #   styles/   全局样式层（tokens / layer-rules / focus-visible / motion / 排版）
 #   none/     非运行时层（lint 规则 · CI 闸门 · 构建配置 · e2e 基础设施 · 纯文档政策）
@@ -108,11 +108,11 @@ aliases:
   "wave/create": "features/wave/create"
   "shared/new-task-form": "features/wave/create"
   "web/components/new-task-form": "features/wave/create"
-  "pages/cove": "features/cove/page"
-  "web/pages/cove": "features/cove/page"
-  "cove/folders": "features/cove/folders"
-  "cove/delete": "features/cove/delete"
-  "shared/cove-palette": "features/cove/palette"
+  "pages/area": "features/area/page"
+  "web/pages/area": "features/area/page"
+  "area/folders": "features/area/folders"
+  "area/delete": "features/area/delete"
+  "shared/area-palette": "features/area/palette"
   "pages/today": "features/today/page"
   "hooks/today-terminal": "features/today/terminal"
   "pages/wave-report": "features/report/page"

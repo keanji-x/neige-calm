@@ -9,7 +9,7 @@
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Wave, WaveLifecycle};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
@@ -82,11 +82,11 @@ impl CardDecisionSink {
         let scope = EventScope::Card {
             card: CardId::from(card_id_str.clone()),
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let wave_scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let wave_id = wave.id.clone();
         let release_workspace = matches!(
@@ -325,7 +325,7 @@ impl CardDecisionSink {
             })?;
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
-            cove: wave.cove_id.clone(),
+            area: wave.area_id.clone(),
         };
         let wave_id = wave.id.clone();
         let wave_scope = scope.clone();
@@ -575,15 +575,15 @@ impl DecisionSink for CardDecisionSink {
 pub struct SpecHarnessAgentReactor {
     runtime_id: RuntimeId,
     wave_id: WaveId,
-    cove_id: CoveId,
+    area_id: AreaId,
 }
 
 impl SpecHarnessAgentReactor {
-    pub fn new(runtime_id: RuntimeId, wave_id: WaveId, cove_id: CoveId) -> Self {
+    pub fn new(runtime_id: RuntimeId, wave_id: WaveId, area_id: AreaId) -> Self {
         Self {
             runtime_id,
             wave_id,
-            cove_id,
+            area_id,
         }
     }
 }
@@ -594,7 +594,7 @@ impl AgentReactor for SpecHarnessAgentReactor {
         Principal::Agent {
             session_id: WorkerSessionId::from(self.runtime_id.clone()),
             wave_id: self.wave_id.clone(),
-            cove_id: self.cove_id.clone(),
+            area_id: self.area_id.clone(),
         }
     }
 
@@ -611,12 +611,12 @@ mod tests {
     use crate::db::sqlite::{
         SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_wave_root_tx,
     };
-    use crate::model::{CardRole, NewCard, NewCove, NewWave, WavePatch};
+    use crate::model::{CardRole, NewArea, NewCard, NewWave, WavePatch};
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, provision_workspace_worktree,
     };
     use crate::recorder_shadow::divergence_count_for_test;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
     use calm_types::worker::{
         LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
         WorkerSessionState,
@@ -738,18 +738,18 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "worker report preserve".into(),
                 color: "#000".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "worker report preserve".into(),
                 sort: None,
                 cwd: repo_root.path().display().to_string(),
@@ -810,15 +810,15 @@ mod tests {
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
-        let wave_cove_cache = WaveCoveCache::new();
-        repo.seed_wave_cove_cache(&wave_cove_cache)
+        let wave_area_cache = WaveAreaCache::new();
+        repo.seed_wave_area_cache(&wave_area_cache)
             .await
-            .expect("seed wave cove cache");
+            .expect("seed wave area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_cove_cache),
+            write: WriteContext::new(card_role_cache, wave_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
@@ -826,7 +826,7 @@ mod tests {
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: session_id.as_str().to_string(),
             wave_id: Some(wave.id.as_str().to_string()),
-            cove_id: cove.id.as_str().to_string(),
+            area_id: area.id.as_str().to_string(),
             thread_id: "worker-thread".to_string(),
         };
 
@@ -883,18 +883,18 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "recorder-shadow".into(),
                 color: "#000".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "shadow wave".into(),
                 sort: None,
                 cwd: String::new(),
@@ -944,15 +944,15 @@ mod tests {
             CardRole::ReportCard,
             wave.id.clone(),
         );
-        let wave_cove_cache = WaveCoveCache::new();
-        repo.seed_wave_cove_cache(&wave_cove_cache)
+        let wave_area_cache = WaveAreaCache::new();
+        repo.seed_wave_area_cache(&wave_area_cache)
             .await
-            .expect("seed wave cove cache");
+            .expect("seed wave area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_cove_cache),
+            write: WriteContext::new(card_role_cache, wave_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
@@ -960,7 +960,7 @@ mod tests {
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: "non-root-session".to_string(),
             wave_id: Some(wave.id.as_str().to_string()),
-            cove_id: cove.id.as_str().to_string(),
+            area_id: area.id.as_str().to_string(),
             thread_id: "non-root-thread".to_string(),
         };
         let next = WaveReportPayload::new("non-root summary", "# Goal\n\nnon-root body\n");
@@ -1021,18 +1021,18 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "recorder-root".into(),
                 color: "#000".into(),
                 sort: None,
             })
             .await
-            .expect("create cove");
+            .expect("create area");
         let wave = repo
             .wave_create(NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "root wave".into(),
                 sort: None,
                 cwd: String::new(),
@@ -1092,15 +1092,15 @@ mod tests {
             CardRole::ReportCard,
             wave.id.clone(),
         );
-        let wave_cove_cache = WaveCoveCache::new();
-        repo.seed_wave_cove_cache(&wave_cove_cache)
+        let wave_area_cache = WaveAreaCache::new();
+        repo.seed_wave_area_cache(&wave_area_cache)
             .await
-            .expect("seed wave cove cache");
+            .expect("seed wave area cache");
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let sink = CardDecisionSink {
             repo: route_repo,
             events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, wave_cove_cache),
+            write: WriteContext::new(card_role_cache, wave_area_cache),
         };
         let identity = ToolCallIdentity {
             card_id: spec_card.id.as_str().to_string(),
@@ -1108,7 +1108,7 @@ mod tests {
             provider: crate::session_projection_repo::AgentProvider::Codex,
             session_id: root_session_id.as_str().to_string(),
             wave_id: Some(wave.id.as_str().to_string()),
-            cove_id: cove.id.as_str().to_string(),
+            area_id: area.id.as_str().to_string(),
             thread_id: "root-thread".to_string(),
         };
         let next = WaveReportPayload::new("root summary", "# Goal\n\nroot body\n");
@@ -1155,7 +1155,7 @@ mod tests {
         let reactor = SpecHarnessAgentReactor::new(
             "runtime-1".to_string(),
             WaveId::from("wave-1"),
-            CoveId::from("cove-1"),
+            AreaId::from("area-1"),
         );
 
         assert_eq!(
@@ -1163,7 +1163,7 @@ mod tests {
             Principal::Agent {
                 session_id: WorkerSessionId::from("runtime-1"),
                 wave_id: WaveId::from("wave-1"),
-                cove_id: CoveId::from("cove-1"),
+                area_id: AreaId::from("area-1"),
             }
         );
 

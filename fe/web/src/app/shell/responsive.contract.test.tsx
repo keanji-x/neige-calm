@@ -17,19 +17,19 @@ vi.mock('@tanstack/react-router', () => ({
   useRouter: () => ({}),
   useRouterState: () => undefined,
 }));
-const COVE = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
+const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
 const WAVE = {
-  id: 'w1', coveId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
 };
 
 vi.mock('../providers/queries.ts', () => ({
   useWorkspace: () => ({
-    coves: [COVE], waves: [WAVE], wavesByCove: new Map([['c1', [WAVE]]]), waveErrorsByCove: new Map(), wavesLoadingByCove: new Map(),
-    covesError: null, overlaysError: null, covesLoading: false, overlaysLoading: false,
-    retryCoves: vi.fn(), retryOverlays: vi.fn(), retryWaves: vi.fn(),
+    areas: [AREA], waves: [WAVE], wavesByArea: new Map([['c1', [WAVE]]]), waveErrorsByArea: new Map(), wavesLoadingByArea: new Map(),
+    areasError: null, overlaysError: null, areasLoading: false, overlaysLoading: false,
+    retryAreas: vi.fn(), retryOverlays: vi.fn(), retryWaves: vi.fn(),
   }),
-  useCoveMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
+  useAreaMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
   useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   // #1209 — the dialog's template read. Blank-only is a working state, so the
   // rail contract needs nothing more than the degraded shape here.
@@ -77,25 +77,25 @@ describe('compact navigation interaction contracts', () => {
     expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
     expect(pages.getAttribute('aria-expanded')).toBe('true');
 
-    const opener = screen.getByRole('button', { name: 'Coves' });
+    const opener = screen.getByRole('button', { name: 'Areas' });
     expect(opener.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Areas' })).toBeNull();
 
     fireEvent.click(opener);
-    expect(screen.getByRole('dialog', { name: 'Coves' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Areas' })).toBeTruthy();
     expect(opener.getAttribute('aria-expanded')).toBe('true');
     expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
 
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Areas' })).toBeNull();
     expect(opener.getAttribute('aria-expanded')).toBe('false');
 
     /*
      * The dock yields to a secondary page. That used to be published as a
      * `window` event; since #1191 §2.1 it is derived, so the only way to reach
-     * it here is to drive the state it is derived from — drilling the Coves
-     * sheet into a cove. `useCurrentPath` is mocked to `/`, so the wave-route
-     * half of the OR is out of play and this is the cove half on its own.
+     * it here is to drive the state it is derived from — drilling the Areas
+     * sheet into an area. `useCurrentPath` is mocked to `/`, so the wave-route
+     * half of the OR is out of play and this is the area half on its own.
      */
     const dock = document.querySelector('nav[aria-label="Primary"]');
     expect(dock?.getAttribute('aria-hidden')).toBeNull();
@@ -103,7 +103,7 @@ describe('compact navigation interaction contracts', () => {
     fireEvent.click(screen.getByRole('button', { name: /Product/ }));
     expect(dock?.getAttribute('aria-hidden')).toBe('true');
     expect(dock?.hasAttribute('inert')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Back to Coves' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Areas' }));
     expect(dock?.getAttribute('aria-hidden')).toBeNull();
   });
 });

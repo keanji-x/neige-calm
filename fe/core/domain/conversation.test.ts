@@ -10,10 +10,10 @@ import type { ApiFailure } from '../api/types.js';
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE,
-  coveConversationCardId, coveConversationFailure, coveConversationsOperation,
-  createCoveConversationOperation, createWaveConversationOperation,
+  areaConversationCardId, areaConversationFailure, areaConversationsOperation,
+  createAreaConversationOperation, createWaveConversationOperation,
   harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
-  reconcileUserEchoes, toCoveConversation, toWaveConversation, waveConversationCardId,
+  reconcileUserEchoes, toAreaConversation, toWaveConversation, waveConversationCardId,
   waveConversationsOperation,
   type Conversation, type ConversationKind, type ConversationTurn,
 } from './conversation.js';
@@ -77,18 +77,18 @@ describe('conversationNameFrom', () => {
   });
 });
 
-describe('cove conversations', () => {
+describe('area conversations', () => {
   const row = {
     id: 'card-9', waveId: 'chat-wave', title: null, kind: 'shared-chat',
     state: 'idle' as const, updatedAt: 42,
   };
 
-  it('names a nameless cove conversation Chat, never after its hidden wave', () => {
-    expect(conversationName(toCoveConversation(row))).toBe('Chat');
+  it('names a nameless area conversation Chat, never after its hidden wave', () => {
+    expect(conversationName(toAreaConversation(row))).toBe('Chat');
   });
 
   it('leaves what the server does not send absent rather than inventing it', () => {
-    const conversation = toCoveConversation(row);
+    const conversation = toAreaConversation(row);
     expect(conversation.waveTitle).toBeUndefined();
     expect(conversation.turns).toBeUndefined();
     expect(Object.hasOwn(conversation, 'waveTitle')).toBe(false);
@@ -96,21 +96,21 @@ describe('cove conversations', () => {
   });
 
   it('keeps a null state null: no session read is not a session that died', () => {
-    expect(toCoveConversation({ ...row, state: null }).state).toBeNull();
+    expect(toAreaConversation({ ...row, state: null }).state).toBeNull();
     expect(isLiveConversation(null)).toBe(false);
     expect(isLiveConversation('turn_pending')).toBe(true);
   });
 
   it('sends the idempotency key as a header, and the text as the whole body', () => {
-    const operation = createCoveConversationOperation('cove 1', 'hello', 'key-1');
+    const operation = createAreaConversationOperation('area 1', 'hello', 'key-1');
     expect(operation.method).toBe('POST');
-    expect(operation.path).toBe('/api/coves/cove%201/conversations');
+    expect(operation.path).toBe('/api/areas/area%201/conversations');
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-1' });
     expect(operation.body).toEqual({ text: 'hello' });
   });
 
   it('decodes a list row into the app\'s own shape', () => {
-    const parsed = coveConversationsOperation('c1').responseSchema.parse([row]);
+    const parsed = areaConversationsOperation('c1').responseSchema.parse([row]);
     expect(parsed).toEqual([{
       id: 'card-9', waveId: 'chat-wave', title: null, kind: 'shared-chat',
       state: 'idle', updatedAt: 42,
@@ -124,11 +124,11 @@ describe('cove conversations', () => {
      have no conversation behind them, and each one leaves the draft in a
      different place. */
   it.each([
-    ['no claimed folder', http(409, 'conflict', 'cove c1 has no claimed folder'), 'blocked'],
+    ['no claimed folder', http(409, 'conflict', 'area c1 has no claimed folder'), 'blocked'],
     ['a spent key', http(409, 'idempotency_key_exhausted', 'key exhausted'), 'exhausted'],
     ['an edited body', http(409, 'conflict', 'operation idempotency key k already used with different payload'), 'stale-payload'],
     ['a card that exists', http(409, 'conflict', 'card already exists'), 'exists'],
-    ['a missing cove', http(404, 'not_found', 'cove not found'), 'gone'],
+    ['a missing area', http(404, 'not_found', 'area not found'), 'gone'],
     ['a rejected request', http(400, 'bad_request', 'text must not be blank'), 'blocked'],
     ['a server error', http(500, 'internal', 'boom'), 'retry'],
     /* A separate kind for its *sentence*, not for a different resolution: on
@@ -138,19 +138,19 @@ describe('cove conversations', () => {
     ['a stopped agent server', http(503, 'codex_app_server', 'not running'), 'unavailable'],
     ['an unavailable service', http(503, 'service_unavailable', 'try later'), 'unavailable'],
   ])('reads %s as %s', (_label, failure, expected) => {
-    expect(coveConversationFailure(failure).kind).toBe(expected);
+    expect(areaConversationFailure(failure).kind).toBe(expected);
   });
 
   it('treats a lost connection as ambiguous, not as a refusal', () => {
-    expect(coveConversationFailure({ kind: 'transport', message: 'Transport request failed' }))
+    expect(areaConversationFailure({ kind: 'transport', message: 'Transport request failed' }))
       .toEqual({ kind: 'retry', message: 'Transport request failed' });
   });
 
   /*
    * A golden, and the value is not ours: it is copied from the server's own
-   * golden assertion — `the_derived_card_id_depends_only_on_cove_and_idempotency_key`
-   * in `crates/calm-server/src/routes/cove_conversations.rs`, which pins
-   * `("cove-1", "key-a")` to this exact id.
+   * golden assertion — `the_derived_card_id_depends_only_on_area_and_idempotency_key`
+   * in `crates/calm-server/src/routes/area_conversations.rs`, which pins
+   * `("area-1", "key-a")` to this exact id.
    *
    * Asserting the two sides agree is the entire point. A self-consistent
    * derivation (`derive(a) === derive(a)`) would stay green while the client
@@ -159,9 +159,9 @@ describe('cove conversations', () => {
    * own row and would keep offering to send it again.
    */
   it('derives the same card id the server does', () => {
-    expect(coveConversationCardId('cove-1', 'key-a')).toBe('conv-7b12bb251f95129865ab81128125cbf5');
-    expect(coveConversationCardId('cove-1', 'key-b')).not.toBe(coveConversationCardId('cove-1', 'key-a'));
-    expect(coveConversationCardId('cove-2', 'key-a')).not.toBe(coveConversationCardId('cove-1', 'key-a'));
+    expect(areaConversationCardId('area-1', 'key-a')).toBe('conv-268c82584d9a20bce6719d19f019cd36');
+    expect(areaConversationCardId('area-1', 'key-b')).not.toBe(areaConversationCardId('area-1', 'key-a'));
+    expect(areaConversationCardId('area-2', 'key-a')).not.toBe(areaConversationCardId('area-1', 'key-a'));
   });
 });
 
@@ -205,11 +205,11 @@ describe('wave conversations', () => {
   /*
    * The two lists are separate kinds, not one kind with two sources. The
    * server sends distinct markers and says the frontend branches on them; a
-   * transform that collapsed them would route assistant rows through the cove
+   * transform that collapsed them would route assistant rows through the area
    * chat's presentation, which is the exact mistake #1189 §4.1 warns about.
    */
-  it('does not collapse into the cove chat kind', () => {
-    expect(toWaveConversation(row).kind).not.toBe(toCoveConversation({ ...row, kind: 'shared-chat' }).kind);
+  it('does not collapse into the area chat kind', () => {
+    expect(toWaveConversation(row).kind).not.toBe(toAreaConversation({ ...row, kind: 'shared-chat' }).kind);
   });
 
   it('posts the first message to the wave, carrying the key as a header', () => {
@@ -230,15 +230,15 @@ describe('wave conversations', () => {
    * The last assertion is the one that would survive a plausible mistake. The
    * two derivations differ **only** in the namespace inside the hashed string —
    * the visible `conv-` prefix is deliberately identical — so a wave derivation
-   * that reused the cove prefix produces a perfectly well-shaped id that names
-   * another endpoint's card, and a draft that adopted it would open a cove chat
+   * that reused the area prefix produces a perfectly well-shaped id that names
+   * another endpoint's card, and a draft that adopted it would open an area chat
    * as if it were the words just typed.
    */
   it('derives the same card id the server does, from its own namespace', () => {
     expect(waveConversationCardId('wave-1', 'key-a')).toBe('conv-9778c6de9be6196b5b44fdd411e5c305');
     expect(waveConversationCardId('wave-1', 'key-b')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
     expect(waveConversationCardId('wave-2', 'key-a')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
-    expect(waveConversationCardId('id-1', 'key-a')).not.toBe(coveConversationCardId('id-1', 'key-a'));
+    expect(waveConversationCardId('id-1', 'key-a')).not.toBe(areaConversationCardId('id-1', 'key-a'));
   });
 });
 

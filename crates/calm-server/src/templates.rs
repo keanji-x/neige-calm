@@ -8,7 +8,7 @@
 //! database.
 //!
 //! #1300 S2 — through #1110 S6 this module described the same three plans as
-//! *seeded system-cove template waves*, discovered through an overlay payload
+//! *seeded system-area template waves*, discovered through an overlay payload
 //! `{schemaVersion: 1, template_key}` and forked on create. All three of those
 //! nouns are gone: no hidden wave, no `template_key` writer, no fork. The
 //! reason is #1300's own: seeding wrote those reports through `persist_report`

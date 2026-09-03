@@ -93,7 +93,7 @@ async fn boot_host(
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
     (host, repo, tmp, events)
@@ -289,7 +289,7 @@ fn auth_helpers_reachable_from_public_surface() {
 
 #[tokio::test]
 async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
-    use calm_server::model::{NewCove, NewWave};
+    use calm_server::model::{NewArea, NewWave};
 
     let plugin_id = "test.nocaps";
 
@@ -307,8 +307,8 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             .await
             .expect("open in-memory sqlite repo"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -318,7 +318,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
@@ -379,7 +379,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         events,
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
 

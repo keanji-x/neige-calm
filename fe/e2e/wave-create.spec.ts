@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { createCove } from './helpers/seed.js';
+import { createArea } from './helpers/seed.js';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 /* The two strings the composer's task field answers to. astryx puts `label` on
    the `contenteditable` as `aria-label`, so the browser-level check that the
@@ -19,10 +19,10 @@ function captureBrowserErrors(page: Page): string[] {
   return errors;
 }
 
-test.beforeEach(() => { createdCoveIds.length = 0; });
+test.beforeEach(() => { createdAreaIds.length = 0; });
 test.afterEach(async ({ request }) => {
-  for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
-  createdCoveIds.length = 0;
+  for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
+  createdAreaIds.length = 0;
 });
 
 /*
@@ -40,12 +40,12 @@ test.afterEach(async ({ request }) => {
  * became (S3). It is not delivered yet — the absence is asserted at the end of
  * this case, under #1299.
  */
-test('creates a wave from the cove page with no title, and persists it', async ({ page, request }) => {
+test('creates a wave from the area page with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
-  await page.goto(`/next/cove/${cove.id}`);
-  // exact: the rail's per-cove `+` is `New wave in …`, a substring match.
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  await page.goto(`/next/area/${area.id}`);
+  // exact: the rail's per-area `+` is `New wave in …`, a substring match.
   await page.getByRole('button', { name: 'New wave', exact: true }).click();
 
   /* #1211 — a route, not a modal. `waitForURL` is the surface being ready;
@@ -53,7 +53,7 @@ test('creates a wave from the cove page with no title, and persists it', async (
      asserted because a route that renders an error box would satisfy only the
      first. The dialog count is the negative half of the same statement: main's
      `getByRole('dialog', { name: 'New wave' })` scope has no successor here. */
-  await page.waitForURL(/\/cove\/[^/]+\/new$/);
+  await page.waitForURL(/\/area\/[^/]+\/new$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const message = `FE e2e wave ${Date.now()}`;
   await expect(page.getByLabel(TASK_LABEL)).toBeVisible();
@@ -88,7 +88,7 @@ test('creates a wave from the cove page with no title, and persists it', async (
     page.getByRole('button', { name: 'Create wave' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ cove_id: cove.id });
+  expect(body).toMatchObject({ area_id: area.id });
   expect(body).toHaveProperty('theme');
   /* #1211 — the sentence is the wave's intent, not its name. The kernel stores
      the empty string and the spec agent renames later via `calm.wave.rename`. */
@@ -113,7 +113,7 @@ test('creates a wave from the cove page with no title, and persists it', async (
   expect(waveId).toBeTruthy();
   await page.getByRole('button', { name: 'Rename wave' }).click();
   await expect(page.getByRole('textbox', { name: 'Wave title' })).toHaveValue('');
-  const response = await request.get(`/api/coves/${cove.id}/waves`);
+  const response = await request.get(`/api/areas/${area.id}/waves`);
   expect(response.ok()).toBe(true);
   expect(await response.json() as { id: string; title: string }[]).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: waveId, title: '' })]),
@@ -138,7 +138,7 @@ test('creates a wave from the cove page with no title, and persists it', async (
     .map((item) => (typeof item.params === 'string' ? item.params : '')).join('\n');
   expect(params).not.toContain(message);
 
-  const foldersResponse = await request.get(`/api/coves/${cove.id}/folders`);
+  const foldersResponse = await request.get(`/api/areas/${area.id}/folders`);
   expect(foldersResponse.ok()).toBe(true);
   expect(await foldersResponse.json()).toEqual([]);
   expect(errors).toEqual([]);
@@ -158,17 +158,17 @@ test('creates a wave from the cove page with no title, and persists it', async (
  */
 test('creates a wave from a template and seeds its report', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  const cove = await createCove(request);
-  createdCoveIds.push(cove.id);
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
 
   const templates = await request.get('/api/wave-templates');
   expect(templates.ok()).toBe(true);
   const ids = (await templates.json() as { id: string }[]).map((template) => template.id);
   expect(ids).toContain('small-change');
 
-  await page.goto(`/next/cove/${cove.id}`);
+  await page.goto(`/next/area/${area.id}`);
   await page.getByRole('button', { name: 'New wave', exact: true }).click();
-  await page.waitForURL(/\/cove\/[^/]+\/new$/);
+  await page.waitForURL(/\/area\/[^/]+\/new$/);
   const message = `FE e2e template wave ${Date.now()}`;
   await page.getByLabel(TASK_LABEL).fill(message);
   await page.getByRole('button', { name: /^Template: / }).click();
@@ -213,7 +213,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
     page.getByRole('button', { name: 'Create wave' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ cove_id: cove.id, template_id: 'small-change' });
+  expect(body).toMatchObject({ area_id: area.id, template_id: 'small-change' });
   expect(body).not.toHaveProperty('title');
   // Unbound template: the kernel rejects `template_input` against it.
   expect(body).not.toHaveProperty('template_input');
@@ -236,7 +236,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   /* #1300 — the assertion this case's name always claimed and never made.
      `template_id` on the wave row says the kernel accepted the binding; it says
      nothing about the report, which is the thing "seeds its report" is about.
-     Before #1300 the report came from forking a hidden system-cove wave the
+     Before #1300 the report came from forking a hidden system-area wave the
      kernel lazily seeded; it now comes from instantiating a Rust constant in
      the create transaction. Both produce the same document — that equivalence
      is pinned in-process by

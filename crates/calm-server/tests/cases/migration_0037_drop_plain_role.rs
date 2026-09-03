@@ -139,7 +139,7 @@ async fn stage_to_0037(pool: &SqlitePool) {
 async fn seed_wave(pool: &SqlitePool, wave_id: &str) {
     sqlx::query(
         r#"INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-           VALUES ('cove-0037', 'c', '#000000', 0.0, 1000, 1000)"#,
+           VALUES ('area-0037', 'c', '#000000', 0.0, 1000, 1000)"#,
     )
     .execute(pool)
     .await
@@ -147,7 +147,7 @@ async fn seed_wave(pool: &SqlitePool, wave_id: &str) {
     sqlx::query(
         r#"INSERT INTO waves
               (id, cove_id, title, sort, archived_at, created_at, updated_at)
-           VALUES (?1, 'cove-0037', 'w', 0.0, NULL, 1000, 1000)"#,
+           VALUES (?1, 'area-0037', 'w', 0.0, NULL, 1000, 1000)"#,
     )
     .bind(wave_id)
     .execute(pool)

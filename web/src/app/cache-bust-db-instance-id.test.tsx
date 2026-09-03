@@ -164,10 +164,10 @@ describe('ServerCompatGate cache bust with real IDB', () => {
           mutations: [],
           queries: [
             {
-              queryKey: ['coves'],
-              queryHash: '["coves"]',
+              queryKey: ['areas'],
+              queryHash: '["areas"]',
               state: {
-                data: [{ id: 'cove-from-previous-db' }],
+                data: [{ id: 'area-from-previous-db' }],
                 dataUpdateCount: 1,
                 dataUpdatedAt: Date.now(),
                 error: null,
@@ -203,8 +203,8 @@ describe('ServerCompatGate cache bust with real IDB', () => {
           queries: { retry: false, gcTime: 0 },
         },
       });
-      qc.setQueryData(['coves'], [{ id: 'cove-from-previous-db' }]);
-      expect(qc.getQueryData(['coves'])).toBeDefined();
+      qc.setQueryData(['areas'], [{ id: 'area-from-previous-db' }]);
+      expect(qc.getQueryData(['areas'])).toBeDefined();
 
       // 4. /api/version returns the NEW id — the trigger condition.
       mockFetchVersion(ID_NEW);
@@ -251,7 +251,7 @@ describe('ServerCompatGate cache bust with real IDB', () => {
       expect(localStorage.getItem(WS_CURSOR_STORAGE_KEY)).toBeNull();
 
       // ---- 3. QueryClient in-memory data dropped.
-      expect(qc.getQueryData(['coves'])).toBeUndefined();
+      expect(qc.getQueryData(['areas'])).toBeUndefined();
 
       // ---- 4. dbInstanceId rewritten to the new id.
       expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_NEW);
@@ -289,7 +289,7 @@ describe('ServerCompatGate cache bust with real IDB', () => {
         queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
       },
     });
-    qc.setQueryData(['coves'], [{ id: 'kept' }]);
+    qc.setQueryData(['areas'], [{ id: 'kept' }]);
 
     render(
       <QueryClientProvider client={qc}>
@@ -310,7 +310,7 @@ describe('ServerCompatGate cache bust with real IDB', () => {
     expect(reload).not.toHaveBeenCalled();
     expect(localStorage.getItem(WS_CURSOR_STORAGE_KEY)).toBe('42');
     expect(localStorage.getItem(DB_INSTANCE_ID_STORAGE_KEY)).toBe(ID_PREVIOUS);
-    expect(qc.getQueryData(['coves'])).toEqual([{ id: 'kept' }]);
+    expect(qc.getQueryData(['areas'])).toEqual([{ id: 'kept' }]);
 
     // IDB blob still readable (note: we use the SAME persister
     // instance so the memoized connection is fine — no bust ran).

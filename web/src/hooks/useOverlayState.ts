@@ -28,7 +28,7 @@
 //      clients land here automatically.
 //   2. `useMutation` wrapping `POST /api/overlays` (upsert). The setter
 //      runs an optimistic update against the queryKey above and rolls back
-//      on error — same shape as `useUpdateCoveMutation` in `api/queries.ts`.
+//      on error — same shape as `useUpdateAreaMutation` in `api/queries.ts`.
 //   3. The functional setter form `(prev) => next` peeks at the current
 //      cached value via `qc.getQueryData` to compute the next.
 //

@@ -6,8 +6,8 @@
 // module singleton.
 //
 // This module is also the composition point the layering forbids anywhere
-// else: `features/cove` may not import `features/wave`, so the cove route is
-// where `<CovePage>` and `<WaveList>` are put together.
+// else: `features/area` may not import `features/wave`, so the area route is
+// where `<AreaPage>` and `<WaveList>` are put together.
 
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
@@ -17,7 +17,7 @@ import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-qu
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { coveOf, folderConflictMessage, type Cove } from '../../../../core/domain/cove.ts';
+import { areaOf, folderConflictMessage, type Area } from '../../../../core/domain/area.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle,
   type Wave, type WaveDetailWire,
@@ -29,7 +29,7 @@ import {
   cardAddMenuEntries, isAssistantHarnessPayload, isSpecHarnessPayload, partitionWaveCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
-import { CovePage } from '../../features/cove/page/public.tsx';
+import { AreaPage } from '../../features/area/page/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { todaySummaryFailure } from '../../../../core/domain/today.ts';
 import { WaveList } from '../../features/wave/list/public.tsx';
@@ -51,8 +51,8 @@ import {
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  coveConversationFailure, COVE_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
-  waveConversationCardId, coveConversationCardId,
+  areaConversationFailure, AREA_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
+  waveConversationCardId, areaConversationCardId,
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
@@ -65,14 +65,14 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, coveConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
-  prefetchCoveList, specRunQueryOptions, todayLaunchpadQueryOptions,
-  useCoveConversationMutations, useCoveMutations, useSpecMutations, useTodaySummaryMutation,
+  ApiError, areaConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
+  prefetchAreaList, specRunQueryOptions, todayLaunchpadQueryOptions,
+  useAreaConversationMutations, useAreaMutations, useSpecMutations, useTodaySummaryMutation,
   useWaveConversationMutations, useWaveMutations, useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
+import { NewWaveForm, type NewWaveDraft } from '../../features/area/new-wave/public.tsx';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
@@ -112,7 +112,7 @@ type ConversationStore = Readonly<{
  * opened. `'rows'` is the opposite: the server sends the list, so the registry
  * is not consulted for it.
  *
- * `'waves'` has no construction site left: the cove route filtered the registry
+ * `'waves'` has no construction site left: the area route filtered the registry
  * by its waves before it listed conversations from the server (#1098), and
  * Today is the only registry-backed surface now, with `'all'`. It is left
  * standing rather than deleted here because deleting it is not one line — the
@@ -144,7 +144,7 @@ type ConversationRouteIntent =
      * the session registry, and it is a wave id rather than a boolean so the
      * decision can be enforced here rather than trusted (§5.1).
      *
-     * A cove route passes null: its rows live on the cove's hidden chat wave,
+     * An area route passes null: its rows live on the area's hidden chat wave,
      * Today navigates to `conversation.waveId` when a row is opened, and
      * remembering them would walk the reader into a wave that is deliberately
      * on no list. A wave route passes its own wave id: its rows are on a real,
@@ -201,7 +201,7 @@ function describeConversation(
 ): Conversation {
   return {
     id: facts.cardId, waveId: facts.waveId,
-    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
+    /* Absent, not `''`: an area conversation's wave is hidden and has no title
        to show. `ChatList` renders the difference; `''` would render a blank. */
     ...(facts.waveTitle === undefined ? {} : { waveTitle: facts.waveTitle }),
     title: facts.cardTitle
@@ -420,8 +420,8 @@ export function useConversationStore(
      *
      * The registry exists so a conversation stays visible on routes that cannot
      * fetch it — which is exactly what a `'rows'` route can do for itself. What
-     * remembering would add on a cove route is a leak: those rows live on the
-     * cove's hidden chat wave, and Today lists everything the registry holds and
+     * remembering would add on an area route is a leak: those rows live on the
+     * area's hidden chat wave, and Today lists everything the registry holds and
      * navigates to `conversation.waveId` when a row is opened, which would walk
      * the reader into the hidden wave. Today has no second filter.
      *
@@ -480,7 +480,7 @@ export function useConversationStore(
          that row, and a plain `{...row}` would put the null back: Today would
          fall from the derived name to the bare kind label `Assistant`. Only
          the absent direction is carried — a title the server *does* send (the
-         cove list's, and any future backfill) is the server's to change and
+         area list's, and any future backfill) is the server's to change and
          wins, exactly as `turns` does. */
       /* `updatedAt` never goes backwards, which is the same rule once more.
          A row's time is whatever column produced it — the listed rows read
@@ -574,7 +574,7 @@ export function useConversationStore(
        * put the pre-send entry back and drop what just arrived. The
        * "only into an entry that already exists" check is the same story —
        * that is what keeps this on the right side of the `rememberOn` defence
-       * above (on a cove route the open conversation is never remembered, so
+       * above (on an area route the open conversation is never remembered, so
        * there is nothing to find), and a decision made off a captured list is
        * a decision made about a list that may no longer be the one being
        * written to.
@@ -676,7 +676,7 @@ export function useConversationStore(
  * The one conversation whose transcript is being read.
  *
  * `id` is the wave the card hangs off; `title` is that wave's title *when the
- * surface knows one*, which a cove route does not — its chat wave is hidden on
+ * surface knows one*, which an area route does not — its chat wave is hidden on
  * purpose. `kind` carries what the list row already knew, so opening a chat row
  * cannot make it read as a spec one. `state` carries the row's server state as
  * the *baseline*; the open row is the only one this route can watch live, so it
@@ -700,12 +700,12 @@ type SpecConversationScope = Readonly<{
  *
  * That conflated "there is a card open" with two facts that have nothing to do
  * with a card: whether this route can *hold* a drawer at all, and where a new
- * conversation would go. Today cannot hold one (it has no wave and no cove), so
- * opening a row there navigates; a cove route can hold one for every row it
+ * conversation would go. Today cannot hold one (it has no wave and no area), so
+ * opening a row there navigates; an area route can hold one for every row it
  * lists, so opening one must not navigate — the wave it would navigate to is
  * hidden.
  *
- * Two routes select two of the three: Today is `'elsewhere'` and both the cove
+ * Two routes select two of the three: Today is `'elsewhere'` and both the area
  * and the wave route are `'rows'`. **`'card'` is selected by nothing** since the
  * wave route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
  * is left standing for the reason given on `ConversationListIntent`: removing it
@@ -719,7 +719,7 @@ type ConversationPanelSource =
   | Readonly<{
     kind: 'rows';
     /**
-     * What a draft on this route belongs to — a cove id on a cove route, a wave
+     * What a draft on this route belongs to — an area id on an area route, a wave
      * id on a wave route. Two routes, one drawer, and the reducer tells their
      * drafts apart by this value alone (`ConversationDraft`).
      */
@@ -754,28 +754,28 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
  *
  * `scopeId` is in here for one concrete reason, and it is worth stating exactly
  * because a looser version of it was written here first and was false. The
- * panel is **not** remounted when the reader walks from one cove to another:
- * `/cove/$coveId` is one route component across a param change, so the reducer
- * survives and a draft that did not name its cove would be a draft cove B's `+`
- * picks up — posting cove A's key and words to cove B. That is what
- * `cove-conversation.test.tsx`'s `keeps a failed draft to the cove it belongs
+ * panel is **not** remounted when the reader walks from one area to another:
+ * `/area/$areaId` is one route component across a param change, so the reducer
+ * survives and a draft that did not name its area would be a draft area B's `+`
+ * picks up — posting area A's key and words to area B. That is what
+ * `area-conversation.test.tsx`'s `keeps a failed draft to the area it belongs
  * to` holds down, and it is the whole of what the guard is *proved* to do.
  *
- * Cove → wave is a different walk and has no twin test, because it cannot: the
- * cove and wave routes are two sibling components under `rootRoute`, so that
+ * Area → wave is a different walk and has no twin test, because it cannot: the
+ * area and wave routes are two sibling components under `rootRoute`, so that
  * walk unmounts the panel and takes the reducer — draft and all — with it.
  * Nothing can leak across it, and nothing survives it either (#1225 is the
  * second half of that sentence: an unsent draft, and the idempotency key that
  * makes a retry a retry, are simply lost).
  *
- * #1189 is still why the field is `scopeId` and not `coveId`: a wave route now
+ * #1189 is still why the field is `scopeId` and not `areaId`: a wave route now
  * holds drafts too, and one field carrying values from two id spaces is what
  * keeps the guard total should a future route ever hold both — a generalisation
  * that costs nothing and closes the shape rather than a claim about today's
  * routing.
  */
 type ConversationDraft = Readonly<{
-  /** The cove or wave this draft belongs to. It is only ever visible there. */
+  /** The area or wave this draft belongs to. It is only ever visible there. */
   scopeId: string;
   /** Identifies the draft to the server for as long as it exists; minted when
    *  the drawer opens and *never* per send. */
@@ -825,26 +825,26 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     getParentRoute: () => rootRoute,
     path: '/',
     /**
-     * INV-APP-084 — the index loader primes **only** the coves list. The
-     * cove → waves fan-out stays lazy inside the page (`useQueries` in
-     * `useWorkspace`); awaiting it here would let one slow cove block the
+     * INV-APP-084 — the index loader primes **only** the areas list. The
+     * area → waves fan-out stays lazy inside the page (`useQueries` in
+     * `useWorkspace`); awaiting it here would let one slow area block the
      * whole calendar behind the route commit.
      */
-    loader: () => prefetchCoveList(client, transport, unauthorized),
+    loader: () => prefetchAreaList(client, transport, unauthorized),
     component: () => <TodayRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  const coveRoute = createRoute({
+  const areaRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/cove/$coveId',
-    component: () => <CoveRoute transport={transport} unauthorized={unauthorized} />,
+    path: '/area/$areaId',
+    component: () => <AreaRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  /* Declared after `coveRoute` and matched by its own literal segment: `/new`
-     is not a cove id, and TanStack prefers the more specific path. */
+  /* Declared after `areaRoute` and matched by its own literal segment: `/new`
+     is not an area id, and TanStack prefers the more specific path. */
   const newWaveRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/cove/$coveId/new',
+    path: '/area/$areaId/new',
     component: () => <NewWaveRoute transport={transport} unauthorized={unauthorized} />,
   });
 
@@ -890,7 +890,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, coveRoute, newWaveRoute, waveRoute, settingsRoute,
+    indexRoute, areaRoute, newWaveRoute, waveRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
@@ -919,7 +919,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 }
 
 /** Everything needed to say "is this still the draft I was working on?": the
- *  cove or wave it belongs to and the key that is the identity of its attempt. */
+ *  area or wave it belongs to and the key that is the identity of its attempt. */
 type DraftId = Readonly<{ scopeId: string; key: string }>;
 
 /**
@@ -928,11 +928,11 @@ type DraftId = Readonly<{ scopeId: string; key: string }>;
  *
  * These were two `useState`s, and the split was the bug. A create is
  * asynchronous, and by the time it answers the reader may have walked to
- * another cove and started a draft there. Adopting the answer then meant two
+ * another area and started a draft there. Adopting the answer then meant two
  * independent writes — clear the held draft, point the drawer at a row — with
- * nothing tying either to the draft the request was made *for*: cove A's late
- * success deleted cove B's brand-new draft and aimed the drawer at a row that
- * is not on cove B.
+ * nothing tying either to the draft the request was made *for*: area A's late
+ * success deleted area B's brand-new draft and aimed the drawer at a row that
+ * is not on area B.
  *
  * Merging them is what makes the guard expressible at all. Every move that a
  * late answer can perform carries the `DraftId` it was computed from, and the
@@ -999,7 +999,7 @@ function useConversationPanel(
   source: ConversationPanelSource,
   options?: { showWave?: boolean },
 ) {
-  /* One draft at a time, and it names the cove it belongs to — see
+  /* One draft at a time, and it names the area it belongs to — see
      `ConversationDraft`. It shares a reducer with the drawer's target because
      a late create has to move both or neither — see `DrawerState`. */
   const [{ open: openTarget, held }, moveDrawerTo] = useReducer(
@@ -1041,14 +1041,14 @@ function useConversationPanel(
   /*
    * The draft, if it belongs *here*.
    *
-   * A held draft from another cove is not visible, not reopenable and not
+   * A held draft from another area is not visible, not reopenable and not
    * sendable here; it is simply not this route's business. It is kept rather
-   * than dropped so that walking back to that cove still finds it; the one
+   * than dropped so that walking back to that area still finds it; the one
    * thing that discards it is starting a draft somewhere else, because only one
    * is held at a time.
    *
-   * "Walking back" means within one route component — cove → cove. A draft
-   * written on a wave is never seen by a cove for a blunter reason: the two are
+   * "Walking back" means within one route component — area → area. A draft
+   * written on a wave is never seen by an area for a blunter reason: the two are
    * separate route components, so the walk unmounted this hook and there is no
    * held draft left to filter (see `ConversationDraft`, and #1225). The test is
    * the same either way, and being the same is the point.
@@ -1062,9 +1062,9 @@ function useConversationPanel(
    *
    * All three are no-ops when the draft they were computed from is no longer
    * the one held. Note what that does and does not cover, because an earlier
-   * version of this comment claimed too much: walking to another cove does
+   * version of this comment claimed too much: walking to another area does
    * **not** by itself discard the draft — it stays held, just invisible here,
-   * so a late write from its own cove still lands on it, which is right. What
+   * so a late write from its own area still lands on it, which is right. What
    * makes a write a no-op is the draft actually being gone: adopted, closed,
    * or replaced by a `+` pressed somewhere else. `adopt` is guarded the same
    * way and by the same identity, in the same reducer.
@@ -1167,9 +1167,9 @@ function useConversationPanel(
 
   /*
    * The `+` opens a conversation. On a wave that is the wave's one spec card,
-   * which already exists; on a cove it is a draft, because the card is minted
+   * which already exists; on an area it is a draft, because the card is minted
    * by the first message and there is nothing to open until then. On Today
-   * there is neither a wave nor a cove to attach one to, so the action is not
+   * there is neither a wave nor an area to attach one to, so the action is not
    * offered rather than offered and refused.
    */
   const start = () => {
@@ -1200,9 +1200,9 @@ function useConversationPanel(
      * leave two conversations holding the same message. Binding it to the
      * draft is the whole reason the server requires the header.
      *
-     * `draft` is null here whenever the held draft belongs to another cove, so
-     * this branch — not the restore above — is what a `+` in a second cove
-     * gets, and the key it mints is that cove's.
+     * `draft` is null here whenever the held draft belongs to another area, so
+     * this branch — not the restore above — is what a `+` in a second area
+     * gets, and the key it mints is that area's.
      */
     moveDrawerTo({
       kind: 'start-draft',
@@ -1218,7 +1218,7 @@ function useConversationPanel(
    * `/new` in the composer runs `start` — the very callback the `+` runs — and
    * it is offered on exactly one of the three sources.
    *
-   * `'elsewhere'` (Today): no `+` either. There is no wave and no cove to
+   * `'elsewhere'` (Today): no `+` either. There is no wave and no area to
    * attach a conversation to, so the action is not offered rather than offered
    * and refused. Strict parity, and it is what `action:` below already decides.
    *
@@ -1232,7 +1232,7 @@ function useConversationPanel(
    * where "bring that one up" is a real outcome. Nothing is lost by omitting
    * it: the wave route has no second conversation to start.
    *
-   * `'rows'` (a cove route): offered, and this is the case the whole thing
+   * `'rows'` (an area route): offered, and this is the case the whole thing
    * exists for — the `+` mints a draft, the drawer hides the panel column the
    * `+` lives on, and the reader inside a conversation would otherwise have to
    * close it first.
@@ -1243,10 +1243,10 @@ function useConversationPanel(
    * The attempt `from` became row `row`: forget the draft and open the row.
    *
    * `from` is not decoration. This runs after an `await`, and by then the
-   * reader may be in another cove with another draft in hand; the reducer
+   * reader may be in another area with another draft in hand; the reducer
    * applies both halves only if `from` is still what is held, and otherwise
-   * applies neither — see `DrawerState`. Before that guard existed, cove A's
-   * late success deleted cove B's draft and pointed the drawer at a row cove B
+   * applies neither — see `DrawerState`. Before that guard existed, area A's
+   * late success deleted area B's draft and pointed the drawer at a row area B
    * does not have.
    */
   const adopt = (from: DraftId, row: Conversation) => {
@@ -1262,12 +1262,12 @@ function useConversationPanel(
    * card can exist with the message already queued behind it. What is not
    * allowed is answering that question with "the list grew". During the seconds
    * an attempt is failing, another tab or another reader can add a conversation
-   * to the same cove, and adopting *that* row opens somebody else's chat as if
+   * to the same area, and adopting *that* row opens somebody else's chat as if
    * it were the words just typed — while this draft's real card, if it exists,
    * goes unclaimed.
    *
    * So the question asked is the exact one: the card id is a pure public
-   * function of `(scopeId, key)` — `coveConversationCardId` on a cove and
+   * function of `(scopeId, key)` — `areaConversationCardId` on an area and
    * `waveConversationCardId` on a wave, each golden-tested against the server's
    * own golden and each hashing its **own namespace**, which is what stops one
    * `(id, key)` pair naming one card from two endpoints. The route supplies the
@@ -1302,7 +1302,7 @@ function useConversationPanel(
      * Two different questions, and they are asked of two different strings —
      * because the server asks them that way.
      *
-     * `create_cove_conversation` refuses `text.trim().is_empty()` and then
+     * `create_area_conversation` refuses `text.trim().is_empty()` and then
      * counts `text.chars().count()` on the **untrimmed** text. So the blank
      * check trims and the length check does not; a message padded to the limit
      * with spaces is over the limit there, and letting it through here would
@@ -1314,12 +1314,12 @@ function useConversationPanel(
      * refused legal astral-plane messages at half the real limit.
      */
     if (text.trim() === '') return;
-    if (Array.from(text).length > COVE_CONVERSATION_TEXT_MAX) {
+    if (Array.from(text).length > AREA_CONVERSATION_TEXT_MAX) {
       /* Shown back, but never recorded as sent: no request left the browser, so
          the key is untouched and the next press is not "the text changed". */
       amendDraft(draft, {
         text,
-        error: `This message is too long — the limit is ${COVE_CONVERSATION_TEXT_MAX} characters.`,
+        error: `This message is too long — the limit is ${AREA_CONVERSATION_TEXT_MAX} characters.`,
         remedy: null,
       });
       return;
@@ -1327,7 +1327,7 @@ function useConversationPanel(
     const previousText = draft.sentText;
     /* The draft this send is *for*, fixed here. Everything below writes through
        it, so a send that outlives its draft — adopted, closed, or left behind by
-       a cove switch — changes nothing rather than writing into whatever is held
+       an area switch — changes nothing rather than writing into whatever is held
        by then. */
     let attempt = draft;
     setCreating(true);
@@ -1369,7 +1369,7 @@ function useConversationPanel(
     attempt: ConversationDraft,
   ): Promise<void> {
     const failure = error instanceof ApiError
-      ? coveConversationFailure(error.failure)
+      ? areaConversationFailure(error.failure)
       : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
     const message = failure.message;
     switch (failure.kind) {
@@ -1477,7 +1477,7 @@ function useConversationPanel(
     moveDrawerTo({ kind: 'close', discard: draft !== null && draft.sentText === null ? draft : null });
   };
 
-  /* A draft belonging to another cove is not open here even if the drawer was
+  /* A draft belonging to another area is not open here even if the drawer was
      left on one: `draft` is null on any route but its own. */
   const draftOpen = openTarget?.kind === 'draft' && draft !== null;
 
@@ -1593,7 +1593,7 @@ function useConversationPanel(
               * it. The effect re-runs (its deps are `[turns.length, newestId]`
               * and the newest id changed), and then asks `followsNewest`, whose
               * answer is about A: a reader parked in the middle of A opens B
-              * parked too. `cove-conversation.test.tsx` holds that down with
+              * parked too. `area-conversation.test.tsx` holds that down with
               * two primed two-turn transcripts, so the switch cannot remount
               * the component for some other reason and pass anyway.
               *
@@ -1616,7 +1616,7 @@ function useConversationPanel(
               * Nothing follows the transcript.
               *
               * `Reset conversation` used to be here, one line under the last
-              * reply. It is gone from the product (#1139), not moved: a cove's
+              * reply. It is gone from the product (#1139), not moved: an area's
               * chat wave holds as many conversations as you start, so "empty
               * this one in place" was never the answer to a thread going
               * wrong — opening another one is, and the old thread stays
@@ -1639,7 +1639,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const deletion = useDeleteConfirm((waveId, signal) => {
     const wave = workspace.waves.find((candidate) => candidate.id === waveId);
     if (wave === undefined) throw new Error('This wave is no longer available.');
-    return waveMutations.remove(wave.id, wave.coveId, signal);
+    return waveMutations.remove(wave.id, wave.areaId, signal);
   });
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
      a card, and cards belong to waves), and this route has no single wave in
@@ -1752,17 +1752,17 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           />}
         />
       );
-  const workspaceError = workspace.covesError
-    ?? workspace.waveErrorsByCove.values().next().value ?? null;
-  if (workspace.covesLoading
-    || (workspace.waves.length === 0 && [...workspace.wavesLoadingByCove.values()].some(Boolean))) return null;
+  const workspaceError = workspace.areasError
+    ?? workspace.waveErrorsByArea.values().next().value ?? null;
+  if (workspace.areasLoading
+    || (workspace.waves.length === 0 && [...workspace.wavesLoadingByArea.values()].some(Boolean))) return null;
   return (
     <>
     {workspaceError !== null && <ErrorBox
       message={workspaceError.message}
       onRetry={() => {
-        workspace.retryCoves(); workspace.retryOverlays();
-        for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+        workspace.retryAreas(); workspace.retryOverlays();
+        for (const area of workspace.areas) workspace.retryWaves(area.id);
       }}
     />}
     {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
@@ -1772,16 +1772,16 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     </div>}
     <TodayPage
       waves={workspace.waves}
-      coves={workspace.coves}
+      areas={workspace.areas}
       // The row belongs to features/wave and Today may not import a sibling
-      // domain, so the composition layer injects it — the same reason CovePage
+      // domain, so the composition layer injects it — the same reason AreaPage
       // takes its list as a prop. One WaveRow still, per INV-DUP-009.
       renderWaveRow={(wave, options) => (
         <WaveRow
           wave={wave}
           variant={options.variant}
           hourLabel={options.hourLabel}
-          coveName={options.coveName}
+          areaName={options.areaName}
           onOpen={(waveId) => go({ name: 'wave', waveId })}
           /* The panel variant only — that is the calendar's agenda, inside the
              card, where every other list already puts a delete under the status
@@ -1824,12 +1824,12 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
 }
 
 /**
- * `/cove/$coveId/new` — the page you start a wave on (#1211).
+ * `/area/$areaId/new` — the page you start a wave on (#1211).
  *
  * It owns the whole create, which used to be split between the shell (the POST,
  * the 409, the navigation) and a dialog inside it. There is no reason for the
  * shell to hold any of it now that the surface is a route: the rail's `+` and
- * the cove page's `+` both just navigate here, and one route owning one
+ * the area page's `+` both just navigate here, and one route owning one
  * operation is the shape every other write in this file already has.
  *
  * ## What it does NOT do yet: deliver the first message (#1299)
@@ -1868,7 +1868,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  * work is (#1211 S1).
  */
 function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const coveId = useRouteParam('/cove/');
+  const areaId = useRouteParam('/area/');
   const workspace = useWorkspace(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
   const templates = useWaveTemplates(transport, unauthorized);
@@ -1914,11 +1914,11 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
    * they can type it.
    */
   const submit = (draft: NewWaveDraft) => {
-    if (coveId === undefined) return;
+    if (areaId === undefined) return;
     setCreating(true);
     setError(null);
     void waveMutations.create({
-      cove_id: coveId,
+      area_id: areaId,
       /* No `title` (#1211): the sentence the reader typed is the wave's intent,
          not its name. It is not put on the wire at all yet — see the #1299 note
          on this route — which is why the landing opens the spec composer. */
@@ -1931,11 +1931,11 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
-       * already claimed by some cove", which the kernel answers with a 409
+       * already claimed by some area", which the kernel answers with a 409
        * whenever it is not — so the omitted-flag default is a request that
        * fails for every folder the user has not already bound. `true` is what
-       * "I picked this folder for this cove" means, and it is a no-op when this
-       * cove already covers the path (`waves.rs`'s same-cove arm), so a second
+       * "I picked this folder for this area" means, and it is a no-op when this
+       * area already covers the path (`waves.rs`'s same-area arm), so a second
        * wave in the same repository does not conflict with the first.
        */
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
@@ -1953,7 +1953,7 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
        *
        * **Known gap, #1299.** `liveRef` answers "did this route unmount", which
        * is not the same question as "is this still the reader's surface". The
-       * mobile sheets (Pages / Coves) do not unmount the outlet — they cover it
+       * mobile sheets (Pages / Areas) do not unmount the outlet — they cover it
        * behind an `inert` `main` — so a create landing while a sheet is open
        * still passes this guard and navigates underneath it. An earlier version
        * of this comment claimed the dock was covered; it is not, and the fix is
@@ -1964,9 +1964,9 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
-        // The 409 body names a cove by id and carries no `error` key, so the
+        // The 409 body names an area by id and carries no `error` key, so the
         // generic message below would be the bare word "Conflict".
-        const owner = workspace.coves.find((candidate) => candidate.id === conflict.cove_id);
+        const owner = workspace.areas.find((candidate) => candidate.id === conflict.area_id);
         setError(folderConflictMessage(conflict, owner?.name ?? null));
         return;
       }
@@ -1974,7 +1974,7 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
     }).finally(() => { setCreating(false); });
   };
 
-  if (coveId === undefined) return <ErrorBox message="This cove could not be found." onRetry={() => { go({ name: 'today' }); }} />;
+  if (areaId === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
   return (
     <NewWaveForm
       submitting={creating}
@@ -1987,22 +1987,22 @@ function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort
   );
 }
 
-function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const coveId = useRouteParam('/cove/');
+function AreaRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const areaId = useRouteParam('/area/');
   const workspace = useWorkspace(transport, unauthorized);
-  const coveMutations = useCoveMutations(transport, unauthorized);
+  const areaMutations = useAreaMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
-  const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
+  const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, areaId ?? '', signal));
   const go = useGo();
-  /* #1211 — the `+` navigates to `/cove/{id}/new`; there is no dialog. Two
-     surfaces reach it — every cove row's `+` in the rail and this page's WAVES
+  /* #1211 — the `+` navigates to `/area/{id}/new`; there is no dialog. Two
+     surfaces reach it — every area row's `+` in the rail and this page's WAVES
      module head — and the rail is a sibling of the outlet, so the callback is
-     a context rather than a prop. This route only names the cove whose id the
+     a context rather than a prop. This route only names the area whose id the
      new-wave page will post. */
   const requestNewWave = useRequestNewWave();
   /*
-   * A cove's conversations are its own, listed by the server (#1098). They are
-   * plain-chat cards on the cove's hidden chat wave, so nothing here reads the
+   * An area's conversations are its own, listed by the server (#1098). They are
+   * plain-chat cards on the area's hidden chat wave, so nothing here reads the
    * session registry and nothing here is written back into it: the wave they
    * belong to is not a place the reader can be sent.
    *
@@ -2011,22 +2011,22 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
    * rows in this panel whose drawer this route cannot open.
    */
   const conversationsQuery = useQuery({
-    ...coveConversationsQueryOptions(transport, coveId ?? '', unauthorized),
-    enabled: coveId !== undefined,
+    ...areaConversationsQueryOptions(transport, areaId ?? '', unauthorized),
+    enabled: areaId !== undefined,
   });
-  const coveConversations = conversationsQuery.data ?? [];
-  const conversationMutations = useCoveConversationMutations(transport, coveId ?? '', unauthorized);
+  const areaConversations = conversationsQuery.data ?? [];
+  const conversationMutations = useAreaConversationMutations(transport, areaId ?? '', unauthorized);
   const chat = useConversationPanel(transport, unauthorized, {
     kind: 'rows',
-    scopeId: coveId ?? '',
-    rows: coveConversations,
+    scopeId: areaId ?? '',
+    rows: areaConversations,
     /* Null, and this is the one gate on this route: every row here lives on the
-       cove's hidden chat wave, and Today navigates to `conversation.waveId`
+       area's hidden chat wave, and Today navigates to `conversation.waveId`
        when a row is opened. */
     rememberOn: null,
-    derivedCardId: (idempotencyKey) => coveConversationCardId(coveId ?? '', idempotencyKey),
+    derivedCardId: (idempotencyKey) => areaConversationCardId(areaId ?? '', idempotencyKey),
     scopeOf: (conversationId) => {
-      const row = coveConversations.find((candidate) => candidate.id === conversationId);
+      const row = areaConversations.find((candidate) => candidate.id === conversationId);
       /* No `title`: the chat wave is hidden, so there is no wave name to pass
          down, and `showWave: false` below is what keeps the rows honest. */
       return row === undefined ? null : {
@@ -2038,28 +2038,28 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
     refresh: conversationMutations.refresh,
   }, { showWave: false });
 
-  const cove = coveId === undefined ? undefined : coveOf(coveId, workspace.coves);
-  if (cove === undefined) {
-    // While the coves list is still loading we do not know whether the cove
+  const area = areaId === undefined ? undefined : areaOf(areaId, workspace.areas);
+  if (area === undefined) {
+    // While the areas list is still loading we do not know whether the area
     // exists; showing "missing" first and the real page a moment later reads
     // as a flash of a wrong answer.
-    if (workspace.covesLoading) return null;
-    if (workspace.covesError !== null) return <ErrorBox message={workspace.covesError.message} onRetry={workspace.retryCoves} />;
-    return <PendingRoute label="Cove" owner="features/cove" missing />;
+    if (workspace.areasLoading) return null;
+    if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
+    return <PendingRoute label="Area" owner="features/area" missing />;
   }
-  const waveError = workspace.waveErrorsByCove.get(cove.id);
-  if (waveError !== null && waveError !== undefined && !workspace.wavesByCove.has(cove.id)) return <ErrorBox
+  const waveError = workspace.waveErrorsByArea.get(area.id);
+  if (waveError !== null && waveError !== undefined && !workspace.wavesByArea.has(area.id)) return <ErrorBox
     message={waveError.message}
-    onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
+    onRetry={() => { workspace.retryWaves(area.id); workspace.retryOverlays(); }}
   />;
-  if (workspace.wavesLoadingByCove.get(cove.id) || !workspace.wavesByCove.has(cove.id)) return null;
-  const waves = workspace.wavesByCove.get(cove.id) ?? [];
+  if (workspace.wavesLoadingByArea.get(area.id) || !workspace.wavesByArea.has(area.id)) return null;
+  const waves = workspace.wavesByArea.get(area.id) ?? [];
 
   return (
     <>
       {waveError !== null && waveError !== undefined && <ErrorBox
         message={waveError.message}
-        onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
+        onRetry={() => { workspace.retryWaves(area.id); workspace.retryOverlays(); }}
       />}
       {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
       {/* Without this the panel would render "No conversations yet." over a
@@ -2068,37 +2068,37 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
         message={`Conversations are unavailable: ${conversationsQuery.error.message}`}
         onRetry={() => { void conversationsQuery.refetch(); }}
       />}
-      <CovePage
-        cove={cove}
+      <AreaPage
+        area={area}
         waveCount={waves.length}
         /*
-         * Always empty, and honestly so: the kernel has no cove-level document.
+         * Always empty, and honestly so: the kernel has no area-level document.
          * `wave-report` is a card, and cards belong to waves — there is no
-         * cove-report card kind, no column, no writer. Rendering the empty
+         * area-report card kind, no column, no writer. Rendering the empty
          * state here is not a placeholder for a feature being built; it is this
          * column saying what it would hold, which is what the reader needs
          * either way.
          */
         report={<ReportEmpty
-          lead="This cove has no document yet."
+          lead="This area has no document yet."
           hints={[
-            'A cove document is written by hand — notes, decisions, links you want on the way in.',
+            'An area document is written by hand — notes, decisions, links you want on the way in.',
             'Each wave keeps its own report, which the agent writes as it works.',
           ]}
         />}
-        onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
-        onDeleteCove={(signal) => coveMutations.remove(cove.id, signal).then(() => {
+        onRenameArea={(name) => areaMutations.rename(area.id, { name }).then(() => undefined)}
+        onDeleteArea={(signal) => areaMutations.remove(area.id, signal).then(() => {
           if (!signal.aborted) go({ name: 'today' });
         })}
-        onRequestNewWave={() => requestNewWave(cove.id)}
+        onRequestNewWave={() => requestNewWave(area.id)}
         conversationList={chat.list}
         conversationAction={chat.action}
         waveList={(
           <WaveList
             waves={waves}
-            coves={workspace.coves}
+            areas={workspace.areas}
             variant="panel"
-            emptyMessage="This cove is quiet. Start a wave."
+            emptyMessage="This area is quiet. Start a wave."
             onOpenWave={(waveId) => go({ name: 'wave', waveId })}
             /* No pin here. The trailing column in a panel row holds exactly one
                thing at a time — the status dot, becoming the delete on hover —
@@ -2182,18 +2182,18 @@ function WaveRoute({ transport, unauthorized, cardRuntime }: {
       transport={transport}
       unauthorized={unauthorized}
       wave={wave}
-      cove={coveOf(wave.coveId, workspace.coves)}
+      area={areaOf(wave.areaId, workspace.areas)}
       cards={detail.data.cards}
       cardRuntime={cardRuntime}
     />
   );
 }
 
-function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime }: {
+function WaveRouteBody({ transport, unauthorized, wave, area, cards, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   wave: Wave;
-  cove: Cove | undefined;
+  area: Area | undefined;
   cards: WaveDetailWire['cards'];
   cardRuntime: CardRuntime;
 }) {
@@ -2329,7 +2329,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       kind: 'rows',
       scopeId: wave.id,
       rows,
-      /* Unlike a cove's, these rows are on a wave the reader can be sent to —
+      /* Unlike an area's, these rows are on a wave the reader can be sent to —
          this very route — so Today may hold and open them. The store checks
          each row's `waveId` against this, so a row from anywhere else is not
          remembered whatever put it in the list. */
@@ -2720,11 +2720,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       onOpenPanel={(kind) => { openPanel(wave.id, kind); }}
       onClosePanel={() => { closePanel(wave.id); }}
       /* `?from=` is the whole memory of how the reader got here; absent means
-         Pages, which is the default this route shipped with (§1.2). The cove to
+         Pages, which is the default this route shipped with (§1.2). The area to
          return to is the wave's own, not a stored restore id. */
-      mobileBackLabel={routeFrom === 'cove' ? 'Waves' : 'Pages'}
+      mobileBackLabel={routeFrom === 'area' ? 'Waves' : 'Pages'}
       onMobileBack={() => {
-        if (routeFrom === 'cove') openMobileSection('coves', wave.coveId);
+        if (routeFrom === 'area') openMobileSection('areas', wave.areaId);
         else openMobileSection('pages');
       }}
       report={<ReportDocument
@@ -2766,10 +2766,10 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
-      onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
-      onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.coveId, signal).then(() => {
+      onRenameWave={(title) => waveMutations.patch(wave.id, wave.areaId, { title }).then(() => undefined)}
+      onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.areaId, signal).then(() => {
         if (signal.aborted) return;
-        if (cove !== undefined) go({ name: 'cove', coveId: cove.id });
+        if (area !== undefined) go({ name: 'area', areaId: area.id });
         else go({ name: 'today' });
       })}
     />

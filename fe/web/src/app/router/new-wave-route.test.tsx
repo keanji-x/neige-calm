@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The new-wave page: `/cove/{id}/new`, reached from two `+` entry points.
-// `cove_id` is the opener's cove; the folder is optional and decides the whole
+// The new-wave page: `/area/{id}/new`, reached from two `+` entry points.
+// `area_id` is the opener's area; the folder is optional and decides the whole
 // request shape — no folder omits `cwd` *and* `attach_folder` (the kernel's
 // managed default), a chosen folder sends both (#1147 S3).
 //
@@ -55,7 +55,7 @@ const FOLDER_CHIP_NAME = `Folder: ${FOLDER_PLACEHOLDER}`;
    one is picked — so the name has one shape and the assertions vary the tail. */
 const TEMPLATE_CHIP = /^Template: /;
 
-const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 
 const LISTING = {
@@ -66,14 +66,14 @@ const LISTING = {
    The client sends none, the kernel stores the empty string, and the spec agent
    names the wave later through `calm.wave.rename`. */
 const WAVE_ROW = {
-  id: 'w-new', cove_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
+  id: 'w-new', area_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
   lifecycle: 'draft', cwd: '/srv/managed', template_id: null, plugin_scope: null,
   purpose: null, template_input: null, terminal_at: null, created_at: 1, updated_at: 1,
 };
 
 /** The 409 `POST /api/waves` answers a folder clash with — no `error` key. */
 const CONFLICT = {
-  folder_id: 4, cove_id: 'c1', conflict_path: '/srv/app', conflict_kind: 'descendant',
+  folder_id: 4, area_id: 'c1', conflict_path: '/srv/app', conflict_kind: 'descendant',
 };
 
 /* #1209 — what `GET /api/wave-templates` returns, in the two shapes that
@@ -103,7 +103,7 @@ function harness(options: {
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
-      const posted = request.body as { cove_id?: string } | undefined;
+      const posted = request.body as { area_id?: string } | undefined;
       if (request.method === 'POST' && request.path === '/api/waves' && options.waveCreate) {
         return Promise.resolve(options.waveCreate);
       }
@@ -111,7 +111,7 @@ function harness(options: {
         return options.heldCreate.then(() => ({
           status: 200,
           statusText: 'OK',
-          body: { ...WAVE_ROW, cove_id: posted?.cove_id ?? 'c1' },
+          body: { ...WAVE_ROW, area_id: posted?.area_id ?? 'c1' },
         }));
       }
       if (request.path === '/api/wave-templates') {
@@ -148,15 +148,15 @@ function harness(options: {
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
       }
-      const body = request.path === '/api/coves' ? [COVE, OTHER]
+      const body = request.path === '/api/areas' ? [AREA, OTHER]
         : request.path.startsWith('/api/fs/listdir') ? LISTING
           : request.method === 'POST' && request.path === '/api/waves'
-            ? { ...WAVE_ROW, cove_id: posted?.cove_id ?? 'c1' }
+            ? { ...WAVE_ROW, area_id: posted?.area_id ?? 'c1' }
             : [];
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
   };
-  window.history.pushState({}, '', `${APP_BASEPATH}/cove/c1`);
+  window.history.pushState({}, '', `${APP_BASEPATH}/area/c1`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
@@ -225,26 +225,26 @@ function createdWaveBodies(sent: readonly ApiRequest[]): unknown[] {
 }
 
 describe('the new-wave page is a route, and both `+` entry points navigate to it', () => {
-  it('lands on the same page from the rail and from the cove page', async () => {
+  it('lands on the same page from the rail and from the area page', async () => {
     harness();
-    // The rail's `+`, on a cove the user is not currently inside: the whole
+    // The rail's `+`, on an area the user is not currently inside: the whole
     // point of the row control is starting a wave without navigating first.
-    // It carries that cove's id into the URL, which is what makes this one
+    // It carries that area's id into the URL, which is what makes this one
     // route serve both openers.
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     expect(await findComposer()).toBeTruthy();
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/cove/c2/new`);
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
 
     /* #1211 — and it is a *page*, so there is no modal over the app: the
        assertion that would catch a quiet return to a dialog. */
     expect(screen.queryByRole('dialog')).toBeNull();
 
-    // The cove page's WAVES module head reaches the same route for the cove
+    // The area page's WAVES module head reaches the same route for the area
     // the reader is inside — one page, one set of strings, two openers.
     window.history.back();
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await findComposer()).toBeTruthy();
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/cove/c1/new`);
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1/new`);
   });
 
   /*
@@ -316,10 +316,10 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
     expect(Object.hasOwn(body, 'title')).toBe(false);
-    expect(body).toMatchObject({ cove_id: 'c2' });
+    expect(body).toMatchObject({ area_id: 'c2' });
   });
 
-  it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {
+  it('posts the opener\'s area_id and omits cwd / attach_folder with no folder chosen', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     // #1161 — establish the page is on screen *and exposed* first. The
@@ -327,7 +327,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     // page that never rendered, and `getByLabelText` does no accessibility
     // filtering, so it cannot stand in for this wait.
     expect(await findComposer()).toBeTruthy();
-    expect(screen.queryByLabelText('Cove')).toBeNull();
+    expect(screen.queryByLabelText('Area')).toBeNull();
     /* #1147 S3 restated on top of #1209: the Folder control *is* here — this
        assertion used to be `toBeNull()` — and it starts empty. Empty is what
        "no folder chosen" looks like, and it is what the absence checks on the
@@ -337,7 +337,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ cove_id: 'c2' });
+    expect(body).toMatchObject({ area_id: 'c2' });
     expect(body).toHaveProperty('theme');
     /* #1211 — the sentence is the wave's *intent*, not its name. No `title` on
        the wire at all: the kernel stores the empty string and the spec agent
@@ -360,9 +360,9 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
 
   /*
    * The other half of the same contract. `attach_folder: true` is not decorative
-   * — with it omitted the kernel refuses any path no cove has already claimed,
+   * — with it omitted the kernel refuses any path no area has already claimed,
    * so an attached create would 409 for exactly the folders a user is most
-   * likely to pick. It is a no-op when this cove already covers the path.
+   * likely to pick. It is a no-op when this area already covers the path.
    */
   it('posts the picked folder as cwd with attach_folder: true', async () => {
     const { sent } = harness({ templates: TEMPLATES });
@@ -386,7 +386,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
     expect(body).toMatchObject({
-      cove_id: 'c1', cwd: '/srv/app', attach_folder: true,
+      area_id: 'c1', cwd: '/srv/app', attach_folder: true,
     });
     expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
     // Attaching a folder is orthogonal to #1209's template choice: staying on
@@ -415,7 +415,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
 
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
-      cove_id: 'c1',
+      area_id: 'c1',
       template_id: 'small-change',
       cwd: '/srv/app',
       attach_folder: true,
@@ -425,7 +425,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
   /*
    * The 409 body has no `error` key, so `ApiError.message` is the bare status
    * text: without decoding it the user is told "Conflict" and nothing else —
-   * not which folder, not which cove, not what to do instead.
+   * not which folder, not which area, not what to do instead.
    */
   it('renders the structured folder conflict, not the word Conflict', async () => {
     harness({
@@ -440,8 +440,8 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     // does not await; the default 1s window is not enough under a loaded suite.
     const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
     expect(alert.textContent).toContain('/srv/app');
-    // `c1` is Work in the seeded cove list — the id must never reach the page.
-    expect(alert.textContent).toContain('cove “Work”');
+    // `c1` is Work in the seeded area list — the id must never reach the page.
+    expect(alert.textContent).toContain('area “Work”');
     expect(alert.textContent).not.toContain('c1');
     expect(alert.textContent).not.toBe('Conflict');
   });
@@ -468,7 +468,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({
-      cove_id: 'c2',
+      area_id: 'c2',
       template_id: 'issue-development',
       template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
@@ -516,7 +516,7 @@ describe('the new-wave page is a route, and both `+` entry points navigate to it
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
-    expect(createdWaveBodies(sent)[0]).toMatchObject({ cove_id: 'c2' });
+    expect(createdWaveBodies(sent)[0]).toMatchObject({ area_id: 'c2' });
     expect(createdWaveBodies(sent)[0]).not.toHaveProperty('title');
     expect(specInputTexts(sent)).toEqual([]);
   });
@@ -693,7 +693,7 @@ describe('the sentence is not delivered yet, and the wave opens ready for it', (
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
 
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/cove/c2/new`);
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
     expect(specInputTexts(sent)).toEqual([]);
   });

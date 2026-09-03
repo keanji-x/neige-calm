@@ -4,7 +4,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { Cove } from '../../../../core/domain/cove.ts';
+import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
 import { TodayPage, type ScheduledEvent } from './public.tsx';
 
@@ -23,13 +23,13 @@ afterEach(cleanup);
 
 const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 
-function cove(overrides: Partial<Cove> = {}): Cove {
+function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -38,7 +38,7 @@ function wave(overrides: Partial<Wave> = {}): Wave {
 
 describe('INV-TODAY-002 the scheduled-event seam', () => {
   it('renders live wave activity while the scheduled list is empty', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByRole('complementary').textContent).toContain('Open wave');
     expect(screen.queryByText('Nothing scheduled.')).toBeNull();
   });
@@ -50,7 +50,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     // it as "dead code" is exactly the regression this locks.
     const scheduled = wave({ id: 'w2', title: 'Scheduled wave', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
     const events: ScheduledEvent[] = [{ wave: scheduled, date: new Date(NOW), hour: 15 }];
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} scheduledEvents={events} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
 
     const agenda = screen.getByRole('complementary').textContent ?? '';
     expect(agenda).toContain('Scheduled wave');
@@ -58,7 +58,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   });
 
   it('shows the empty state only when both sources are empty', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByText('Nothing scheduled.')).toBeTruthy();
   });
 
@@ -67,7 +67,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     // failure this locks: one wave present in both sources must read as 1.
     const shared = wave({ id: 'w1' });
     const events: ScheduledEvent[] = [{ wave: shared, date: new Date(NOW), hour: 9 }];
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[shared]} coves={[cove()]} scheduledEvents={events} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
     // Both the drawn glyph and the accessible name say one, not two.
     const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 wave' });
     expect(today.querySelector('[data-nc-day-count]')?.textContent).toBe('1');
@@ -89,7 +89,7 @@ describe('INV-A11Y-061 navigation shape', () => {
    */
   it('emits no native link anywhere on the surface', () => {
     const { container } = render(
-      <TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW} />,
+      <TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW} />,
     );
     expect(container.querySelectorAll('a').length).toBe(0);
   });
@@ -111,7 +111,7 @@ const EMPTY_COPY = 'Nothing written today yet.';
 describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
   it('renders the empty state for a report nobody has written', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
       launchpadDocument={DOCUMENT}
     />);
@@ -125,7 +125,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('renders the document once the server says the report has content', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -135,7 +135,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('treats a 404 as the empty state rather than an error', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
       launchpad={null} launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
@@ -146,7 +146,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     // flashing the second one while the first is true is how a page teaches
     // people to distrust it.
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
@@ -167,7 +167,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * neither of which has a control today.
      */
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
     const empty = screen.getByText(EMPTY_COPY);
@@ -184,7 +184,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state', () => {
   it('shows the failure and suppresses the empty state', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave()]} areas={[area()]} nowMs={NOW}
       launchpad={undefined}
       launchpadDocument={DOCUMENT}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
@@ -197,7 +197,7 @@ describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state'
 describe('#1253 D7 the status bar comes before the document', () => {
   it('puts the waiting rows above the document in the main column', () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[wave({ lifecycle: 'blocked' })]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[wave({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -221,7 +221,7 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 
   it('caps the waiting rows so the document cannot be pushed down', () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={manyWaiting} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -236,7 +236,7 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 
   it('keeps every waiting wave reachable behind the control', async () => {
     const { container } = render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={manyWaiting} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -257,7 +257,7 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 
   it('draws no control when the waiting list already fits', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={manyWaiting.slice(0, 5)} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={manyWaiting.slice(0, 5)} areas={[area()]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -267,15 +267,15 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
 
 describe('#1253 the first-run page still owns a document', () => {
   /*
-   * `coves` is the USER-visible list: #175 filters the system cove out of
-   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
-   * "no waves and no coves" is a perfectly ordinary state for a workspace
+   * `areas` is the USER-visible list: #175 filters the system area out of
+   * `GET /api/areas`, and the launchpad wave lives in the system area. So
+   * "no waves and no areas" is a perfectly ordinary state for a workspace
    * whose only content is the day's report — and the early return for it used
    * to drop the document and the resolve failure alike.
    */
-  it('renders the report on a workspace with no user coves', () => {
+  it('renders the report on a workspace with no user areas', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[]} areas={[]} nowMs={NOW}
       launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
@@ -283,9 +283,9 @@ describe('#1253 the first-run page still owns a document', () => {
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
-  it('surfaces a failed resolve on a workspace with no user coves', () => {
+  it('surfaces a failed resolve on a workspace with no user areas', () => {
     render(<TodayPage
-      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      renderWaveRow={renderWaveRow} waves={[]} areas={[]} nowMs={NOW}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
     />);
     expect(screen.getByRole('alert').textContent).toContain('boom');
@@ -296,7 +296,7 @@ describe('#1253 D5 the document’s trigger', () => {
   const WRITE = 'Write today’s progress';
   const REWRITE = 'Rewrite today’s progress';
   const props = {
-    renderWaveRow, waves: [wave()], coves: [cove()], nowMs: NOW,
+    renderWaveRow, waves: [wave()], areas: [area()], nowMs: NOW,
     launchpadDocument: <p>the day&apos;s report</p>,
   } as const;
 

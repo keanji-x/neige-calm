@@ -1,0 +1,9 @@
+{
+  "description": "area.deleted inline struct variant.",
+  "wire": {
+    "ev": "area.deleted",
+    "data": {
+      "id": "area-01"
+    }
+  }
+}

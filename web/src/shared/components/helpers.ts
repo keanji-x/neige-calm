@@ -1,5 +1,5 @@
-import type { Cove } from '../../types';
+import type { Area } from '../../types';
 
-export function coveOf(coveId: string, coves: Cove[]): Cove | undefined {
-  return coves.find((c) => c.id === coveId);
+export function areaOf(areaId: string, areas: Area[]): Area | undefined {
+  return areas.find((c) => c.id === areaId);
 }

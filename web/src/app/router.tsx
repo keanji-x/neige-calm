@@ -2,7 +2,7 @@
 //
 // Routes:
 //   /                  → TodayPage
-//   /cove/$coveId      → CovePage
+//   /area/$areaId      → AreaPage
 //   /wave/$waveId      → WavePage
 //
 // The root route renders <CalmApp /> as a layout shell; CalmApp owns
@@ -16,7 +16,7 @@
 // Route loaders prime the relevant TanStack Query cache entries via
 // `queryClient.ensureQueryData(...)` using the same `{ queryKey, queryFn }`
 // factories exported from `api/queries.ts`, so cache shape stays in lock-step
-// with the hook call sites. The wave/cove loaders intentionally do this
+// with the hook call sites. The wave/area loaders intentionally do this
 // without blocking the route commit: selection feedback (URL commit + Sidebar
 // active highlight) is instant, and the route component owns its brief in-page
 // loading state. The parallel prefetch usually fills the cache before the lazy
@@ -34,28 +34,28 @@ import { MissingShell } from './shell';
 import { useGo } from './navigation';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
 import {
-  covesQueryOptions,
+  areasQueryOptions,
   settingsQueryOptions,
-  useCovesQuery,
+  useAreasQuery,
   useDeleteCardMutation,
-  useDeleteCoveMutation,
+  useDeleteAreaMutation,
   useDeleteWaveMutation,
   useOverlaysByKindQuery,
-  useUpdateCoveMutation,
+  useUpdateAreaMutation,
   useUpdateWaveMutation,
   useWaveDetailQuery,
-  useWavesByCoveQuery,
+  useWavesByAreaQuery,
   waveDetailQueryOptions,
-  wavesByCoveQueryOptions,
+  wavesByAreaQueryOptions,
 } from '../api/queries';
-import { adaptCard, adaptCove, adaptWave } from '../api/adapt';
+import { adaptCard, adaptArea, adaptWave } from '../api/adapt';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../api/themeRgb';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import { queryKeys } from '../api/queries';
 import { queryClient } from './providers';
 import { dlog } from '../util/debug';
-import type { Cove, Wave, WaveCardSlot } from '../types';
+import type { Area, Wave, WaveCardSlot } from '../types';
 import type { AddPanelKind } from '../shared/components/AddPanel';
 import { getEntry } from '../cards/registry';
 import type { CardCreateStrategy, CardKindClaim } from '../cards/registry';
@@ -71,8 +71,8 @@ import type { CardCreateStrategy, CardKindClaim } from '../cards/registry';
 const TodayPage = lazy(() =>
   import('../pages/Today').then((m) => ({ default: m.TodayPage })),
 );
-const CovePage = lazy(() =>
-  import('../pages/Cove').then((m) => ({ default: m.CovePage })),
+const AreaPage = lazy(() =>
+  import('../pages/Area').then((m) => ({ default: m.AreaPage })),
 );
 const WavePage = lazy(() =>
   import('../pages/Wave').then((m) => ({ default: m.WavePage })),
@@ -90,29 +90,29 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  // Today fans out to per-cove wave lists on the page itself; we
-  // conservatively prefetch only the coves list here. The cove → waves
-  // fan-out stays lazy (the page uses `useQueries`) so a slow cove
+  // Today fans out to per-area wave lists on the page itself; we
+  // conservatively prefetch only the areas list here. The area → waves
+  // fan-out stays lazy (the page uses `useQueries`) so a slow area
   // doesn't block the calendar.
-  loader: () => queryClient.ensureQueryData(covesQueryOptions()),
+  loader: () => queryClient.ensureQueryData(areasQueryOptions()),
   component: IndexComponent,
 });
 
-const coveRoute = createRoute({
+const areaRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/cove/$coveId',
+  path: '/area/$areaId',
   loader: ({ params }) => {
     // Non-blocking: prime the cache but do NOT await, so the route commits
     // immediately and the sidebar's active-row highlight is instant.
-    // CoveComponent renders with an empty wave list until wavesQ resolves.
+    // AreaComponent renders with an empty wave list until wavesQ resolves.
     // `.catch` keeps a fetch failure (404/5xx/offline) from becoming an
     // unhandled rejection; the error is still recorded on the query so the
     // component can surface it.
     void queryClient
-      .ensureQueryData(wavesByCoveQueryOptions(params.coveId))
+      .ensureQueryData(wavesByAreaQueryOptions(params.areaId))
       .catch(() => {});
   },
-  component: CoveComponent,
+  component: AreaComponent,
 });
 
 const waveRoute = createRoute({
@@ -145,13 +145,13 @@ const settingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  coveRoute,
+  areaRoute,
   waveRoute,
   settingsRoute,
 ]);
 
 // `basepath` mirrors Vite's `base: '/calm/'` (see vite.config.ts) so URLs
-// in the browser actually read `/calm/cove/$id` rather than `/cove/$id`.
+// in the browser actually read `/calm/area/$id` rather than `/area/$id`.
 // Router internals (route definitions above, useRouterState's pathname)
 // still see paths relative to the basepath — only the browser URL and
 // generated <a href> include the prefix.
@@ -171,27 +171,27 @@ declare module '@tanstack/react-router' {
 
 function IndexComponent() {
   const go = useGo();
-  const covesQ = useCovesQuery();
+  const areasQ = useAreasQuery();
   // Belt-and-suspenders for issue #175 — see CalmApp.tsx for the same
   // filter. The server already hides `kind='system'` from
-  // `GET /api/coves` by default, but the second layer of defence keeps
-  // the system cove out of Today's calendar/clock fan-out as well.
-  const kernelCoves = (covesQ.data ?? []).filter((c) => c.kind === 'user');
+  // `GET /api/areas` by default, but the second layer of defence keeps
+  // the system area out of Today's calendar/clock fan-out as well.
+  const kernelAreas = (areasQ.data ?? []).filter((c) => c.kind === 'user');
 
-  // Today's calendar + clock want a flat wave list across all coves.
-  // One query per cove keeps cache granularity sensible (a wave moving
-  // between coves invalidates only the two affected lists).
+  // Today's calendar + clock want a flat wave list across all areas.
+  // One query per area keeps cache granularity sensible (a wave moving
+  // between areas invalidates only the two affected lists).
   const waveQueries = useQueries({
-    queries: kernelCoves.map((c) => ({
-      queryKey: queryKeys.wavesInCove(c.id),
-      queryFn: () => api.wavesInCove(c.id),
+    queries: kernelAreas.map((c) => ({
+      queryKey: queryKeys.wavesInArea(c.id),
+      queryFn: () => api.wavesInArea(c.id),
     })),
   });
 
   // Workspace-wide wave overlays — fed into adaptWave so the Sidebar's
   // status indicators ("waiting on you" / "running") are accurate for
   // every wave, not just whichever wave the user has opened. eventBridge
-  // invalidates this snapshot on overlay.set/.deleted and on wave/cove
+  // invalidates this snapshot on overlay.set/.deleted and on wave/area
   // deletes (where the kernel may not cascade individual events).
   const waveOverlaysQ = useOverlaysByKindQuery('wave');
   const overlaysByWaveId = new Map<string, typeof waveOverlaysQ.data>();
@@ -202,7 +202,7 @@ function IndexComponent() {
     else overlaysByWaveId.set(o.entity_id, [o]);
   }
 
-  const coves: Cove[] = kernelCoves.map(adaptCove);
+  const areas: Area[] = kernelAreas.map(adaptArea);
   const waves: Wave[] = [];
   for (const q of waveQueries) {
     if (!q.data) continue;
@@ -216,7 +216,7 @@ function IndexComponent() {
   return (
     <TodayPage
       waves={waves}
-      coves={coves}
+      areas={areas}
       onGo={go}
       todayTerminalId={todayTerm.today?.terminalId ?? null}
       todayError={todayTerm.error}
@@ -225,60 +225,60 @@ function IndexComponent() {
   );
 }
 
-function CoveComponent() {
+function AreaComponent() {
   const go = useGo();
-  const { coveId } = useParams({ from: coveRoute.id });
-  const covesQ = useCovesQuery();
-  const wavesQ = useWavesByCoveQuery(coveId);
-  const updateCove = useUpdateCoveMutation();
-  const deleteCove = useDeleteCoveMutation();
+  const { areaId } = useParams({ from: areaRoute.id });
+  const areasQ = useAreasQuery();
+  const wavesQ = useWavesByAreaQuery(areaId);
+  const updateArea = useUpdateAreaMutation();
+  const deleteArea = useDeleteAreaMutation();
   const deleteWave = useDeleteWaveMutation();
   const updateWave = useUpdateWaveMutation();
 
-  const kernelCove = covesQ.data?.find((c) => c.id === coveId);
-  if (!kernelCove) {
-    // While the coves list is loading, we don't know if the cove exists.
+  const kernelArea = areasQ.data?.find((c) => c.id === areaId);
+  if (!kernelArea) {
+    // While the areas list is loading, we don't know if the area exists.
     // Show the calm "Connecting…" shell rather than flashing a missing
     // state. CalmApp already renders LoadingShell for the initial fetch,
-    // but a hard-refresh on /cove/:id can land here before cache primes.
-    if (covesQ.isLoading) return null;
-    return <MissingShell label="Cove" onGo={go} />;
+    // but a hard-refresh on /area/:id can land here before cache primes.
+    if (areasQ.isLoading) return null;
+    return <MissingShell label="Area" onGo={go} />;
   }
-  const cove = adaptCove(kernelCove);
+  const area = adaptArea(kernelArea);
   const waves: Wave[] = (wavesQ.data ?? []).map((w) => adaptWave(w, []));
 
   return (
-    <CovePage
-      cove={cove}
+    <AreaPage
+      area={area}
       waves={waves}
       onGo={go}
       onWaveCreated={(wave) => {
-        // Issue #250 PR 3 — the NewTaskForm inside CovePage owns the
-        // wave-create POST end-to-end (cwd + cove auto-inference +
+        // Issue #250 PR 3 — the NewTaskForm inside AreaPage owns the
+        // wave-create POST end-to-end (cwd + area auto-inference +
         // theme stamping + folder-conflict surfacing). All this
         // callback needs to do is navigate. The cwd-empty stopgap
         // from PR 2 is gone — the form refuses to submit without a
         // valid absolute path.
         go({ name: 'wave', id: wave.id });
       }}
-      onRenameCove={async (cId, name) => {
+      onRenameArea={async (cId, name) => {
         try {
-          await updateCove.mutateAsync({ id: cId, body: { name } });
+          await updateArea.mutateAsync({ id: cId, body: { name } });
         } catch (err) {
-          console.warn('[Calm] cove rename failed:', err);
+          console.warn('[Calm] area rename failed:', err);
         }
       }}
-      onDeleteCove={async (cId) => {
+      onDeleteArea={async (cId) => {
         try {
-          await deleteCove.mutateAsync(cId);
+          await deleteArea.mutateAsync(cId);
           go({ name: 'today' });
         } catch (err) {
-          console.warn('[Calm] cove delete failed:', err);
+          console.warn('[Calm] area delete failed:', err);
         }
       }}
       onDeleteWave={async (waveId) => {
         try {
-          await deleteWave.mutateAsync({ id: waveId, coveId: cove.id });
+          await deleteWave.mutateAsync({ id: waveId, areaId: area.id });
         } catch (err) {
           console.warn('[Calm] wave delete failed:', err);
         }
@@ -302,7 +302,7 @@ function WaveComponent() {
   const go = useGo();
   const { waveId } = useParams({ from: waveRoute.id });
   const detailQ = useWaveDetailQuery(waveId);
-  const covesQ = useCovesQuery();
+  const areasQ = useAreasQuery();
   const qc = useQueryClient();
   const updateWave = useUpdateWaveMutation();
   const deleteWave = useDeleteWaveMutation();
@@ -329,12 +329,12 @@ function WaveComponent() {
     }
     return null;
   }
-  const kernelCove = covesQ.data?.find((c) => c.id === detail.wave.cove_id);
-  if (!kernelCove) {
-    if (covesQ.isLoading) return null;
-    return <MissingShell label="Cove" onGo={go} />;
+  const kernelArea = areasQ.data?.find((c) => c.id === detail.wave.area_id);
+  if (!kernelArea) {
+    if (areasQ.isLoading) return null;
+    return <MissingShell label="Area" onGo={go} />;
   }
-  const cove = adaptCove(kernelCove);
+  const area = adaptArea(kernelArea);
   const uiWave = adaptWave(detail.wave, detail.overlays);
   uiWave.cards = detail.cards.map((k): WaveCardSlot => {
     // Issue #229 PR A — propagate the kernel's `deletable` bit so
@@ -364,7 +364,7 @@ function WaveComponent() {
   return (
     <WavePage
       wave={uiWave}
-      cove={cove}
+      area={area}
       onGo={go}
       onAddCard={async (wId, type) => {
         // #177 — click-time host-theme read; see the matching
@@ -413,8 +413,8 @@ function WaveComponent() {
       }}
       onDeleteWave={async (wId) => {
         try {
-          await deleteWave.mutateAsync({ id: wId, coveId: cove.id });
-          go({ name: 'cove', coveId: cove.id });
+          await deleteWave.mutateAsync({ id: wId, areaId: area.id });
+          go({ name: 'area', areaId: area.id });
         } catch (err) {
           console.warn('[Calm] wave delete failed:', err);
         }

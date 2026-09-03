@@ -19,9 +19,9 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
-const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = {
-  id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  id: 'w1', area_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -139,8 +139,8 @@ function setup(
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = {
     send(request) {
-      if (request.path === '/api/coves') return Promise.resolve(ok([COVE]));
-      if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([WAVE]));
+      if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
+      if (request.path === '/api/areas/c1/waves') return Promise.resolve(ok([WAVE]));
       if (request.path === '/api/overlays?entity_kind=wave') return Promise.resolve(ok([]));
       if (request.path === '/api/waves/w1') {
         return Promise.resolve(ok({ wave: WAVE, cards: [...cards], overlays: [] }));

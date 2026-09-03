@@ -328,7 +328,7 @@ endif
 	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
-	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"
+	@echo "  → API: http://localhost:$(CALM_PORT)/api/areas"
 	@echo "  dev id: $(DEV_ID)"
 	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
 	@echo "  logs: make logs DEV_ID=$(DEV_ID)"
@@ -341,7 +341,7 @@ dev-fresh: proxy-forwarder-up build ## Remove this DEV_ID's containers/state, th
 	$(COMPOSE) up -d --build
 	@echo ""
 	@echo "  → http://localhost:$(CALM_PORT)/"
-	@echo "  → API: http://localhost:$(CALM_PORT)/api/coves"
+	@echo "  → API: http://localhost:$(CALM_PORT)/api/areas"
 	@echo "  dev id: $(DEV_ID)"
 	@echo "  state:  container $(CALM_CONTAINER_STATE_DIR) tmpfs"
 	@echo "  logs: make logs DEV_ID=$(DEV_ID)"
@@ -373,7 +373,7 @@ shell: ## Drop into a shell in the server container (already at $HOME).
 
 .PHONY: health
 health: ## Smoke-test the API end-to-end through nginx.
-	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/coves \
+	@curl -fsS -w "  HTTP %{http_code}\n" http://localhost:$(CALM_PORT)/api/areas \
 	  && echo "ok" || (echo "down — try: make logs"; exit 1)
 
 # ---- host production lifecycle -----------------------------------------
@@ -396,7 +396,7 @@ prod-repair-codex-homes: prod-local-bin ## Rewrite stale docker shim paths in ex
 .PHONY: prod
 prod: build fe-build prod-dirs prod-repair-codex-homes ## Run production locally without docker (uses host ~/.codex and local shell; serves /next/).
 	@echo "  → http://localhost:$(PROD_PORT)/"
-	@echo "  → API: http://localhost:$(PROD_PORT)/api/coves"
+	@echo "  → API: http://localhost:$(PROD_PORT)/api/areas"
 	@echo "  data:  $(PROD_DATA_DIR)"
 	@echo "  shell: $(LOCAL_SHELL)"
 	@# Issue #388 Phase 1 — calm-server now talks to calm-proc-supervisor

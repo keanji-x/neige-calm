@@ -7,11 +7,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, HarnessItem, NewCard, NewCove, NewWave, new_id};
+use calm_server::model::{Card, CardRole, HarnessItem, NewArea, NewCard, NewWave, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -25,8 +25,8 @@ struct Boot {
 
 async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "items-rest".into(),
             color: "#111111".into(),
             sort: None,
@@ -36,7 +36,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "items rest".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -49,8 +49,8 @@ async fn boot() -> Boot {
         .unwrap();
 
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id);
+    let wave_area_cache = WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id);
     let mut tx = repo.pool().begin().await.unwrap();
     let spec_card = card_create_with_id_tx(
         &mut tx,
@@ -97,11 +97,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-items-rest"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(

@@ -320,8 +320,8 @@ mod tests {
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 
     async fn wave(repo: &SqlxRepo) -> Wave {
-        let cove = repo
-            .cove_create(NewCove {
+        let area = repo
+            .area_create(NewArea {
                 name: "cards".into(),
                 color: "#123456".into(),
                 sort: None,
@@ -329,7 +329,7 @@ mod tests {
             .await
             .unwrap();
         repo.wave_create(NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -541,9 +541,9 @@ pub async fn card_delete_tx(
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("card {id}")));
     }
-    // Not reached when a wave/cove delete cascades cards via FK — those
+    // Not reached when a wave/area delete cascades cards via FK — those
     // paths sweep card overlays in their own txn via
-    // overlay_delete_card_overlays_by_wave_tx / overlay_delete_subtree_by_cove_tx.
+    // overlay_delete_card_overlays_by_wave_tx / overlay_delete_subtree_by_area_tx.
     overlay_delete_by_entity_tx(tx, "card", id).await?;
     // PR3 (#136) — keep the role cache in lockstep with the table.
     // Like the insert-side write-through, this happens before commit;
@@ -595,7 +595,7 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
 ///
 /// It is deliberately unconditional in the *card kind*: codex, claude and
 /// terminal cards all persist a `cwd` here, and all three are the durable
-/// consumer the design names. The one exception — the system cove's launchpad
+/// consumer the design names. The one exception — the system area's launchpad
 /// wave, which the kernel re-points on every `ensure` — lives inside
 /// [`wave_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
 pub async fn terminal_create_tx(

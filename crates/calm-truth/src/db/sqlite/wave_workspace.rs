@@ -109,9 +109,9 @@ pub async fn wave_workspace_read_tx(
 /// consumer; and a caller cannot accidentally un-freeze, because this function
 /// has no way to write `NULL`.
 ///
-/// # Why it is a no-op in the system cove
+/// # Why it is a no-op in the system area
 ///
-/// Design §数据模型: `frozen_at` is monotonic **except for the system cove's
+/// Design §数据模型: `frozen_at` is monotonic **except for the system area's
 /// Today/launchpad wave**, whose path the kernel maintains
 /// (`today_launchpad_ensure_tx` re-points it on every `ensure`). That wave also
 /// owns a terminal card and takes worker leases, i.e. it hits two of the freeze
@@ -135,7 +135,7 @@ pub async fn wave_workspace_freeze_tx(
            SET workspace_frozen_at = ?1
            WHERE id = ?2
              AND workspace_frozen_at IS NULL
-             AND (SELECT c.kind FROM coves AS c WHERE c.id = waves.cove_id) <> 'system'"#,
+             AND (SELECT c.kind FROM areas AS c WHERE c.id = waves.area_id) <> 'system'"#,
     )
     .bind(now_ms)
     .bind(wave_id)

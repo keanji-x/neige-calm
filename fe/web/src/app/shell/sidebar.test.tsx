@@ -4,9 +4,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Cove } from '../../../../core/domain/cove.ts';
+import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
-import { COVE_PALETTE } from '../../features/cove/palette.ts';
+import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 
@@ -17,13 +17,13 @@ function memoryStorage() {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
 
-function cove(overrides: Partial<Cove> = {}): Cove {
+function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -39,13 +39,13 @@ function renderSidebar(props: Partial<Props> = {}) {
     return (
       <ThemeProvider storage={memoryStorage()}>
         <Sidebar
-          coves={merged.coves ?? [cove()]}
-          wavesByCove={merged.wavesByCove ?? new Map([['c1', waves]])}
+          areas={merged.areas ?? [area()]}
+          wavesByArea={merged.wavesByArea ?? new Map([['c1', waves]])}
           waves={waves}
           currentPath={merged.currentPath ?? '/'}
           onGo={merged.onGo ?? vi.fn()}
-          onCreateCove={merged.onCreateCove ?? vi.fn()}
-          onDeleteCove={merged.onDeleteCove ?? vi.fn()}
+          onCreateArea={merged.onCreateArea ?? vi.fn()}
+          onDeleteArea={merged.onDeleteArea ?? vi.fn()}
           onNewWave={merged.onNewWave ?? vi.fn()}
           onSetPinned={merged.onSetPinned ?? vi.fn()}
           onDeleteWave={merged.onDeleteWave ?? vi.fn()}
@@ -72,8 +72,8 @@ describe('workspace read feedback', () => {
     const onRetryRead = vi.fn();
     const { update } = renderSidebar({ readLoading: true, onRetryRead });
     expect(screen.getByRole('status').textContent).toContain('Loading workspace');
-    update({ readLoading: false, readError: 'coves down', onRetryRead });
-    expect(screen.getByRole('alert').textContent).toContain('coves down');
+    update({ readLoading: false, readError: 'areas down', onRetryRead });
+    expect(screen.getByRole('alert').textContent).toContain('areas down');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryRead).toHaveBeenCalledTimes(1);
   });
@@ -87,22 +87,22 @@ describe('workspace read feedback', () => {
   });
 });
 
-describe('cove disclosure', () => {
-  it('collapses and re-expands a cove wave list from its chevron', async () => {
+describe('area disclosure', () => {
+  it('collapses and re-expands an area wave list from its chevron', async () => {
     renderSidebar({ waves: [wave({ title: 'Inside' })] });
     expect(screen.getByRole('button', { name: /^Wave Inside/ })).toBeTruthy();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
     expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Expand cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Expand area Work' }));
     expect(screen.getByRole('button', { name: /^Wave Inside/ })).toBeTruthy();
   });
 
-  it('re-expands the cove holding the wave the user just opened', async () => {
+  it('re-expands the area holding the wave the user just opened', async () => {
     const waves = [wave({ id: 'w9', title: 'Inside' })];
     const { update } = renderSidebar({ waves });
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
     expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
 
     update({ waves, currentPath: '/wave/w9' });
@@ -110,10 +110,10 @@ describe('cove disclosure', () => {
   });
 });
 
-describe('cove row', () => {
-  it('excludes archived waves from shortcuts and cove groups', () => {
+describe('area row', () => {
+  it('excludes archived waves from shortcuts and area groups', () => {
     const archived = wave({ title: 'Filed away', lifecycle: 'blocked', archivedAt: 10, pinnedAt: 9 });
-    renderSidebar({ waves: [archived], wavesByCove: new Map([['c1', [archived]]]) });
+    renderSidebar({ waves: [archived], wavesByArea: new Map([['c1', [archived]]]) });
     expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
   });
 
@@ -121,9 +121,9 @@ describe('cove row', () => {
    * The count is gone, and this asserts its absence.
    *
    * It answered a question nobody asks: you come to the rail to find *a* wave,
-   * not to learn how many a cove holds, and the number drove no decision here.
+   * not to learn how many an area holds, and the number drove no decision here.
    * It spent a grid column and a tone saying so. What the rail owes you about a
-   * cove is already under it — its rows.
+   * area is already under it — its rows.
    */
   it('carries the name and nothing else — no count, no identity dot', () => {
     const waves = [
@@ -131,7 +131,7 @@ describe('cove row', () => {
       wave({ id: 'b', lifecycle: 'draft' }),
       wave({ id: 'c', lifecycle: 'draft' }),
     ];
-    renderSidebar({ waves, wavesByCove: new Map([['c1', waves]]) });
+    renderSidebar({ waves, wavesByArea: new Map([['c1', waves]]) });
     const row = screen.getByRole('button', { name: 'Work' });
     expect(row.textContent).toBe('Work');
     expect(row.querySelectorAll('[style]').length).toBe(0);
@@ -142,20 +142,20 @@ describe('cove row', () => {
   it('exposes disclosure as its own control outside the navigation button', () => {
     renderSidebar({ waves: [wave()] });
     const row = screen.getByRole('button', { name: 'Work' });
-    const chevron = screen.getByRole('button', { name: 'Collapse cove Work' });
+    const chevron = screen.getByRole('button', { name: 'Collapse area Work' });
     expect(row.contains(chevron)).toBe(false);
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
   });
 
   /* The rail does not own the new-wave surface — since #1211 it is a route,
      and the rail only navigates. `AppShell` owns the seam, because the
-     cove page's `+` opens the same one. All the row reports is which cove. */
-  it('starts a wave in its own cove from the row, without navigating into it', async () => {
+     area page's `+` opens the same one. All the row reports is which area. */
+  it('starts a wave in its own area from the row, without navigating into it', async () => {
     const onNewWave = vi.fn();
     const onGo = vi.fn();
     renderSidebar({
-      coves: [cove(), cove({ id: 'c2', name: 'Reading', sort: 2 })],
-      wavesByCove: new Map([['c1', []], ['c2', []]]),
+      areas: [area(), area({ id: 'c2', name: 'Reading', sort: 2 })],
+      wavesByArea: new Map([['c1', []], ['c2', []]]),
       onNewWave,
       onGo,
     });
@@ -165,30 +165,30 @@ describe('cove row', () => {
   });
 });
 
-describe('new cove', () => {
+describe('new area', () => {
   it('submits on Enter with a palette colour, and cancels on Escape', async () => {
-    const onCreateCove = vi.fn();
-    renderSidebar({ onCreateCove });
+    const onCreateArea = vi.fn();
+    renderSidebar({ onCreateArea });
 
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Reading{Escape}');
-    expect(onCreateCove).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Escape}');
+    expect(onCreateArea).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Reading{Enter}');
-    expect(onCreateCove).toHaveBeenCalledTimes(1);
-    const [name, color] = onCreateCove.mock.calls[0] as [string, string];
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Enter}');
+    expect(onCreateArea).toHaveBeenCalledTimes(1);
+    const [name, color] = onCreateArea.mock.calls[0] as [string, string];
     expect(name).toBe('Reading');
-    expect(COVE_PALETTE).toContain(color);
+    expect(AREA_PALETTE).toContain(color);
   });
 
   it('submits on blur', async () => {
-    const onCreateCove = vi.fn();
-    renderSidebar({ onCreateCove });
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Later');
+    const onCreateArea = vi.fn();
+    renderSidebar({ onCreateArea });
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Later');
     await userEvent.click(screen.getByRole('button', { name: 'Work' }));
-    expect(onCreateCove.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
+    expect(onCreateArea.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
   });
 });
 
@@ -208,35 +208,35 @@ describe('destructive confirms', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('deletes a cove only after Confirm', async () => {
-    const onDeleteCove = vi.fn();
-    renderSidebar({ onDeleteCove });
+  it('deletes an area only after Confirm', async () => {
+    const onDeleteArea = vi.fn();
+    renderSidebar({ onDeleteArea });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    // §6.13 / CR-5a — the title names the cove, and Confirm stays blocked until
-    // the name is reproduced. Deleting a cove cascades to every wave inside it;
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    // §6.13 / CR-5a — the title names the area, and Confirm stays blocked until
+    // the name is reproduced. Deleting an area cascades to every wave inside it;
     // it is the one operation in the product that earns a typed confirm, and
-    // this rail entry shares that dialog with the cove page's header button.
+    // this rail entry shares that dialog with the area page's header button.
     expect(screen.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
-    expect(onDeleteCove).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
+    expect(onDeleteArea).not.toHaveBeenCalled();
 
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
-    expect(onDeleteCove).toHaveBeenCalledWith('c1', expect.any(AbortSignal));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
+    expect(onDeleteArea).toHaveBeenCalledWith('c1', expect.any(AbortSignal));
   });
 
-  it('states that the cascade count is unknown when the cove wave query has no data', async () => {
-    renderSidebar({ wavesByCove: new Map() });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+  it('states that the cascade count is unknown when the area wave query has no data', async () => {
+    renderSidebar({ wavesByArea: new Map() });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     expect(screen.getByRole('dialog').textContent).toContain('The number of waves is not available.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
   });
 
-  it('describes deletion of a genuinely empty cove without claiming it deletes zero waves', async () => {
-    renderSidebar({ wavesByCove: new Map([['c1', []]]) });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    expect(screen.getByRole('dialog').textContent).toContain('This deletes the cove.');
+  it('describes deletion of a genuinely empty area without claiming it deletes zero waves', async () => {
+    renderSidebar({ wavesByArea: new Map([['c1', []]]) });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('This deletes the area.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
   });
 
@@ -353,7 +353,7 @@ describe('collapse toggle', () => {
     await userEvent.click(toggle);
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
     // Nothing changed here, because nothing here owns it.
-    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
   });
 
   it('drops to an icon strip when told it is collapsed, and stays navigable', () => {
@@ -364,8 +364,8 @@ describe('collapse toggle', () => {
     // answers "where am I", not "what is there".
     expect(screen.queryAllByRole('heading')).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
-    // The cove is still reachable, named for assistive tech and initialled for
-    // sighted users — a letter, not one of eight cove hues, because §7.5 keeps
+    // The area is still reachable, named for assistive tech and initialled for
+    // sighted users — a letter, not one of eight area hues, because §7.5 keeps
     // this surface greyscale apart from the current location and "waiting".
     const item = screen.getByRole('button', { name: 'Work' });
     expect(item.textContent).toBe('W');
@@ -375,7 +375,7 @@ describe('collapse toggle', () => {
     expect(expand.querySelector('[aria-hidden="true"]')).toBeTruthy();
 
     update({ collapsed: false });
-    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
   });
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {

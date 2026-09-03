@@ -21,7 +21,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -32,7 +32,7 @@ use tower::ServiceExt;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     wave_id: String,
     _tmp: TempDir,
 }
@@ -44,8 +44,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "theme-required-test".into(),
             color: "#000".into(),
             sort: None,
@@ -55,7 +55,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "theme-required-test".into(),
             sort: None,
             cwd: String::new(),
@@ -85,7 +85,7 @@ async fn boot() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -101,7 +101,7 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         wave_id: wave.id.to_string(),
         _tmp: tmp,
     }
@@ -151,7 +151,7 @@ async fn post_waves_without_theme_is_rejected_with_422() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "no theme here",
             "cwd": "/tmp/issue-177-pr1-test",
             "attach_folder": true,
@@ -183,7 +183,7 @@ async fn post_waves_with_null_theme_is_rejected_with_422() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "null theme",
             "cwd": "/tmp/issue-177-pr1-test",
             "attach_folder": true,

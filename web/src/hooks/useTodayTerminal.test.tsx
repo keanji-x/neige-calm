@@ -2,7 +2,7 @@
 //
 // The hook used to mint the Today wave with `cwd: '/'` + `attach_folder: false`.
 // Since #1131/S2 an *omitted* `cwd` is the managed branch (the kernel allocates,
-// creates and `git init`s `<workspace-root>/<cove>/<wave>`), while an *explicit*
+// creates and `git init`s `<workspace-root>/<area>/<wave>`), while an *explicit*
 // `cwd` means "attach this existing repository" and is validated as absolute +
 // existing + inside a Git work tree. `/` is not a Git work tree, so the old body
 // was both the live source of the #1147 symptom (workers dying in
@@ -46,15 +46,15 @@ function installFetchStub() {
       typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     calls.push({ method, path, body });
 
-    if (method === 'POST' && path === '/api/coves/system') {
-      return json(200, { id: 'cove-system', title: 'system', kind: 'system' });
+    if (method === 'POST' && path === '/api/areas/system') {
+      return json(200, { id: 'area-system', title: 'system', kind: 'system' });
     }
-    if (method === 'GET' && path === '/api/coves/cove-system/waves') {
+    if (method === 'GET' && path === '/api/areas/area-system/waves') {
       // No Today wave yet → the hook takes the mint branch under test.
       return json(200, []);
     }
     if (method === 'POST' && path === '/api/waves') {
-      return json(201, { id: 'wave-today', cove_id: 'cove-system', title: 'Today' });
+      return json(201, { id: 'wave-today', area_id: 'area-system', title: 'Today' });
     }
     if (method === 'GET' && path === '/api/waves/wave-today') {
       return json(200, { id: 'wave-today', cards: [] });
@@ -113,7 +113,7 @@ describe('useTodayTerminal wave-create body', () => {
     expect(body).not.toHaveProperty('attach_folder');
 
     // The keys that must still be there, so "omit everything" can't pass.
-    expect(body.cove_id).toBe('cove-system');
+    expect(body.area_id).toBe('area-system');
     expect(body.title).toBe('Today');
   });
 });

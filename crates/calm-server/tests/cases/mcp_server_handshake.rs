@@ -34,7 +34,7 @@ use calm_server::mcp_server::registry::{
     ConnectionIdentity, ToolCallIdentity, ToolHandler, ToolHandlerFuture,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -57,7 +57,7 @@ struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_id: String,
-    cove_id: String,
+    area_id: String,
     wave_id: String,
     session_id: String,
     thread_id: String,
@@ -68,7 +68,7 @@ struct Boot {
 }
 
 /// Boot an `McpServer` against an in-memory SqlxRepo with a Spec card
-/// plus an MCP token already minted. The card's wave + cove are seeded so
+/// plus an MCP token already minted. The card's wave + area are seeded so
 /// the emit tools (PR7a) can resolve the scope chain.
 async fn boot() -> Boot {
     boot_with_registry(build_default_registry()).await
@@ -87,8 +87,8 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-handshake-test".into(),
             color: "#000".into(),
             sort: None,
@@ -98,7 +98,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-handshake-test".into(),
             sort: None,
             cwd: String::new(),
@@ -148,12 +148,12 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     let events = EventBus::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
         registry,
@@ -171,7 +171,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         repo,
         events,
         card_id,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         wave_id: wave.id.to_string(),
         session_id,
         thread_id,
@@ -400,7 +400,7 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
             assert_eq!(identity.card_id.as_str(), b.card_id);
             assert_eq!(identity.session_id, b.session_id);
             assert_eq!(identity.wave_id.as_deref(), Some(b.wave_id.as_str()));
-            assert_eq!(identity.cove_id, b.cove_id);
+            assert_eq!(identity.area_id, b.area_id);
             assert_eq!(
                 identity.to_actor_id(),
                 ActorId::AiSpecSession(WorkerSessionId::from(b.session_id.as_str())),
@@ -411,7 +411,7 @@ async fn initialize_with_valid_token_binds_session_principal_and_card_actor() {
                 Some(Principal::Agent {
                     session_id: WorkerSessionId::from(b.session_id.as_str()),
                     wave_id: b.wave_id.as_str().into(),
-                    cove_id: b.cove_id.as_str().into(),
+                    area_id: b.area_id.as_str().into(),
                 }),
                 "Principal must be session-derived"
             );
@@ -862,12 +862,12 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
     let card_role_cache = CardRoleCache::new();
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
 
     let result = McpServer::spawn(
         repo,
         events,
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache, wave_area_cache),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,

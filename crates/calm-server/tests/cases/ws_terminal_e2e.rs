@@ -26,7 +26,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -57,7 +57,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// `TerminalExited` makes it through. Bound is still well under the
 /// issue's <10s total budget.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(8);
-/// Boot: in-memory repo + cove + wave seeded; AppState wired with a real
+/// Boot: in-memory repo + area + wave seeded; AppState wired with a real
 /// `DaemonClient` pointed at a fresh `TempDir` (so sockets from concurrent
 /// tests don't race in /tmp); both REST and WS routers merged and bound to
 /// a fresh `127.0.0.1:0` listener.
@@ -77,11 +77,11 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             .expect("open in-memory sqlite"),
     );
 
-    // Seed a cove + wave so the test can POST a card into the wave. Goes
+    // Seed an area + wave so the test can POST a card into the wave. Goes
     // through `raw_repo()` (gated behind the `fixtures` feature, auto-
     // enabled in dev-deps) just like `payload_validation.rs` does.
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "e2e".into(),
             color: "#000".into(),
             sort: None,
@@ -91,7 +91,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "e2e".into(),
             sort: None,
             // #1147 S6 — the terminal card's cwd defaults to the wave's
@@ -122,7 +122,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),

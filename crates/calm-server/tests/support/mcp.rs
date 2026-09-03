@@ -10,7 +10,7 @@ use calm_server::db::sqlite::{
 };
 use calm_server::event::{BroadcastEnvelope, EventBus};
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewWave, now_ms};
+use calm_server::model::{CardRole, NewArea, NewWave, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -35,7 +35,7 @@ pub struct CardBoot {
     /// through THESE, not a private cache of its own, or the role gate
     /// will see a card with no role.
     pub card_role_cache: CardRoleCache,
-    pub wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
+    pub wave_area_cache: calm_server::wave_area_cache::WaveAreaCache,
     /// Home wave of the minted card(s).
     pub wave_id: calm_server::ids::WaveId,
     pub events: EventBus,
@@ -94,8 +94,8 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "mcp-test".into(),
             color: "#000".into(),
             sort: None,
@@ -105,7 +105,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "mcp-test".into(),
             sort: None,
             cwd: String::new(),
@@ -184,12 +184,12 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
 
     let events = EventBus::new();
     let registry = build_default_registry();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -208,7 +208,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         repo,
         sqlx: sqlx_repo,
         card_role_cache,
-        wave_cove_cache,
+        wave_area_cache,
         wave_id: wave.id.clone(),
         events,
         card_id,

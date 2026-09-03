@@ -1,21 +1,21 @@
 import { test, expect, type APIResponse, type Page } from '@playwright/test';
 
-const createdCoveIds: string[] = [];
+const createdAreaIds: string[] = [];
 
 test.beforeEach(() => {
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 test.afterEach(async ({ page }) => {
-  for (const id of createdCoveIds) {
-    const res = await page.request.delete(`/api/coves/${id}`);
+  for (const id of createdAreaIds) {
+    const res = await page.request.delete(`/api/areas/${id}`);
     if (!res.ok() && res.status() !== 404) {
       throw new Error(
-        `cleanup: DELETE /api/coves/${id} -> ${res.status()} ${res.statusText()}`,
+        `cleanup: DELETE /api/areas/${id} -> ${res.status()} ${res.statusText()}`,
       );
     }
   }
-  createdCoveIds.length = 0;
+  createdAreaIds.length = 0;
 });
 
 async function expectOk(res: APIResponse, label: string): Promise<void> {
@@ -35,30 +35,30 @@ async function login(page: Page): Promise<void> {
   await expectOk(res, 'POST /api/auth/login');
 }
 
-async function createCove(page: Page, ts: number): Promise<{ id: string }> {
-  const res = await page.request.post('/api/coves', {
+async function createArea(page: Page, ts: number): Promise<{ id: string }> {
+  const res = await page.request.post('/api/areas', {
     data: { name: `E2E report files ${ts}`, color: '#4a8' },
     headers: { 'content-type': 'application/json' },
   });
-  await expectOk(res, 'POST /api/coves');
-  const cove = (await res.json()) as { id: string };
-  createdCoveIds.push(cove.id);
-  return cove;
+  await expectOk(res, 'POST /api/areas');
+  const area = (await res.json()) as { id: string };
+  createdAreaIds.push(area.id);
+  return area;
 }
 
 async function createWave(
   page: Page,
-  coveId: string,
+  areaId: string,
   ts: number,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E report file wave ${ts}`;
   const res = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about the report sidebar, not working directories.
-      // See `helpers/reset.ts::createWaveInCove` for why the invented
+      // See `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-report-files-<ts>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
@@ -83,8 +83,8 @@ test('WaveReportPage Files rail renders a selectable wave-fs tree', async ({
   await login(page);
 
   const ts = Date.now();
-  const cove = await createCove(page, ts);
-  const wave = await createWave(page, cove.id, ts);
+  const area = await createArea(page, ts);
+  const wave = await createWave(page, area.id, ts);
   await writeReport(page, wave.id, 'Report file tree body.');
 
   await page.goto(`/calm/wave/${wave.id}`);

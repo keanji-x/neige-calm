@@ -11,7 +11,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import { forceSpecPhase, getSpecCardId } from './helpers/spec-chat';
 import { getEventTrace } from './helpers/trace';
 
@@ -21,8 +21,8 @@ test.describe('spec chat live phase updates', () => {
 
   test.beforeEach(async ({ request }) => {
     await resetReplayServer(request);
-    const cove = await createUserCove(request, 'AtlasSpecLive');
-    const wave = await createWaveInCove(request, cove.id, 'Spec live test');
+    const area = await createUserArea(request, 'AtlasSpecLive');
+    const wave = await createWaveInArea(request, area.id, 'Spec live test');
     waveId = wave.id;
     specCardId = await getSpecCardId(request, waveId);
   });

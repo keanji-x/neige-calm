@@ -4,23 +4,23 @@
 //! turns `card_id` NULL (FK `ON DELETE SET NULL`) instead of cascading
 //! the row away.
 use super::{
-    SqlxRepo, card_create_with_id_tx, cove_create_tx, session_insert_tx, wave_create_tx,
+    SqlxRepo, area_create_tx, card_create_with_id_tx, session_insert_tx, wave_create_tx,
     worker_flow_item_insert_tx, worker_flow_items_delete_by_card_tx,
 };
 use crate::db::RepoRead;
-use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme};
+use crate::model::{CardRole, NewArea, NewCard, NewWave, RequestTheme};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
 };
 
-/// Seed a real cove → wave → card chain through the typed `_tx` helpers
+/// Seed a real area → wave → card chain through the typed `_tx` helpers
 /// (so the FKs target genuine rows) and return the card/wave ids.
 async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, String) {
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -32,7 +32,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -43,7 +43,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();

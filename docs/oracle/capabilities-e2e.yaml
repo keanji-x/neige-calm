@@ -21,7 +21,7 @@
 #       captured as E2E-CAP-SCROLL-001/002 + E2E-INV-SCROLL-003 (authoritative_test: NONE)
 #       because the new fe must still own those surfaces even though nothing gates them today.
 #   authoritative_test: NONE appears on 7 entries — behaviours the specs DOCUMENT as
-#     deliberately ungated (wave archive UI, cove-folder management UI, the resolve
+#     deliberately ungated (wave archive UI, area-folder management UI, the resolve
 #     longest-prefix tiebreak, the folder-overlap 409, the dormant-spec-input 409, and the
 #     scroll-probe inventory). Each is an intentional scope decision, not an oversight.
 #   ONLY-E2E signal: entries whose `why` contains "ONLY e2e" have no unit/vitest counterpart
@@ -135,7 +135,7 @@
     The e2e run must use exactly one worker.
   why: >
     playwright.config.ts:81-82 — multiple workers would mutate the same shared MockRepo /
-    replay kernel concurrently and make cove/wave seed state unpredictable.
+    replay kernel concurrently and make area/wave seed state unpredictable.
   source: web/playwright.config.ts:83
   authoritative_test: web/playwright.config.ts:83
   owner_slice: none/e2e/infra
@@ -369,13 +369,13 @@
   kind: capability
   family: seed-helpers
   statement: >
-    Test helpers must be able to mint a user cove (`POST /api/coves`), a wave inside a cove
-    (`POST /api/waves` with cove_id/title/cwd/attach_folder/theme), a wave report
+    Test helpers must be able to mint a user area (`POST /api/areas`), a wave inside an area
+    (`POST /api/waves` with area_id/title/cwd/attach_folder/theme), a wave report
     (`POST /api/waves/:id/report`), a renderer-free iframe worker card
     (`POST /api/waves/:id/cards`), and a per-wave view-mode overlay (`POST /api/overlays`).
   why: >
     helpers/reset.ts:42-59,81-87,125,148-153,178-190 — post-#175 the sidebar has no seeded
-    cove, so every spec must create the coves/waves it needs; the iframe card exists so card
+    area, so every spec must create the areas/waves it needs; the iframe card exists so card
     surfaces can be populated without a terminal/codex daemon.
   source: web/e2e/helpers/reset.ts:61-219
   authoritative_test: web/e2e/helpers/reset.ts:61
@@ -390,8 +390,8 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    The shared seed helper `createWaveInCove` posts every wave it mints through one body
-    literal — `cove_id`, `title`, `cwd`, `attach_folder`, and an inert dark theme sentinel —
+    The shared seed helper `createWaveInArea` posts every wave it mints through one body
+    literal — `area_id`, `title`, `cwd`, `attach_folder`, and an inert dark theme sentinel —
     so every caller of this helper sends exactly that key set, and no caller can vary it.
   why: >
     #250 PR2 put cwd into this body (since #1131 the server takes it as optional); #177 made
@@ -406,7 +406,7 @@
     the cited TypeScript can witness a rejection.
     #1148 第三轮:两处据实收口。(a) 原 `authoritative_test` 指的 reset.ts:105 是 helper 自己的
     `request.post`,既不是 `it` 也没有断言,按 SCHEMA.md:15「无测试写 NONE」改为 NONE。
-    (b) statement 原来枚举 `cove_id`/`cwd`/`attach_folder`/theme 四个键、并声称「no caller can
+    (b) statement 原来枚举 `area_id`/`cwd`/`attach_folder`/theme 四个键、并声称「no caller can
     seed a wave that omits a field the kernel requires」,两头都不准:`title`(reset.ts:108 实际有传)
     是服务端必填却没被枚举,而 `cwd` 自 #1131 起在 `crates/calm-server/src/routes/waves.rs:195-214`
     是 `Option<String>`(可选)。现在枚举补上 `title`,并把断言收回到本条真正的载体 —— helper body
@@ -768,11 +768,11 @@
   kind: invariant
   family: cleanup
   statement: >
-    Every chromium-project spec that mints coves must track their ids and
-    `DELETE /api/coves/<id>` them in `afterEach`, tolerating 404.
+    Every chromium-project spec that mints areas must track their ids and
+    `DELETE /api/areas/<id>` them in `afterEach`, tolerating 404.
   why: >
-    wave-create.spec.ts:21-26 (#250 PR5 triage) — leftover coves accumulate and break specs
-    that assume a zero-cove baseline (notably golden-path). The delete cascades through
+    wave-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break specs
+    that assume a zero-area baseline (notably golden-path). The delete cascades through
     waves → cards → terminals.
   source: web/e2e/wave-create.spec.ts:27-43
   authoritative_test: web/e2e/wave-create.spec.ts:33
@@ -788,7 +788,7 @@
   family: locators
   statement: >
     Every locator matching an entity name must use `exact: true` (or an anchored regex),
-    because per-row `Delete cove "<name>"` / `Expand cove <name>` / `Delete wave "<title>"`
+    because per-row `Delete area "<name>"` / `Expand area <name>` / `Delete wave "<title>"`
     buttons embed the same name in their accessible names.
   why: >
     golden-path.spec.ts:60-63, a11y-deep-link-after-reset.spec.ts:71-74 — a loose substring
@@ -830,7 +830,7 @@
   statement: >
     Loading `/calm/` must paint the app shell with a visible `aside.side` sidebar containing a
     `<nav aria-label="Sidebar navigation">` whose first control is a `Today` button, and a
-    separate `<nav aria-label="Coves">`.
+    separate `<nav aria-label="Areas">`.
   why: >
     golden-path.spec.ts:19-29 — the two named navigation landmarks are what let role-scoped
     queries disambiguate a sidebar `Today` button from a wave row also named "Today".
@@ -851,7 +851,7 @@
     resolved card id to `localStorage['calm.todayCardId']`.
   why: >
     golden-path.spec.ts:32-42 (#175) — that key is the ONLY externally observable signal that
-    the hidden system cove + Today wave + terminal card all exist, since none of them appear
+    the hidden system area + Today wave + terminal card all exist, since none of them appear
     in the sidebar.
   source: web/e2e/golden-path.spec.ts:36-42
   authoritative_test: web/e2e/golden-path.spec.ts:36
@@ -866,8 +866,8 @@
   kind: invariant
   family: today-bootstrap
   statement: >
-    The system cove hosting the default Today terminal must be filtered out of
-    `GET /api/coves`; a fresh workspace must render ZERO `button.cove-nav` rows in the sidebar.
+    The system area hosting the default Today terminal must be filtered out of
+    `GET /api/areas`; a fresh workspace must render ZERO `button.area-nav` rows in the sidebar.
   why: >
     golden-path.spec.ts:44-49 (#175) — leaking kernel scaffolding back into the sidebar is the
     exact regression this assertion catches.
@@ -882,14 +882,14 @@
 
 - id: E2E-CAP-SHELL-004
   kind: capability
-  family: cove-create
+  family: area-create
   statement: >
-    The sidebar Coves header must expose a `+ New cove` icon button that reveals a name input
-    (placeholder matching /name/i); pressing Enter mints the cove and its nav row appears with
-    the cove name as its accessible name.
+    The sidebar Areas header must expose a `+ New area` icon button that reveals a name input
+    (placeholder matching /name/i); pressing Enter mints the area and its nav row appears with
+    the area name as its accessible name.
   why: >
     golden-path.spec.ts:51-66 — the canonical zero-to-one entrypoint; the trigger lives on the
-    Coves header as an icon button (no longer a `button.cove-nav` row).
+    Areas header as an icon button (no longer a `button.area-nav` row).
   source: web/e2e/golden-path.spec.ts:51-66
   authoritative_test: web/e2e/golden-path.spec.ts:53
   owner_slice: app/shell/sidebar
@@ -903,10 +903,10 @@
   kind: capability
   family: routing
   statement: >
-    Clicking a sidebar cove row must navigate to `/calm/cove/<uuid>` with the sidebar still
-    visible alongside the cove page.
+    Clicking a sidebar area row must navigate to `/calm/area/<uuid>` with the sidebar still
+    visible alongside the area page.
   why: >
-    golden-path.spec.ts:66-73 — catches a broken router or a broken `/api/coves` route.
+    golden-path.spec.ts:66-73 — catches a broken router or a broken `/api/areas` route.
   source: web/e2e/golden-path.spec.ts:66-73
   authoritative_test: web/e2e/golden-path.spec.ts:70
   owner_slice: app/router
@@ -923,10 +923,10 @@
     The router must be created with `basepath` set to `/calm`, so the Today index route surfaces
     in the browser URL as `/calm/` with no `/today` suffix.
   why: >
-    a11y-wave-cove-ops.spec.ts:901-904 — the cove-delete handler navigates `go({name:'today'})`
+    a11y-wave-area-ops.spec.ts:901-904 — the area-delete handler navigates `go({name:'today'})`
     and the assertion has to match `/calm/(\?|$)`.
-  source: web/src/app/router.tsx:153-161 web/e2e/a11y-wave-cove-ops.spec.ts:896-908
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:908
+  source: web/src/app/router.tsx:153-161 web/e2e/a11y-wave-area-ops.spec.ts:896-908
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:908
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -938,8 +938,8 @@
   kind: capability
   family: sidebar-expand
   statement: >
-    Each sidebar cove row must expose an `Expand cove <name>` button that reveals an inline
-    `<div role="group" aria-label="Waves in <name>">` listing that cove's waves.
+    Each sidebar area row must expose an `Expand area <name>` button that reveals an inline
+    `<div role="group" aria-label="Waves in <name>">` listing that area's waves.
   why: >
     a11y-sidebar-wave-delete.spec.ts:28-30 — the inline wave list is the surface the sidebar
     wave-delete affordance lives on.
@@ -1012,11 +1012,11 @@
   kind: invariant
   family: sidebar-overflow
   statement: >
-    The sidebar has no `overflow: auto` (body is `overflow: hidden`), so once enough coves
-    accumulate the `+ New cove` row is pushed outside the document and cannot be scrolled to.
+    The sidebar has no `overflow: auto` (body is `overflow: hidden`), so once enough areas
+    accumulate the `+ New area` row is pushed outside the document and cannot be scrolled to.
   why: >
     wave-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
-    multi-cove specs to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
+    multi-area specs to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
     silently changes which flows are reachable.
   source: web/e2e/wave-create-auto-match.spec.ts:82-90
   authoritative_test: web/e2e/wave-create-auto-match.spec.ts:91
@@ -1028,14 +1028,14 @@
   migration: pending
 
 # =============================================================================
-# SECTION 3 — Wave creation (NewTaskForm + cwd→cove resolve)
+# SECTION 3 — Wave creation (NewTaskForm + cwd→area resolve)
 # =============================================================================
 
 - id: E2E-CAP-WAVECREATE-001
   kind: capability
   family: new-task-form
   statement: >
-    The cove page must expose a `+ New wave` CTA that opens a modal `<dialog aria-label="New
+    The area page must expose a `+ New wave` CTA that opens a modal `<dialog aria-label="New
     wave">` hosting a `<form aria-label="New task">`; all wave creation entrypoints go through
     this one configuration card.
   why: >
@@ -1072,12 +1072,12 @@
   kind: capability
   family: new-task-form
   statement: >
-    Submitting from a fresh cove whose cwd no cove claims must POST the wave against the
-    surrounding cove with `attach_folder: true` and push the router to `/calm/wave/<id>`
+    Submitting from a fresh area whose cwd no area claims must POST the wave against the
+    surrounding area with `attach_folder: true` and push the router to `/calm/wave/<id>`
     within ~10s, with the submitted title visible on the page.
   why: >
-    wave-create.spec.ts:83-105 — the CovePage passes `defaultCoveId={cove.id}`; the resolve
-    misses so the "existing cove + attach_folder" branch runs. This is the everyday path.
+    wave-create.spec.ts:83-105 — the AreaPage passes `defaultAreaId={area.id}`; the resolve
+    misses so the "existing area + attach_folder" branch runs. This is the everyday path.
   source: web/e2e/wave-create.spec.ts:83-105
   authoritative_test: web/e2e/wave-create.spec.ts:96
   owner_slice: features/wave/create
@@ -1091,11 +1091,11 @@
   kind: capability
   family: cwd-auto-match
   statement: >
-    Typing a cwd covered by another cove's folder claim must, after a 300ms debounce, render a
-    `data-testid="cove-auto-match"` banner naming that cove AND the matching folder path.
+    Typing a cwd covered by another area's folder claim must, after a 300ms debounce, render a
+    `data-testid="area-auto-match"` banner naming that area AND the matching folder path.
   why: >
     wave-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
-    copy tweaks; the visible copy starts with "Auto-matched to cove".
+    copy tweaks; the visible copy starts with "Auto-matched to area".
   source: web/e2e/wave-create-auto-match.spec.ts:128-136
   authoritative_test: web/e2e/wave-create-auto-match.spec.ts:133
   owner_slice: features/wave/create
@@ -1109,12 +1109,12 @@
   kind: invariant
   family: cwd-auto-match
   statement: >
-    A cwd auto-match MUST override the surrounding page's `defaultCoveId` — the wave lands in
-    the cove that owns the path, not the cove whose page the user is looking at.
+    A cwd auto-match MUST override the surrounding page's `defaultAreaId` — the wave lands in
+    the area that owns the path, not the area whose page the user is looking at.
   why: >
     wave-create-auto-match.spec.ts:6-11 — "longest-prefix resolve wins over surrounding page
-    context". Without it the user silently lands waves in the wrong cove every time they type
-    a path another cove already owns.
+    context". Without it the user silently lands waves in the wrong area every time they type
+    a path another area already owns.
   source: web/e2e/wave-create-auto-match.spec.ts:122-143
   authoritative_test: web/e2e/wave-create-auto-match.spec.ts:142
   owner_slice: features/wave/create
@@ -1129,7 +1129,7 @@
   family: cwd-auto-match
   statement: >
     When the auto-match branch fires, `attach_folder` must be FALSE — the wave-create tx must
-    NOT mint a redundant `cove_folders` row for a cwd already covered by an ancestor claim.
+    NOT mint a redundant `area_folders` row for a cwd already covered by an ancestor claim.
   why: >
     wave-create-auto-match.spec.ts:145-154 — a redundant descendant claim would later trip the
     create endpoint's ancestor/descendant overlap 409 and corrupt resolve's at-most-one-row
@@ -1145,16 +1145,16 @@
 
 - id: E2E-CAP-WAVECREATE-007
   kind: capability
-  family: cove-picker
+  family: area-picker
   statement: >
-    When the cwd resolve MISSES, the form must show a `<radiogroup aria-label="Cove
-    selection">` offering `Existing cove` (default when defaultCoveId is set, paired with a
-    combobox listing every user cove) and `Create new cove`.
+    When the cwd resolve MISSES, the form must show a `<radiogroup aria-label="Area
+    selection">` offering `Existing area` (default when defaultAreaId is set, paired with a
+    combobox listing every user area) and `Create new area`.
   why: >
-    wave-create-new-cove.spec.ts:90-98 and wave-create-browse-cwd.spec.ts:146-149 — the
+    wave-create-new-area.spec.ts:90-98 and wave-create-browse-cwd.spec.ts:146-149 — the
     radiogroup's appearance is also the signal that the resolve debounce has settled.
-  source: web/e2e/wave-create-new-cove.spec.ts:90-104
-  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:96
+  source: web/e2e/wave-create-new-area.spec.ts:90-104
+  authoritative_test: web/e2e/wave-create-new-area.spec.ts:96
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1164,17 +1164,17 @@
 
 - id: E2E-CAP-WAVECREATE-008
   kind: capability
-  family: cove-picker
+  family: area-picker
   statement: >
-    Picking `Create new cove` must reveal a `New cove name` input, auto-seed a deterministic
+    Picking `Create new area` must reveal a `New area name` input, auto-seed a deterministic
     palette colour (no colour picker), and on submit run the two-step
-    `POST /api/coves` → `POST /api/waves (attach_folder: true)` so the typed cwd lands as a
-    `cove_folders` row in the same tx.
+    `POST /api/areas` → `POST /api/waves (attach_folder: true)` so the typed cwd lands as a
+    `area_folders` row in the same tx.
   why: >
-    wave-create-new-cove.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
+    wave-create-new-area.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
     URL push and the resulting rows are observable.
-  source: web/e2e/wave-create-new-cove.spec.ts:99-152
-  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:49
+  source: web/e2e/wave-create-new-area.spec.ts:99-152
+  authoritative_test: web/e2e/wave-create-new-area.spec.ts:49
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1184,15 +1184,15 @@
 
 - id: E2E-CAP-WAVECREATE-009
   kind: capability
-  family: cove-picker
+  family: area-picker
   statement: >
-    A cove minted by the form's create-new-cove branch must appear in the sidebar within ~5s
+    An area minted by the form's create-new-area branch must appear in the sidebar within ~5s
     without a reload.
   why: >
-    wave-create-new-cove.spec.ts:120-129 — both the create-cove mutation's onSuccess
-    invalidate and the wave-create cache poke refresh the coves list.
-  source: web/e2e/wave-create-new-cove.spec.ts:120-129
-  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:127
+    wave-create-new-area.spec.ts:120-129 — both the create-area mutation's onSuccess
+    invalidate and the wave-create cache poke refresh the areas list.
+  source: web/e2e/wave-create-new-area.spec.ts:120-129
+  authoritative_test: web/e2e/wave-create-new-area.spec.ts:127
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1204,11 +1204,11 @@
   kind: capability
   family: auto-match-override
   statement: >
-    The auto-match banner must carry an enabled `Use a different cove` button that restores
+    The auto-match banner must carry an enabled `Use a different area` button that restores
     the radio picker.
   why: >
     wave-create-override-auto-match.spec.ts:12-15 (#250 PR3 fix-loop "B2") — without it the
-    auto-match locks the cove in permanently and the user has no escape hatch for a path that
+    auto-match locks the area in permanently and the user has no escape hatch for a path that
     happens to fall under an existing claim.
   source: web/e2e/wave-create-override-auto-match.spec.ts:100-111
   authoritative_test: web/e2e/wave-create-override-auto-match.spec.ts:103
@@ -1224,7 +1224,7 @@
   family: auto-match-override
   statement: >
     Once the override flag is latched, subsequent resolveState transitions (idle/miss/hit)
-    must NOT rewrite the user's cove choice.
+    must NOT rewrite the user's area choice.
   why: >
     wave-create-override-auto-match.spec.ts:118-127 — the user edits the cwd after overriding;
     a re-resolve that resets the radio would silently discard their pick.
@@ -1242,11 +1242,11 @@
   family: conflict-error
   statement: >
     A 409 FolderConflict on submit must render an inline `role="alert"` naming the OWNING
-    COVE BY NAME (resolved from the local coves cache) plus the conflicting path, and must NOT
-    print the cove UUID.
+    AREA BY NAME (resolved from the local areas cache) plus the conflicting path, and must NOT
+    print the area UUID.
   why: >
     wave-create-conflict.spec.ts:1-16 (#250 PR3 fix-loop "B1") — pre-fix the error read
-    "claimed by another cove" regardless of cache state; the absent-UUID assertion is what
+    "claimed by another area" regardless of cache state; the absent-UUID assertion is what
     proves the name lookup hit rather than the fallback.
   source: web/e2e/wave-create-conflict.spec.ts:127-135
   authoritative_test: web/e2e/wave-create-conflict.spec.ts:131
@@ -1388,13 +1388,13 @@
 
 - id: E2E-CAP-WAVECREATE-020
   kind: capability
-  family: cove-page-nav
+  family: area-page-nav
   statement: >
-    On successful create, the CovePage's `onWaveCreated` handler must navigate straight to the
+    On successful create, the AreaPage's `onWaveCreated` handler must navigate straight to the
     new wave's detail page.
   why: >
     a11y-keyboard.spec.ts:302-305 — router.tsx wires `go({name:'wave', id:...})`; without it
-    the user is stranded on the cove page wondering whether the create worked.
+    the user is stranded on the area page wondering whether the create worked.
   source: web/e2e/a11y-keyboard.spec.ts:302-306
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:305
   owner_slice: app/router
@@ -1405,22 +1405,22 @@
   migration: pending
 
 # =============================================================================
-# SECTION 4 — cwd → cove resolution (GET /api/coves/resolve)
+# SECTION 4 — cwd → area resolution (GET /api/areas/resolve)
 # =============================================================================
 
 - id: E2E-CAP-CWD-001
   kind: capability
-  family: cove-resolve
+  family: area-resolve
   statement: >
-    `GET /api/coves/resolve?path=<abs>` must answer 200 with
-    `{cove_id, folder_id, folder_path}` for a covered path, and JSON `null` (still 200) for a
+    `GET /api/areas/resolve?path=<abs>` must answer 200 with
+    `{area_id, folder_id, folder_path}` for a covered path, and JSON `null` (still 200) for a
     path outside every claim.
   why: >
     a11y-cwd-resolve.spec.ts:20-22 — a miss must never be a 404 or 500; the FE's miss-branch
     picker keys off the null body.
   source: web/e2e/a11y-cwd-resolve.spec.ts:103-140
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:103
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1429,16 +1429,16 @@
 
 - id: E2E-INV-CWD-002
   kind: invariant
-  family: cove-resolve
+  family: area-resolve
   statement: >
-    With two coves owning disjoint paths, a descendant query must resolve to its OWNING cove
+    With two areas owning disjoint paths, a descendant query must resolve to its OWNING area
     with no cross-talk.
   why: >
-    a11y-cwd-resolve.spec.ts:106-110 — the everyday multi-cove contract; without it users land
-    waves in whichever cove the surrounding page hinted at.
+    a11y-cwd-resolve.spec.ts:106-110 — the everyday multi-area contract; without it users land
+    waves in whichever area the surrounding page hinted at.
   source: web/e2e/a11y-cwd-resolve.spec.ts:103-140
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:126
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1447,7 +1447,7 @@
 
 - id: E2E-INV-CWD-003
   kind: invariant
-  family: cove-resolve
+  family: area-resolve
   statement: >
     Sibling claims sharing a raw string prefix (`/p/alpha` and `/p/alpha-extra`) must each
     resolve to their own claim, never to the other.
@@ -1456,7 +1456,7 @@
     substring match would route `/p/alpha-extra/...` into `/p/alpha`.
   source: web/e2e/a11y-cwd-resolve.spec.ts:142-185
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:142
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1465,17 +1465,17 @@
 
 - id: E2E-INV-CWD-004
   kind: invariant
-  family: cove-resolve
+  family: area-resolve
   statement: >
     A sibling-prefix path that is NOT a filesystem descendant (`siblingPrefix`, e.g.
     /work-1700000000/repository, against a `claim` of /work-1700000000/repo) must MISS —
     both at the exact level and deeper.
   why: >
     a11y-cwd-resolve.spec.ts:234-245 — dedicated regression guard for the `/`-boundary check;
-    the failure mode silently swallows a whole sibling project into the wrong cove.
+    the failure mode silently swallows a whole sibling project into the wrong area.
   source: web/e2e/a11y-cwd-resolve.spec.ts:234-262
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:234
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1484,7 +1484,7 @@
 
 - id: E2E-CAP-CWD-005
   kind: capability
-  family: cove-resolve
+  family: area-resolve
   statement: >
     An exact-path query must match the claim with the equal path
     (`is_descendant_of(p, p) == true`).
@@ -1493,7 +1493,7 @@
     descendant-of-itself, which is what makes "type the repo root" work.
   source: web/e2e/a11y-cwd-resolve.spec.ts:187-211
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:187
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1502,7 +1502,7 @@
 
 - id: E2E-INV-CWD-006
   kind: invariant
-  family: cove-resolve
+  family: area-resolve
   statement: >
     Trailing-slash queries must normalize server-side to exactly the same answer as the
     slashless query, for both exact and descendant probes.
@@ -1511,7 +1511,7 @@
     DirectoryBrowser writes trailing-slash values into the path input, so this is a live case.
   source: web/e2e/a11y-cwd-resolve.spec.ts:213-232
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:213
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1520,16 +1520,16 @@
 
 - id: E2E-INV-CWD-007
   kind: invariant
-  family: cove-resolve
+  family: area-resolve
   statement: >
-    A `/` root claim must cover EVERY absolute path on that cove — deep descendants, shallow
+    A `/` root claim must cover EVERY absolute path on that area — deep descendants, shallow
     descendants, and `/` itself.
   why: >
     a11y-cwd-resolve.spec.ts:278-287 — `is_descendant_of` needs an early-return root branch;
     the naive fallback builds `"//"` and misses every real cwd query.
   source: web/e2e/a11y-cwd-resolve.spec.ts:278-316
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:278
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1538,7 +1538,7 @@
 
 - id: E2E-CAP-CWD-008
   kind: capability
-  family: cove-resolve
+  family: area-resolve
   statement: >
     An empty `?path=` and a non-absolute `?path=relative/path` must both reject with 400,
     body `{error, code: "bad_request"}` where `error` mentions "absolute" and (for the
@@ -1548,7 +1548,7 @@
     enum refactor must update the assertion deliberately; operators need the bad value in logs.
   source: web/e2e/a11y-cwd-resolve.spec.ts:318-353
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:318
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1557,15 +1557,15 @@
 
 - id: E2E-CAP-CWD-009
   kind: capability
-  family: cove-folders
+  family: area-folders
   statement: >
-    `POST /api/coves/:id/folders {path}` must answer 201 and claim the path for that cove.
+    `POST /api/areas/:id/folders {path}` must answer 201 and claim the path for that area.
   why: >
     a11y-cwd-resolve.spec.ts:57-76 — the 201 (not 200) is asserted so a server-side conflict
     or bad path shape surfaces at the seeding call, not as a later confusing failure.
   source: web/e2e/a11y-cwd-resolve.spec.ts:61-76
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:70
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1574,7 +1574,7 @@
 
 - id: E2E-INV-CWD-010
   kind: invariant
-  family: cove-folders
+  family: area-folders
   statement: >
     The create-folder endpoint rejects ancestor/descendant/equal overlap with 409, which is
     what keeps the resolve handler's filter set to AT MOST ONE row per query path — so the
@@ -1585,7 +1585,7 @@
     Rust-integration-test concern.
   source: web/e2e/a11y-cwd-resolve.spec.ts:264-272
   authoritative_test: NONE
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -1594,16 +1594,16 @@
 
 - id: E2E-INV-CWD-011
   kind: invariant
-  family: cove-folders
+  family: area-folders
   statement: >
-    There is deliberately NO cove-folder management UI (the Settings page covers proxy config
-    only; Cove/Wave pages expose no folder management).
+    There is deliberately NO area-folder management UI (the Settings page covers proxy config
+    only; Area/Wave pages expose no folder management).
   why: >
     a11y-cwd-resolve.spec.ts:43-48 (#269 P3) — explicitly scoped out and skipped, not
     forgotten. A rewrite that "notices the gap" is adding scope, not restoring it.
   source: web/e2e/a11y-cwd-resolve.spec.ts:43-48
   authoritative_test: NONE
-  owner_slice: features/cove/folders
+  owner_slice: features/area/folders
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -1657,11 +1657,11 @@
   kind: capability
   family: keyboard-nav
   statement: >
-    Tab must reach the sidebar `button.cove-nav` row and Enter must activate it, routing to
-    `/calm/cove/<id>` where the CovePage renders an `<h1>` carrying the cove name.
+    Tab must reach the sidebar `button.area-nav` row and Enter must activate it, routing to
+    `/calm/area/<id>` where the AreaPage renders an `<h1>` carrying the area name.
   why: >
     a11y-keyboard.spec.ts:215-236 — asserting the heading (not just the URL) proves the route
-    actually mounted. The cove-nav name includes a wave-count badge, so predicates must match
+    actually mounted. The area-nav name includes a wave-count badge, so predicates must match
     on prefix.
   source: web/e2e/a11y-keyboard.spec.ts:215-237
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
@@ -1676,7 +1676,7 @@
   kind: capability
   family: keyboard-nav
   statement: >
-    The cove page must wrap its sorted wave list in a `<section aria-label="Waves">` landmark
+    The area page must wrap its sorted wave list in a `<section aria-label="Waves">` landmark
     whose rows are real `<button class="wave-row">` elements named by the wave title.
   why: >
     a11y-keyboard.spec.ts:717-722 — the landmark is what lets role-scoped queries disambiguate
@@ -1684,7 +1684,7 @@
     div) is the #127 nested-interactive fix.
   source: web/e2e/a11y-keyboard.spec.ts:353-364
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:747
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2086,7 +2086,7 @@
   family: axe
   statement: >
     The deferred-rules list must be EMPTY; no rule may be blanket-disabled. Common pages
-    (Today, Cove, Wave, Settings) MUST come out with zero violations — the fix goes in the
+    (Today, Area, Wave, Settings) MUST come out with zero violations — the fix goes in the
     source, never in a rule silence.
   why: >
     a11y-axe.spec.ts:28-32,109-124 — resolved-rule archaeology is kept in the file instead:
@@ -2180,13 +2180,13 @@
   kind: capability
   family: axe-matrix
   statement: >
-    The Cove page must scan clean in both themes, after its `<h1>` has painted.
+    The Area page must scan clean in both themes, after its `<h1>` has painted.
   why: >
-    a11y-axe.spec.ts:263-268 — CovePage paints its header synchronously once covesQuery
+    a11y-axe.spec.ts:263-268 — AreaPage paints its header synchronously once areasQuery
     resolves; scanning earlier would catch a half-rendered skeleton.
   source: web/e2e/a11y-axe.spec.ts:257-274
   authoritative_test: web/e2e/a11y-axe.spec.ts:259
-  owner_slice: features/cove/page
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2335,7 +2335,7 @@
   migration: pending
 
 # =============================================================================
-# SECTION 7 — Wave + cove mutation ops (#269 P2): rename / delete / cascade
+# SECTION 7 — Wave + area mutation ops (#269 P2): rename / delete / cascade
 # =============================================================================
 
 - id: E2E-CAP-DELETE-001
@@ -2346,10 +2346,10 @@
     `Delete wave "<title>"` that opens a ConfirmDialog titled `Delete wave?` with a `Cancel`
     button and a `Delete wave` confirm button.
   why: >
-    a11y-wave-cove-ops.spec.ts:119-129 — the label carries the entity name so AT users know
+    a11y-wave-area-ops.spec.ts:119-129 — the label carries the entity name so AT users know
     what they are about to destroy.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:119-134
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:101
+  source: web/e2e/a11y-wave-area-ops.spec.ts:119-134
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:101
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2363,11 +2363,11 @@
   statement: >
     A destructive ConfirmDialog must default-focus CANCEL, never the confirm button.
   why: >
-    a11y-wave-cove-ops.spec.ts:130-137 — cancel-safe default. The e2e mirror exists so a future
+    a11y-wave-area-ops.spec.ts:130-137 — cancel-safe default. The e2e mirror exists so a future
     refactor that bypasses ConfirmDialog (e.g. reverting to `window.confirm`) is caught even
     though `ConfirmDialog.contract.test.tsx` pins it at unit level.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:130-137
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:137
+  source: web/e2e/a11y-wave-area-ops.spec.ts:130-137
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:137
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2379,13 +2379,13 @@
   kind: capability
   family: wave-delete
   statement: >
-    Confirming a wave delete must: navigate back to the owning cove page, emit `wave.deleted`
+    Confirming a wave delete must: navigate back to the owning area page, emit `wave.deleted`
     carrying the wave id, and make `GET /api/waves/<id>` return 404.
   why: >
-    a11y-wave-cove-ops.spec.ts:148-159 — router.tsx wires `go({name:'cove', coveId})` on the
+    a11y-wave-area-ops.spec.ts:148-159 — router.tsx wires `go({name:'area', areaId})` on the
     wave page's `onDeleteWave`; all three halves (UI, event, kernel) must agree.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:148-159
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:154
+  source: web/e2e/a11y-wave-area-ops.spec.ts:148-159
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:154
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2399,9 +2399,9 @@
   statement: >
     Keyboard activation of the confirm button (Tab from Cancel, then Enter) must be equivalent
     to a click, including the disabled-while-pending guard.
-  why: a11y-wave-cove-ops.spec.ts:139-146 — the ConfirmDialog contract treats both identically.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:139-146
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:146
+  why: a11y-wave-area-ops.spec.ts:139-146 — the ConfirmDialog contract treats both identically.
+  source: web/e2e/a11y-wave-area-ops.spec.ts:139-146
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:146
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2417,10 +2417,10 @@
     dialog unmounts, NO destructive event fires within 1.5s, the row still exists (200), and
     the router must not navigate.
   why: >
-    a11y-wave-cove-ops.spec.ts:748-799 — a regression here silently deletes user data on a
+    a11y-wave-area-ops.spec.ts:748-799 — a regression here silently deletes user data on a
     keypress meant to back out.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:748-800
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:748
+  source: web/e2e/a11y-wave-area-ops.spec.ts:748-800
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:748
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2435,10 +2435,10 @@
     Clicking the Cancel BUTTON must dismiss without deleting — asserted as a separate test from
     the Escape path.
   why: >
-    a11y-wave-cove-ops.spec.ts:802-812 — split on purpose so a regression that breaks one path
+    a11y-wave-area-ops.spec.ts:802-812 — split on purpose so a regression that breaks one path
     (e.g. a stray `e.stopPropagation()` on Cancel) surfaces without the other masking it.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:802-845
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:802
+  source: web/e2e/a11y-wave-area-ops.spec.ts:802-845
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:802
   owner_slice: ui/confirm-dialog
   intentional_omission: false
   runtime_layer: ui
@@ -2452,10 +2452,10 @@
   statement: >
     Mouse click on the wave-title span must also enter rename mode (not just F2/Enter).
   why: >
-    a11y-wave-cove-ops.spec.ts:184-190 — `onClick={startRename}` is wired whenever
+    a11y-wave-area-ops.spec.ts:184-190 — `onClick={startRename}` is wired whenever
     `onRenameWave` is supplied; a11y-keyboard covers only the F2 path.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:184-190
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:162
+  source: web/e2e/a11y-wave-area-ops.spec.ts:184-190
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:162
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2469,9 +2469,9 @@
   statement: >
     Escape during wave rename must cancel: no POST, displayed title unchanged, on-disk title
     unchanged, and focus restored to the display span.
-  why: a11y-wave-cove-ops.spec.ts:192-204 — the cancel path must be write-free, not a revert.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:192-204
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:197
+  why: a11y-wave-area-ops.spec.ts:192-204 — the cancel path must be write-free, not a revert.
+  source: web/e2e/a11y-wave-area-ops.spec.ts:192-204
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:197
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2487,7 +2487,7 @@
     title must be a NO-OP — exit edit mode, restore focus, never call `onRenameWave`, and emit no
     `wave.updated` within 1.5s.
   why: >
-    a11y-wave-cove-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
+    a11y-wave-area-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
     empty or unchanged; without it a stray Enter blanks the wave title.
     The scope narrowing is #1211 S2's, and the rewrite does the opposite on purpose: a wave there
     has a second namer (the spec agent, whose rename only fires while the title is empty), so
@@ -2495,8 +2495,8 @@
     contradict each other — this row is about a front-end that has no such agent behind it. The
     owner_slice below is where the *rewrite* would put this behaviour, not a claim that the
     rewrite has it; `migration: pending` is what says it does not.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:206-223
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:221
+  source: web/e2e/a11y-wave-area-ops.spec.ts:206-223
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:221
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2510,10 +2510,10 @@
   statement: >
     After the cancel and no-op paths, a normal click-edit-Enter must still POST and update.
   why: >
-    a11y-wave-cove-ops.spec.ts:225-238 — proves the earlier short-circuits didn't wedge the
+    a11y-wave-area-ops.spec.ts:225-238 — proves the earlier short-circuits didn't wedge the
     editing state machine.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:225-239
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:233
+  source: web/e2e/a11y-wave-area-ops.spec.ts:225-239
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:233
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2523,17 +2523,17 @@
 
 - id: E2E-CAP-RENAME-011
   kind: capability
-  family: cove-rename
+  family: area-rename
   statement: >
-    The cove header must render its name as a real `<button class="h-display-rename">` with
-    aria-label = the name and aria-describedby resolving to `Rename cove name`; clicking it
-    opens an `<input aria-label="Cove name">` that auto-focuses with the value pre-selected.
+    The area header must render its name as a real `<button class="h-display-rename">` with
+    aria-label = the name and aria-describedby resolving to `Rename area name`; clicking it
+    opens an `<input aria-label="Area name">` that auto-focuses with the value pre-selected.
   why: >
-    a11y-wave-cove-ops.spec.ts:253-265 — EditableTitle in Cove.tsx; the microtask `select()` in
+    a11y-wave-area-ops.spec.ts:253-265 — EditableTitle in Area.tsx; the microtask `select()` in
     `enter()` is why specs must `selectText()` before `fill()` for determinism.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:253-282
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:241
-  owner_slice: features/cove/page
+  source: web/e2e/a11y-wave-area-ops.spec.ts:253-282
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:241
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2542,16 +2542,16 @@
 
 - id: E2E-CAP-RENAME-012
   kind: capability
-  family: cove-rename
+  family: area-rename
   statement: >
-    Blurring the cove-name input (Tab away) must commit via `onBlur={save}`, emit
-    `cove.updated`, and be reflected in `GET /api/coves`.
+    Blurring the area-name input (Tab away) must commit via `onBlur={save}`, emit
+    `area.updated`, and be reflected in `GET /api/areas`.
   why: >
-    a11y-wave-cove-ops.spec.ts:277-303 — blur-commit is a distinct code path from Enter-commit;
+    a11y-wave-area-ops.spec.ts:277-303 — blur-commit is a distinct code path from Enter-commit;
     tabbing away also proves the header's tab order isn't wedged.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:283-303
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:289
-  owner_slice: features/cove/page
+  source: web/e2e/a11y-wave-area-ops.spec.ts:283-303
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:289
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2560,19 +2560,19 @@
 
 - id: E2E-INV-RENAME-013
   kind: invariant
-  family: cove-rename
+  family: area-rename
   statement: >
-    Pressing Enter then immediately Tab during a cove rename must produce EXACTLY ONE PATCH,
+    Pressing Enter then immediately Tab during an area rename must produce EXACTLY ONE PATCH,
     carrying the NEW name; the kernel must hold the new name and the sidebar must show it.
   why: >
-    a11y-wave-cove-ops.spec.ts:656-678 (#288, fixed in PR #292) — pre-fix the Enter `keyup` was
+    a11y-wave-area-ops.spec.ts:656-678 (#288, fixed in PR #292) — pre-fix the Enter `keyup` was
     delivered to the just-focused display button, synthesized a click, re-entered edit mode with
     `draft` reset to the stale `value`, and the follow-up Tab blurred that remounted input into
     a SECOND PATCH with the OLD name. The user saw the new name flash then revert. The fix sets
     a one-shot ref in `save()` on keyboard commit that `enter()` consumes and ignores.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:686-745
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:728
-  owner_slice: features/cove/page
+  source: web/e2e/a11y-wave-area-ops.spec.ts:686-745
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:728
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2583,15 +2583,15 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    A cove rename must propagate to the SIDEBAR entry: the old name must disappear AND the new
+    An area rename must propagate to the SIDEBAR entry: the old name must disappear AND the new
     name must appear, within 1.5s, without a reload.
   why: >
-    a11y-wave-cove-ops.spec.ts:326-419 (#288) — both halves are asserted because new-name-only
+    a11y-wave-area-ops.spec.ts:326-419 (#288) — both halves are asserted because new-name-only
     would false-pass if both rows rendered side by side, and old-name-absent-only would
-    false-pass in the render gap. Seeded with three sibling coves because a single-cove sidebar
+    false-pass in the render gap. Seeded with three sibling areas because a single-area sidebar
     is a degenerate case some failure modes (memoized-by-length lists) would miss.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:396-419
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:326
+  source: web/e2e/a11y-wave-area-ops.spec.ts:396-419
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:326
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -2606,11 +2606,11 @@
     `test.fail()` must NOT be applied to the #288 sidebar-rename test even though the bug was
     reported against production.
   why: >
-    a11y-wave-cove-ops.spec.ts:343-350 — the assertion currently passes in the hermetic replay
+    a11y-wave-area-ops.spec.ts:343-350 — the assertion currently passes in the hermetic replay
     harness; Playwright flips an expected-failure annotation into a CI failure on unexpected
     pass, which would break the gate the moment the harness diverges from production.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:343-350
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:326
+  source: web/e2e/a11y-wave-area-ops.spec.ts:343-350
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:326
   owner_slice: none/e2e/infra
   intentional_omission: true
   runtime_layer: none
@@ -2622,11 +2622,11 @@
   kind: capability
   family: rename-propagation
   statement: >
-    The wave page must render a `<button class="wave-cove">` breadcrumb back-link displaying the
-    owning cove's name, and a cove rename must be reflected there.
-  why: a11y-wave-cove-ops.spec.ts:422-488 — the linked-surface case across a route boundary.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:484-489
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:422
+    The wave page must render a `<button class="wave-area">` breadcrumb back-link displaying the
+    owning area's name, and an area rename must be reflected there.
+  why: a11y-wave-area-ops.spec.ts:422-488 — the linked-surface case across a route boundary.
+  source: web/e2e/a11y-wave-area-ops.spec.ts:484-489
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:422
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2638,14 +2638,14 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    After a cove rename, a nav-away-and-back round trip (Cove → Today → Cove) must still show
+    After an area rename, a nav-away-and-back round trip (Area → Today → Area) must still show
     the new name in the sidebar.
   why: >
-    a11y-wave-cove-ops.spec.ts:491-505 — adds the route-boundary dimension: a
-    refetch-on-cove.updated regression and a re-render-on-route-change regression show up
+    a11y-wave-area-ops.spec.ts:491-505 — adds the route-boundary dimension: a
+    refetch-on-area.updated regression and a re-render-on-route-change regression show up
     differently across this test and E2E-INV-SURFACE-014.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:491-542
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:539
+  source: web/e2e/a11y-wave-area-ops.spec.ts:491-542
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:539
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -2657,14 +2657,14 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    A wave rename done on the wave detail page must be reflected in the cove page's Waves list:
+    A wave rename done on the wave detail page must be reflected in the area page's Waves list:
     the new title's `button.wave-row` visible AND the old title's row gone (count 0).
   why: >
-    a11y-wave-cove-ops.spec.ts:544-606 — the old-row-absent half pins that a stale duplicate
+    a11y-wave-area-ops.spec.ts:544-606 — the old-row-absent half pins that a stale duplicate
     cache entry cannot false-green the test.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:590-606
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:544
-  owner_slice: features/cove/page
+  source: web/e2e/a11y-wave-area-ops.spec.ts:590-606
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:544
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2675,12 +2675,12 @@
   kind: invariant
   family: rename-propagation
   statement: >
-    A wave rename must NOT clobber the cove name in the breadcrumb.
+    A wave rename must NOT clobber the area name in the breadcrumb.
   why: >
-    a11y-wave-cove-ops.spec.ts:648-653 — guards against a `wave.updated` → `['coves']`
+    a11y-wave-area-ops.spec.ts:648-653 — guards against a `wave.updated` → `['areas']`
     invalidation that returns stale data.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:609-654
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:651
+  source: web/e2e/a11y-wave-area-ops.spec.ts:609-654
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:651
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -2690,14 +2690,14 @@
 
 - id: E2E-CAP-DELETE-020
   kind: capability
-  family: cove-delete
+  family: area-delete
   statement: >
-    The cove header must expose `Delete cove "<name>"` opening a `Delete cove?` ConfirmDialog;
-    confirming emits `cove.deleted`, removes the row from `GET /api/coves`, and routes to Today.
-  why: a11y-wave-cove-ops.spec.ts:884-908 — full UI-driven destructive path.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:884-912
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
-  owner_slice: features/cove/page
+    The area header must expose `Delete area "<name>"` opening a `Delete area?` ConfirmDialog;
+    confirming emits `area.deleted`, removes the row from `GET /api/areas`, and routes to Today.
+  why: a11y-wave-area-ops.spec.ts:884-908 — full UI-driven destructive path.
+  source: web/e2e/a11y-wave-area-ops.spec.ts:884-912
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:847
+  owner_slice: features/area/page
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2706,16 +2706,16 @@
 
 - id: E2E-INV-DELETE-021
   kind: invariant
-  family: cove-delete
+  family: area-delete
   statement: >
-    Deleting a cove must CASCADE-drop its `cove_folders` rows, so `/api/coves/resolve` returns
+    Deleting an area must CASCADE-drop its `area_folders` rows, so `/api/areas/resolve` returns
     null for every previously-claimed path.
   why: >
-    a11y-wave-cove-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
-    claims would permanently block those paths from being claimed by any future cove.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:918-923
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
-  owner_slice: features/cove/folders
+    a11y-wave-area-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
+    claims would permanently block those paths from being claimed by any future area.
+  source: web/e2e/a11y-wave-area-ops.spec.ts:918-923
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:847
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2724,17 +2724,17 @@
 
 - id: E2E-INV-DELETE-022
   kind: invariant
-  family: cove-delete
+  family: area-delete
   statement: >
     The cascade must drop EVERY folder row, not just one — verified with three non-overlapping
     claims probed independently.
   why: >
-    a11y-wave-cove-ops.spec.ts:927-935 — with only two rows a `LIMIT 1`-style regression passes
+    a11y-wave-area-ops.spec.ts:927-935 — with only two rows a `LIMIT 1`-style regression passes
     50% of the time depending on insert order; three pushes false-green probability low enough
     to catch it every run.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:922-1016
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:922
-  owner_slice: features/cove/folders
+  source: web/e2e/a11y-wave-area-ops.spec.ts:922-1016
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:922
+  owner_slice: features/area/folders
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2743,15 +2743,15 @@
 
 - id: E2E-INV-DELETE-023
   kind: invariant
-  family: cove-delete
+  family: area-delete
   statement: >
-    `DELETE /api/coves/:id` must cascade through waves → cards → terminals.
+    `DELETE /api/areas/:id` must cascade through waves → cards → terminals.
   why: >
     wave-create.spec.ts:24-26 — relied on by every chromium spec's cleanup hook; without the
     cascade the suite leaks orphan waves and terminals.
   source: web/e2e/wave-create.spec.ts:21-26
   authoritative_test: web/e2e/wave-create.spec.ts:33
-  owner_slice: features/cove/delete
+  owner_slice: features/area/delete
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -2765,10 +2765,10 @@
     Wave ARCHIVE is deliberately NOT surfaced in the frontend: the kernel accepts
     `PATCH /api/waves/{id}` with `archived_at`, but no button or menu item exists.
   why: >
-    a11y-wave-cove-ops.spec.ts:12-18 — verified by grepping `web/src/` (only schema/type
+    a11y-wave-area-ops.spec.ts:12-18 — verified by grepping `web/src/` (only schema/type
     comments mention it). Explicitly scoped out, tracked as follow-up — a rewrite that "adds
     the missing archive button" is adding scope.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:12-18
+  source: web/e2e/a11y-wave-area-ops.spec.ts:12-18
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: true
@@ -2785,10 +2785,10 @@
     pill contributes aria text), and each row also carries sibling `Delete "<title>"` and
     `Pin wave` buttons.
   why: >
-    a11y-wave-cove-ops.spec.ts:72-86 — an `exact: true` match on the bare title finds nothing;
+    a11y-wave-area-ops.spec.ts:72-86 — an `exact: true` match on the bare title finds nothing;
     locators must anchor a regex at the title start with a trailing word boundary.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:72-92
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:80
+  source: web/e2e/a11y-wave-area-ops.spec.ts:72-92
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:80
   owner_slice: features/wave/row
   intentional_omission: false
   runtime_layer: features
@@ -2843,7 +2843,7 @@
   family: lifecycle-events
   statement: >
     Every accepted lifecycle edge must emit EXACTLY TWO events — a `wave.lifecycle_changed`
-    with payload `{id, cove_id, from, to}` AND a paired `wave.updated` carrying the full row.
+    with payload `{id, area_id, from, to}` AND a paired `wave.updated` carrying the full row.
   why: >
     a11y-wave-lifecycle.spec.ts:310-318,333-342 — `emitted_events` is asserted to be 2 on every
     forced edge; frontend cache invalidation hangs off `wave.updated` while the badge state
@@ -3051,7 +3051,7 @@
   family: event-bus
   statement: >
     The default fixture's event sequence must be exactly
-    [cove.updated, wave.updated, card.added ×3, overlay.set ×2] and the first N trace kinds must
+    [area.updated, wave.updated, card.added ×3, overlay.set ×2] and the first N trace kinds must
     match it verbatim.
   why: >
     a11y-trace-smoke.spec.ts:34-45 — pinned so a fixture edit causes a noisy failure; this is the
@@ -3124,7 +3124,7 @@
   kind: capability
   family: deep-link
   statement: >
-    Deep-linking straight to `/calm/cove/<id>` (no Today visit first) must render the cove name
+    Deep-linking straight to `/calm/area/<id>` (no Today visit first) must render the area name
     within 15s AND light up the sidebar entry.
   why: >
     a11y-deep-link-after-reset.spec.ts:41-77 (#290) — the cross-surface half pins that a fix which
@@ -3143,7 +3143,7 @@
   family: deep-link
   statement: >
     Deep-linking straight to `/calm/wave/<id>` must render the wave title within 15s and a
-    populated `button.wave-cove` breadcrumb.
+    populated `button.wave-area` breadcrumb.
   why: >
     a11y-deep-link-after-reset.spec.ts:80-106 — `useWaveDetailQuery` shares the WS-resync race
     surface; pre-#290 the breadcrumb rendered stale or empty.
@@ -3161,8 +3161,8 @@
   family: cursor-resync
   statement: >
     A poisoned cursor (`calm:sync:cursor = 999999`) installed before bundle load must trigger the
-    reset path and the bus must re-bootstrap: `cove.updated` lands within 15s and the sidebar
-    renders the cove.
+    reset path and the bus must re-bootstrap: `area.updated` lands within 15s and the sidebar
+    renders the area.
   why: >
     a11y-deep-link-after-reset.spec.ts:108-136 — direct reproduction of the pre-#290 failure mode.
     The test lands on Today rather than a deep link because the persisted React-Query/IndexedDB
@@ -3181,8 +3181,8 @@
   kind: capability
   family: live-updates
   statement: >
-    A cove or wave minted by a direct REST call from outside the browser must appear in the
-    sidebar live, via the resulting `EventScope::System` `cove.updated` / `wave.updated` WS
+    An area or wave minted by a direct REST call from outside the browser must appear in the
+    sidebar live, via the resulting `EventScope::System` `area.updated` / `wave.updated` WS
     frames, with no reload.
   why: >
     helpers/reset.ts:42-52 — every a11y spec depends on this; it is also the everyday multi-tab /
@@ -4698,7 +4698,7 @@
   statement: >
     In dark theme, every `text`-kind control's background must be neither fully transparent
     `rgba(0,0,0,0)` nor pure white `rgb(255,255,255)` — EXCEPT the allowlisted inline-rename
-    inputs `wave-title-input`, `cove-title-input`, `cove-nav-edit-input`.
+    inputs `wave-title-input`, `area-title-input`, `area-nav-edit-input`.
   why: >
     color-system-anchor.spec.ts:19-23,49-54 — a transparent or white text input in dark mode is
     unreadable; the three inline-rename inputs are deliberately transparent because they sit
@@ -4814,9 +4814,9 @@
   statement: >
     Only the replay-backed `a11y` project is hermetic; the `chromium` project targets a shared
     developer stack, so every chromium spec must namespace its cwds/titles with `Date.now()` (and
-    where needed `Math.random()`) to avoid tripping `cove_folders.UNIQUE(path)`.
+    where needed `Math.random()`) to avoid tripping `area_folders.UNIQUE(path)`.
   why: >
-    wave-create.spec.ts:12-17 and a11y-wave-cove-ops.spec.ts:20-27 — concurrent or repeated runs
+    wave-create.spec.ts:12-17 and a11y-wave-area-ops.spec.ts:20-27 — concurrent or repeated runs
     otherwise collide on the unique path constraint.
   source: web/e2e/wave-create.spec.ts:12-17
   authoritative_test: web/e2e/wave-create.spec.ts:90
@@ -4851,7 +4851,7 @@
   family: hermeticity
   statement: >
     Every a11y spec must clear the trace ring buffer AFTER bootstrap completes, so per-test
-    assertions never see the bootstrap path's own `cove.updated` / `wave.updated` frames.
+    assertions never see the bootstrap path's own `area.updated` / `wave.updated` frames.
   why: >
     a11y-keyboard.spec.ts:203-212 — bootstrap pollution is the single most common source of
     trace-assertion flakes in this suite.
@@ -4871,11 +4871,11 @@
     "This event must NOT fire" is asserted as a bounded 1500ms `waitForEvent` whose rejection is
     the pass condition — never as an unbounded sleep-then-check.
   why: >
-    a11y-wave-cove-ops.spec.ts:217-223,786-791 — 1500ms is comfortably wider than a kernel write +
+    a11y-wave-area-ops.spec.ts:217-223,786-791 — 1500ms is comfortably wider than a kernel write +
     WS broadcast round trip and narrow enough not to slow the suite. Where a deterministic counter
     exists (dev force endpoint's `emitted_events`), prefer it over the timing window entirely.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:217-223
-  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:221
+  source: web/e2e/a11y-wave-area-ops.spec.ts:217-223
+  authoritative_test: web/e2e/a11y-wave-area-ops.spec.ts:221
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4898,7 +4898,7 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:205-227; fe/web/src/app/router/public.tsx:1870,1916-1941
+  source: fe/web/src/features/area/new-wave/public.tsx:205-227; fe/web/src/app/router/public.tsx:1870,1916-1941
   authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:322
   owner_slice: features/wave/create
   intentional_omission: false
@@ -4912,13 +4912,13 @@
   family: wave-workspace
   statement: >
     Choosing a folder must post its absolute cwd together with `attach_folder` true; the flag may
-    not be omitted, and no `coves/resolve` pre-flight may decide it.
+    not be omitted, and no `areas/resolve` pre-flight may decide it.
   why: >
-    With the flag omitted the kernel refuses any path no cove has claimed ("is not claimed by any
-    cove", `routes/waves.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
-    no-op when this cove already covers the path (same-cove arm), so a second wave in one
+    With the flag omitted the kernel refuses any path no area has claimed ("is not claimed by any
+    area", `routes/waves.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
+    no-op when this area already covers the path (same-area arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
-    same-cove case, which the kernel's in-transaction scan already reaches atomically.
+    same-area case, which the kernel's in-transaction scan already reaches atomically.
   source: fe/web/src/app/router/public.tsx:1932-1941
   authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:367
   owner_slice: features/wave/create
@@ -4956,8 +4956,8 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/cove/new-wave/public.tsx:737-752
-  authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:847
+  source: fe/web/src/features/area/new-wave/public.tsx:737-752
+  authoritative_test: fe/web/src/features/area/new-wave/public.test.tsx:847
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4978,7 +4978,7 @@
     whole lifetime, and -003 alone no longer forbids it.
     It is stated on the call site where the hazard can actually occur. `features/wave/new-card`
     renders inside `app/router`'s add-card dialog, so it keeps `DirectoryField` and takes the
-    child-view branch; `features/cove/new-wave` is a route with no dialog above it and is
+    child-view branch; `features/area/new-wave` is a route with no dialog above it and is
     deliberately out of scope here — that is what -003 covers.
     Recorded as a new row because the old -003 wording was the *only* place either half was
     written down, and E2E-CAP-WAVECREATE-014 — which its `why` pointed at — is a legacy pending
@@ -5016,14 +5016,14 @@
   family: wave-workspace
   statement: >
     A wave-create folder clash must be rendered from the structured `FolderConflict` body — the
-    path, the owning cove's name, and a remedy that differs per conflict kind — never as the bare
-    status word, and never as a raw cove id.
+    path, the owning area's name, and a remedy that differs per conflict kind — never as the bare
+    status word, and never as a raw area id.
   why: >
     The 409 body carries no error key, so the generic normaliser in core/api/client.ts leaves
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
-    "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
+    "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/router/public.tsx:1964-1971
+  source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:1964-1971
   authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:430
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5056,8 +5056,8 @@
     the statement had to move from "collects nothing" to "collects the intent and not a name" —
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
-  source: fe/web/src/features/cove/new-wave/public.tsx:205-217,462-472
-  authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:187;
+  source: fe/web/src/features/area/new-wave/public.tsx:205-217,462-472
+  authoritative_test: fe/web/src/features/area/new-wave/public.test.tsx:187;
     fe/web/src/app/router/new-wave-route.test.tsx:295
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5082,7 +5082,7 @@
     `ChatComposerInput` forwards its DOM ref to the *wrapper*, which is not focusable, so a ref
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
-  source: fe/web/src/features/cove/new-wave/public.tsx:392-425
+  source: fe/web/src/features/area/new-wave/public.tsx:392-425
   authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:265
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5096,12 +5096,12 @@
   family: wave-rename
   statement: >
     On the rewrite's wave page, committing an empty title is a request and not a cancel: the page
-    passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The cove header
+    passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The area header
     keeps the primitive's "cancel" default, and an already-blank title stays a no-op on both.
   why: >
     A wave has a second namer — the spec agent's `calm.wave.rename`, which succeeds only while the
     title is empty (#1211 S3) — so clearing the name is how a reader hands naming back to it, and
-    swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". A cove has
+    swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". An area has
     no such agent, so the same gesture there must stay write-free: this is why the semantics is an
     explicit per-caller prop and not the shared primitive's default. The already-blank case is
     arithmetic, not policy — there is no state change to request.

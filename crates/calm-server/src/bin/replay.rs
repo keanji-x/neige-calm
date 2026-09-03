@@ -15,7 +15,7 @@
 //!
 //! The boot + seed pipeline is shared with `tests/replay_fixtures.rs`
 //! via `calm_server::replay`. The binary mounts the full app router
-//! (REST + WS) on top of the seeded repo so `curl /api/coves`, `curl
+//! (REST + WS) on top of the seeded repo so `curl /api/areas`, `curl
 //! /api/waves`, etc. all work against the playback state.
 
 use std::path::PathBuf;
@@ -213,7 +213,7 @@ async fn run_serve(
     //
     // REST handlers extract `Actor` via `FromRequestParts`, which reads
     // a request extension that the `actor_middleware` layer populates.
-    // Without that layer, any REST *write* (curl POST /api/coves, etc.)
+    // Without that layer, any REST *write* (curl POST /api/areas, etc.)
     // 500s with "actor middleware not applied" — so we mirror main.rs
     // and attach the middleware to the REST sub-router. Callers that
     // want non-default attribution still pass `X-Calm-Actor`; absent
@@ -425,7 +425,7 @@ async fn dev_force_wave_lifecycle(
     axum::Json(body): axum::Json<ForceLifecycleBody>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
     // Read the existing row outside the tx — `update_wave` does the same
-    // (cove_id is immutable so a cross-tx read is safe).
+    // (area_id is immutable so a cross-tx read is safe).
     let existing = s
         .app
         .repo
@@ -474,9 +474,9 @@ async fn dev_force_wave_lifecycle(
 
     let scope = EventScope::Wave {
         wave: existing.id.clone(),
-        cove: existing.cove_id.clone(),
+        area: existing.area_id.clone(),
     };
-    let cove_id_for_event = existing.cove_id.clone();
+    let area_id_for_event = existing.area_id.clone();
     let wave_id_for_event = existing.id.clone();
     let wave_id_for_tx = body.wave_id.clone();
 
@@ -501,7 +501,7 @@ async fn dev_force_wave_lifecycle(
                         scope.clone(),
                         Event::WaveLifecycleChanged {
                             id: wave_id_for_event.clone(),
-                            cove_id: cove_id_for_event.clone(),
+                            area_id: area_id_for_event.clone(),
                             from,
                             to,
                             agent_message: None,

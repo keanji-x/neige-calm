@@ -39,7 +39,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_delete_tx, card_with_codex_create_tx, terminal_delete_tx,
 };
 use calm_server::event::EventBus;
-use calm_server::model::{Card, CardRole, NewCove, NewWave, Terminal, new_id};
+use calm_server::model::{Card, CardRole, NewArea, NewWave, Terminal, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::WorkerSessionState;
@@ -62,8 +62,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "cascade-pin".into(),
             color: "#000".into(),
             sort: None,
@@ -73,7 +73,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "cascade pin".into(),
             sort: None,
             cwd: "/workspace".into(),
@@ -91,8 +91,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone() as Arc<dyn Repo>,
         events,
@@ -104,11 +104,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-cascade-pin-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     );
 
     let app = routes::router()

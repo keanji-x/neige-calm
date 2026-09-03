@@ -20,7 +20,7 @@
 
 use crate::db::RouteRepo;
 use crate::event::EventBus;
-use crate::ids::{ActorId, CardId, CoveId, WaveId};
+use crate::ids::{ActorId, AreaId, CardId, WaveId};
 use crate::mcp_server::framing::RpcError;
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
@@ -45,7 +45,7 @@ pub struct CardIdentity {
     pub provider: AgentProvider,
     pub session_id: String,
     pub wave_id: Option<String>,
-    pub cove_id: String,
+    pub area_id: String,
 }
 
 impl CardIdentity {
@@ -80,7 +80,7 @@ impl CardIdentity {
         Some(Principal::Agent {
             session_id: WorkerSessionId::from(self.session_id.clone()),
             wave_id: WaveId::from(wave_id.clone()),
-            cove_id: CoveId::from(self.cove_id.clone()),
+            area_id: AreaId::from(self.area_id.clone()),
         })
     }
 }
@@ -109,7 +109,7 @@ pub struct ToolCallIdentity {
     pub provider: AgentProvider,
     pub session_id: String,
     pub wave_id: Option<String>,
-    pub cove_id: String,
+    pub area_id: String,
     pub thread_id: String,
 }
 
@@ -137,7 +137,7 @@ impl ToolCallIdentity {
         Some(Principal::Agent {
             session_id: WorkerSessionId::from(self.session_id.clone()),
             wave_id: WaveId::from(wave_id.clone()),
-            cove_id: CoveId::from(self.cove_id.clone()),
+            area_id: AreaId::from(self.area_id.clone()),
         })
     }
 }
@@ -286,7 +286,7 @@ pub fn read_only_annotations() -> Value {
 ///
 /// Do NOT slap this on every new write tool - re-evaluate whether the
 /// handler enforces a real authorization gate first. If a tool ever
-/// writes outside the wave/cove the caller owns (e.g. crosses cove
+/// writes outside the wave/area the caller owns (e.g. crosses area
 /// boundaries or touches global state), keep approval ON by using
 /// `None` annotations or building a custom block with `destructiveHint:
 /// true`.
@@ -395,7 +395,7 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::state::WriteContext;
-    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_area_cache::WaveAreaCache;
 
     fn identity_with_role_and_provider(
         role: CardRole,
@@ -407,7 +407,7 @@ mod tests {
             provider,
             session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
-            cove_id: "cove-1".to_string(),
+            area_id: "area-1".to_string(),
             thread_id: "thread-1".to_string(),
         }
     }
@@ -426,7 +426,7 @@ mod tests {
             provider,
             session_id: "session-1".to_string(),
             wave_id: Some("wave-1".to_string()),
-            cove_id: "cove-1".to_string(),
+            area_id: "area-1".to_string(),
         }
     }
 
@@ -530,7 +530,7 @@ mod tests {
             repo: route_repo,
             wave_vcs: None,
             events: EventBus::new(),
-            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            write: WriteContext::new(CardRoleCache::new(), WaveAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),

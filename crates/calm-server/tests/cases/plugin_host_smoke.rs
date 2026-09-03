@@ -114,7 +114,7 @@ async fn host_parts(
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     );
     (host, repo, tmp, events)

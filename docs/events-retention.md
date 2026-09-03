@@ -11,7 +11,7 @@ Hourly background pass that deletes rows matching ALL of:
 
 * **exact-kind allowlist** — `claude.hook`, `codex.hook`,
   `harness.phase.changed`, `harness.item.added`, `overlay.set`. Everything
-  else (all `card.*` / `wave.*` / `cove.*` / `terminal.*` structural kinds,
+  else (all `card.*` / `wave.*` / `area.*` / `terminal.*` structural kinds,
   and `overlay.deleted` tombstones) is permanent by construction;
 * **age horizon** on `at` — default 30 days (floored at 1 day, see Knobs);
 * **keep-latest carve-out** — the newest `overlay.set` per

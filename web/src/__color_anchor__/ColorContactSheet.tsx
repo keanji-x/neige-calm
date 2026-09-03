@@ -8,7 +8,7 @@ type Row = {
   type?: string;
   placeholder?: string;
   value?: string;
-  coveNav?: boolean;
+  areaNav?: boolean;
 };
 
 const rows: Row[] = [
@@ -62,18 +62,18 @@ const rows: Row[] = [
     value: 'Wave title',
   },
   {
-    slug: 'cove-title-input',
+    slug: 'area-title-input',
     tag: 'input',
     controlKind: 'text',
-    className: 'cove-title-input',
-    value: 'Cove title',
+    className: 'area-title-input',
+    value: 'Area title',
   },
   {
-    slug: 'cove-nav-edit-input',
+    slug: 'area-nav-edit-input',
     tag: 'input',
     controlKind: 'text',
-    placeholder: 'New cove',
-    coveNav: true,
+    placeholder: 'New area',
+    areaNav: true,
   },
   { slug: 'settings-theme-radio', tag: 'input', controlKind: 'native', type: 'radio' },
   { slug: 'bare-textarea', tag: 'textarea', controlKind: 'text', value: 'bare textarea' },
@@ -90,9 +90,9 @@ export function ColorContactSheet() {
         {rows.map((row) => (
           <label key={row.slug} style={labelStyle}>
             <span>{row.slug}</span>
-            {row.coveNav ? (
+            {row.areaNav ? (
               <div className="side">
-                <div className="cove-nav-edit">{renderControl(row)}</div>
+                <div className="area-nav-edit">{renderControl(row)}</div>
               </div>
             ) : (
               renderControl(row)

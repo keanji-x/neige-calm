@@ -42,28 +42,28 @@
 //! `id` tiebreak from `cards`, dropping the `overlays` sort entirely — turns
 //! the matching test red.
 
-use super::{SqlxRepo, card_create_tx, cove_create_tx, overlay_upsert_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, card_create_tx, overlay_upsert_tx, wave_create_tx};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::RepoRead;
-use crate::model::{NewCard, NewCove, NewOverlay, NewWave, RequestTheme};
+use crate::model::{NewArea, NewCard, NewOverlay, NewWave, RequestTheme};
 use serde_json::json;
 
 async fn empty_wave(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "order".into(),
             color: "#101010".into(),
             sort: None,
         },
     )
     .await
-    .expect("cove");
+    .expect("area");
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "order".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -75,7 +75,7 @@ async fn empty_wave(repo: &SqlxRepo) -> String {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("wave");

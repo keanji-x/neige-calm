@@ -6,10 +6,10 @@
 // sit inside a Git work tree — see
 // `crates/calm-server/src/workspace_materialize.rs::validate_attached_workspace`.
 // Specs that only need *a* wave should omit `cwd` entirely and take the
-// kernel-managed branch (see `helpers/reset.ts::createWaveInCove`).
+// kernel-managed branch (see `helpers/reset.ts::createWaveInArea`).
 // This module is for the ones that cannot: the legacy `web/` NewTaskForm
 // always puts the cwd input's value on the wire, and a handful of specs
-// assert on `wave.cwd` / `cove_folders.path`.
+// assert on `wave.cwd` / `area_folders.path`.
 //
 // ## Why $HOME
 //
@@ -74,7 +74,7 @@ function scrubbedGitEnv(): NodeJS.ProcessEnv {
 /**
  * An absolute path under `$HOME` for a per-run fixture. `name` should
  * already carry the spec's uniqueness (a timestamp, usually) so parallel
- * or repeated runs never collide on `cove_folders.UNIQUE(path)`.
+ * or repeated runs never collide on `area_folders.UNIQUE(path)`.
  */
 export function attachedWorkspacePath(name: string): string {
   return path.join(homedir(), name);
@@ -105,7 +105,7 @@ export function createGitWorkTree(dir: string): string {
  * Create a subdirectory *inside* an existing work tree and return its
  * absolute path. `rev-parse --show-toplevel` succeeds anywhere under the
  * work tree, so a descendant is a valid attached workspace too — which is
- * exactly the shape the cove-auto-match specs need (a cove claims the
+ * exactly the shape the area-auto-match specs need (an area claims the
  * root, the wave attaches a directory beneath it).
  */
 export function createWorkTreeSubdir(root: string, ...segments: string[]): string {

@@ -268,7 +268,7 @@ fn run_detail_dto_serializes_like_old_json_builder() {
 fn fallback_write() -> WriteContext {
     WriteContext::new(
         crate::card_role_cache::CardRoleCache::new(),
-        crate::wave_cove_cache::WaveCoveCache::new(),
+        crate::wave_area_cache::WaveAreaCache::new(),
     )
 }
 
@@ -279,7 +279,7 @@ fn wave_scoped(id: i64, at: i64, actor: ActorId, event: Event) -> WaveEvent {
         actor,
         scope: EventScope::Wave {
             wave: WaveId::from("wave-test"),
-            cove: crate::ids::CoveId::from("cove-test"),
+            area: crate::ids::AreaId::from("area-test"),
         },
         event,
     }
@@ -733,10 +733,10 @@ fn worker_flow_markdown_empty_reports_no_items() {
 #[tokio::test]
 async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     use crate::db::sqlite::{
-        SqlxRepo, card_create_with_id_tx, cove_create_tx, session_insert_tx, wave_create_tx,
+        SqlxRepo, area_create_tx, card_create_with_id_tx, session_insert_tx, wave_create_tx,
         worker_flow_item_insert_tx,
     };
-    use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+    use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
     use calm_types::worker::{
         LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
         WorkerSessionId, WorkerSessionState,
@@ -748,14 +748,14 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
 
-    // Seed a real cove → wave → card chain (FK target) and bulk-insert
+    // Seed a real area → wave → card chain (FK target) and bulk-insert
     // 600 flow items in ONE transaction for speed: a UserMessage first,
     // 598 CommandExecution rows, then the final AgentMessage LAST (highest
     // id). `flow_env(seq, turn)` keeps every item in turn 1.
     let mut tx = repo.pool().begin().await.unwrap();
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "c".into(),
             color: "#fff".into(),
             sort: None,
@@ -767,7 +767,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         &mut tx,
         NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "w".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -778,7 +778,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .unwrap();

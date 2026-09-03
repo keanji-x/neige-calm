@@ -11,7 +11,7 @@ use calm_server::db::sqlite::{
     session_supersede_and_start_tx,
 };
 use calm_server::ids::CardId;
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_lookup::project_runtime_into_card_payload;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind,
@@ -30,17 +30,17 @@ async fn fresh_repo() -> SqlxRepo {
 }
 
 async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "runtime-repo".into(),
             color: "#101010".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     repo.wave_create(NewWave {
         template_input: None,
-        cove_id: cove.id,
+        area_id: area.id,
         title: "runtime repo".into(),
         sort: None,
         cwd: String::new(),

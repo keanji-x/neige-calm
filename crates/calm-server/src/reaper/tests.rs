@@ -23,12 +23,12 @@ use calm_types::worker::{
 use serde_json::json;
 
 use crate::model::{
-    Card, NewCard, NewCove, NewWave, RequestTheme, Task, TaskKind, TaskStatus, WaveLifecycle,
+    Card, NewArea, NewCard, NewWave, RequestTheme, Task, TaskKind, TaskStatus, WaveLifecycle,
     new_id,
 };
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::WriteContext;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 
 static REAPER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -40,21 +40,21 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = RepoSyncDomainRaw::cove_create(
+    let area = RepoSyncDomainRaw::area_create(
         repo.as_ref(),
-        NewCove {
+        NewArea {
             name: "reaper-test".into(),
             color: "#000".into(),
             sort: None,
         },
     )
     .await
-    .expect("seed cove");
+    .expect("seed area");
     let wave = RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "reaper-test".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
@@ -166,23 +166,23 @@ fn registry_for(kind: WorkerProviderKind, fake: Arc<FakeProvider>) -> WorkerProv
 
 async fn write_context(repo: &SqlxRepo) -> WriteContext {
     let role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
+    let wave_area_cache = WaveAreaCache::new();
     repo.seed_card_role_cache(&role_cache)
         .await
         .expect("seed card role cache");
-    repo.seed_wave_cove_cache(&wave_cove_cache)
+    repo.seed_wave_area_cache(&wave_area_cache)
         .await
-        .expect("seed wave cove cache");
-    WriteContext::new(role_cache, wave_cove_cache)
+        .expect("seed wave area cache");
+    WriteContext::new(role_cache, wave_area_cache)
 }
 
 async fn route_state(repo: Arc<SqlxRepo>) -> crate::state::RouteState {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
+    let waves = WaveAreaCache::new();
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    repo.seed_wave_area_cache(&waves).await.unwrap();
     let state = crate::state::AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
@@ -629,7 +629,7 @@ async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_s
     reset_reaper_boot_gate_for_test();
 
     let (repo, wave_id) = seeded_repo().await;
-    set_wave_purpose(&repo, &wave_id, crate::COVE_CHAT_PURPOSE).await;
+    set_wave_purpose(&repo, &wave_id, crate::AREA_CHAT_PURPOSE).await;
     insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
 
     let fake = Arc::new(FakeProvider::new());
@@ -647,17 +647,17 @@ async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_s
         wave_lifecycle_now(&repo, &wave_id).await,
         WaveLifecycle::Draft
     );
-    let cove_id = repo
+    let area_id = repo
         .wave_get(wave_id.as_str())
         .await
         .unwrap()
         .unwrap()
-        .cove_id;
+        .area_id;
     let state = route_state(repo.clone()).await;
-    let response = crate::routes::waves::ensure_cove_chat_wave(
+    let response = crate::routes::waves::ensure_area_chat_wave(
         State(state),
         crate::actor::Actor(crate::actor::Actor::DEFAULT.into()),
-        AxumPath(cove_id.to_string()),
+        AxumPath(area_id.to_string()),
     )
     .await
     .expect("ensure existing chat wave")
@@ -681,7 +681,7 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
     reset_reaper_boot_gate_for_test();
 
     let (repo, wave_id) = seeded_repo().await;
-    set_wave_purpose(&repo, &wave_id, "cove-chat").await;
+    set_wave_purpose(&repo, &wave_id, "area-chat").await;
     set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
     let fake = Arc::new(FakeProvider::new());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -705,7 +705,7 @@ async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
             .unwrap()
             .purpose
             .as_deref(),
-        Some("cove-chat")
+        Some("area-chat")
     );
     reset_reaper_boot_gate_for_test();
 }

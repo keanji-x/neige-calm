@@ -1,6 +1,6 @@
-use super::{SqlxRepo, cove_create_tx, wave_create_tx};
+use super::{SqlxRepo, area_create_tx, wave_create_tx};
 use crate::db::RepoRead;
-use crate::model::{NewCove, NewWave, RequestTheme};
+use crate::model::{NewArea, NewWave, RequestTheme};
 use serde_json::json;
 
 /// #891 — `template_input` INSERT → SELECT round-trip: the JSON blob
@@ -10,16 +10,16 @@ use serde_json::json;
 async fn wave_create_round_trips_template_input() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let mut tx = repo.pool().begin().await.expect("begin tx");
-    let cove = cove_create_tx(
+    let area = area_create_tx(
         &mut tx,
-        NewCove {
+        NewArea {
             name: "template input round trip".into(),
             color: "#202020".into(),
             sort: None,
         },
     )
     .await
-    .expect("create cove");
+    .expect("create area");
     let input = json!({
         "issue_url": "https://github.com/o/r/issues/891",
         "issue_number": 891,
@@ -28,7 +28,7 @@ async fn wave_create_round_trips_template_input() {
     let with_input = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "with input".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -38,9 +38,9 @@ async fn wave_create_round_trips_template_input() {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
-        Some("cove-chat"),
+        Some("area-chat"),
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave with input");
@@ -48,7 +48,7 @@ async fn wave_create_round_trips_template_input() {
     let without_input = wave_create_tx(
         &mut tx,
         NewWave {
-            cove_id: cove.id,
+            area_id: area.id,
             title: "without input".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -60,7 +60,7 @@ async fn wave_create_round_trips_template_input() {
         },
         None,
         &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-        repo.wave_cove_cache(),
+        repo.wave_area_cache(),
     )
     .await
     .expect("create wave without input");
@@ -72,7 +72,7 @@ async fn wave_create_round_trips_template_input() {
         .expect("get wave")
         .expect("wave exists");
     assert_eq!(stored.template_input.as_ref(), Some(&input));
-    assert_eq!(stored.purpose.as_deref(), Some("cove-chat"));
+    assert_eq!(stored.purpose.as_deref(), Some("area-chat"));
 
     let stored_none = repo
         .wave_get(without_input.id.as_str())

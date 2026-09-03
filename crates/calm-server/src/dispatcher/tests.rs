@@ -63,13 +63,13 @@ fn permits_from_env_fallback_paths() {
 
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
-use crate::ids::CoveId;
+use crate::ids::AreaId;
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 
-fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
+fn wave_scope(wave: &WaveId, area: &AreaId) -> EventScope {
     EventScope::Wave {
         wave: wave.clone(),
-        cove: cove.clone(),
+        area: area.clone(),
     }
 }
 
@@ -108,8 +108,8 @@ fn dispatcher_filter_matches_push_kinds() {
         ]),
     };
     let wave = WaveId::from("w");
-    let cove = CoveId::from("c");
-    let scope = wave_scope(&wave, &cove);
+    let area = AreaId::from("c");
+    let scope = wave_scope(&wave, &area);
 
     let env = |ev: Event| BroadcastEnvelope {
         id: 1,
@@ -283,7 +283,7 @@ fn dispatcher_filter_matches_push_kinds() {
     })));
     assert!(filter.matches(&env(Event::WaveLifecycleChanged {
         id: wave.clone(),
-        cove_id: cove.clone(),
+        area_id: area.clone(),
         from: crate::model::WaveLifecycle::Draft,
         to: crate::model::WaveLifecycle::Planning,
         agent_message: None,
@@ -294,7 +294,7 @@ fn dispatcher_filter_matches_push_kinds() {
         crate::event::WaveUpdatedPayload::new(
             crate::model::Wave {
                 id: wave.clone(),
-                cove_id: cove.clone(),
+                area_id: area.clone(),
                 title: "w".into(),
                 sort: 0.0,
                 archived_at: None,
@@ -324,7 +324,7 @@ fn dispatcher_filter_matches_push_kinds() {
     // closed allowlist.
     assert!(!filter.matches(&env(Event::WaveDeleted {
         id: wave.clone(),
-        cove_id: cove.clone(),
+        area_id: area.clone(),
     })));
 }
 
@@ -574,13 +574,13 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
 fn event_warrants_spec_push_covers_push_allowlist() {
     let cache = CardRoleCache::new();
     let wave = WaveId::from("w");
-    let cove = CoveId::from("c");
+    let area = AreaId::from("c");
     let worker = CardId::from("worker");
     let spec = CardId::from("spec");
     let unknown = CardId::from("unknown");
     cache.insert(worker.clone(), CardRole::Worker, wave.clone());
     cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
+    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
 
     let completed = Event::TaskCompleted {
         idempotency_key: "done".into(),
@@ -853,7 +853,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
     assert!(!event_warrants_spec_push(
         &Event::WaveDeleted {
             id: wave,
-            cove_id: cove,
+            area_id: area,
         },
         &ActorId::User,
         &write
@@ -874,7 +874,7 @@ fn event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin() {
     let spec = CardId::from("spec");
     cache.insert(worker.clone(), CardRole::Worker, wave.clone());
     cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
+    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
 
     let completed = Event::TaskCompleted {
         idempotency_key: "done".into(),
@@ -1363,7 +1363,7 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
         );
     }
     assert!(
-        tags.contains("cove.updated") && tags.contains("task.completed") && tags.len() >= 46,
+        tags.contains("area.updated") && tags.contains("task.completed") && tags.len() >= 46,
         "kind census parse failed; raw diagnostic: {msg}"
     );
     tags
@@ -1394,13 +1394,13 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 fn spec_push_predicate_and_observation_mapping_agree() {
     let cache = CardRoleCache::new();
     let wave = WaveId::from("w");
-    let cove = CoveId::from("c");
+    let area = AreaId::from("c");
     let worker = CardId::from("worker");
     let spec = CardId::from("spec");
     let unknown = CardId::from("unknown");
     cache.insert(worker.clone(), CardRole::Worker, wave.clone());
     cache.insert(spec.clone(), CardRole::Spec, wave.clone());
-    let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
+    let write = WriteContext::new(cache, crate::wave_area_cache::WaveAreaCache::new());
 
     let row = |event: Event, actor: ActorId, expect_push: bool, expect_observation: bool| {
         SpecPushWiringRow {
@@ -1698,12 +1698,12 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         // -- Never-push kinds: explicit-false on both seams. ---------
         row(
-            Event::CoveUpdated(crate::model::Cove {
-                id: cove.clone(),
+            Event::AreaUpdated(crate::model::Area {
+                id: area.clone(),
                 name: "c".into(),
                 color: "#000000".into(),
                 sort: 0.0,
-                kind: crate::model::CoveKind::User,
+                kind: crate::model::AreaKind::User,
                 created_at: 1,
                 updated_at: 1,
             }),
@@ -1712,7 +1712,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::CoveDeleted { id: cove.clone() },
+            Event::AreaDeleted { id: area.clone() },
             ActorId::User,
             false,
             false,
@@ -1721,7 +1721,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
                 crate::model::Wave {
                     id: wave.clone(),
-                    cove_id: cove.clone(),
+                    area_id: area.clone(),
                     title: "w".into(),
                     sort: 0.0,
                     archived_at: None,
@@ -1746,7 +1746,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::WaveDeleted {
                 id: wave.clone(),
-                cove_id: cove.clone(),
+                area_id: area.clone(),
             },
             ActorId::User,
             false,
@@ -1787,7 +1787,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         row(
             Event::WaveLifecycleChanged {
                 id: wave.clone(),
-                cove_id: cove.clone(),
+                area_id: area.clone(),
                 from: crate::model::WaveLifecycle::Draft,
                 to: crate::model::WaveLifecycle::Planning,
                 agent_message: None,

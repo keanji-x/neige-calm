@@ -8,7 +8,7 @@ use super::session_row::{
 use crate::error::{CalmError, Result};
 use crate::ids::WaveId;
 use crate::model::*;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 
 use super::wave_tree::MAX_TREE_TASK_BUDGET;
 use super::wave_workspace::wave_workspace_write_tx;
@@ -31,13 +31,13 @@ pub enum WaveWorkspacePlan {
     /// future PATCH branch that forgot to check `kind` would relocate, i.e.
     /// would move a real user repository (D9).
     AttachedFromCwd,
-    /// Derive `<root>/<cove_id>/<wave_id>`, `kind = Managed`, **not** frozen.
+    /// Derive `<root>/<area_id>/<wave_id>`, `kind = Managed`, **not** frozen.
     ///
     /// Unfrozen is the point: design §2.3 makes the workspace a *default* —
     /// re-assignable until work actually happens (S3's PATCH). `NewWave.cwd`
     /// is ignored on this branch.
     ManagedUnder(std::path::PathBuf),
-    /// Derive `<root>/<cove_id>/<wave_id>`, `kind = Managed`, **frozen at
+    /// Derive `<root>/<area_id>/<wave_id>`, `kind = Managed`, **frozen at
     /// creation**. The child-wave path (design D7).
     ///
     /// Same derivation as [`Self::ManagedUnder`], opposite freeze decision, and
@@ -81,7 +81,7 @@ pub enum WaveWorkspacePlan {
 ///
 /// The check exists because "attached rows are never recycled" is a statement
 /// about the ROW, and S5 recycles by DIRECTORY. An attached row whose path sits
-/// under `<workspace-root>` — say `<root>/<cove>/<some-managed-wave>` — is
+/// under `<workspace-root>` — say `<root>/<area>/<some-managed-wave>` — is
 /// removed as collateral when that managed wave is deleted, and the attached
 /// wave silently loses its workspace. Nothing in the tree can produce that
 /// today (the only caller feeds an attached parent's own path, and an attached
@@ -135,20 +135,20 @@ pub async fn wave_create_tx(
     p: NewWave,
     purpose: Option<&str>,
     workspace_plan: &WaveWorkspacePlan,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
 ) -> Result<Wave> {
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
-        .bind(p.cove_id.as_str())
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM areas WHERE id = ?1")
+        .bind(p.area_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
     if exists.is_none() {
-        return Err(CalmError::NotFound(format!("cove {}", p.cove_id)));
+        return Err(CalmError::NotFound(format!("area {}", p.area_id)));
     }
 
     let sort = match p.sort {
         Some(s) => s,
         None => {
-            next_sort_scoped_in_tx(tx, "waves", "WHERE cove_id = ?1", Some(p.cove_id.as_ref()))
+            next_sort_scoped_in_tx(tx, "waves", "WHERE area_id = ?1", Some(p.area_id.as_ref()))
                 .await?
         }
     };
@@ -162,7 +162,7 @@ pub async fn wave_create_tx(
     // the column from the INSERT list.
     let lifecycle = crate::model::WaveLifecycle::Draft;
     // Issue #250 PR 2 — the route layer (`POST /api/waves`) already validated
-    // absolute-path shape + cove-folder ownership; this writer stays
+    // absolute-path shape + area-folder ownership; this writer stays
     // mechanical.
     //
     // Issue #1147 S1 — the workspace is not part of this INSERT. It is written
@@ -181,11 +181,11 @@ pub async fn wave_create_tx(
     // whole-tree bound vacuous.
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, created_at, updated_at)
+           (id, area_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
     )
     .bind(&id)
-    .bind(p.cove_id.as_str())
+    .bind(p.area_id.as_str())
     .bind(&p.title)
     .bind(sort)
     .bind(lifecycle.as_db_str())
@@ -211,7 +211,7 @@ pub async fn wave_create_tx(
         WaveWorkspacePlan::ManagedUnder(root) => WaveWorkspace {
             kind: WaveWorkspaceKind::Managed,
             path: root
-                .join(p.cove_id.as_str())
+                .join(p.area_id.as_str())
                 .join(&id)
                 .to_string_lossy()
                 .into_owned(),
@@ -220,7 +220,7 @@ pub async fn wave_create_tx(
         WaveWorkspacePlan::ManagedFrozenUnder(root) => WaveWorkspace {
             kind: WaveWorkspaceKind::Managed,
             path: root
-                .join(p.cove_id.as_str())
+                .join(p.area_id.as_str())
                 .join(&id)
                 .to_string_lossy()
                 .into_owned(),
@@ -233,15 +233,15 @@ pub async fn wave_create_tx(
         },
     };
     wave_workspace_write_tx(tx, &id, &workspace).await?;
-    // #234 — write-through into the wave→cove cache. Same semantics as
+    // #234 — write-through into the wave→area cache. Same semantics as
     // the `card_role_cache` write-through in `card_create_with_id_tx`: a
     // follow-up emit inside the same `write_with_event` closure can
     // see the freshly-minted binding via `enforce_role`'s lookup.
     let wave_id: WaveId = id.clone().into();
-    wave_cove_cache.insert(wave_id.clone(), p.cove_id.clone());
+    wave_area_cache.insert(wave_id.clone(), p.area_id.clone());
     Ok(Wave {
         id: wave_id,
-        cove_id: p.cove_id,
+        area_id: p.area_id,
         title: p.title,
         sort,
         archived_at: None,
@@ -441,10 +441,10 @@ pub async fn wave_update_tx(
 pub async fn wave_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
 ) -> Result<()> {
     wave_require_leaf_tx(tx, id).await?;
-    wave_delete_leaf_tx(tx, id, wave_cove_cache).await
+    wave_delete_leaf_tx(tx, id, wave_area_cache).await
 }
 
 /// Refuse deletion while a direct child exists. This is the authoritative
@@ -467,7 +467,7 @@ pub async fn wave_require_leaf_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) ->
 async fn wave_delete_leaf_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    wave_cove_cache: &WaveCoveCache,
+    wave_area_cache: &WaveAreaCache,
 ) -> Result<()> {
     sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
         .bind(id)
@@ -508,8 +508,8 @@ async fn wave_delete_leaf_tx(
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("wave {id}")));
     }
-    // #234 — keep the wave→cove cache in lockstep with the table. Mirror
+    // #234 — keep the wave→area cache in lockstep with the table. Mirror
     // of the card-delete-side write-through in `card_delete_tx`.
-    wave_cove_cache.remove(&WaveId::from(id));
+    wave_area_cache.remove(&WaveId::from(id));
     Ok(())
 }

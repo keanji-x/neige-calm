@@ -7,7 +7,7 @@
 //   Page                              | Describe block                  |
 //   -----------------------------------|---------------------------------|
 //   /calm/ (Today)                    | "Today page"                    |
-//   /calm/cove/<id>                   | "Cove page"                     |
+//   /calm/area/<id>                   | "Area page"                     |
 //   /calm/wave/<id>                   | "Wave page"                     |
 //   /calm/settings                    | "Settings page"                 |
 //   Wave + AddPanel menu open         | "AddPanel open"                 |
@@ -27,7 +27,7 @@
 // We deliberately don't blanket-disable any rule. If a third-party
 // component fails a check, the right move is to call it out in the
 // finding (a comment on the failing spec) and decide whether to fix or
-// defer. The "common" pages (Today, Cove, Wave, Settings) MUST come out
+// defer. The "common" pages (Today, Area, Wave, Settings) MUST come out
 // clean — if axe ever turns up violations on those, fix the source, don't
 // silence the spec.
 
@@ -36,7 +36,7 @@ import { AxeBuilder } from '@axe-core/playwright';
 import {
   createIframeCard,
   resetReplayServer,
-  createWaveInCove,
+  createWaveInArea,
   seedWaveReport,
   seedWaveViewMode,
 } from './helpers/reset';
@@ -51,11 +51,11 @@ type Theme = (typeof THEMES)[number];
 
 // Wait for the app shell to be ready. Pre-#175 this anchored on the
 // Sidebar "Scratch" button — a stable signal that `useTodayTerminal`
-// had minted the default cove and the coves query had refetched.
-// Post-#175 the system cove is hidden from the sidebar, so we anchor
+// had minted the default area and the areas query had refetched.
+// Post-#175 the system area is hidden from the sidebar, so we anchor
 // on the Today nav button instead: it's rendered as soon as the
 // Sidebar mounts and is independent of whether useTodayTerminal's
-// full bootstrap (system cove → Today wave → terminal card) completes.
+// full bootstrap (system area → Today wave → terminal card) completes.
 // In the replay-binary harness the terminal-card POST may surface a
 // renderer-start error in CI and never set
 // `localStorage['calm.todayCardId']`, so we can't anchor on that —
@@ -176,46 +176,46 @@ function formatViolations(
     .join('\n');
 }
 
-// Mint a fresh user cove + wave for the axe scans to operate on. After
+// Mint a fresh user area + wave for the axe scans to operate on. After
 // issue #175 the kernel's default Today terminal lives in a hidden
-// system cove that the sidebar can't reach, so we always create our
-// own user cove for these tests. We click sidebar / wave-row
+// system area that the sidebar can't reach, so we always create our
+// own user area for these tests. We click sidebar / wave-row
 // affordances directly here (not keyboard-only) because this helper is
 // just plumbing for the axe scans; the keyboard-only contract lives in
 // `a11y-keyboard.spec.ts`.
-async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
+async function ids(page: Page): Promise<{ areaId: string; waveId: string }> {
   await page.goto('/?trace=1');
   await waitForBootstrap(page);
-  // Mint a user cove via the sidebar "+ New cove" affordance.
-  const sidebarCoves = page.getByRole('navigation', { name: 'Coves' });
-  const coveName = `axe cove ${Date.now()}`;
-  await sidebarCoves.getByRole('button', { name: /new cove/i }).click();
-  const nameInput = sidebarCoves.getByPlaceholder(/name/i);
+  // Mint a user area via the sidebar "+ New area" affordance.
+  const sidebarAreas = page.getByRole('navigation', { name: 'Areas' });
+  const areaName = `axe area ${Date.now()}`;
+  await sidebarAreas.getByRole('button', { name: /new area/i }).click();
+  const nameInput = sidebarAreas.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
-  // `exact: true` excludes the per-row "Delete cove \"<name>\"" button
-  // whose accessible name also contains coveName — strict mode otherwise
+  // `exact: true` excludes the per-row "Delete area \"<name>\"" button
+  // whose accessible name also contains areaName — strict mode otherwise
   // resolves to two buttons.
-  const coveBtn = sidebarCoves.getByRole('button', { name: coveName, exact: true });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+(\?|$)/);
-  const coveId = new URL(page.url()).pathname.split('/').pop()!;
+  const areaBtn = sidebarAreas.getByRole('button', { name: areaName, exact: true });
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+(\?|$)/);
+  const areaId = new URL(page.url()).pathname.split('/').pop()!;
   // Create a wave via the API helper. PR 3's NewTaskForm now drives
-  // the cove-page "+ New wave" CTA, but for axe scans (rendered-page
+  // the area-page "+ New wave" CTA, but for axe scans (rendered-page
   // contracts) the wave-create path is just plumbing — the REST-direct
   // helper keeps the scan setup cheap and decoupled from form UI
   // changes.
   const waveTitle = `axe wave ${Date.now()}`;
-  const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  const wave = await createWaveInArea(page.request, areaId, waveTitle);
   // #1147 S3 — the old `{ attachFolder: false }` argument existed only
   // to stop this second wave from re-claiming the first one's invented
-  // cwd (`cove_folders.UNIQUE(path)`). `createWaveInCove` now sends no
+  // cwd (`area_folders.UNIQUE(path)`). `createWaveInArea` now sends no
   // cwd at all, so there is no claim to collide with and no knob.
-  const source = await createWaveInCove(
+  const source = await createWaveInArea(
     page.request,
-    coveId,
+    areaId,
     `axe backlink source ${Date.now()}`,
   );
   await seedWaveReport(
@@ -226,7 +226,7 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   );
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
-  return { coveId, waveId: wave.id };
+  return { areaId, waveId: wave.id };
 }
 
 test.describe('a11y · axe', () => {
@@ -257,16 +257,16 @@ test.describe('a11y · axe', () => {
     }
   });
 
-  test.describe('Cove page', () => {
+  test.describe('Area page', () => {
     for (const theme of THEMES) {
       test(`${theme} mode · no violations`, async ({ page }) => {
-        const { coveId } = await ids(page);
-        await page.goto(`/calm/cove/${coveId}?trace=1`);
+        const { areaId } = await ids(page);
+        await page.goto(`/calm/area/${areaId}?trace=1`);
         await waitForBootstrap(page);
-        // CovePage paints its header (h1, eyebrow, …) synchronously once
-        // covesQuery resolves. Wait for the H1 to appear before scanning
+        // AreaPage paints its header (h1, eyebrow, …) synchronously once
+        // areasQuery resolves. Wait for the H1 to appear before scanning
         // so we don't catch a half-rendered skeleton. We anchor on the
-        // role rather than the cove name (which now varies per run since
+        // role rather than the area name (which now varies per run since
         // we mint our own in `ids()`).
         await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
         await applyTheme(page, theme);
@@ -366,7 +366,7 @@ test.describe('a11y · axe', () => {
         const addBtn = page.getByRole('button', { name: /add card/i });
         await expect(addBtn).toBeVisible();
         // Post-#175 the wave from `ids()` is freshly minted with zero
-        // cards (the default Today PTY lives in the hidden system cove,
+        // cards (the default Today PTY lives in the hidden system area,
         // not user-created waves). Without at least one worker card the
         // list-view `<ul>` collapses to 0 height and Playwright reports
         // it as hidden. Seed an iframe worker card via REST so this scan

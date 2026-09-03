@@ -2,7 +2,7 @@
 // (`api/persistConfig.ts` + `app/providers.tsx` wiring).
 //
 // What we're proving:
-//   1. A query whose key is on the allowlist (`['coves']`) survives a
+//   1. A query whose key is on the allowlist (`['areas']`) survives a
 //      remount via IndexedDB — the data is restored before the queryFn
 //      runs, which is exactly the "no flash of empty UI" property the
 //      provider is supposed to give us.
@@ -99,8 +99,8 @@ beforeEach(() => {
 // each shape directly so a regression names itself in the test output.
 
 describe('isPersistableQueryKey (allowlist)', () => {
-  it("accepts ['coves']", () => {
-    expect(isPersistableQueryKey({ queryKey: ['coves'] })).toBe(true);
+  it("accepts ['areas']", () => {
+    expect(isPersistableQueryKey({ queryKey: ['areas'] })).toBe(true);
   });
   it("accepts ['waves', <id>]", () => {
     expect(isPersistableQueryKey({ queryKey: ['waves', 'c1'] })).toBe(true);
@@ -125,7 +125,7 @@ describe('isPersistableQueryKey (allowlist)', () => {
   it('rejects empty / malformed keys', () => {
     expect(isPersistableQueryKey({ queryKey: [] })).toBe(false);
     expect(
-      isPersistableQueryKey({ queryKey: 'coves' as unknown as readonly unknown[] }),
+      isPersistableQueryKey({ queryKey: 'areas' as unknown as readonly unknown[] }),
     ).toBe(false);
   });
 });
@@ -133,8 +133,8 @@ describe('isPersistableQueryKey (allowlist)', () => {
 // --- end-to-end persist + restore --------------------------------------
 
 describe('PersistQueryClientProvider + IndexedDB', () => {
-  it('restores an allowlisted query (["coves"]) across a remount', async () => {
-    const fakeCoves = [
+  it('restores an allowlisted query (["areas"]) across a remount', async () => {
+    const fakeAreas = [
       { id: 'c1', name: 'Persisted', color: '#abc', sort: 0, created_at: 1, updated_at: 2 },
     ];
     const buildOpts = buildPersistOptions();
@@ -143,7 +143,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     // "second mount" can hydrate from a known-good blob.
     const seedPersister = createIDBPersister({ throttleTime: 0 });
     await seedPersister.persistClient(
-      makePersistedClient(['coves'], fakeCoves, buildOpts.buster),
+      makePersistedClient(['areas'], fakeAreas, buildOpts.buster),
     );
 
     // Fresh client + same build-time persist options. Hydration should
@@ -153,7 +153,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
 
     function Reader() {
       const q = useQuery({
-        queryKey: ['coves'],
+        queryKey: ['areas'],
         queryFn,
         // Keep the data we hydrate from cache "fresh" so RQ doesn't fire
         // a background refetch and race the assertion.
@@ -169,7 +169,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     );
 
     await waitFor(() => {
-      expect(getByTestId('data').textContent).toBe(JSON.stringify(fakeCoves));
+      expect(getByTestId('data').textContent).toBe(JSON.stringify(fakeAreas));
     });
   });
 
@@ -181,7 +181,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     const persister = createIDBPersister({ throttleTime: 0 });
 
     const client = makeClient();
-    client.setQueryData(['coves'], [{ id: 'c1' }]);
+    client.setQueryData(['areas'], [{ id: 'c1' }]);
     client.setQueryData(['transient'], { secret: 'do-not-persist' });
 
     const dehydrated = dehydrate(client, opts.dehydrateOptions);
@@ -194,7 +194,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     const restored = await persister.restoreClient();
     expect(restored).toBeDefined();
     const persistedKeys = restored!.clientState.queries.map((q) => q.queryKey);
-    expect(persistedKeys).toContainEqual(['coves']);
+    expect(persistedKeys).toContainEqual(['areas']);
     expect(persistedKeys).not.toContainEqual(['transient']);
   });
 
@@ -204,7 +204,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
 
     await expect(
       client.fetchQuery({
-        queryKey: ['coves'],
+        queryKey: ['areas'],
         queryFn: async () => {
           throw new Error('boom');
         },
@@ -212,14 +212,14 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
     ).rejects.toThrow('boom');
 
     const dehydrated = dehydrate(client, opts.dehydrateOptions);
-    expect(dehydrated.queries.map((q) => q.queryKey)).not.toContainEqual(['coves']);
+    expect(dehydrated.queries.map((q) => q.queryKey)).not.toContainEqual(['areas']);
   });
 
   it('clears the cache when the buster changes (e.g. on version bump)', async () => {
     // Seed IDB with a blob tagged "v-old".
     const seedPersister = createIDBPersister({ throttleTime: 0 });
     await seedPersister.persistClient(
-      makePersistedClient(['coves'], [{ id: 'old' }], 'v-old'),
+      makePersistedClient(['areas'], [{ id: 'old' }], 'v-old'),
     );
 
     const before = await seedPersister.restoreClient();
@@ -239,7 +239,7 @@ describe('PersistQueryClientProvider + IndexedDB', () => {
 
     function Reader() {
       const q = useQuery({
-        queryKey: ['coves'],
+        queryKey: ['areas'],
         queryFn,
         staleTime: Infinity,
       });

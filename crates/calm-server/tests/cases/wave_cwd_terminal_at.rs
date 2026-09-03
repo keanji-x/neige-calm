@@ -1,13 +1,13 @@
 //! Issue #250 PR 2 — coverage for `Wave.cwd`, `Wave.terminal_at`, the
 //! `POST /api/waves` cwd-claim handling (attach_folder + resolve),
 //! lifecycle terminal-stamp wiring inside `wave_update_tx`, and the
-//! calendar window query `GET /api/waves?since&until&cove_id`.
+//! calendar window query `GET /api/waves?since&until&area_id`.
 //!
 //! These tests boot a stub-daemon router (no real codex / no real
 //! terminal renderer) so the spec-push app-server boot fails on
 //! `POST /api/waves`. Issue #293 / PR #311 made that boot NON-FATAL —
 //! the route now returns 201 (inert wave) on that branch rather than
-//! 500 — and the wave + cards + (optional) cove_folder rows land at
+//! 500 — and the wave + cards + (optional) area_folder rows land at
 //! commit time regardless. The assertions below tolerate either 201 or
 //! 500 (legacy) since they target DB state, the lifecycle → terminal_at
 //! wiring, and the route-layer body shapes — none of them need the
@@ -29,7 +29,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CoveKind, NewCove, WaveLifecycle, WavePatch, WaveWorkspaceKind};
+use calm_server::model::{AreaKind, NewArea, WaveLifecycle, WavePatch, WaveWorkspaceKind};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -41,7 +41,7 @@ use tower::ServiceExt;
 use crate::support::git_helpers::attached_repo_fixture;
 
 /// #1147 S3 — `POST /api/waves` now validates an explicit (attached) `cwd`
-/// *before* the cove-claim scan: absolute, existing, inside a Git work tree.
+/// *before* the area-claim scan: absolute, existing, inside a Git work tree.
 /// The claim-semantics fixtures below used invented literals (`/workspace`,
 /// `/a/b`, `/srv/projects/alpha`) that never existed on any disk, so they now
 /// name real, shared, idempotent Git work trees instead. Every ancestor /
@@ -57,12 +57,12 @@ fn attached_sub(name: &str, sub: &str) -> String {
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     /// #1147 S2 — the managed workspace root this boot was pinned to.
     workspace_root: std::path::PathBuf,
-    /// A second cove pre-created so cross-cove conflict tests have a
+    /// A second area pre-created so cross-area conflict tests have a
     /// stable target. Used by the descendant/ancestor cases below.
-    other_cove_id: String,
+    other_area_id: String,
     repo: Arc<dyn Repo>,
     /// Concrete `SqlxRepo` handle so the window-query test can write
     /// raw timestamps via `pool()`. The same backing pool as `repo`
@@ -79,8 +79,8 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "wave-cwd-test".into(),
             color: "#000".into(),
             sort: None,
@@ -88,8 +88,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let other = repo
-        .cove_create(NewCove {
-            name: "other-cove".into(),
+        .area_create(NewArea {
+            name: "other-area".into(),
             color: "#111".into(),
             sort: None,
         })
@@ -107,8 +107,8 @@ async fn boot() -> Boot {
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -120,11 +120,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-cwd-test"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
-        Some(wave_cove_cache.clone()),
+        Some(wave_area_cache.clone()),
     )
     // #1147 S2 — omitted-cwd creates now allocate a managed workspace and
     // `git init` it. Pin the root inside this test's TempDir.
@@ -138,9 +138,9 @@ async fn boot() -> Boot {
 
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         workspace_root: tmp.path().join("workspaces"),
-        other_cove_id: other.id.to_string(),
+        other_area_id: other.id.to_string(),
         repo,
         sqlx_repo,
         _tmp: tmp,
@@ -205,7 +205,7 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 // POST /api/waves — cwd validation + attach_folder path
 // ---------------------------------------------------------------------------
 
-/// Happy path 1: the body's cove already claims an ancestor of cwd.
+/// Happy path 1: the body's area already claims an ancestor of cwd.
 /// `attach_folder = false` is enough — no new folder row is needed.
 /// Spec-daemon spawn will fail (stub bin); tolerate 201 or 500 but
 /// assert the wave row landed with the cwd verbatim.
@@ -213,12 +213,12 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 async fn post_api_waves_uses_existing_folder_claim() {
     let boot = boot().await;
 
-    // Pre-seed: the cove claims the workspace root as a folder, and the
+    // Pre-seed: the area claims the workspace root as a folder, and the
     // wave's cwd is a real directory *under* it.
     let claimed = attached_repo_fixture("cwd-terminal-existing-claim");
     let cwd = attached_sub("cwd-terminal-existing-claim", "sub/dir");
     boot.repo
-        .cove_folder_create(&boot.cove_id, &claimed)
+        .area_folder_create(&boot.area_id, &claimed)
         .await
         .unwrap();
 
@@ -226,7 +226,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-existing-claim",
             "cwd": cwd.clone(),
             "attach_folder": false,
@@ -240,7 +240,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
         "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
     assert_eq!(waves[0].workspace.path, cwd);
     assert_eq!(waves[0].terminal_at, None);
@@ -248,7 +248,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
 
     // No extra folder row was minted (attach_folder = false +
     // existing claim covers cwd).
-    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].path, claimed);
 }
@@ -264,7 +264,7 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-attach",
             "cwd": cwd.clone(),
             "attach_folder": true,
@@ -275,46 +275,46 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     assert!(status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR);
 
     // Folder claim landed.
-    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].path, cwd);
 
     // Wave row carries the same path.
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     assert_eq!(waves[0].workspace.path, cwd);
 }
 
-/// Issue #275 — the cove already claims *exactly* this cwd and the caller
-/// still sets `attach_folder = true`. The claim scan finds the same cove as
+/// Issue #275 — the area already claims *exactly* this cwd and the caller
+/// still sets `attach_folder = true`. The claim scan finds the same area as
 /// the owner, so `attach_folder` is silently ignored and no second row is
 /// minted.
 ///
 /// BEHAVIOR CHANGE (deliberate). Before this fix the in-tx insert ran
 /// unconditionally on the scan result: it re-inserted `/workspace`, hit
-/// `UNIQUE(cove_folders.path)`, and the whole request 409'd. A caller
+/// `UNIQUE(area_folders.path)`, and the whole request 409'd. A caller
 /// re-posting the folder it already owns is not a conflict, so 201 is the
 /// correct answer. This test pins the new outcome.
 #[tokio::test]
-async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() {
+async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_area_claim() {
     let boot = boot().await;
 
     // The pre-seeded state below already satisfies `folders.len() == 1`,
     // so this test would also pass if folder enforcement were skipped
-    // wholesale for this cove via the `is_system_cove` bypass in
-    // `routes::waves::create_wave`. Pin that the cove under test is NOT
-    // a system cove, so the assertions can only be explained by the
+    // wholesale for this area via the `is_system_area` bypass in
+    // `routes::waves::create_wave`. Pin that the area under test is NOT
+    // a system area, so the assertions can only be explained by the
     // enforcement path actually running.
-    let cove = boot.repo.cove_get(&boot.cove_id).await.unwrap().unwrap();
+    let area = boot.repo.area_get(&boot.area_id).await.unwrap().unwrap();
     assert_eq!(
-        cove.kind,
-        CoveKind::User,
+        area.kind,
+        AreaKind::User,
         "this test only proves idempotency if folder enforcement is not bypassed"
     );
 
     let cwd = attached_repo_fixture("cwd-terminal-reclaim-exact");
     boot.repo
-        .cove_folder_create(&boot.cove_id, &cwd)
+        .area_folder_create(&boot.area_id, &cwd)
         .await
         .unwrap();
 
@@ -322,7 +322,7 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-reclaim-exact",
             "cwd": cwd.clone(),
             "attach_folder": true,
@@ -335,7 +335,7 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
     assert_ne!(
         status,
         StatusCode::CONFLICT,
-        "re-claiming the cove's own folder must not 409; body={body}"
+        "re-claiming the area's own folder must not 409; body={body}"
     );
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
@@ -343,7 +343,7 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
     );
 
     // Exactly one claim row — no duplicate `/workspace`.
-    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(
         folders.len(),
         1,
@@ -352,20 +352,20 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
     );
     assert_eq!(folders[0].path, cwd);
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
     assert_eq!(waves[0].workspace.path, cwd);
 }
 
-/// Issue #275 — the cove claims `/a` and the caller posts `cwd: "/a/b"`
-/// with `attach_folder = true`. The scan finds the same cove already
+/// Issue #275 — the area claims `/a` and the caller posts `cwd: "/a/b"`
+/// with `attach_folder = true`. The scan finds the same area already
 /// covering the cwd, so nothing is minted.
 ///
 /// BEHAVIOR CHANGE (deliberate), and the important one: before this fix
 /// the in-tx insert ran unconditionally on the scan result, so this
 /// request created `/a/b` alongside the existing `/a` — two rows that both
 /// cover `/a/b/...`. That is precisely the overlapping-claim corruption
-/// `cove_folders.rs::resolve_and_wave_create_agree_on_overlapping_rows`
+/// `area_folders.rs::resolve_and_wave_create_agree_on_overlapping_rows`
 /// has to seed through the raw repo primitive to reproduce; this arm
 /// handed it to any caller over plain HTTP, single-threaded, with no
 /// concurrency at all. It was the larger of the two holes in the overlap
@@ -377,7 +377,7 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
     let claimed = attached_repo_fixture("cwd-terminal-overlap");
     let cwd = attached_sub("cwd-terminal-overlap", "b");
     boot.repo
-        .cove_folder_create(&boot.cove_id, &claimed)
+        .area_folder_create(&boot.area_id, &claimed)
         .await
         .unwrap();
 
@@ -385,7 +385,7 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-reclaim-descendant",
             "cwd": cwd.clone(),
             "attach_folder": true,
@@ -396,7 +396,7 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
     assert_ne!(
         status,
         StatusCode::CONFLICT,
-        "a cwd already covered by this cove's own claim must not 409; body={body}"
+        "a cwd already covered by this area's own claim must not 409; body={body}"
     );
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
@@ -404,23 +404,23 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
     );
 
     // The overlapping row must NOT exist. `/a` alone still covers `/a/b`.
-    let folders = boot.repo.cove_folders_list_all().await.unwrap();
+    let folders = boot.repo.area_folders_list_all().await.unwrap();
     let paths: Vec<&str> = folders.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(
         paths,
         vec![claimed.as_str()],
-        "attach_folder must not mint `{cwd}` under a cove that already claims \
+        "attach_folder must not mint `{cwd}` under an area that already claims \
          `{claimed}` — two rows covering the same subtree is the corrupt state \
          #275 exists to prevent"
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
     assert_eq!(waves[0].workspace.path, cwd);
 }
 
 /// `attach_folder = false` with an unclaimed cwd is refused (409) —
-/// otherwise the wave would be orphaned (no cove resolves it).
+/// otherwise the wave would be orphaned (no area resolves it).
 #[tokio::test]
 async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
     let boot = boot().await;
@@ -429,7 +429,7 @@ async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-orphan",
             "cwd": attached_repo_fixture("cwd-terminal-unclaimed"),
             "attach_folder": false,
@@ -440,12 +440,12 @@ async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
     assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
     // No wave / folder rows should have landed.
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
     assert_eq!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .len(),
@@ -454,29 +454,29 @@ async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
 }
 
 /// `attach_folder = true` against a cwd that already conflicts with
-/// another cove's claim is refused (409) with the structured
+/// another area's claim is refused (409) with the structured
 /// `FolderConflict` body, and the whole tx rolls back (no wave row,
 /// no extra folder row).
 #[tokio::test]
 async fn post_api_waves_attach_folder_conflict_rolls_back() {
     let boot = boot().await;
 
-    // Pre-seed the *other* cove with a folder that overlaps the cwd
+    // Pre-seed the *other* area with a folder that overlaps the cwd
     // we're about to try claiming.
     let other_claim = attached_repo_fixture("cwd-terminal-shared");
     let cwd = attached_sub("cwd-terminal-shared", "inner");
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, &other_claim)
+        .area_folder_create(&boot.other_area_id, &other_claim)
         .await
         .unwrap();
-    let folders_before = boot.repo.cove_folders_list_all().await.unwrap().len();
+    let folders_before = boot.repo.area_folders_list_all().await.unwrap().len();
     assert_eq!(folders_before, 1);
 
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-conflict",
             "cwd": cwd.clone(),
             "attach_folder": true,
@@ -501,10 +501,10 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
 
     // Rollback: no new wave, no new folder.
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
-    let folders_after = boot.repo.cove_folders_list_all().await.unwrap().len();
+    let folders_after = boot.repo.area_folders_list_all().await.unwrap().len();
     assert_eq!(
         folders_after, folders_before,
         "attach_folder = true must roll back the folder insert on conflict; \
@@ -513,15 +513,15 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
 }
 
 /// `attach_folder = false` against a cwd that resolves to *another*
-/// cove must 409 — the wave's cove and the folder's cove must agree.
+/// area must 409 — the wave's area and the folder's area must agree.
 #[tokio::test]
-async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
+async fn post_api_waves_rejects_cwd_owned_by_another_area() {
     let boot = boot().await;
 
     let other_claim = attached_repo_fixture("cwd-terminal-owned-by-other");
     let cwd = attached_sub("cwd-terminal-owned-by-other", "sub");
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, &other_claim)
+        .area_folder_create(&boot.other_area_id, &other_claim)
         .await
         .unwrap();
 
@@ -529,7 +529,7 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-cross",
             "cwd": cwd.clone(),
             "attach_folder": false,
@@ -538,20 +538,20 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
-    let conflict_cove = body
-        .get("cove_id")
+    let conflict_area = body
+        .get("area_id")
         .and_then(Value::as_str)
         .expect("structured body");
-    assert_eq!(conflict_cove, boot.other_cove_id);
+    assert_eq!(conflict_area, boot.other_area_id);
 
-    // No wave on either cove.
+    // No wave on either area.
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
     assert_eq!(
         boot.repo
-            .waves_by_cove(&boot.other_cove_id)
+            .waves_by_area(&boot.other_area_id)
             .await
             .unwrap()
             .len(),
@@ -559,42 +559,42 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
     );
 }
 
-/// System cove (kernel-internal scaffolding) is exempt from the
-/// cove_folders claim namespace: a wave POST against it must not
-/// mint a cove_folders row even when `attach_folder = true`, and
+/// System area (kernel-internal scaffolding) is exempt from the
+/// area_folders claim namespace: a wave POST against it must not
+/// mint a area_folders row even when `attach_folder = true`, and
 /// must not poison the global descendant check for subsequent user
-/// coves. Regression for the `cwd: '/'` self-collision noticed in CI.
+/// areas. Regression for the `cwd: '/'` self-collision noticed in CI.
 ///
 /// #1147 S3 — the literal `/` cannot be the system cwd any more: an explicit
 /// `cwd` is validated (absolute, exists, inside a Git work tree) *before* the
-/// system-cove exemption runs, and `/` is not inside a work tree. What made
+/// system-area exemption runs, and `/` is not inside a work tree. What made
 /// `/` the sharp case was that it is an **ancestor of every other cwd**, so
-/// the system cove is given a real repository root here and the user wave
+/// the system area is given a real repository root here and the user wave
 /// below is given a real directory *inside* it. The poison the regression is
-/// about is reproduced exactly: had the system cove claimed its root, the
+/// about is reproduced exactly: had the system area claimed its root, the
 /// user create underneath it would 409.
 #[tokio::test]
-async fn post_api_waves_for_system_cove_skips_folder_claim() {
+async fn post_api_waves_for_system_area_skips_folder_claim() {
     let boot = boot().await;
 
-    // Mint the system cove via its idempotent route.
-    let (status, body) = post(boot.app.clone(), "/api/coves/system", json!({})).await;
+    // Mint the system area via its idempotent route.
+    let (status, body) = post(boot.app.clone(), "/api/areas/system", json!({})).await;
     assert!(
         status == StatusCode::CREATED || status == StatusCode::OK,
-        "mint system cove: status={status}, body={body}",
+        "mint system area: status={status}, body={body}",
     );
-    let system_cove_id = body["id"].as_str().expect("system cove id").to_string();
+    let system_area_id = body["id"].as_str().expect("system area id").to_string();
     let system_cwd = attached_repo_fixture("cwd-terminal-system-root");
     let user_cwd = attached_sub("cwd-terminal-system-root", "beta");
 
-    // POST a wave with the system cove + a `/` cwd + attach_folder=true.
-    // Pre-fix this would claim `/` for the system cove and poison every
+    // POST a wave with the system area + a `/` cwd + attach_folder=true.
+    // Pre-fix this would claim `/` for the system area and poison every
     // subsequent user wave (descendant-of-`/` 409).
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": system_cove_id,
+            "area_id": system_area_id,
             "title": "Today",
             "cwd": system_cwd.clone(),
             "attach_folder": true,
@@ -604,27 +604,27 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
     .await;
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "system-cove wave create: status={status}"
+        "system-area wave create: status={status}"
     );
 
-    // No cove_folders row landed for the system cove.
+    // No area_folders row landed for the system area.
     let sys_folders = boot
         .repo
-        .cove_folders_by_cove(&system_cove_id)
+        .area_folders_by_area(&system_area_id)
         .await
         .unwrap();
     assert!(
         sys_folders.is_empty(),
-        "system cove must not appear in cove_folders, got: {sys_folders:?}"
+        "system area must not appear in area_folders, got: {sys_folders:?}"
     );
 
-    // And a subsequent user-cove wave with a normal cwd works — the
-    // system cove's `/` cwd is *not* a descendant-blocker.
+    // And a subsequent user-area wave with a normal cwd works — the
+    // system area's `/` cwd is *not* a descendant-blocker.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "user wave",
             "cwd": user_cwd.clone(),
             "attach_folder": true,
@@ -634,47 +634,47 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
     .await;
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "user-cove wave create after system: status={status}"
+        "user-area wave create after system: status={status}"
     );
-    let user_folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let user_folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert_eq!(user_folders.len(), 1);
     assert_eq!(user_folders[0].path, user_cwd);
 }
 
 /// Issue #1131 — omitted `cwd` (and `attach_folder`) is not the same as
-/// sending `cwd: "$HOME"`. Omission skips `cove_folders` entirely. An
+/// sending `cwd: "$HOME"`. Omission skips `area_folders` entirely. An
 /// *explicit* HOME path with `attach_folder: false` and no prior claim still
 /// 409s — that is `post_api_waves_rejects_unclaimed_cwd_without_attach_folder`.
 /// Do not special-case an explicit HOME path; only omission takes this
-/// branch. Never claim `$HOME` into `cove_folders` (longest-prefix
-/// would poison every other cove).
+/// branch. Never claim `$HOME` into `area_folders` (longest-prefix
+/// would poison every other area).
 ///
 /// #1147 S2 — what omission *stores* changed. It used to persist
 /// `default_cwd()` (`$HOME`), which is not a git repository, so every
 /// `kind: codex` task on such a wave died in `git rev-parse --show-toplevel`
 /// with nothing but `spawn-failed` to show for it — the defect #1147 opened
 /// on. Omission is now the managed-default branch: the server allocates
-/// `<workspace-root>/<cove_id>/<wave_id>` and materializes it. The
-/// `cove_folders`-untouched half of this test is unchanged and still the
+/// `<workspace-root>/<area_id>/<wave_id>` and materializes it. The
+/// `area_folders`-untouched half of this test is unchanged and still the
 /// point of the #1131 branch.
 #[tokio::test]
-async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
+async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_area_folders() {
     let boot = boot().await;
     assert_eq!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .len(),
         0,
-        "fixture cove must start with no claims so 'unchanged' is empty"
+        "fixture area must start with no claims so 'unchanged' is empty"
     );
 
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-title-only",
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -686,14 +686,14 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
         "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
     assert_eq!(waves[0].title, "w-title-only");
     assert_eq!(waves[0].workspace.kind, WaveWorkspaceKind::Managed);
     assert_eq!(
         std::path::PathBuf::from(&waves[0].workspace.path),
         boot.workspace_root
-            .join(&boot.cove_id)
+            .join(&boot.area_id)
             .join(waves[0].id.as_str())
     );
     assert_ne!(
@@ -702,10 +702,10 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
         "the pre-#1147 behavior was `$HOME`, which is not a repository"
     );
 
-    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    let folders = boot.repo.area_folders_by_area(&boot.area_id).await.unwrap();
     assert!(
         folders.is_empty(),
-        "omitted cwd must not mint a cove_folders row; got {folders:?}"
+        "omitted cwd must not mint a area_folders row; got {folders:?}"
     );
 
     // `cwd: null` is the same omitted branch as a missing key.
@@ -713,7 +713,7 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-null-cwd",
             "cwd": null,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
@@ -724,30 +724,30 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
         "null cwd: expected 201 or 500; got {status} body={body}",
     );
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 2, "null cwd must also mint a wave");
     assert!(
         waves
             .iter()
             .all(|w| w.workspace.kind == WaveWorkspaceKind::Managed
                 && std::path::Path::new(&w.workspace.path)
-                    .starts_with(boot.workspace_root.join(&boot.cove_id))),
+                    .starts_with(boot.workspace_root.join(&boot.area_id))),
         "`cwd: null` must take the same managed-default branch as omission: {waves:?}"
     );
     assert!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .is_empty(),
-        "null cwd must not mint a cove_folders row"
+        "null cwd must not mint a area_folders row"
     );
 }
 
-/// Explicit `cwd: $HOME` is *not* the omitted-cwd branch. A user cove
+/// Explicit `cwd: $HOME` is *not* the omitted-cwd branch. A user area
 /// with no claims is still refused when `attach_folder` is false —
 /// production only skips the scan when `cwd` is missing/`null`. Do not
-/// special-case HOME as a present path; that would poison every other cove via
+/// special-case HOME as a present path; that would poison every other area via
 /// longest-prefix if it ever claimed.
 ///
 /// #1147 S3 — an explicit `cwd` is now validated (absolute, exists, inside a
@@ -799,7 +799,7 @@ async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-explicit-home",
             "cwd": home,
             "attach_folder": false,
@@ -822,12 +822,12 @@ async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
          other rejection that happens to share the status; body = {body}"
     );
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
     assert_eq!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .len(),
@@ -845,7 +845,7 @@ async fn post_api_waves_empty_string_cwd_is_400() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-empty-cwd",
             "cwd": "",
             "attach_folder": false,
@@ -855,12 +855,12 @@ async fn post_api_waves_empty_string_cwd_is_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
     assert_eq!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .len(),
@@ -878,7 +878,7 @@ async fn post_api_waves_omitted_cwd_ignores_attach_folder_true() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-omit-attach-true",
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
@@ -890,18 +890,18 @@ async fn post_api_waves_omitted_cwd_ignores_attach_folder_true() {
         "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
     );
 
-    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(waves.len(), 1, "wave must land");
     assert_eq!(waves[0].workspace.kind, WaveWorkspaceKind::Managed);
     assert_eq!(
         std::path::PathBuf::from(&waves[0].workspace.path),
         boot.workspace_root
-            .join(&boot.cove_id)
+            .join(&boot.area_id)
             .join(waves[0].id.as_str())
     );
     assert!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .is_empty(),
@@ -919,7 +919,7 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.cove_id,
+            "area_id": boot.area_id,
             "title": "w-relative",
             "cwd": "relative/path",
             "attach_folder": true,
@@ -929,12 +929,12 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     assert_eq!(
-        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        boot.repo.waves_by_area(&boot.area_id).await.unwrap().len(),
         0
     );
     assert_eq!(
         boot.repo
-            .cove_folders_by_cove(&boot.cove_id)
+            .area_folders_by_area(&boot.area_id)
             .await
             .unwrap()
             .len(),
@@ -949,10 +949,10 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
 /// Helper: create a fresh wave in `Draft` state via the repo (bypassing
 /// the route so we don't have to do the cwd/folder dance in every
 /// lifecycle test).
-async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::Wave {
+async fn seed_wave(repo: &Arc<dyn Repo>, area_id: &str) -> calm_server::model::Wave {
     repo.wave_create(calm_server::model::NewWave {
         template_input: None,
-        cove_id: cove_id.into(),
+        area_id: area_id.into(),
         title: "lifecycle-test".into(),
         sort: None,
         cwd: String::new(),
@@ -971,7 +971,7 @@ async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::W
 #[tokio::test]
 async fn lifecycle_to_done_stamps_terminal_at() {
     let boot = boot().await;
-    let wave = seed_wave(&boot.repo, &boot.cove_id).await;
+    let wave = seed_wave(&boot.repo, &boot.area_id).await;
     // Route everything through `wave_update` (which opens a tx and
     // calls `wave_update_tx` under the hood). The lifecycle validator
     // runs at the *route* layer; bypassing it here is fine — we're
@@ -1033,7 +1033,7 @@ async fn lifecycle_to_done_stamps_terminal_at() {
 #[tokio::test]
 async fn lifecycle_reopen_clears_terminal_at() {
     let boot = boot().await;
-    let wave = seed_wave(&boot.repo, &boot.cove_id).await;
+    let wave = seed_wave(&boot.repo, &boot.area_id).await;
 
     // Force the wave into Done first.
     for step in [
@@ -1083,7 +1083,7 @@ async fn lifecycle_reopen_clears_terminal_at() {
 #[tokio::test]
 async fn lifecycle_working_to_blocked_leaves_terminal_at_unset() {
     let boot = boot().await;
-    let wave = seed_wave(&boot.repo, &boot.cove_id).await;
+    let wave = seed_wave(&boot.repo, &boot.area_id).await;
 
     for step in [
         WaveLifecycle::Planning,
@@ -1118,15 +1118,15 @@ async fn wave_update_tx_stamps_terminal_at_inside_one_tx() {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "tx-test".into(),
             color: "#000".into(),
             sort: None,
         })
         .await
         .unwrap();
-    let wave = seed_wave(&(repo.clone() as Arc<dyn Repo>), cove.id.as_str()).await;
+    let wave = seed_wave(&(repo.clone() as Arc<dyn Repo>), area.id.as_str()).await;
     let done = repo
         .wave_update(
             wave.id.as_str(),
@@ -1163,9 +1163,9 @@ async fn wave_update_tx_stamps_terminal_at_inside_one_tx() {
 #[tokio::test]
 async fn list_waves_window_filters_by_created_and_terminal_at() {
     let boot = boot().await;
-    let a = seed_wave(&boot.repo, &boot.cove_id).await;
-    let b = seed_wave(&boot.repo, &boot.cove_id).await;
-    let c = seed_wave(&boot.repo, &boot.cove_id).await;
+    let a = seed_wave(&boot.repo, &boot.area_id).await;
+    let b = seed_wave(&boot.repo, &boot.area_id).await;
+    let c = seed_wave(&boot.repo, &boot.area_id).await;
 
     // Pin the timestamps via raw SQL. The kernel `wave_create_tx`
     // / `wave_update_tx` always stamp `now_ms()`; for the window
@@ -1197,7 +1197,7 @@ async fn list_waves_window_filters_by_created_and_terminal_at() {
 
     let (status, body) = get(
         boot.app.clone(),
-        &format!("/api/waves?since=4&until=8&cove_id={}", boot.cove_id),
+        &format!("/api/waves?since=4&until=8&area_id={}", boot.area_id),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
@@ -1226,26 +1226,26 @@ async fn list_waves_window_inverted_returns_400() {
 #[tokio::test]
 async fn list_waves_window_no_params_keeps_ordinary_waves_visible() {
     let boot = boot().await;
-    seed_wave(&boot.repo, &boot.cove_id).await;
-    seed_wave(&boot.repo, &boot.cove_id).await;
-    seed_wave(&boot.repo, &boot.other_cove_id).await;
+    seed_wave(&boot.repo, &boot.area_id).await;
+    seed_wave(&boot.repo, &boot.area_id).await;
+    seed_wave(&boot.repo, &boot.other_area_id).await;
 
     let (status, body) = get(boot.app.clone(), "/api/waves").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().map(|a| a.len()), Some(3));
 }
 
-/// `cove_id` alone partitions by cove.
+/// `area_id` alone partitions by area.
 #[tokio::test]
-async fn list_waves_window_cove_id_filter() {
+async fn list_waves_window_area_id_filter() {
     let boot = boot().await;
-    seed_wave(&boot.repo, &boot.cove_id).await;
-    seed_wave(&boot.repo, &boot.cove_id).await;
-    seed_wave(&boot.repo, &boot.other_cove_id).await;
+    seed_wave(&boot.repo, &boot.area_id).await;
+    seed_wave(&boot.repo, &boot.area_id).await;
+    seed_wave(&boot.repo, &boot.other_area_id).await;
 
     let (status, body) = get(
         boot.app.clone(),
-        &format!("/api/waves?cove_id={}", boot.cove_id),
+        &format!("/api/waves?area_id={}", boot.area_id),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1253,20 +1253,20 @@ async fn list_waves_window_cove_id_filter() {
 }
 
 /// INV-CHAT-005 paired route-boundary contract: NULL-purpose ordinary waves
-/// and launchpads remain visible in both public lists, while only cove-chat is
+/// and launchpads remain visible in both public lists, while only area-chat is
 /// hidden. The repository still returns the full set.
 #[tokio::test]
-async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
+async fn public_wave_lists_hide_only_area_chat_and_repo_keeps_full_set() {
     let boot = boot().await;
-    let ordinary = seed_wave(&boot.repo, &boot.cove_id).await;
-    let launchpad = seed_wave(&boot.repo, &boot.cove_id).await;
-    let chat = seed_wave(&boot.repo, &boot.cove_id).await;
+    let ordinary = seed_wave(&boot.repo, &boot.area_id).await;
+    let launchpad = seed_wave(&boot.repo, &boot.area_id).await;
+    let chat = seed_wave(&boot.repo, &boot.area_id).await;
     sqlx::query("UPDATE waves SET purpose = 'launchpad' WHERE id = ?1")
         .bind(launchpad.id.as_str())
         .execute(boot.sqlx_repo.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+    sqlx::query("UPDATE waves SET purpose = 'area-chat' WHERE id = ?1")
         .bind(chat.id.as_str())
         .execute(boot.sqlx_repo.pool())
         .await
@@ -1274,8 +1274,8 @@ async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
 
     let expected = [ordinary.id.as_str(), launchpad.id.as_str()];
     for uri in [
-        format!("/api/coves/{}/waves", boot.cove_id),
-        format!("/api/waves?cove_id={}", boot.cove_id),
+        format!("/api/areas/{}/waves", boot.area_id),
+        format!("/api/waves?area_id={}", boot.area_id),
     ] {
         let (status, body) = get(boot.app.clone(), &uri).await;
         assert_eq!(status, StatusCode::OK, "body={body}");
@@ -1292,7 +1292,7 @@ async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
         assert!(!ids.contains(&chat.id.as_str()), "{uri}: chat leaked");
     }
 
-    let repo_waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    let repo_waves = boot.repo.waves_by_area(&boot.area_id).await.unwrap();
     assert_eq!(
         repo_waves.len(),
         3,
@@ -1302,7 +1302,7 @@ async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
 
     let repo_window = boot
         .repo
-        .waves_window(Some(&boot.cove_id), None, None)
+        .waves_window(Some(&boot.area_id), None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1317,24 +1317,24 @@ async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
 // Issue #275 — the two resolvers must agree
 // ---------------------------------------------------------------------------
 
-/// `GET /api/coves/resolve` and the `POST /api/waves` owner scan are two
+/// `GET /api/areas/resolve` and the `POST /api/waves` owner scan are two
 /// separate readers of the same claim table. They must pick the **same**
 /// row for the same cwd, because the UI chains them: NewTaskForm resolves
-/// the cwd, auto-selects the cove it names, and posts the wave with that
-/// `cove_id`. A resolver that disagrees turns that chain into a 409 on a
-/// cove the user never chose.
+/// the cwd, auto-selects the area it names, and posts the wave with that
+/// `area_id`. A resolver that disagrees turns that chain into a 409 on a
+/// area the user never chose.
 ///
 /// The claim rules make overlapping rows unreachable over HTTP, so this
-/// test seeds them through the raw repo (`cove_folder_create`, the
+/// test seeds them through the raw repo (`area_folder_create`, the
 /// unchecked primitive) — the corrupt-DB state — and pins that even
 /// *there* the two answers are identical. This is the case that regressed
 /// when only one of the two scans dropped its longest-prefix tiebreak:
-/// resolve said `/a` (cove A) while wave-create said `/a/b` (cove B).
+/// resolve said `/a` (area A) while wave-create said `/a/b` (area B).
 #[tokio::test]
 async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     let boot = boot().await;
 
-    // Corrupt state: two claims cover `/a/b/c`, under different coves.
+    // Corrupt state: two claims cover `/a/b/c`, under different areas.
     // `ORDER BY path ASC` puts `/a` first; `/a/b` is the longer prefix.
     // `ORDER BY path ASC` still puts the outer claim first: `<root>` is a
     // strict prefix of `<root>/b`, so it sorts before it, exactly as `/a`
@@ -1343,32 +1343,32 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     let inner = attached_sub("cwd-terminal-agree", "b");
     let cwd = attached_sub("cwd-terminal-agree", "b/c");
     boot.repo
-        .cove_folder_create(&boot.cove_id, &outer)
+        .area_folder_create(&boot.area_id, &outer)
         .await
         .unwrap();
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, &inner)
+        .area_folder_create(&boot.other_area_id, &inner)
         .await
         .unwrap();
 
     // Resolver 1 — the endpoint the frontend calls.
-    let (status, body) = get(boot.app.clone(), &format!("/api/coves/resolve?path={cwd}")).await;
+    let (status, body) = get(boot.app.clone(), &format!("/api/areas/resolve?path={cwd}")).await;
     assert_eq!(status, StatusCode::OK);
-    let resolved_cove = body["cove_id"].as_str().unwrap().to_string();
+    let resolved_area = body["area_id"].as_str().unwrap().to_string();
     assert_eq!(
         body["folder_path"].as_str().unwrap(),
         outer,
         "shared find_owner takes the first row in ORDER BY path ASC"
     );
-    assert_eq!(resolved_cove, boot.cove_id);
+    assert_eq!(resolved_area, boot.area_id);
 
     // Resolver 2 — the wave-create owner scan. Posting with exactly the
-    // cove `/api/coves/resolve` just named must be accepted.
+    // area `/api/areas/resolve` just named must be accepted.
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": resolved_cove,
+            "area_id": resolved_area,
             "title": "w-agree",
             "cwd": cwd.clone(),
             "attach_folder": false,
@@ -1377,30 +1377,30 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     )
     .await;
     // The contract under test is "not a 409" — the two resolvers agree, so
-    // the owner scan must not refuse the cove the resolver just named. The
+    // the owner scan must not refuse the area the resolver just named. The
     // 201-or-500 tolerance below is only the file's stub-daemon convention.
     assert_ne!(
         status,
         StatusCode::CONFLICT,
-        "wave create must not refuse the cove `/api/coves/resolve` named for this cwd; \
+        "wave create must not refuse the area `/api/areas/resolve` named for this cwd; \
          body={body}"
     );
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "wave create must accept the cove `/api/coves/resolve` named for this cwd; \
+        "wave create must accept the area `/api/areas/resolve` named for this cwd; \
          got {status} body={body}",
     );
-    let waves = boot.repo.waves_by_cove(&resolved_cove).await.unwrap();
-    assert_eq!(waves.len(), 1, "the wave must have landed under that cove");
+    let waves = boot.repo.waves_by_area(&resolved_area).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed under that area");
     assert_eq!(waves[0].workspace.path, cwd);
 
-    // ...and the cove the resolver did NOT name must still be refused,
+    // ...and the area the resolver did NOT name must still be refused,
     // so "they agree" is not vacuously true by accepting everything.
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
-            "cove_id": boot.other_cove_id,
+            "area_id": boot.other_area_id,
             "title": "w-disagree",
             "cwd": cwd.clone(),
             "attach_folder": false,
@@ -1411,6 +1411,6 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "the non-owning cove must still 409"
+        "the non-owning area must still 409"
     );
 }

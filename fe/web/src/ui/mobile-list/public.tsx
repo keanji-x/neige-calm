@@ -31,7 +31,7 @@ import styles from './mobile-list.module.css';
  * the element it must reach is a control Astryx generates and hands no props to.
  * See `MobileListItem`'s docstrings for each.
  *
- * **Opt-in, and that is load-bearing.** `app/shell`'s cove and page lists and
+ * **Opt-in, and that is load-bearing.** `app/shell`'s area and page lists and
  * this page's Outline / Conversations pages render through these same
  * primitives and are not row modules. Marking unconditionally would put
  * `data-nc-module` / `data-nc-row` elements in trees whose view model has none,

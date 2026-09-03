@@ -8,7 +8,7 @@
 //!
 //! ## Sync engine — internal layout
 //!
-//! Every entity write the trait exposes (`cove_create`, `wave_update`,
+//! Every entity write the trait exposes (`area_create`, `wave_update`,
 //! `card_create`, ...) is implemented as a thin wrapper around a `_tx`-
 //! suffixed free function that takes `&mut Transaction<'_, Sqlite>` and
 //! does the actual SQL. The wrappers each open their own one-shot
@@ -31,9 +31,9 @@ use std::time::Duration;
 use super::Repo;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use crate::wave_vcs;
-use calm_types::model::CoveFolder;
+use calm_types::model::AreaFolder;
 
 /// Per-connection SQLite busy-handler budget installed by [`SqlxRepo::open`].
 pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -54,9 +54,9 @@ pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 // once all four sub-traits are implemented.
 // ---------------------------------------------------------------------------
 
+mod area;
 mod card;
 mod card_composite;
-mod cove;
 mod events;
 mod infra;
 mod out_of_domain;
@@ -72,6 +72,10 @@ mod wave;
 mod wave_tree;
 mod wave_workspace;
 
+pub use area::{
+    area_create_system_tx, area_create_tx, area_delete_tx, area_folder_create_tx,
+    area_folders_list_all_tx, area_update_tx,
+};
 pub use card::{
     card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
     card_update_with_crdt_tx, terminal_create_tx, terminal_delete_tx, terminal_get_by_card_tx,
@@ -79,10 +83,6 @@ pub use card::{
 pub use card_composite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
     card_with_codex_create_tx, card_with_terminal_create_tx, card_with_terminal_rollback_tx,
-};
-pub use cove::{
-    cove_create_system_tx, cove_create_tx, cove_delete_tx, cove_folder_create_tx,
-    cove_folders_list_all_tx, cove_update_tx,
 };
 pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
 pub use infra::{begin_immediate_tx, is_sqlite_busy};
@@ -92,7 +92,7 @@ pub use out_of_domain::{
 };
 pub use overlay::{
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
-    overlay_delete_subtree_by_cove_tx, overlay_delete_tx, overlay_upsert_tx,
+    overlay_delete_subtree_by_area_tx, overlay_delete_tx, overlay_upsert_tx,
     wave_has_template_overlay_tx,
 };
 pub use session_mirror::{
@@ -162,14 +162,14 @@ pub struct SqlxRepo {
     /// production while the repo-local view backs the test-only raw
     /// path.
     card_role_cache: CardRoleCache,
-    /// #234 — write-through `WaveId -> CoveId` cache, same rationale as
+    /// #234 — write-through `WaveId -> AreaId` cache, same rationale as
     /// `card_role_cache` above: the raw `RepoSyncDomainRaw` wave write
     /// paths (`wave_create` / `wave_delete`) keep this in sync via the
     /// `_tx` helpers, while production `write_with_event` callers thread
-    /// `AppState::wave_cove_cache` (a separate instance that
+    /// `AppState::wave_area_cache` (a separate instance that
     /// `AppState::new` seeds from the same pool). Both converge on
     /// the persisted `waves` table.
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     /// #926 — process-lifetime keepalive for in-memory databases.
     ///
     /// sqlx maps `sqlite::memory:` / `mode=memory` URLs to a NAMED
@@ -360,13 +360,13 @@ impl SqlxRepo {
         // which `AppState::new` re-seeds from the same pool.
         let card_role_cache = CardRoleCache::new();
         card_role_cache.seed_from_db(&pool).await?;
-        let wave_cove_cache = WaveCoveCache::new();
-        wave_cove_cache.seed_from_db(&pool).await?;
+        let wave_area_cache = WaveAreaCache::new();
+        wave_area_cache.seed_from_db(&pool).await?;
 
         Ok(Self {
             pool,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             _memory_cache_anchor: memory_cache_anchor,
         })
     }
@@ -399,11 +399,11 @@ impl SqlxRepo {
         &self.card_role_cache
     }
 
-    /// #234 — borrow the repo's wave→cove cache. Mirrors
+    /// #234 — borrow the repo's wave→area cache. Mirrors
     /// [`card_role_cache`](Self::card_role_cache). `AppState::new`
     /// re-seeds its own clone from the same pool.
-    pub fn wave_cove_cache(&self) -> &WaveCoveCache {
-        &self.wave_cove_cache
+    pub fn wave_area_cache(&self) -> &WaveAreaCache {
+        &self.wave_area_cache
     }
 }
 
@@ -425,13 +425,13 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
     Ok(())
 }
 
-/// Boot fence: refuse to serve when `cove_folders` holds two rows where
+/// Boot fence: refuse to serve when `area_folders` holds two rows where
 /// one is an ancestor of (or equal to) the other.
 ///
 /// **Why a fence and not a repair.** #275 made overlap unreachable going
 /// forward — every writer now classifies and inserts inside one
 /// `BEGIN IMMEDIATE` transaction — and
-/// [`crate::cove_folder_claim::find_owner`] leans on that: it takes the
+/// [`crate::area_folder_claim::find_owner`] leans on that: it takes the
 /// *first* matching row instead of the longest-prefix match, because at
 /// most one row can match. Databases written before that landed can
 /// still carry overlap (the wave-attach path's in-tx insert was gated on
@@ -447,24 +447,24 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
 /// [`assert_worker_sessions_card_id_complete`]: an unresolvable truth
 /// table stops the process before it serves a request. Refusing to boot
 /// costs the operator nothing they need — the fix is a `DELETE` against
-/// `cove_folders` via sqlite3 or the admin CLI, neither of which needs
+/// `area_folders` via sqlite3 or the admin CLI, neither of which needs
 /// calm-server running — whereas booting anyway would route waves and
-/// `GET /api/coves/resolve` to an arbitrarily-chosen cove for as long as
+/// `GET /api/areas/resolve` to an arbitrarily-chosen area for as long as
 /// nobody notices.
 ///
-/// The error names every offending pair (`id`, `cove_id`, `path` on both
+/// The error names every offending pair (`id`, `area_id`, `path` on both
 /// sides) so the operator can act on it without re-deriving the overlap
 /// set by hand.
-pub async fn assert_cove_folders_disjoint(pool: &SqlitePool) -> Result<()> {
-    let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-        r#"SELECT id, cove_id, path, created_at
-           FROM cove_folders ORDER BY path ASC"#,
+pub async fn assert_area_folders_disjoint(pool: &SqlitePool) -> Result<()> {
+    let rows = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
+        r#"SELECT id, area_id, path, created_at
+           FROM area_folders ORDER BY path ASC"#,
     )
     .fetch_all(pool)
     .await?;
-    let folders: Vec<CoveFolder> = rows.into_iter().map(CoveFolder::from).collect();
+    let folders: Vec<AreaFolder> = rows.into_iter().map(AreaFolder::from).collect();
 
-    let pairs = crate::cove_folder_claim::overlapping_pairs(&folders);
+    let pairs = crate::area_folder_claim::overlapping_pairs(&folders);
     if pairs.is_empty() {
         return Ok(());
     }
@@ -473,13 +473,13 @@ pub async fn assert_cove_folders_disjoint(pool: &SqlitePool) -> Result<()> {
         .iter()
         .map(|(row, conflict)| {
             format!(
-                "id={} cove_id={} path=`{}` {:?}-of id={} cove_id={} path=`{}`",
+                "id={} area_id={} path=`{}` {:?}-of id={} area_id={} path=`{}`",
                 row.id,
-                row.cove_id.as_str(),
+                row.area_id.as_str(),
                 row.path,
                 conflict.conflict_kind,
                 conflict.folder_id,
-                conflict.cove_id.as_str(),
+                conflict.area_id.as_str(),
                 conflict.conflict_path,
             )
         })
@@ -487,9 +487,9 @@ pub async fn assert_cove_folders_disjoint(pool: &SqlitePool) -> Result<()> {
         .join("; ");
 
     Err(CalmError::Internal(format!(
-        "cove_folders boot fence failed: {} overlapping claim pair(s) — no single cove owns \
+        "area_folders boot fence failed: {} overlapping claim pair(s) — no single area owns \
          these paths, so folder resolution would silently pick an arbitrary winner. Delete the \
-         wrong claim(s) from `cove_folders` (sqlite3 / admin CLI) and restart. Offending pairs: {}",
+         wrong claim(s) from `area_folders` (sqlite3 / admin CLI) and restart. Offending pairs: {}",
         pairs.len(),
         detail
     )))

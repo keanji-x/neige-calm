@@ -11,7 +11,7 @@ import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
 import type { AddPanelMenuItem } from '../shared/components/AddPanel';
-import type { Cove, Route, Wave, WaveCardSlot } from '../types';
+import type { Area, Route, Wave, WaveCardSlot } from '../types';
 import { Dialog } from '../ui/Dialog/Dialog';
 import { SchemaForm } from '../shared/components/SchemaForm';
 import { DirectoryBrowser } from '../shared/components/DirectoryPicker';
@@ -117,7 +117,7 @@ function formatCreateCardError(err: unknown): string {
 
 export function WavePage({
   wave,
-  cove,
+  area,
   onGo,
   onAddCard,
   onCreateCardWithBody,
@@ -126,7 +126,7 @@ export function WavePage({
   onDeleteWave,
 }: {
   wave: Wave;
-  cove: Cove;
+  area: Area;
   onGo: (r: Route) => void;
   /** No-schema "create immediately" path — kept for terminal cards which
    *  spawn with default args. */
@@ -208,7 +208,7 @@ export function WavePage({
   // this flag so the effect can run once the unmount has flushed.
   const restoreTitleFocus = useRef(false);
   // Stable id for the visually-hidden rename hint. Same accessible-name
-  // split as CovePage's EditableTitle (#56 followup): the title's
+  // split as AreaPage's EditableTitle (#56 followup): the title's
   // aria-label is just the wave name and the rename verb lives in a
   // sibling span referenced via aria-describedby.
   const renameHintId = useId();
@@ -359,20 +359,20 @@ export function WavePage({
         <header className="wave-header">
           <button
             className="wave-back"
-            onClick={() => onGo({ name: 'cove', coveId: cove.id })}
-            title={'Back to ' + cove.name}
+            onClick={() => onGo({ name: 'area', areaId: area.id })}
+            title={'Back to ' + area.name}
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
           <ViewModeCycleButton value={viewMode} onChange={chooseViewMode} />
           <span className="wave-crumb">
-          <span className="wave-cove-dot" style={{ background: cove.color }} />
+          <span className="wave-area-dot" style={{ background: area.color }} />
           <button
             type="button"
-            className="wave-cove"
-            onClick={() => onGo({ name: 'cove', coveId: cove.id })}
+            className="wave-area"
+            onClick={() => onGo({ name: 'area', areaId: area.id })}
           >
-            {cove.name}
+            {area.name}
           </button>
           <span className="wave-sep">·</span>
           {editingTitle ? (
@@ -397,7 +397,7 @@ export function WavePage({
             // Accessible-name split (#56 followup): aria-label is just the
             // wave title; the rename verb lives in a sibling sr-only span
             // referenced via aria-describedby. Keeps the breadcrumb's
-            // accessible name uncluttered (parity with CovePage's heading).
+            // accessible name uncluttered (parity with AreaPage's heading).
             <>
               <span
                 ref={titleDisplayRef}

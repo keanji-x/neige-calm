@@ -95,9 +95,9 @@ const BOX_SCALE = [
   '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
 ] as const;
 const WEIGHTS = ['--weight-normal', '--weight-medium', '--weight-semibold'] as const;
-const COVE_IDENTITY = [
-  '--cove-1', '--cove-2', '--cove-3', '--cove-4',
-  '--cove-5', '--cove-6', '--cove-7', '--cove-8',
+const AREA_IDENTITY = [
+  '--area-1', '--area-2', '--area-3', '--area-4',
+  '--area-5', '--area-6', '--area-7', '--area-8',
 ] as const;
 const SHADOW = ['--shadow-float'] as const;
 // This alias must resolve in both themes (§0.1 #10).
@@ -106,7 +106,7 @@ const INVENTORY = [
   ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS,
   ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
-  ...BOX_SCALE, ...WEIGHTS, ...COVE_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
+  ...BOX_SCALE, ...WEIGHTS, ...AREA_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
 ] as const;
 
 describe('styles/tokens inventory contract', () => {
@@ -191,19 +191,19 @@ describe('styles/tokens themed color contracts', () => {
     expect(dark.get(name)).toMatch(/^var\(--[a-z0-9-]+\)$/);
   });
 
-  describe('cove identity slots', () => {
-    it.each(COVE_IDENTITY)('%s is a concrete oklch literal in both themes', (name) => {
+  describe('area identity slots', () => {
+    it.each(AREA_IDENTITY)('%s is a concrete oklch literal in both themes', (name) => {
       expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
       expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
     });
 
     it('keeps all eight hues pairwise distinct', () => {
-      const hues = COVE_IDENTITY.map((name) => {
+      const hues = AREA_IDENTITY.map((name) => {
         const parts = (root.get(name) ?? '').replace(/^oklch\(|\)$/g, '').trim().split(/\s+/);
         return Number(parts[2]);
       });
       expect(hues.every(Number.isFinite)).toBe(true);
-      expect(new Set(hues).size).toBe(COVE_IDENTITY.length);
+      expect(new Set(hues).size).toBe(AREA_IDENTITY.length);
     });
   });
 

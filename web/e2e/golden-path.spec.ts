@@ -1,17 +1,17 @@
 // Golden-path e2e: prove the app loads, the Today route bootstraps a
 // default terminal, and the user can create + navigate into their own
-// cove from the sidebar.
+// area from the sidebar.
 //
 // Prereq: `make dev` (or any equivalent) must be serving the full stack
 // at http://localhost:4040. Issue #175 — there is no longer a seeded
-// `Scratch` cove visible in the sidebar; the kernel mints a hidden
-// system cove behind the scenes for the default Today terminal, and
-// `GET /api/coves` filters it out of the sidebar surface. We mint our
-// own user-visible cove here and navigate into it.
+// `Scratch` area visible in the sidebar; the kernel mints a hidden
+// system area behind the scenes for the default Today terminal, and
+// `GET /api/areas` filters it out of the sidebar surface. We mint our
+// own user-visible area here and navigate into it.
 
 import { test, expect } from '@playwright/test';
 
-test('loads the calm shell, bootstraps Today, then navigates into a new cove', async ({ page }) => {
+test('loads the calm shell, bootstraps Today, then navigates into a new area', async ({ page }) => {
   await page.goto('/calm/');
 
   // The sidebar `<aside class="side">` is the first thing the shell paints.
@@ -29,7 +29,7 @@ test('loads the calm shell, bootstraps Today, then navigates into a new cove', a
 
   // Bootstrap anchor for issue #175: after the Today page paints,
   // `useTodayTerminal` writes the resolved card id into localStorage.
-  // Wait for that to land — it's the signal that the system cove +
+  // Wait for that to land — it's the signal that the system area +
   // wave + terminal card all exist, even though none of them shows up
   // in the sidebar surface.
   await expect
@@ -40,34 +40,34 @@ test('loads the calm shell, bootstraps Today, then navigates into a new cove', a
     )
     .not.toBeNull();
 
-  // Cleanly demonstrate the system cove is NOT in the sidebar: there
-  // should be no cove-nav button before we mint our own user cove.
-  // (The `+ New cove` trigger now lives on the Coves header as an icon
-  // button — `button.cove-nav` no longer matches it, so no filter needed.)
-  const sidebarNav = page.getByRole('navigation', { name: 'Coves' });
-  await expect(sidebarNav.locator('button.cove-nav')).toHaveCount(0);
+  // Cleanly demonstrate the system area is NOT in the sidebar: there
+  // should be no area-nav button before we mint our own user area.
+  // (The `+ New area` trigger now lives on the Areas header as an icon
+  // button — `button.area-nav` no longer matches it, so no filter needed.)
+  const sidebarNav = page.getByRole('navigation', { name: 'Areas' });
+  await expect(sidebarNav.locator('button.area-nav')).toHaveCount(0);
 
-  // Step: create a user cove via the sidebar "+ New cove" affordance.
-  const coveName = `E2E cove ${Date.now()}`;
-  await sidebarNav.getByRole('button', { name: /new cove/i }).click();
+  // Step: create a user area via the sidebar "+ New area" affordance.
+  const areaName = `E2E area ${Date.now()}`;
+  await sidebarNav.getByRole('button', { name: /new area/i }).click();
   const nameInput = sidebarNav.getByPlaceholder(/name/i);
   await expect(nameInput).toBeVisible();
-  await nameInput.fill(coveName);
+  await nameInput.fill(areaName);
   await nameInput.press('Enter');
 
-  // The new cove's nav row should appear in the sidebar, with the cove
+  // The new area's nav row should appear in the sidebar, with the area
   // name as its accessible name (see Sidebar.tsx). `exact: true` excludes
-  // the per-row "Delete cove \"<name>\"" button that also includes the
-  // cove name in its accessible name (strict-mode would otherwise pick
+  // the per-row "Delete area \"<name>\"" button that also includes the
+  // area name in its accessible name (strict-mode would otherwise pick
   // up both).
-  const coveBtn = sidebarNav.getByRole('button', { name: coveName, exact: true });
-  await expect(coveBtn).toBeVisible();
-  await coveBtn.click();
+  const areaBtn = sidebarNav.getByRole('button', { name: areaName, exact: true });
+  await expect(areaBtn).toBeVisible();
+  await areaBtn.click();
 
-  // URL transitions to /calm/cove/<id>. We don't pin the id — it's a
+  // URL transitions to /calm/area/<id>. We don't pin the id — it's a
   // kernel-generated UUID.
-  await expect(page).toHaveURL(/\/calm\/cove\/[^/]+$/);
+  await expect(page).toHaveURL(/\/calm\/area\/[^/]+$/);
 
-  // And the cove page itself rendered — sidebar still visible alongside it.
+  // And the area page itself rendered — sidebar still visible alongside it.
   await expect(page.locator('aside.side')).toBeVisible();
 });

@@ -124,7 +124,7 @@ pub async fn handle_initialize(
     // 4. Recover the card/session binding metadata from the authenticated
     //    session. The persisted event actor is session-shaped (#770 HP1-b:
     //    `to_actor_id` keys on `session_id`); this lookup supplies role,
-    //    card_id, and cove_id for MCP `require_role` gating, `Principal`,
+    //    card_id, and area_id for MCP `require_role` gating, `Principal`,
     //    and wave/card resolution, not for actor minting.
     let card = repo
         .card_identity_get_by_session(session.id.as_str())
@@ -137,7 +137,7 @@ pub async fn handle_initialize(
     let principal = Principal::Agent {
         session_id: WorkerSessionId::from(session.id.as_str()),
         wave_id: session.wave_id.clone(),
-        cove_id: card.cove_id.clone(),
+        area_id: card.area_id.clone(),
     };
     let card_identity = CardIdentity {
         card_id: card.card_id,
@@ -145,7 +145,7 @@ pub async fn handle_initialize(
         provider: agent_provider_from_worker_provider(session.provider),
         session_id: session.id.as_str().to_string(),
         wave_id: Some(session.wave_id.as_str().to_string()),
-        cove_id: card.cove_id.as_str().to_string(),
+        area_id: card.area_id.as_str().to_string(),
     };
     debug_assert_eq!(card_identity.to_principal(), Some(principal));
     let connection_identity = ConnectionIdentity::CardBound(card_identity);

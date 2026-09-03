@@ -9,10 +9,10 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::rows::{WAVE_SELECT_COLUMNS, WAVE_SELECT_COLUMNS_W};
 use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
 use crate::error::{CalmError, Result};
-use crate::ids::{CardId, CoveId, WaveId};
+use crate::ids::{AreaId, CardId, WaveId};
 use crate::model::*;
 use crate::session_projection_repo::WorkerSessionKind;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 /// Row shape of the single-statement `wave_detail` read (#1016).
@@ -77,97 +77,97 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
-    // ---------------------------------------------------------------- coves
-    async fn coves_list(&self) -> Result<Vec<Cove>> {
-        let rows = sqlx::query_as::<_, crate::db::rows::CoveRow>(
+    // ---------------------------------------------------------------- areas
+    async fn areas_list(&self) -> Result<Vec<Area>> {
+        let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
-               FROM coves ORDER BY sort ASC"#,
+               FROM areas ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Cove::from).collect())
+        Ok(rows.into_iter().map(Area::from).collect())
     }
 
-    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>> {
-        // Issue #175 — default surface for `GET /api/coves`. Filters out
-        // the singleton system cove that hosts the default Today
+    async fn areas_list_user_visible(&self) -> Result<Vec<Area>> {
+        // Issue #175 — default surface for `GET /api/areas`. Filters out
+        // the singleton system area that hosts the default Today
         // terminal's wave + card. Pre-#175 callers that want every row
         // (debug surfaces, integration tests asserting on the system
-        // cove's existence) use `coves_list` directly.
-        let rows = sqlx::query_as::<_, crate::db::rows::CoveRow>(
+        // area's existence) use `areas_list` directly.
+        let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
-               FROM coves WHERE kind = 'user' ORDER BY sort ASC"#,
+               FROM areas WHERE kind = 'user' ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Cove::from).collect())
+        Ok(rows.into_iter().map(Area::from).collect())
     }
 
-    async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
-        let row = sqlx::query_as::<_, crate::db::rows::CoveRow>(
+    async fn area_get(&self, id: &str) -> Result<Option<Area>> {
+        let row = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
-               FROM coves WHERE id = ?1"#,
+               FROM areas WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Cove::from))
+        Ok(row.map(Area::from))
     }
 
-    async fn cove_get_system(&self) -> Result<Option<Cove>> {
-        // Issue #175 — return the singleton system cove if it exists,
-        // `None` before the first call to the `POST /api/coves/system`
+    async fn area_get_system(&self) -> Result<Option<Area>> {
+        // Issue #175 — return the singleton system area if it exists,
+        // `None` before the first call to the `POST /api/areas/system`
         // upsert endpoint. Backed by the partial unique index on
-        // `coves(kind) WHERE kind = 'system'` from migration 0009 —
+        // `areas(kind) WHERE kind = 'system'` from migration 0009 —
         // there is at most one such row.
-        let row = sqlx::query_as::<_, crate::db::rows::CoveRow>(
+        let row = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, created_at, updated_at
-               FROM coves WHERE kind = 'system' LIMIT 1"#,
+               FROM areas WHERE kind = 'system' LIMIT 1"#,
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Cove::from))
+        Ok(row.map(Area::from))
     }
 
-    // -------------------------------------------------------- cove_folders
-    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
-        let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
-               FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
+    // -------------------------------------------------------- area_folders
+    async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>> {
+        let rows = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
+            r#"SELECT id, area_id, path, created_at
+               FROM area_folders WHERE area_id = ?1 ORDER BY path ASC"#,
         )
-        .bind(cove_id)
+        .bind(area_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(CoveFolder::from).collect())
+        Ok(rows.into_iter().map(AreaFolder::from).collect())
     }
 
-    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
-        let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
-               FROM cove_folders ORDER BY path ASC"#,
+    async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>> {
+        let rows = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
+            r#"SELECT id, area_id, path, created_at
+               FROM area_folders ORDER BY path ASC"#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(CoveFolder::from).collect())
+        Ok(rows.into_iter().map(AreaFolder::from).collect())
     }
 
-    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
-        let row = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
-               FROM cove_folders WHERE id = ?1"#,
+    async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>> {
+        let row = sqlx::query_as::<_, crate::db::rows::AreaFolderRow>(
+            r#"SELECT id, area_id, path, created_at
+               FROM area_folders WHERE id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(CoveFolder::from))
+        Ok(row.map(AreaFolder::from))
     }
 
     // ---------------------------------------------------------------- waves
-    async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
+    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE area_id = ?1 ORDER BY sort ASC"
         ))
-        .bind(cove_id)
+        .bind(area_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Wave::from).collect())
@@ -201,7 +201,7 @@ impl RepoRead for SqlxRepo {
 
     async fn waves_window(
         &self,
-        cove_id: Option<&str>,
+        area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<Wave>> {
@@ -209,13 +209,13 @@ impl RepoRead for SqlxRepo {
         // good "optional bind" ergonomics — every binding has to be
         // either materialized or excluded from the query string. The
         // three predicates compose in any combination:
-        //   * `cove_id`     : `cove_id = ?`
+        //   * `area_id`     : `area_id = ?`
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = format!("SELECT {WAVE_SELECT_COLUMNS} FROM waves");
         let mut where_clauses: Vec<&str> = Vec::new();
-        if cove_id.is_some() {
-            where_clauses.push("cove_id = ?");
+        if area_id.is_some() {
+            where_clauses.push("area_id = ?");
         }
         if until.is_some() {
             where_clauses.push("created_at <= ?");
@@ -230,7 +230,7 @@ impl RepoRead for SqlxRepo {
         sql.push_str(" ORDER BY created_at ASC, id ASC");
 
         let mut q = sqlx::query_as::<_, crate::db::rows::WaveRow>(&sql);
-        if let Some(c) = cove_id {
+        if let Some(c) = area_id {
             q = q.bind(c);
         }
         if let Some(u) = until {
@@ -621,15 +621,15 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Card::from).collect())
     }
 
-    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>> {
+    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards
                WHERE kind = 'wave-report'
-                 AND wave_id IN (SELECT id FROM waves WHERE cove_id = ?1)
+                 AND wave_id IN (SELECT id FROM waves WHERE area_id = ?1)
                ORDER BY wave_id ASC, id ASC"#,
         )
-        .bind(cove_id)
+        .bind(area_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Card::from).collect())
@@ -681,7 +681,7 @@ impl RepoRead for SqlxRepo {
         // worth more than a snapshot on a diagnostics render.
         //
         // What WAS collapsed is the part the verdict is computed from: policy,
-        // ceiling, in-flight occupancy, in-flight keys and the wave's cove now
+        // ceiling, in-flight occupancy, in-flight keys and the wave's area now
         // come from a single statement, so a displayed capacity /
         // schedulability can no longer be stitched together from four versions
         // of the database. Two remain — the frozen-declaration scan and the
@@ -1083,8 +1083,8 @@ impl RepoRead for SqlxRepo {
         cache.seed_from_db(&self.pool).await
     }
 
-    // ------------------------------------------------------- wave-cove cache
-    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()> {
+    // ------------------------------------------------------- wave-area cache
+    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()> {
         cache.seed_from_db(&self.pool).await
     }
 
@@ -1114,7 +1114,7 @@ impl RepoRead for SqlxRepo {
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>> {
         let rows = sqlx::query(
-            r#"SELECT c.id, c.role, c.wave_id, w.cove_id
+            r#"SELECT c.id, c.role, c.wave_id, w.area_id
                FROM cards c
                JOIN waves w ON w.id = c.wave_id
               WHERE c.session_id = ?1
@@ -1133,7 +1133,7 @@ impl RepoRead for SqlxRepo {
                     card_id: CardId(row.try_get("id")?),
                     role,
                     wave_id: WaveId(row.try_get("wave_id")?),
-                    cove_id: CoveId(row.try_get("cove_id")?),
+                    area_id: AreaId(row.try_get("area_id")?),
                 }))
             }
             _ => Err(CalmError::Internal(format!(

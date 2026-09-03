@@ -1,5 +1,5 @@
-// Unit tests for optimistic-update + rollback behavior on the cove update
-// mutation (`useUpdateCoveMutation`). Counterpart to `queries.test.tsx`,
+// Unit tests for optimistic-update + rollback behavior on the area update
+// mutation (`useUpdateAreaMutation`). Counterpart to `queries.test.tsx`,
 // which covers the "happy path" hook surface.
 //
 // Why this lives in its own file:
@@ -13,7 +13,7 @@
 //
 // Pattern (matches TanStack Query's own optimistic tests):
 //   - Seed cache with [{ id: 'c1', name: 'before' }]
-//   - Make api.updateCove reject (deferred so we can read mid-flight state)
+//   - Make api.updateArea reject (deferred so we can read mid-flight state)
 //   - Call mutate({ id, body: { name: 'after' } })
 //   - Verify mid-flight: cache shows 'after' (optimistic write applied)
 //   - Resolve the rejection
@@ -25,12 +25,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 
 vi.mock('./calm', () => ({
-  listCoves: vi.fn(),
-  wavesInCove: vi.fn(),
+  listAreas: vi.fn(),
+  wavesInArea: vi.fn(),
   getWaveDetail: vi.fn(),
-  createCove: vi.fn(),
-  updateCove: vi.fn(),
-  deleteCove: vi.fn(),
+  createArea: vi.fn(),
+  updateArea: vi.fn(),
+  deleteArea: vi.fn(),
   createWave: vi.fn(),
   updateWave: vi.fn(),
   deleteWave: vi.fn(),
@@ -40,8 +40,8 @@ vi.mock('./calm', () => ({
 }));
 
 import * as api from './calm';
-import { useUpdateCoveMutation, queryKeys } from './queries';
-import type { KernelCove } from './wire';
+import { useUpdateAreaMutation, queryKeys } from './queries';
+import type { KernelArea } from './wire';
 
 function makeClient(): QueryClient {
   // `gcTime: 0` would immediately garbage-collect `setQueryData` writes that
@@ -62,8 +62,8 @@ function wrap(client: QueryClient) {
   };
 }
 
-function seedCove(client: QueryClient, name: string): KernelCove {
-  const cove: KernelCove = {
+function seedArea(client: QueryClient, name: string): KernelArea {
+  const area: KernelArea = {
     id: 'c1',
     name,
     color: '#abc',
@@ -72,18 +72,18 @@ function seedCove(client: QueryClient, name: string): KernelCove {
     created_at: 1,
     updated_at: 2,
   };
-  client.setQueryData(queryKeys.coves(), [cove]);
-  return cove;
+  client.setQueryData(queryKeys.areas(), [area]);
+  return area;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('useUpdateCoveMutation — optimistic update + rollback', () => {
+describe('useUpdateAreaMutation — optimistic update + rollback', () => {
   it('applies the optimistic name mid-flight then rolls back on rejection', async () => {
     const client = makeClient();
-    seedCove(client, 'before');
+    seedArea(client, 'before');
 
     // The mutationFn rejects, so onError fires and the rollback should
     // restore the snapshot. We hold the rejection in a Promise we control,
@@ -92,9 +92,9 @@ describe('useUpdateCoveMutation — optimistic update + rollback', () => {
     const pending = new Promise<never>((_resolve, reject) => {
       rejectFn = reject;
     });
-    (api.updateCove as ReturnType<typeof vi.fn>).mockReturnValue(pending);
+    (api.updateArea as ReturnType<typeof vi.fn>).mockReturnValue(pending);
 
-    const { result } = renderHook(() => useUpdateCoveMutation(), {
+    const { result } = renderHook(() => useUpdateAreaMutation(), {
       wrapper: wrap(client),
     });
 
@@ -109,7 +109,7 @@ describe('useUpdateCoveMutation — optimistic update + rollback', () => {
     // onMutate runs synchronously-ish; the optimistic write should be
     // visible on the cache before the mutationFn settles.
     await waitFor(() => {
-      const cached = client.getQueryData<KernelCove[]>(queryKeys.coves());
+      const cached = client.getQueryData<KernelArea[]>(queryKeys.areas());
       expect(cached?.[0]?.name).toBe('after');
     });
 
@@ -126,7 +126,7 @@ describe('useUpdateCoveMutation — optimistic update + rollback', () => {
     // no real fetcher (mock returns nothing useful) the cache value sticks
     // at the rolled-back snapshot.
     await waitFor(() => {
-      const cached = client.getQueryData<KernelCove[]>(queryKeys.coves());
+      const cached = client.getQueryData<KernelArea[]>(queryKeys.areas());
       expect(cached?.[0]?.name).toBe('before');
     });
 
@@ -139,11 +139,11 @@ describe('useUpdateCoveMutation — optimistic update + rollback', () => {
     // pins that behavior so future "should we make this optimistic too?"
     // changes are visible in the diff.
     const client = makeClient();
-    seedCove(client, 'unchanged');
+    seedArea(client, 'unchanged');
 
-    (api.updateCove as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    (api.updateArea as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
 
-    const { result } = renderHook(() => useUpdateCoveMutation(), {
+    const { result } = renderHook(() => useUpdateAreaMutation(), {
       wrapper: wrap(client),
     });
 
@@ -154,7 +154,7 @@ describe('useUpdateCoveMutation — optimistic update + rollback', () => {
     });
 
     // Cache never moved because we never wrote an optimistic copy.
-    const cached = client.getQueryData<KernelCove[]>(queryKeys.coves());
+    const cached = client.getQueryData<KernelArea[]>(queryKeys.areas());
     expect(cached?.[0]?.name).toBe('unchanged');
     expect(cached?.[0]?.sort).toBe(0);
     // Mutation state updates asynchronously after the mutationFn settles —

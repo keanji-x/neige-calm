@@ -45,7 +45,7 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::{ActorId, WaveId};
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{NewArea, NewCard, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
-// Fixture boot — fresh `AppState` + a seeded cove/wave/report card. The
+// Fixture boot — fresh `AppState` + a seeded area/wave/report card. The
 // router assembly mirrors `main.rs` so the auth + actor middleware fire
 // in the same order production sees them.
 // ---------------------------------------------------------------------------
@@ -70,8 +70,8 @@ struct Boot {
 
 async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "rest-report-test".into(),
             color: "#000".into(),
             sort: None,
@@ -81,7 +81,7 @@ async fn boot() -> Boot {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "report wave".into(),
             sort: None,
             cwd: String::new(),
@@ -115,7 +115,7 @@ async fn boot() -> Boot {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -417,7 +417,7 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: source_wave.cove_id.clone(),
+            area_id: source_wave.area_id.clone(),
             title: "target wave".into(),
             sort: None,
             cwd: String::new(),
@@ -1117,8 +1117,8 @@ async fn generic_patch_allows_wave_report_title_and_sort_without_payload() {
 // ---------------------------------------------------------------------------
 
 async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "report-invariant".into(),
             color: "#000".into(),
             sort: None,
@@ -1128,7 +1128,7 @@ async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "report invariant wave".into(),
             sort: None,
             cwd: String::new(),

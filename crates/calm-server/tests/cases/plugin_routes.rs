@@ -139,7 +139,7 @@ async fn boot_state_with_repo() -> (AppState, TempDir, PathBuf, Arc<dyn Repo>) {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
     let state = AppState::from_parts(
@@ -149,7 +149,7 @@ async fn boot_state_with_repo() -> (AppState, TempDir, PathBuf, Arc<dyn Repo>) {
         plugin,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_cove_cache — same rationale
+        None, // #234: wave_area_cache — same rationale
     );
     (state, tmp, plugins_dir, repo)
 }

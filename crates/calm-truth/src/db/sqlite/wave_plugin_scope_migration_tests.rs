@@ -45,11 +45,11 @@ async fn plugin_scope_backfill_skips_malformed_workflows_and_fail_closes_orphans
 
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('cove-1', 'c', '#000', 0, 1, 1)",
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
     .execute(&pool)
     .await
-    .expect("seed cove");
+    .expect("seed area");
 
     for (id, workflow_id) in [
         ("w-bound", Some("issue-development")),
@@ -64,7 +64,7 @@ async fn plugin_scope_backfill_skips_malformed_workflows_and_fail_closes_orphans
         // backfill under test never reads the workspace.
         sqlx::query(
             "INSERT INTO waves (id, cove_id, title, sort, lifecycle, workflow_id, created_at, updated_at)
-             VALUES (?1, 'cove-1', 't', 0, 'draft', ?2, 1, 1)",
+             VALUES (?1, 'area-1', 't', 0, 'draft', ?2, 1, 1)",
         )
         .bind(id)
         .bind(workflow_id)

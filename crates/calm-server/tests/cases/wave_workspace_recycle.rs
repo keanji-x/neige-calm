@@ -1,5 +1,5 @@
 //! Issue #1147 S5 — recycling a wave workspace, driven through the real
-//! `DELETE /api/waves/{id}` and `DELETE /api/coves/{id}` routes.
+//! `DELETE /api/waves/{id}` and `DELETE /api/areas/{id}` routes.
 //!
 //! **These tests really delete.** That is the whole point. S4's red team
 //! established that the assertion which actually stops the accident is not a
@@ -13,7 +13,7 @@
 //!   1. `kind == Managed`
 //!   2. `canonicalize(path)` under `canonicalize(workspace_root)`
 //!   3. `.git/neige-workspace` present and equal to this wave's id
-//!   4. the owning cove is not the system cove
+//!   4. the owning area is not the system area
 //!
 //! Each has a test here that fails if the guard is removed, and each such test
 //! asserts on *bytes on disk*, not on a decision value.
@@ -35,7 +35,7 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -62,7 +62,7 @@ struct Boot {
     /// latent gap.
     harness: calm_server::harness::HarnessRegistry,
     roles: CardRoleCache,
-    waves: WaveCoveCache,
+    waves: WaveAreaCache,
     shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
     tmp: TempDir,
 }
@@ -73,9 +73,9 @@ async fn boot() -> Boot {
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
+    let waves = WaveAreaCache::new();
     sqlx_repo.seed_card_role_cache(&roles).await.unwrap();
-    sqlx_repo.seed_wave_cove_cache(&waves).await.unwrap();
+    sqlx_repo.seed_wave_area_cache(&waves).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -148,7 +148,7 @@ async fn install_live_harness(b: &Boot, wave_id: &str) -> String {
             repo,
             events: calm_server::event::EventBus::new(),
             card_role_cache: b.roles.clone(),
-            wave_cove_cache: b.waves.clone(),
+            wave_area_cache: b.waves.clone(),
             daemon: b.shared_codex.clone(),
             config: Default::default(),
             snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
@@ -187,17 +187,17 @@ async fn request(
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-async fn create_cove(b: &Boot, name: &str) -> String {
+async fn create_area(b: &Boot, name: &str) -> String {
     let (status, body) = request(
         b.app.clone(),
         "POST",
-        "/api/coves",
+        "/api/areas",
         Some(json!({"name": name, "color": "#abc"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let cove: Value = serde_json::from_str(&body).unwrap();
-    cove["id"].as_str().unwrap().to_string()
+    let area: Value = serde_json::from_str(&body).unwrap();
+    area["id"].as_str().unwrap().to_string()
 }
 
 async fn create_wave(b: &Boot, body: Value) -> Value {
@@ -216,11 +216,11 @@ async fn delete_wave(b: &Boot, wave_id: &str) -> (StatusCode, String) {
     .await
 }
 
-async fn delete_cove(b: &Boot, cove_id: &str) -> (StatusCode, String) {
+async fn delete_area(b: &Boot, area_id: &str) -> (StatusCode, String) {
     request(
         b.app.clone(),
         "DELETE",
-        &format!("/api/coves/{cove_id}"),
+        &format!("/api/areas/{area_id}"),
         None,
     )
     .await
@@ -236,10 +236,10 @@ async fn workspace_path(b: &Boot, wave_id: &str) -> PathBuf {
 }
 
 /// The single managed wave created by `POST /api/waves` with only a title.
-async fn managed_wave(b: &Boot, cove_id: &str, title: &str) -> (String, PathBuf) {
+async fn managed_wave(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf) {
     let wave = create_wave(
         b,
-        json!({"cove_id": cove_id, "title": title, "theme": theme()}),
+        json!({"area_id": area_id, "title": title, "theme": theme()}),
     )
     .await;
     let id = wave["id"].as_str().unwrap().to_string();
@@ -297,11 +297,11 @@ fn user_repo(at: &Path) -> PathBuf {
     at.to_path_buf()
 }
 
-async fn attached_wave(b: &Boot, cove_id: &str, title: &str, path: &Path) -> String {
+async fn attached_wave(b: &Boot, area_id: &str, title: &str, path: &Path) -> String {
     let wave = create_wave(
         b,
         json!({
-            "cove_id": cove_id,
+            "area_id": area_id,
             "title": title,
             "cwd": path.to_string_lossy(),
             "attach_folder": true,
@@ -437,8 +437,8 @@ fn trash_entry_for(workspace_root: &Path, wave_id: &str) -> Option<PathBuf> {
 #[tokio::test]
 async fn deleting_a_managed_wave_moves_its_workspace_into_the_trash() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (wave_id, path) = managed_wave(&b, &cove_id, "research").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (wave_id, path) = managed_wave(&b, &area_id, "research").await;
     std::fs::write(path.join("worker-output.txt"), b"generated").unwrap();
     let before = fingerprint(&path);
 
@@ -465,10 +465,10 @@ async fn deleting_a_managed_wave_moves_its_workspace_into_the_trash() {
         std::fs::read(trashed.join("worker-output.txt")).unwrap(),
         b"generated"
     );
-    // The `<root>/<cove_id>/` layer deliberately stays: it is the namespace
-    // for every future wave in a cove that still exists. It is reclaimed by
-    // cove deletion, not wave deletion (design §生命周期).
-    assert!(b.workspace_root.join(&cove_id).is_dir());
+    // The `<root>/<area_id>/` layer deliberately stays: it is the namespace
+    // for every future wave in an area that still exists. It is reclaimed by
+    // area deletion, not wave deletion (design §生命周期).
+    assert!(b.workspace_root.join(&area_id).is_dir());
 }
 
 // ---------------------------------------------------------------------------
@@ -494,9 +494,9 @@ async fn deleting_a_managed_wave_moves_its_workspace_into_the_trash() {
 #[tokio::test]
 async fn deleting_an_attached_wave_leaves_the_users_repository_byte_for_byte() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
+    let area_id = create_area(&b, "Atlas").await;
     let repo = user_repo(&b.tmp.path().join("users-project"));
-    let wave_id = attached_wave(&b, &cove_id, "attached", &repo).await;
+    let wave_id = attached_wave(&b, &area_id, "attached", &repo).await;
 
     let before = fingerprint(&repo);
     let before_head = head(&repo).expect("the user repo must have a HEAD to begin with");
@@ -537,8 +537,8 @@ async fn deleting_an_attached_wave_leaves_the_users_repository_byte_for_byte() {
 #[tokio::test]
 async fn a_managed_workspace_without_our_marker_is_left_on_disk() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (wave_id, path) = managed_wave(&b, &cove_id, "research").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (wave_id, path) = managed_wave(&b, &area_id, "research").await;
     // Design gap N5 in the flesh: a partial restore, or a stray cleanup, took
     // the marker. We can no longer prove the directory is ours, so we do not
     // touch it — the row still goes away, so the wave stays deletable.
@@ -564,9 +564,9 @@ async fn a_managed_workspace_without_our_marker_is_left_on_disk() {
 #[tokio::test]
 async fn a_managed_workspace_whose_marker_names_another_wave_is_left_on_disk() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (wave_id, path) = managed_wave(&b, &cove_id, "research").await;
-    let (other_id, _) = managed_wave(&b, &cove_id, "neighbour").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (wave_id, path) = managed_wave(&b, &area_id, "research").await;
+    let (other_id, _) = managed_wave(&b, &area_id, "neighbour").await;
     // The shape S4 exists to make unconstructible: a row pointing at another
     // wave's managed directory. If it ever occurs again, the marker is the
     // thing that stops the delete.
@@ -593,8 +593,8 @@ async fn a_managed_workspace_whose_marker_names_another_wave_is_left_on_disk() {
 #[tokio::test]
 async fn a_symlinked_workspace_resolving_outside_the_root_is_left_on_disk() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (wave_id, path) = managed_wave(&b, &cove_id, "research").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (wave_id, path) = managed_wave(&b, &area_id, "research").await;
 
     // Relocate the real repository outside the root and leave a symlink at the
     // stored path. The marker still names this wave, so containment is the only
@@ -619,11 +619,11 @@ async fn a_symlinked_workspace_resolving_outside_the_root_is_left_on_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// Guard 4 — the system cove, at both layers
+// Guard 4 — the system area, at both layers
 // ---------------------------------------------------------------------------
 
-/// The row layer. `DELETE /api/coves/{id}` already 403s a system cove; this
-/// route used to be the asymmetric one, deleting a system-cove wave row and
+/// The row layer. `DELETE /api/areas/{id}` already 403s a system area; this
+/// route used to be the asymmetric one, deleting a system-area wave row and
 /// returning 204 while the directory (correctly, via guard 4) survived.
 ///
 /// **That combination is the actual leak.** Reclaiming a managed directory
@@ -632,7 +632,7 @@ async fn a_symlinked_workspace_resolving_outside_the_root_is_left_on_disk() {
 /// one more orphan repository under the managed root. The 403 closes it: the
 /// row and the directory now agree.
 #[tokio::test]
-async fn a_system_cove_wave_cannot_be_deleted_through_the_public_route() {
+async fn a_system_area_wave_cannot_be_deleted_through_the_public_route() {
     let b = boot().await;
     let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -664,12 +664,12 @@ async fn a_system_cove_wave_cannot_be_deleted_through_the_public_route() {
 }
 
 /// Single-violation fixture for the 403 above: the *same* wave, moved to a
-/// user cove, deletes fine. Without this, the assertion could be passing
+/// user area, deletes fine. Without this, the assertion could be passing
 /// because the launchpad is undeletable for some unrelated reason (a child
 /// wave, an in-flight forge action, a lifecycle state) rather than because it
 /// is system-owned.
 #[tokio::test]
-async fn the_same_wave_in_a_user_cove_deletes_normally() {
+async fn the_same_wave_in_a_user_area_deletes_normally() {
     let b = boot().await;
     let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -682,11 +682,11 @@ async fn the_same_wave_in_a_user_cove_deletes_normally() {
         "precondition: it is refused while system-owned"
     );
 
-    // Flip only the owning cove's kind. Everything else about the wave — its
+    // Flip only the owning area's kind. Everything else about the wave — its
     // cards, its workspace, its lifecycle — is untouched.
-    let user_cove = create_cove(&b, "Atlas").await;
-    sqlx::query("UPDATE waves SET cove_id=?1 WHERE id=?2")
-        .bind(&user_cove)
+    let user_area = create_area(&b, "Atlas").await;
+    sqlx::query("UPDATE waves SET area_id=?1 WHERE id=?2")
+        .bind(&user_area)
         .bind(&wave_id)
         .execute(b.repo.pool())
         .await
@@ -714,9 +714,9 @@ async fn the_same_wave_in_a_user_cove_deletes_normally() {
 #[tokio::test]
 async fn deleting_a_child_of_an_attached_parent_leaves_the_shared_repository() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
+    let area_id = create_area(&b, "Atlas").await;
     let repo = user_repo(&b.tmp.path().join("users-project"));
-    let parent_id = attached_wave(&b, &cove_id, "attached parent", &repo).await;
+    let parent_id = attached_wave(&b, &area_id, "attached parent", &repo).await;
     let child_id = support_child_wave(&b, &parent_id).await;
     assert_eq!(
         workspace_path(&b, &child_id).await,
@@ -746,8 +746,8 @@ async fn deleting_a_child_of_an_attached_parent_leaves_the_shared_repository() {
 #[tokio::test]
 async fn deleting_a_child_of_a_managed_parent_leaves_the_parent_repository() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (parent_id, parent_path) = managed_wave(&b, &cove_id, "managed parent").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (parent_id, parent_path) = managed_wave(&b, &area_id, "managed parent").await;
     let child_id = support_child_wave(&b, &parent_id).await;
     let child_path = workspace_path(&b, &child_id).await;
     assert_ne!(child_path, parent_path);
@@ -826,7 +826,7 @@ async fn support_child_wave(b: &Boot, parent_wave_id: &str) -> String {
     };
     let adapter = ChildWaveAdapter::new(
         b.repo.card_role_cache().clone(),
-        b.repo.wave_cove_cache().clone(),
+        b.repo.wave_area_cache().clone(),
         b.workspace_root.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();
@@ -839,23 +839,23 @@ async fn support_child_wave(b: &Boot, parent_wave_id: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Cove deletion
+// Area deletion
 // ---------------------------------------------------------------------------
 
-/// Before this slice, `DELETE /api/coves/{id}` left every managed repository
-/// under the cove on disk with no row pointing at it. Now the managed ones are
+/// Before this slice, `DELETE /api/areas/{id}` left every managed repository
+/// under the area on disk with no row pointing at it. Now the managed ones are
 /// recycled and the attached one is not touched at all.
 #[tokio::test]
-async fn deleting_a_cove_recycles_its_managed_workspaces_and_spares_attached_ones() {
+async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_ones() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (first_id, first_path) = managed_wave(&b, &cove_id, "one").await;
-    let (second_id, second_path) = managed_wave(&b, &cove_id, "two").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (first_id, first_path) = managed_wave(&b, &area_id, "one").await;
+    let (second_id, second_path) = managed_wave(&b, &area_id, "two").await;
     let repo = user_repo(&b.tmp.path().join("users-project"));
-    let attached_id = attached_wave(&b, &cove_id, "attached", &repo).await;
+    let attached_id = attached_wave(&b, &area_id, "attached", &repo).await;
     let repo_before = fingerprint(&repo);
 
-    let (status, body) = delete_cove(&b, &cove_id).await;
+    let (status, body) = delete_area(&b, &area_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
     assert!(!first_path.exists());
@@ -871,36 +871,36 @@ async fn deleting_a_cove_recycles_its_managed_workspaces_and_spares_attached_one
         changes.is_empty(),
         "the user's repository changed: {changes:?}"
     );
-    // The `<root>/<cove_id>/` layer goes too — that is the orphan tree this
+    // The `<root>/<area_id>/` layer goes too — that is the orphan tree this
     // route used to leave behind.
     assert!(
-        !b.workspace_root.join(&cove_id).exists(),
-        "the cove directory survived: {:?}",
-        std::fs::read_dir(b.workspace_root.join(&cove_id))
+        !b.workspace_root.join(&area_id).exists(),
+        "the area directory survived: {:?}",
+        std::fs::read_dir(b.workspace_root.join(&area_id))
             .map(|d| d.map(|e| e.unwrap().path()).collect::<Vec<_>>())
     );
 }
 
-/// A cove holding one recyclable and one un-provable workspace: the provable
-/// one goes, the other stays, and so does the cove directory that contains it.
+/// An area holding one recyclable and one un-provable workspace: the provable
+/// one goes, the other stays, and so does the area directory that contains it.
 /// `remove_dir` is non-recursive precisely so this cannot come out any other
 /// way.
 #[tokio::test]
-async fn a_cove_directory_with_an_unrecyclable_wave_survives() {
+async fn a_area_directory_with_an_unrecyclable_wave_survives() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (good_id, good_path) = managed_wave(&b, &cove_id, "one").await;
-    let (_bad_id, bad_path) = managed_wave(&b, &cove_id, "two").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (good_id, good_path) = managed_wave(&b, &area_id, "one").await;
+    let (_bad_id, bad_path) = managed_wave(&b, &area_id, "two").await;
     std::fs::remove_file(bad_path.join(".git/neige-workspace")).unwrap();
     let bad_before = fingerprint(&bad_path);
 
-    let (status, body) = delete_cove(&b, &cove_id).await;
+    let (status, body) = delete_area(&b, &area_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
     assert!(!good_path.exists());
     assert!(trash_entry_for(&b.workspace_root, &good_id).is_some());
     assert!(diff(&bad_before, &fingerprint(&bad_path)).is_empty());
-    assert!(b.workspace_root.join(&cove_id).is_dir());
+    assert!(b.workspace_root.join(&area_id).is_dir());
 }
 
 // ---------------------------------------------------------------------------
@@ -913,9 +913,9 @@ async fn a_cove_directory_with_an_unrecyclable_wave_survives() {
 #[tokio::test]
 async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     let b = boot().await;
-    let cove_id = create_cove(&b, "Atlas").await;
-    let (first_id, _) = managed_wave(&b, &cove_id, "one").await;
-    let (second_id, _) = managed_wave(&b, &cove_id, "two").await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (first_id, _) = managed_wave(&b, &area_id, "one").await;
+    let (second_id, _) = managed_wave(&b, &area_id, "two").await;
 
     let (status, _) = delete_wave(&b, &first_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -957,8 +957,8 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
 #[tokio::test]
 async fn deleting_a_wave_takes_its_live_harness_out_of_the_registry() {
     let b = boot().await;
-    let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let area = create_area(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &area, "w").await;
     let runtime_id = install_live_harness(&b, &wave).await;
 
     let (status, body) = delete_wave(&b, &wave).await;

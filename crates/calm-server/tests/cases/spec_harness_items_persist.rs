@@ -9,7 +9,7 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -27,8 +27,8 @@ async fn seed_harness(
     repo: Arc<SqlxRepo>,
     events: EventBus,
 ) -> (SpecHarness, Arc<SharedCodexAppServer>, String, String) {
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "items-persist".into(),
             color: "#111111".into(),
             sort: None,
@@ -38,7 +38,7 @@ async fn seed_harness(
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "items persist".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -89,8 +89,8 @@ async fn seed_harness(
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
-    wave_cove_cache.insert(wave.id.clone(), cove.id);
+    let wave_area_cache = calm_server::wave_area_cache::WaveAreaCache::new();
+    wave_area_cache.insert(wave.id.clone(), area.id);
     let harness = SpecHarness::run(SpecHarnessParams {
         runtime_id,
         wave_id: card.wave_id.clone(),
@@ -99,7 +99,7 @@ async fn seed_harness(
         repo: repo_dyn,
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        wave_cove_cache,
+        wave_area_cache,
         daemon: daemon.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),

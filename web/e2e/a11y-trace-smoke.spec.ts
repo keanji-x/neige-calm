@@ -35,7 +35,7 @@ test.beforeEach(async ({ request }) => {
 // here so a fixture edit causes a noisy failure — the smoke test's whole
 // purpose is to anchor the contract between the fixture and the bridge.
 const EXPECTED_FIXTURE_KINDS = [
-  'cove.updated',
+  'area.updated',
   'wave.updated',
   'card.added',
   'card.added',

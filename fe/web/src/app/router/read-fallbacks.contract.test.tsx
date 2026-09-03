@@ -11,12 +11,12 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
-const coves = [
+const areas = [
   { id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
   { id: 'c2', name: 'Two', color: '#654321', sort: 2, kind: 'user', created_at: 1, updated_at: 1 },
 ];
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const wave = { id: 'w1', cove_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
+const wave = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
@@ -50,10 +50,10 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('degraded workspace reads stay usable', () => {
-  it.each([['Today', '/'], ['Cove', '/cove/c1']])('%s warns when activity is unavailable', async (_name, path) => {
+  it.each([['Today', '/'], ['Area', '/area/c1']])('%s warns when activity is unavailable', async (_name, path) => {
     renderRoute(path, (request) => {
-      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
-      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/waves') return ok([wave]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
       return ok([]);
     });
@@ -61,23 +61,23 @@ describe('degraded workspace reads stay usable', () => {
     expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Wave activity is unavailable: overlays down'))).toBe(true);
   });
 
-  it('keeps Today content when one cove wave read fails', async () => {
+  it('keeps Today content when one area wave read fails', async () => {
     renderRoute('/', (request) => {
-      if (request.path === '/api/coves') return ok(coves);
-      if (request.path === '/api/coves/c1/waves') return ok([wave]);
-      if (request.path === '/api/coves/c2/waves') return fail('cove two down');
+      if (request.path === '/api/areas') return ok(areas);
+      if (request.path === '/api/areas/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas/c2/waves') return fail('area two down');
       return ok([]);
     });
     expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
-    expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('cove two down'))).toBe(true);
+    expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('area two down'))).toBe(true);
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
   });
 
-  it('keeps Cove content when a refetch fails after usable wave data', async () => {
+  it('keeps Area content when a refetch fails after usable wave data', async () => {
     let waveReads = 0;
-    const view = renderRoute('/cove/c1', (request) => {
-      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
-      if (request.path === '/api/coves/c1/waves') return ++waveReads === 1 ? ok([wave]) : fail('waves stale');
+    const view = renderRoute('/area/c1', (request) => {
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/waves') return ++waveReads === 1 ? ok([wave]) : fail('waves stale');
       return ok([]);
     });
     expect(await screen.findByRole('button', { name: 'New wave' })).toBeTruthy();
@@ -90,8 +90,8 @@ describe('degraded workspace reads stay usable', () => {
     let resolveDetail: (response: ApiTransportResponse) => void = () => undefined;
     const detail = new Promise<ApiTransportResponse>((resolve) => { resolveDetail = resolve; });
     renderRoute('/wave/w1', (request) => {
-      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
-      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/waves') return ok([wave]);
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
       if (request.path === '/api/waves/w1') return detail;
       return ok([]);
@@ -106,8 +106,8 @@ describe('degraded workspace reads stay usable', () => {
 
   it('uses a successful neutral detail read instead of stale workspace activity', async () => {
     renderRoute('/wave/w1', (request) => {
-      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
-      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/waves') return ok([wave]);
       if (request.path.startsWith('/api/overlays?')) return ok([{
         id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'wave', entity_id: 'w1',
         kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
@@ -122,8 +122,8 @@ describe('degraded workspace reads stay usable', () => {
 
 it('puts a dismissible delete failure before Today content', async () => {
   renderRoute('/', (request) => {
-    if (request.path === '/api/coves') return ok(coves.slice(0, 1));
-    if (request.path === '/api/coves/c1/waves') return ok([wave]);
+    if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+    if (request.path === '/api/areas/c1/waves') return ok([wave]);
     if (request.path.startsWith('/api/overlays?')) return ok([]);
     if (request.method === 'DELETE') return fail('wave changed elsewhere');
     return ok([]);

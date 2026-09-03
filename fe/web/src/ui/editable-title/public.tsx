@@ -1,10 +1,10 @@
 // INV-DUP-008 — the one click-or-F2-to-rename title.
 //
-// Both the cove header and the wave header rename in place, and the cove one
+// Both the area header and the wave header rename in place, and the area one
 // carried a synthesized-click suppressor (#288): committing with Enter fires
 // keyup on the freshly-restored title element, which browsers turn into a
 // `click` — that reopened the editor and, on the next commit, PATCHed the
-// stale name back. The suppressor must survive any merge; it is not cove-
+// stale name back. The suppressor must survive any merge; it is not area-
 // specific, it is a property of "Enter commits and returns focus".
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -39,8 +39,8 @@ export type EditableTitleProps = Readonly<{
    *
    * `'cancel'` (the default) is the historical behaviour and stays the
    * default: clearing the field and pressing Enter leaves edit mode and writes
-   * nothing. That is right where nothing else can supply a name — a cove is
-   * named by its owner and by no one else, so an empty cove name is a name the
+   * nothing. That is right where nothing else can supply a name — an area is
+   * named by its owner and by no one else, so an empty area name is a name the
    * product cannot recover from.
    *
    * `'clear'` makes the empty commit a real request: write the empty name.
@@ -51,9 +51,9 @@ export type EditableTitleProps = Readonly<{
    */
   emptyCommit?: 'cancel' | 'clear';
   onCommit: (next: string) => void | Promise<void>;
-  /** Accessible name for the read-mode button, e.g. "Rename cove". */
+  /** Accessible name for the read-mode button, e.g. "Rename area". */
   editLabel: string;
-  /** Accessible name for the input, e.g. "Cove name". */
+  /** Accessible name for the input, e.g. "Area name". */
   inputLabel: string;
   className?: string;
   /**

@@ -3,7 +3,7 @@
 // It is the same on all three routes, which is the point: whatever you are
 // looking at, the agent conversations attached to it are one click away in the
 // same place. What changes per route is the *scope* the caller passes (this
-// wave's, this cove's, everything), not this component.
+// wave's, this area's, everything), not this component.
 //
 // Presentational by construction: it fetches nothing and opens nothing. The
 // caller owns the drawer, because the drawer overlays the whole main region and

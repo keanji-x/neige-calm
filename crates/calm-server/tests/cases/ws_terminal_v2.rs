@@ -16,7 +16,7 @@ use axum::routing::get;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
+use calm_server::model::{NewArea, NewCard, NewTerminal, NewWave, Terminal};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -153,7 +153,7 @@ async fn boot_renderer_ws() -> RendererWsFixture {
             events,
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -185,20 +185,20 @@ async fn boot_renderer_ws() -> RendererWsFixture {
 }
 
 async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str) -> Terminal {
-    let cove = fixture
+    let area = fixture
         .repo
-        .cove_create(NewCove {
+        .area_create(NewArea {
             name: format!("scrollback-{label}"),
             color: "#000".into(),
             sort: None,
         })
         .await
-        .expect("create cove");
+        .expect("create area");
     let wave = fixture
         .repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: format!("scrollback-{label}"),
             sort: None,
             cwd: fixture._tmp.path().display().to_string(),

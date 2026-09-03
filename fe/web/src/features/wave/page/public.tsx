@@ -6,7 +6,7 @@
 // document slot therefore occupies a document's worth of space even when empty,
 // because that shape is what teaches the user what they will get.
 //
-// Presentational: the wave, its cove and its cards arrive as props, and every
+// Presentational: the wave, its area and its cards arrive as props, and every
 // mutation and every navigation leaves through a callback — `features/**` may
 // not import `app/**`, so the router owns both the fetch and the destination.
 //
@@ -121,7 +121,7 @@ export type WavePageProps = Readonly<{
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
-  /** CR-8 — after a successful delete, focus lands on the cove page's title. */
+  /** CR-8 — after a successful delete, focus lands on the area page's title. */
   onRenameWave: (title: string) => void | Promise<void>;
   onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
@@ -337,12 +337,12 @@ export function WavePage({
 
         The breadcrumb row is gone. "Today / ● atlas" cost a full row of chrome
         on every visit to restate two things the rail states permanently and in
-        the same words — the rail is a tree with the cove above the wave, and
+        the same words — the rail is a tree with the area above the wave, and
         the current wave is the row marked in it. A breadcrumb earns its place
         where the ancestor is otherwise unreachable; here it never was.
 
-        The cove dot went with it. It was the only colour in the header, and it
-        was sitting next to the cove's own name — the same defect the cove page
+        The area dot went with it. It was the only colour in the header, and it
+        was sitting next to the area's own name — the same defect the area page
         header had, one level down.
       */}
       {/*
@@ -377,7 +377,7 @@ export function WavePage({
               `emptyCommit="clear"` is the other half: a wave has a second
               namer (the spec agent's `calm.wave.rename`, which succeeds only
               while the title is empty), so clearing the name is a real request
-              here and not the cancel it is on a cove.
+              here and not the cancel it is on an area.
             */}
             <h1 className={styles.titleHeading}><EditableTitle
               value={wave.title}
@@ -417,7 +417,7 @@ export function WavePage({
         /*
          * No identity row — `--header-h` is 62 here now, not 92.
          *
-         * The folder is real (unlike the cove page's, which was synthesised
+         * The folder is real (unlike the area page's, which was synthesised
          * from whatever its waves happened to agree on, and was deleted). But
          * being real is not the same as belonging in the chrome: a page header
          * is what you read on *every* visit, and a path you already chose when
@@ -468,7 +468,7 @@ export function WavePage({
           largest fixed cost the page paid for its least-read fact.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
-            drawer is open — see the same marker on the cove page. */}
+            drawer is open — see the same marker on the area page. */}
         <aside
           id="mobile-wave-panel"
           ref={mobilePanelRef}
@@ -594,10 +594,10 @@ export function WavePage({
               *
               * FOLDER said "you choose it once at creation and the app never
               * showed it again". That stopped being true in the other
-              * direction: **nobody chooses it any more.** `cove/new-wave` omits
+              * direction: **nobody chooses it any more.** `area/new-wave` omits
               * `cwd` and `attach_folder` from the create POST, so the kernel
               * takes the #1131 branch — persist `default_cwd()` (`$HOME`) and
-              * skip the `cove_folders` claim entirely. Every wave this
+              * skip the `area_folders` claim entirely. Every wave this
               * front-end creates therefore reports the same `$HOME`, and a
               * module whose value is a constant the reader neither picked nor
               * can change is a row that costs a module and answers nothing.

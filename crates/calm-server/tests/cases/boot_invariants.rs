@@ -4,12 +4,12 @@ use std::sync::Arc;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::operation::OperationKey;
 use calm_server::operation::forge_action_adapter::FORGE_ACTION_KIND;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -30,7 +30,7 @@ async fn app_state(repo: Arc<SqlxRepo>) -> AppState {
             EventBus::new(),
             WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                WaveCoveCache::new(),
+                WaveAreaCache::new(),
             ),
         )),
         Arc::new(CodexClient::new_stub()),
@@ -42,8 +42,8 @@ async fn app_state(repo: Arc<SqlxRepo>) -> AppState {
 #[tokio::test]
 async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "boot-invariant".into(),
             color: "#111111".into(),
             sort: None,
@@ -53,7 +53,7 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "boot invariant".into(),
             sort: None,
             cwd: "/tmp".into(),
@@ -110,53 +110,53 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     );
 }
 
-/// Seed `n` coves and give each one the matching path via the
-/// **unchecked** repo primitive (`cove_folder_create`), which is exactly
+/// Seed `n` areas and give each one the matching path via the
+/// **unchecked** repo primitive (`area_folder_create`), which is exactly
 /// the writer that a pre-#275 database's overlapping rows came from —
-/// today's `cove_folder_create_checked` would refuse them, so the fence
+/// today's `area_folder_create_checked` would refuse them, so the fence
 /// could not be tested through it.
-/// Returns the seeded `cove_id`s, positionally matching `paths`.
+/// Returns the seeded `area_id`s, positionally matching `paths`.
 async fn seed_folders(repo: &SqlxRepo, paths: &[&str]) -> Vec<String> {
-    let mut cove_ids = Vec::new();
+    let mut area_ids = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        let cove = repo
-            .cove_create(NewCove {
-                name: format!("cove-{i}"),
+        let area = repo
+            .area_create(NewArea {
+                name: format!("area-{i}"),
                 color: "#222222".into(),
                 sort: None,
             })
             .await
             .unwrap();
-        repo.cove_folder_create(cove.id.as_str(), path)
+        repo.area_folder_create(area.id.as_str(), path)
             .await
             .unwrap();
-        cove_ids.push(cove.id.as_str().to_string());
+        area_ids.push(area.id.as_str().to_string());
     }
-    cove_ids
+    area_ids
 }
 
 #[tokio::test]
-async fn boot_fence_rejects_overlapping_cove_folder_claims() {
+async fn boot_fence_rejects_overlapping_area_folder_claims() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove_ids = seed_folders(&repo, &["/a", "/a/b"]).await;
+    let area_ids = seed_folders(&repo, &["/a", "/a/b"]).await;
 
     let state = app_state(repo).await;
-    let err = calm_server::assert_cove_folders_disjoint_on_boot(&state)
+    let err = calm_server::assert_area_folders_disjoint_on_boot(&state)
         .await
-        .expect_err("overlapping cove_folders claims must fail the boot fence");
+        .expect_err("overlapping area_folders claims must fail the boot fence");
     let msg = err.to_string();
     assert!(
-        msg.contains("cove_folders boot fence failed"),
+        msg.contains("area_folders boot fence failed"),
         "unexpected fence error: {msg}"
     );
     // Actionability: both sides of the pair must be nameable by an
     // operator straight from the message.
     assert!(msg.contains("path=`/a`"), "fence must name /a: {msg}");
     assert!(msg.contains("path=`/a/b`"), "fence must name /a/b: {msg}");
-    for cove_id in &cove_ids {
+    for area_id in &area_ids {
         assert!(
-            msg.contains(cove_id.as_str()),
-            "fence must name cove_id {cove_id}: {msg}"
+            msg.contains(area_id.as_str()),
+            "fence must name area_id {area_id}: {msg}"
         );
     }
     // Row ids too, so the operator can `DELETE ... WHERE id = ?`.
@@ -165,14 +165,14 @@ async fn boot_fence_rejects_overlapping_cove_folder_claims() {
 }
 
 #[tokio::test]
-async fn boot_fence_passes_on_disjoint_cove_folder_claims() {
+async fn boot_fence_passes_on_disjoint_area_folder_claims() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     seed_folders(&repo, &["/a", "/b", "/c/d/e"]).await;
 
     let state = app_state(repo).await;
-    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+    calm_server::assert_area_folders_disjoint_on_boot(&state)
         .await
-        .expect("disjoint cove_folders claims must pass the boot fence");
+        .expect("disjoint area_folders claims must pass the boot fence");
 }
 
 /// The adjacent case the fence must NOT trip on: sibling paths that
@@ -184,40 +184,40 @@ async fn boot_fence_passes_on_string_prefix_siblings() {
     seed_folders(&repo, &["/a", "/ab", "/home/ken", "/home/kenji"]).await;
 
     let state = app_state(repo).await;
-    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+    calm_server::assert_area_folders_disjoint_on_boot(&state)
         .await
         .expect("string-prefix siblings are disjoint paths and must pass the fence");
 }
 
 /// An empty table is trivially disjoint — a fresh install must boot.
 #[tokio::test]
-async fn boot_fence_passes_on_empty_cove_folders() {
+async fn boot_fence_passes_on_empty_area_folders() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let state = app_state(repo).await;
-    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+    calm_server::assert_area_folders_disjoint_on_boot(&state)
         .await
-        .expect("empty cove_folders must pass the boot fence");
+        .expect("empty area_folders must pass the boot fence");
 }
 
-/// `UNIQUE(cove_folders.path)` makes the exact-equal overlap
+/// `UNIQUE(area_folders.path)` makes the exact-equal overlap
 /// unreachable even through the unchecked primitive. Pinning that here
 /// documents *why* the DB-level fence test cannot cover `Equal` (the
-/// pure-function test in `cove_folder_claim` does).
+/// pure-function test in `area_folder_claim` does).
 #[tokio::test]
 async fn equal_paths_are_unreachable_even_through_the_unchecked_primitive() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     seed_folders(&repo, &["/a"]).await;
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "dup".into(),
             color: "#333333".into(),
             sort: None,
         })
         .await
         .unwrap();
-    repo.cove_folder_create(cove.id.as_str(), "/a")
+    repo.area_folder_create(area.id.as_str(), "/a")
         .await
-        .expect_err("UNIQUE(cove_folders.path) rejects an exactly-equal claim");
+        .expect_err("UNIQUE(area_folders.path) rejects an exactly-equal claim");
 }
 
 #[tokio::test]

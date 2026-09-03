@@ -4,22 +4,22 @@ test.setTimeout(90_000);
 
 async function createWave(page: Page): Promise<{ id: string; title: string }> {
   const suffix = Date.now();
-  const coveRes = await page.request.post('/api/coves', {
-    data: { name: `E2E wheel cove ${suffix}`, color: '#6a8' },
+  const areaRes = await page.request.post('/api/areas', {
+    data: { name: `E2E wheel area ${suffix}`, color: '#6a8' },
     headers: { 'content-type': 'application/json' },
   });
-  if (!coveRes.ok()) {
-    throw new Error(`POST /api/coves failed: ${coveRes.status()}`);
+  if (!areaRes.ok()) {
+    throw new Error(`POST /api/areas failed: ${areaRes.status()}`);
   }
-  const cove = (await coveRes.json()) as { id: string };
+  const area = (await areaRes.json()) as { id: string };
   const title = `E2E wheel edge ${suffix}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: cove.id,
+      area_id: area.id,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about wheel mode, not working directories. See
-      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `helpers/reset.ts::createWaveInArea` for why the invented
       // `/tmp/playwright-wheel-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },

@@ -329,9 +329,9 @@ pub enum WriteAttribution {
 /// # Why the probe payload is not carried here
 ///
 /// Not because it can be reconstructed from [`AgentOrigin`] — it cannot. The
-/// probe's `principal` is a `Principal::Agent`, which needs a `cove_id`
+/// probe's `principal` is a `Principal::Agent`, which needs a `area_id`
 /// (`calm-types/src/worker.rs`) that `AgentOrigin` does not have; production
-/// builds it in `ToolCallIdentity::to_principal` from `identity.cove_id`.
+/// builds it in `ToolCallIdentity::to_principal` from `identity.area_id`.
 ///
 /// The reason is narrower and true: what the gate actually reads of the
 /// principal is its `session_id` and nothing else — `decide_recorder`
@@ -340,7 +340,7 @@ pub enum WriteAttribution {
 /// carrying `session_id` plus the write's target wave determines the same gate
 /// outcome as today for every input, and leaving the assembled probe out of
 /// this type avoids a second place where the principal could drift away from
-/// the origin. If a future gate reads `cove_id`, this stops holding and the
+/// the origin. If a future gate reads `area_id`, this stops holding and the
 /// origin has to grow the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecorderRequirement {

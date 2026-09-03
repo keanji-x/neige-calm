@@ -22,7 +22,7 @@ describe('assistant card entry', () => {
   /*
    * The two markers live under one field, and this is the direction that
    * actually costs something: a predicate widened to "has a `harness_profile`"
-   * would make every cove chat card resolve as a wave assistant. The server
+   * would make every area chat card resolve as a wave assistant. The server
    * refuses to conflate them for the same reason and pins it in
    * `plain_chat.rs::the_two_conversation_markers_never_answer_for_each_other`.
    */

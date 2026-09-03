@@ -96,12 +96,12 @@ mod tests {
 
     async fn seed_card(repo: &SqlxRepo) -> String {
         use crate::db::sqlite::session_insert_tx;
-        use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+        use crate::model::{NewArea, NewCard, NewWave, RequestTheme};
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let cove = crate::db::sqlite::cove_create_tx(
+        let area = crate::db::sqlite::area_create_tx(
             &mut tx,
-            NewCove {
+            NewArea {
                 name: "c".into(),
                 color: "#000".into(),
                 sort: None,
@@ -113,7 +113,7 @@ mod tests {
             &mut tx,
             NewWave {
                 template_input: None,
-                cove_id: cove.id.clone(),
+                area_id: area.id.clone(),
                 title: "w".into(),
                 sort: None,
                 cwd: String::new(),
@@ -124,7 +124,7 @@ mod tests {
             },
             None,
             &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
-            repo.wave_cove_cache(),
+            repo.wave_area_cache(),
         )
         .await
         .unwrap();

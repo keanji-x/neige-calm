@@ -41,7 +41,7 @@ use calm_server::{
     routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT,
     shared_codex_appserver::SharedCodexAppServer,
     state::{AppState, CodexClient, DaemonClient, WriteContext},
-    wave_cove_cache::WaveCoveCache,
+    wave_area_cache::WaveAreaCache,
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -93,12 +93,12 @@ async fn boot_with_rendezvouses(
 ) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
-    let waves = WaveCoveCache::new();
+    let waves = WaveAreaCache::new();
     // Seeded, not empty: a second server over an existing database must
     // recognise the cards already there, or `ensure` tries to mint a second
     // spec card and the re-point fixture stops being a re-point.
     repo.seed_card_role_cache(&roles).await.unwrap();
-    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    repo.seed_wave_area_cache(&waves).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -188,26 +188,26 @@ impl Boot {
         )
     }
 
-    /// A user-visible cove with one real wave in it. Through `POST /api/coves`
-    /// and `POST /api/waves`, so the cove is `kind = 'user'` and the wave has
+    /// A user-visible area with one real wave in it. Through `POST /api/areas`
+    /// and `POST /api/waves`, so the area is `kind = 'user'` and the wave has
     /// the cards and workspace a production wave has.
     async fn user_wave(&self, title: &str) -> String {
-        let (status, cove) = self
+        let (status, area) = self
             .request(
                 "POST",
-                "/api/coves",
+                "/api/areas",
                 None,
                 Some(json!({"name": title, "color": "#abc"})),
             )
             .await;
-        assert_eq!(status, StatusCode::CREATED, "cove={cove}");
+        assert_eq!(status, StatusCode::CREATED, "area={area}");
         let (status, wave) = self
             .request(
                 "POST",
                 "/api/waves",
                 None,
                 Some(json!({
-                    "cove_id": cove["id"],
+                    "area_id": area["id"],
                     "title": title,
                     "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
                 })),
@@ -707,7 +707,7 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
 ///
 /// It also pins the visibility filter from the other side: the launchpad's own
 /// report edits, which every successful summary produces, are in the system
-/// cove and must never be what keeps the window non-empty.
+/// area and must never be what keeps the window non-empty.
 #[tokio::test]
 async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity() {
     let b = boot().await;

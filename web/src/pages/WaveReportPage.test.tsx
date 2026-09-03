@@ -140,7 +140,7 @@ const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'wave_1',
-    coveId: 'cove_1',
+    areaId: 'area_1',
     title: 'Spec wave',
     lifecycle: 'draft',
     anyCardNeedsInput: false,
@@ -1503,7 +1503,7 @@ describe('WaveReportPage', () => {
         content: JSON.stringify({
           title: 'Wave fs registry',
           id: 'wave_json_1',
-          cove_id: 'cove_json_1',
+          area_id: 'area_json_1',
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
           template_id: null,

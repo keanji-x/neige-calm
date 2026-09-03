@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{SqlxRepo, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::model::NewCard;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -17,8 +17,8 @@ use tower::ServiceExt;
 
 async fn boot() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "policy".into(),
             color: "#fff".into(),
             sort: None,
@@ -28,7 +28,7 @@ async fn boot() -> (AppState, String, Arc<dyn Repo>) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id,
+            area_id: area.id,
             title: "policy".into(),
             sort: None,
             cwd: String::new(),
@@ -53,7 +53,7 @@ async fn boot() -> (AppState, String, Arc<dyn Repo>) {
             events,
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -142,7 +142,7 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
 
 const WAVE_PERSISTENT_COLUMNS: &[&str] = &[
     "id",
-    "cove_id",
+    "area_id",
     "title",
     "sort",
     "archived_at",
@@ -532,12 +532,12 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     let child = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: repo
+            area_id: repo
                 .wave_get(&wave_id)
                 .await
                 .unwrap()
                 .unwrap()
-                .cove_id
+                .area_id
                 .clone(),
             title: "child".into(),
             sort: None,
@@ -682,7 +682,7 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
     let child = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: root.cove_id,
+            area_id: root.area_id,
             title: "child".into(),
             sort: None,
             cwd: String::new(),
@@ -731,7 +731,7 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     let child = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: root.cove_id,
+            area_id: root.area_id,
             title: "child".into(),
             sort: None,
             cwd: String::new(),
@@ -827,7 +827,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
     );
 
     let new_events: Vec<PersistedWaveEvent> = sqlx::query_as(
-        "SELECT kind,actor,scope_kind,scope_cove,scope_wave,scope_card,payload \
+        "SELECT kind,actor,scope_kind,scope_area,scope_wave,scope_card,payload \
              FROM events WHERE id>?1 ORDER BY id",
     )
     .bind(before_events)
@@ -839,7 +839,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
         1,
         "ceiling PATCH must append exactly one event envelope"
     );
-    let (kind, actor, scope_kind, scope_cove, scope_wave, scope_card, payload) = &new_events[0];
+    let (kind, actor, scope_kind, scope_area, scope_wave, scope_card, payload) = &new_events[0];
     assert_eq!(kind, "wave.updated");
     assert_eq!(
         serde_json::from_str::<Value>(actor).unwrap(),
@@ -847,7 +847,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
     );
     assert_eq!(scope_kind, "wave");
     let wave = repo.wave_get(&wave_id).await.unwrap().unwrap();
-    assert_eq!(scope_cove.as_deref(), Some(wave.cove_id.as_str()));
+    assert_eq!(scope_area.as_deref(), Some(wave.area_id.as_str()));
     assert_eq!(scope_wave.as_deref(), Some(wave_id.as_str()));
     assert_eq!(scope_card, &None);
     let payload: Value = serde_json::from_str(payload).unwrap();

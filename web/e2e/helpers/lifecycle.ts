@@ -170,7 +170,7 @@ export async function getWave(
  *  lifecycle suite asserts on are pinned here. */
 export interface WaveSnapshot {
   id: string;
-  cove_id: string;
+  area_id: string;
   title: string;
   lifecycle: WaveLifecycle;
   terminal_at: number | null;

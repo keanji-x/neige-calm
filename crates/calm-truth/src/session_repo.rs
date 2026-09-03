@@ -4,7 +4,7 @@ use calm_types::worker::{Liveness, WorkerSession, WorkerSessionId, WorkerSession
 use sqlx::{Sqlite, Transaction};
 
 use crate::error::Result;
-use crate::ids::{CoveId, WaveId};
+use crate::ids::{AreaId, WaveId};
 
 pub type Tx<'a> = Transaction<'a, Sqlite>;
 
@@ -27,7 +27,7 @@ pub enum CommitExitOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadRootCandidate {
     pub wave_id: WaveId,
-    pub cove_id: CoveId,
+    pub area_id: AreaId,
     /// The current lifecycle — always [`WaveLifecycle::Draft`] (failed-start)
     /// or [`WaveLifecycle::Planning`] (lost-root). The reaper drives the
     /// matching `from → Failed` edge and treats a current != from read as a

@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewWave};
+use calm_server::model::{NewArea, NewWave};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -41,7 +41,7 @@ const TOOLCALL_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-toolcall");
 // ---------------------------------------------------------------------------
 
 /// Test fixture: an `AppState` wired to a real `PluginHost`, an in-memory
-/// `SqlxRepo` pre-seeded with one cove + one wave, and one installed `stub-toolcall`
+/// `SqlxRepo` pre-seeded with one area + one wave, and one installed `stub-toolcall`
 /// plugin with configurable env vars (mode / resource_uri / structured).
 struct Fixture {
     state: AppState,
@@ -71,8 +71,8 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
             .await
             .expect("open in-memory sqlite repo"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -82,7 +82,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
@@ -143,7 +143,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         events.clone(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_cove_cache::WaveCoveCache::new(),
+            calm_server::wave_area_cache::WaveAreaCache::new(),
         ),
     ));
 
@@ -157,7 +157,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         plugin_host,
         Arc::new(calm_server::state::CodexClient::new_stub()),
         None, // PR3 (#136): card_role_cache — tests don't exercise role gating
-        None, // #234: wave_cove_cache — same rationale
+        None, // #234: wave_area_cache — same rationale
     );
 
     Fixture {

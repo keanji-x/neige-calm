@@ -13,7 +13,7 @@ use crate::mcp_server::registry::{
 use crate::model::CardRole;
 use crate::wave_report_read::load_report_read_snapshot;
 
-pub const TOOL_COVE_OUTLINE: &str = "calm.cove.outline";
+pub const TOOL_AREA_OUTLINE: &str = "calm.area.outline";
 pub const TOOL_REPORT_BACKLINKS: &str = "calm.report.links.backlinks";
 
 const MAX_WAVES: usize = 50;
@@ -21,7 +21,7 @@ const MAX_BLOCKS_PER_WAVE: usize = 40;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024;
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(outline_descriptor(), wrap(cove_outline));
+    registry.register(outline_descriptor(), wrap(area_outline));
     registry.register(backlinks_descriptor(), wrap(report_backlinks));
 }
 
@@ -35,12 +35,12 @@ where
 
 fn outline_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_COVE_OUTLINE.into(),
+        name: TOOL_AREA_OUTLINE.into(),
         description: "Spec-only: list the reports and addressable block index for every wave in \
-            the caller's cove. Takes no parameters. Create links as \
+            the caller's area. Takes no parameters. Create links as \
             `[label](neige://wave/<wave_id>#<block_id>)`; the `#<block_id>` fragment is optional. \
             Block ids come from this outline or `calm.report.read`. Links resolve only within the \
-            cove. If an anchored block no longer exists, the link degrades to a whole-report link \
+            area. If an anchored block no longer exists, the link degrades to a whole-report link \
             instead of breaking. Returns `{ waves: [{ id, title, lifecycle, blocks: [{ id, kind, \
             heading }] }], truncated? }`; it never returns report bodies."
             .into(),
@@ -53,11 +53,11 @@ fn outline_descriptor() -> ToolDescriptor {
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BACKLINKS.into(),
-        description: "Spec-only: list report links from waves in the same cove to the caller's \
+        description: "Spec-only: list report links from waves in the same area to the caller's \
             own wave. Takes no parameters. Link syntax is \
             `[label](neige://wave/<wave_id>#<block_id>)`; the fragment is optional, and block ids \
-            come from `calm.cove.outline` or `calm.report.read`. Links resolve only within the \
-            cove. An anchor whose block no longer exists degrades to a whole-report link rather \
+            come from `calm.area.outline` or `calm.report.read`. Links resolve only within the \
+            area. An anchor whose block no longer exists degrades to a whole-report link rather \
             than breaking."
             .into(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -66,7 +66,7 @@ fn backlinks_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn cove_outline(
+async fn area_outline(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     _args: Value,
@@ -74,9 +74,9 @@ async fn cove_outline(
     require_role(&identity, CardRole::Spec)?;
     let mut cards = ctx
         .repo
-        .wave_report_cards_by_cove(identity.cove_id.as_str())
+        .wave_report_cards_by_area(identity.area_id.as_str())
         .await
-        .map_err(|error| RpcError::internal(format!("cove_outline: {error}")))?;
+        .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
     cards.sort_by(|left, right| left.wave_id.as_str().cmp(right.wave_id.as_str()));
 
     let total_waves = cards.len();
@@ -87,11 +87,11 @@ async fn cove_outline(
             .repo
             .wave_get(card.wave_id.as_str())
             .await
-            .map_err(|error| RpcError::internal(format!("cove_outline: {error}")))?
-            .ok_or_else(|| RpcError::internal("cove_outline: wave vanished mid-read"))?;
+            .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?
+            .ok_or_else(|| RpcError::internal("area_outline: wave vanished mid-read"))?;
         let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
             .await
-            .map_err(|error| RpcError::internal(format!("cove_outline: {error}")))?;
+            .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
         let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_WAVE);
         if omitted > 0 {
             block_truncations.insert(wave.id.as_str().to_string(), omitted);
@@ -161,7 +161,7 @@ async fn cove_outline(
         > MAX_RESPONSE_BYTES
     {
         return Err(RpcError::internal(
-            "cove_outline: truncation metadata exceeds response byte cap",
+            "area_outline: truncation metadata exceeds response byte cap",
         ));
     }
     Ok(response)

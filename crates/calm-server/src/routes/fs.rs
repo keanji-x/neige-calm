@@ -20,7 +20,7 @@
 //!   * 403 if read permission is denied at the OS level.
 //!
 //! Security: kernel is a single-user process; this endpoint sits at the
-//! same trust level as `/api/coves`, `/api/cards`, etc. — no auth gate
+//! same trust level as `/api/areas`, `/api/cards`, etc. — no auth gate
 //! beyond what's wrapped around the whole router. If we ever multi-tenant
 //! the server, this is one of the first endpoints to lock down.
 

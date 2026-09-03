@@ -69,7 +69,7 @@
 //! # Counts only — this is what bounds the prompt
 //!
 //! Every field of [`WorkspaceActivityWindow`] is an integer. No wave titles, no
-//! cove names, no detail lists, and nothing else of variable length. That is
+//! area names, no detail lists, and nothing else of variable length. That is
 //! not tidiness: the prompt this feeds goes through `POST /api/cards/{id}/spec/input`,
 //! which rejects anything over `MAX_SPEC_INPUT_CHARS` (32,768) — so the
 //! rendered prompt's length has to have a bound that can be computed without
@@ -128,14 +128,14 @@ pub const ACTIVITY_KINDS: [&str; 4] = [
 ///   to restrict the rows and once to bucket them, so a kind can never be
 ///   counted into a column the query did not ask for.
 ///
-/// The join runs through `waves` and `coves` rather than trusting
-/// `events.scope_cove`: the scope columns are a snapshot taken at write time,
-/// while `waves.cove_id` is current, and a wave whose row is gone should not
+/// The join runs through `waves` and `areas` rather than trusting
+/// `events.scope_area`: the scope columns are a snapshot taken at write time,
+/// while `waves.area_id` is current, and a wave whose row is gone should not
 /// contribute activity to a page that cannot link to it.
 ///
-/// `coves.kind = 'user'` is the visibility filter, and it is the same predicate
-/// `coves_list_user_visible` uses for `GET /api/coves` (#175). It is what keeps
-/// the system cove — and therefore the launchpad — out of the count.
+/// `areas.kind = 'user'` is the visibility filter, and it is the same predicate
+/// `areas_list_user_visible` uses for `GET /api/areas` (#175). It is what keeps
+/// the system area — and therefore the launchpad — out of the count.
 const ACTIVITY_QUERY: &str = r#"
     SELECT COALESCE(SUM(e.kind = ?4), 0) AS lifecycle,
            COALESCE(SUM(e.kind = ?5), 0) AS report,
@@ -144,7 +144,7 @@ const ACTIVITY_QUERY: &str = r#"
            COUNT(DISTINCT w.id)          AS waves
       FROM events e
       JOIN waves w ON w.id = e.scope_wave
-      JOIN coves c ON c.id = w.cove_id
+      JOIN areas c ON c.id = w.area_id
      WHERE e.at >= ?1
        AND e.at <  ?2
        AND c.kind = 'user'
@@ -188,14 +188,14 @@ impl WorkspaceActivityWindow {
 /// rather than a load-bearing wall — stating that precisely is part of the
 /// design's ruling (D4). Writing the summary is itself a `wave.report_edited`
 /// on the launchpad wave, so without an exclusion each run would feed the next
-/// one its own footprint. But the launchpad lives in the system cove and
+/// one its own footprint. But the launchpad lives in the system area and
 /// `c.kind = 'user'` above has already dropped it, so deleting this predicate
 /// turns no test red *through the join*. What pins it is
 /// `reflexive_exclusion_drops_the_named_wave_before_the_visibility_join` in
 /// this module, which drives the predicate directly on raw allowlisted rows in
-/// a user cove — i.e. before the visibility filter can mask it. The predicate
+/// a user area — i.e. before the visibility filter can mask it. The predicate
 /// becomes load-bearing the day the visibility join widens or the launchpad
-/// moves out of the system cove.
+/// moves out of the system area.
 ///
 /// The exclusion is by **wave**, so a human hand-editing Today's report does
 /// not register as activity either. That is intended (design D4).
@@ -320,7 +320,7 @@ mod tests {
 
         let lifecycle = Event::WaveLifecycleChanged {
             id: crate::ids::WaveId::from("w".to_string()),
-            cove_id: crate::ids::CoveId::from("c".to_string()),
+            area_id: crate::ids::AreaId::from("c".to_string()),
             from: WaveLifecycle::Draft,
             to: WaveLifecycle::Planning,
             agent_message: None,
@@ -358,9 +358,9 @@ mod tests {
             Self { repo }
         }
 
-        async fn cove(&self, id: &str, kind: &str) {
+        async fn area(&self, id: &str, kind: &str) {
             sqlx::query(
-                "INSERT INTO coves(id,name,color,sort,kind,created_at,updated_at) \
+                "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
                  VALUES(?1,?1,'#abc',1,?2,1,1)",
             )
             .bind(id)
@@ -370,13 +370,13 @@ mod tests {
             .unwrap();
         }
 
-        async fn wave(&self, id: &str, cove_id: &str) {
+        async fn wave(&self, id: &str, area_id: &str) {
             sqlx::query(
-                "INSERT INTO waves(id,cove_id,title,sort,lifecycle,created_at,updated_at) \
+                "INSERT INTO waves(id,area_id,title,sort,lifecycle,created_at,updated_at) \
                  VALUES(?1,?2,?1,1,'draft',1,1)",
             )
             .bind(id)
-            .bind(cove_id)
+            .bind(area_id)
             .execute(self.repo.pool())
             .await
             .unwrap();
@@ -420,8 +420,8 @@ mod tests {
     #[tokio::test]
     async fn a_boundary_event_belongs_to_the_later_day_and_only_to_it() {
         let f = Fixture::new().await;
-        f.cove("cove-user", "user").await;
-        f.wave("wave-1", "cove-user").await;
+        f.area("area-user", "user").await;
+        f.wave("wave-1", "area-user").await;
 
         let midnight = 1_700_000_000_000;
         let day = 86_400_000;
@@ -470,13 +470,13 @@ mod tests {
     #[tokio::test]
     async fn each_kind_lands_in_its_own_field_and_unlisted_kinds_are_ignored() {
         let f = Fixture::new().await;
-        f.cove("cove-user", "user").await;
-        f.wave("wave-1", "cove-user").await;
-        f.wave("wave-2", "cove-user").await;
+        f.area("area-user", "user").await;
+        f.wave("wave-1", "area-user").await;
+        f.wave("wave-2", "area-user").await;
         // The discriminator. It carries ONLY unlisted kinds, so it is the one
         // wave whose presence in `waves_touched` can distinguish a query that
         // restricts by kind from one that does not — see the note below.
-        f.wave("wave-3", "cove-user").await;
+        f.wave("wave-3", "area-user").await;
 
         f.event("wave.lifecycle_changed", "wave-1", 10).await;
         f.event("wave.report_edited", "wave-1", 11).await;
@@ -505,31 +505,31 @@ mod tests {
         assert_eq!(window.total_events(), 5);
     }
 
-    /// The system cove is not activity, which is what INV-TODAYDOC-007's
+    /// The system area is not activity, which is what INV-TODAYDOC-007's
     /// "empty window" is able to mean at all.
     ///
     /// The launchpad wave lives there, and so does everything the kernel does
     /// on its own behalf. If these rows counted, no workspace would ever have
     /// an empty day and the gate would be unreachable.
     #[tokio::test]
-    async fn only_user_visible_coves_count_as_activity() {
+    async fn only_user_visible_areas_count_as_activity() {
         let f = Fixture::new().await;
-        f.cove("cove-system", "system").await;
-        f.wave("wave-launchpad", "cove-system").await;
+        f.area("area-system", "system").await;
+        f.wave("wave-launchpad", "area-system").await;
         f.event("wave.report_edited", "wave-launchpad", 10).await;
 
         let window = f.window(0, 100).await;
         assert!(
             window.is_empty(),
-            "a system-cove wave must not make the day look busy: {window:?}"
+            "a system-area wave must not make the day look busy: {window:?}"
         );
     }
 
     /// The reflexive exclusion, driven where it can actually be observed.
     ///
-    /// The wave here sits in a **user** cove, so the visibility join lets it
+    /// The wave here sits in a **user** area, so the visibility join lets it
     /// through and the exclusion predicate is the only thing that can drop it.
-    /// In production it is not: the launchpad is in the system cove and the
+    /// In production it is not: the launchpad is in the system area and the
     /// case above already removes it, which is why the design calls this
     /// defence in depth and not a wall. Pinning it here rather than through the
     /// endpoint is the design's own instruction — the alternative was writing
@@ -537,9 +537,9 @@ mod tests {
     #[tokio::test]
     async fn reflexive_exclusion_drops_the_named_wave_before_the_visibility_join() {
         let f = Fixture::new().await;
-        f.cove("cove-user", "user").await;
-        f.wave("wave-self", "cove-user").await;
-        f.wave("wave-other", "cove-user").await;
+        f.area("area-user", "user").await;
+        f.wave("wave-self", "area-user").await;
+        f.wave("wave-other", "area-user").await;
         f.event("wave.report_edited", "wave-self", 10).await;
         f.event("wave.report_edited", "wave-other", 11).await;
 

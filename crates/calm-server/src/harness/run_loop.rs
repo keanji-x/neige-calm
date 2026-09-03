@@ -20,7 +20,7 @@ use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use crate::wave_vcs;
 
 const OBSERVATION_BUFFER: usize = 256;
@@ -50,7 +50,7 @@ pub struct SpecHarnessParams {
     pub repo: Arc<dyn Repo>,
     pub events: EventBus,
     pub card_role_cache: CardRoleCache,
-    pub wave_cove_cache: WaveCoveCache,
+    pub wave_area_cache: WaveAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub config: HarnessConfig,
     pub snapshot: HarnessSnapshot,
@@ -64,7 +64,7 @@ pub(super) struct Inner {
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
-    wave_cove_cache: WaveCoveCache,
+    wave_area_cache: WaveAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     observations: mpsc::Sender<HarnessObservationDelivery>,
     state: Mutex<HarnessState>,
@@ -433,7 +433,7 @@ fn inner_from_params(
         repo: params.repo,
         events: params.events,
         card_role_cache: params.card_role_cache,
-        wave_cove_cache: params.wave_cove_cache,
+        wave_area_cache: params.wave_area_cache,
         daemon: params.daemon,
         observations,
         state: Mutex::new(state),
@@ -468,15 +468,15 @@ fn inner_from_params(
 fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
     let card = inner.card_id.clone();
     let wave = inner.wave_id.clone();
-    match inner.wave_cove_cache.cove_of(&wave) {
-        Some(cove) => EventScope::Card { card, wave, cove },
+    match inner.wave_area_cache.area_of(&wave) {
+        Some(area) => EventScope::Card { card, wave, area },
         None => {
             tracing::warn!(
                 runtime_id = %inner.runtime_id,
                 card_id = %card,
                 wave_id = %wave,
                 event_name,
-                "spec harness event missing wave cove cache entry; using system scope"
+                "spec harness event missing wave area cache entry; using system scope"
             );
             EventScope::System
         }
@@ -967,7 +967,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     None,
                     &inner.events,
                     &inner.card_role_cache,
-                    &inner.wave_cove_cache,
+                    &inner.wave_area_cache,
                     Event::HarnessItemAdded {
                         runtime_id: inner.runtime_id.clone(),
                         card_id: inner.card_id.clone(),
@@ -1300,7 +1300,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // * `skip_wave_diff` — issue the turn with no "wave state changes since
     //   your last turn" block at all.
     //
-    // A cove chat skips both: it lives alone on a hidden scaffolding wave, so
+    // An area chat skips both: it lives alone on a hidden scaffolding wave, so
     // there is nothing to snapshot and nothing to diff.
     //
     // A wave assistant skips only the first, and the asymmetry is deliberate.
@@ -1970,7 +1970,7 @@ async fn persist_snapshot_inner(
                 None,
                 &inner.events,
                 &inner.card_role_cache,
-                &inner.wave_cove_cache,
+                &inner.wave_area_cache,
                 Event::HarnessPhaseChanged {
                     runtime_id: event_runtime_id,
                     card_id: event_card_id,

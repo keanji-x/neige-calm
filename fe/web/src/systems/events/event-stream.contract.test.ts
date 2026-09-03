@@ -64,7 +64,7 @@ describe('event stream typestate contract', () => {
   it('pins configuration and connection-state unions', () => {
     expectTypeOf<EventStreamConfiguration>().toEqualTypeOf<Readonly<{
       syncEventVersion: number | null;
-      topics: readonly ('*' | `cove:${string}` | `wave:${string}` | `card:${string}`)[];
+      topics: readonly ('*' | `area:${string}` | `wave:${string}` | `card:${string}`)[];
     }>>();
     expectTypeOf<ConnectionState>().toEqualTypeOf<'connecting' | 'connected' | 'disconnected'>();
     expectTypeOf<EventStreamDriver['start']>().parameters.toEqualTypeOf<[

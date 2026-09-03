@@ -26,7 +26,7 @@ pub(crate) fn card_is_plain_chat(
 /// role. The two must never be conflated: a plain chat has no MCP token and no
 /// wave authority at all, while an assistant holds a token that reaches the
 /// block channel. Answering one question with the other's predicate would
-/// either strand the assistant outside the harness routes or hand a cove chat
+/// either strand the assistant outside the harness routes or hand an area chat
 /// the assistant's surface.
 pub(crate) fn card_is_wave_assistant(
     card: &Card,
@@ -80,7 +80,7 @@ mod tests {
     }
 
     /// The two markers are disjoint in both directions. Without this, a
-    /// widened predicate ("any harness_profile marker") would let a cove chat
+    /// widened predicate ("any harness_profile marker") would let an area chat
     /// card answer yes to the assistant question — and the assistant question
     /// is what opens the MCP-backed harness routes.
     #[test]

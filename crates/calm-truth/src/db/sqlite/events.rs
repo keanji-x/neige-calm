@@ -18,7 +18,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, WaveId};
 use crate::model::*;
-use crate::wave_cove_cache::WaveCoveCache;
+use crate::wave_area_cache::WaveAreaCache;
 use crate::wave_vcs;
 
 impl SqlxRepo {
@@ -37,7 +37,7 @@ impl SqlxRepo {
     ///   * `scope` is decomposed into the four `events.scope_*` columns added
     ///     in migration 0007. `EventScope::System` writes `scope_kind='system'`
     ///     with NULL ancestor cols; the other variants populate whatever
-    ///     prefix of the cove → wave → card chain they carry.
+    ///     prefix of the area → wave → card chain they carry.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
         actor: &ActorId,
@@ -51,13 +51,13 @@ impl SqlxRepo {
         let actor_text = serde_json::to_string(actor)?;
         let at = now_ms();
         let scope_kind = scope.kind();
-        let scope_cove = scope.cove_id().map(|c| c.as_str());
+        let scope_area = scope.area_id().map(|c| c.as_str());
         let scope_wave = scope.wave_id().map(|w| w.as_str());
         let scope_card = scope.card_id().map(|c| c.as_str());
         let row = sqlx::query(
             r#"INSERT INTO events (
                    kind, payload, actor, at, correlation, event_version,
-                   scope_kind, scope_cove, scope_wave, scope_card
+                   scope_kind, scope_area, scope_wave, scope_card
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                RETURNING id"#,
@@ -69,7 +69,7 @@ impl SqlxRepo {
         .bind(correlation)
         .bind(SYNC_EVENT_VERSION)
         .bind(scope_kind)
-        .bind(scope_cove)
+        .bind(scope_area)
         .bind(scope_wave)
         .bind(scope_card)
         .fetch_one(&mut **tx)
@@ -191,7 +191,7 @@ impl RepoEventWrite for SqlxRepo {
             &event,
             &scope,
             write.role_cache(),
-            write.cove_cache(),
+            write.area_cache(),
         )
         .await
         {
@@ -275,7 +275,7 @@ impl RepoEventWrite for SqlxRepo {
                 event,
                 scope,
                 write.role_cache(),
-                write.cove_cache(),
+                write.area_cache(),
             )
             .await
             {
@@ -365,7 +365,7 @@ impl RepoEventWrite for SqlxRepo {
                 event,
                 scope,
                 write.role_cache(),
-                write.cove_cache(),
+                write.area_cache(),
             )
             .await
             {
@@ -433,7 +433,7 @@ impl RepoEventWrite for SqlxRepo {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        wave_area_cache: &WaveAreaCache,
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
@@ -450,7 +450,7 @@ impl RepoEventWrite for SqlxRepo {
             &event,
             &scope,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
         )
         .await
         {
@@ -540,13 +540,13 @@ impl RepoEventWrite for SqlxRepo {
             String,         // payload
             u32,            // event_version
             Option<String>, // scope_kind
-            Option<String>, // scope_cove
+            Option<String>, // scope_area
             Option<String>, // scope_wave
             Option<String>, // scope_card
         );
         let rows: Vec<ScopeRow> = sqlx::query_as(
             r#"SELECT id, kind, payload, event_version,
-                      scope_kind, scope_cove, scope_wave, scope_card
+                      scope_kind, scope_area, scope_wave, scope_card
                FROM events
                WHERE id > ?1
                ORDER BY id ASC
@@ -630,14 +630,14 @@ impl RepoEventWrite for SqlxRepo {
             String,         // actor
             i64,            // at
             Option<String>, // scope_kind
-            Option<String>, // scope_cove
+            Option<String>, // scope_area
             Option<String>, // scope_wave
             Option<String>, // scope_card
         );
 
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT id, kind, payload, actor, at,
-                      scope_kind, scope_cove, scope_wave, scope_card
+                      scope_kind, scope_area, scope_wave, scope_card
                FROM events
                WHERE scope_wave = "#,
         );

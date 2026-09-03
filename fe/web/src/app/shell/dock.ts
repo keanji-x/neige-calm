@@ -9,8 +9,8 @@
 
 import { pathFor } from '../router/navigation.ts';
 
-export type MobileSection = 'pages' | 'coves';
-export type DockKey = 'pages' | 'today' | 'coves' | 'me';
+export type MobileSection = 'pages' | 'areas';
+export type DockKey = 'pages' | 'today' | 'areas' | 'me';
 
 export type DockItem = Readonly<{
   key: DockKey;
@@ -37,7 +37,7 @@ export type DockItem = Readonly<{
 export const DOCK_ITEMS: readonly DockItem[] = Object.freeze([
   Object.freeze({ key: 'pages', label: 'Pages', icon: 'viewColumns', opensSection: 'pages' } as const),
   Object.freeze({ key: 'today', label: 'Today', icon: 'calendar' } as const),
-  Object.freeze({ key: 'coves', label: 'Coves', icon: 'menu', opensSection: 'coves' } as const),
+  Object.freeze({ key: 'areas', label: 'Areas', icon: 'menu', opensSection: 'areas' } as const),
   Object.freeze({ key: 'me', label: 'Me', icon: 'wrench' } as const),
 ]);
 
@@ -46,7 +46,7 @@ export const DOCK_ITEMS: readonly DockItem[] = Object.freeze([
  *
  * Pages is the fallback rather than a fifth "nothing selected" state, which is
  * the behaviour the four inline `aria-current` expressions added up to: on a
- * wave or a cove route with no sheet open, the reader is inside the Pages
+ * wave or an area route with no sheet open, the reader is inside the Pages
  * index. A sheet always wins over the route underneath it, because the sheet is
  * what they are looking at.
  */

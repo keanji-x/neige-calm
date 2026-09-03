@@ -16,7 +16,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, NewOverlay};
+use calm_server::model::{NewArea, NewOverlay};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -25,7 +25,7 @@ use calm_server::validation::{
     OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
     template_overlay_payload,
 };
-use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_area_cache::WaveAreaCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -36,7 +36,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
-    cove_id: String,
+    area_id: String,
     repo: Arc<dyn Repo>,
     _tmp: TempDir,
 }
@@ -48,8 +48,8 @@ async fn boot() -> Boot {
             .await
             .expect("open in-memory sqlite"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "template-overlay-test".into(),
             color: "#000".into(),
             sort: None,
@@ -57,8 +57,8 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
-    let wave_cove_cache = WaveCoveCache::new();
-    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+    let wave_area_cache = WaveAreaCache::new();
+    repo.seed_wave_area_cache(&wave_area_cache).await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -73,11 +73,11 @@ async fn boot() -> Boot {
             std::env::temp_dir().join("calm-plugins-data-1110-s1"),
             Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), wave_area_cache.clone()),
         )),
         Arc::new(common::fake_codex_client()),
         Some(card_role_cache),
-        Some(wave_cove_cache),
+        Some(wave_area_cache),
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
@@ -88,7 +88,7 @@ async fn boot() -> Boot {
         .with_state(state);
     Boot {
         app,
-        cove_id: cove.id.to_string(),
+        area_id: area.id.to_string(),
         repo,
         _tmp: tmp,
     }
@@ -155,9 +155,9 @@ async fn spec_harness_ops_for_wave(repo: &Arc<dyn Repo>, wave_id: &str) -> i64 {
     .expect("wave spec-harness-start count")
 }
 
-fn create_body(cove_id: &str, title: &str, cwd: &str, as_template: Option<bool>) -> Value {
+fn create_body(area_id: &str, title: &str, cwd: &str, as_template: Option<bool>) -> Value {
     let mut body = json!({
-        "cove_id": cove_id,
+        "area_id": area_id,
         "title": title,
         "cwd": cwd,
         "attach_folder": true,
@@ -176,7 +176,7 @@ async fn post_api_waves_as_template_writes_overlay_and_skips_spec_harness_start(
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "template wave",
             &attached_repo_fixture("1110-s1-template"),
             Some(true),
@@ -227,7 +227,7 @@ async fn post_api_waves_omitted_as_template_still_starts_spec_harness() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "ordinary wave",
             &attached_repo_fixture("1110-s1-ordinary"),
             None,
@@ -258,7 +258,7 @@ async fn template_waves_are_hidden_from_lists_and_visible_by_id() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "hidden template",
             &attached_repo_fixture("1110-s1-hidden"),
             Some(true),
@@ -272,7 +272,7 @@ async fn template_waves_are_hidden_from_lists_and_visible_by_id() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "visible ordinary",
             &attached_repo_fixture("1110-s1-visible"),
             Some(false),
@@ -283,9 +283,9 @@ async fn template_waves_are_hidden_from_lists_and_visible_by_id() {
     let ordinary_id = ordinary["id"].as_str().unwrap().to_string();
 
     for uri in [
-        format!("/api/coves/{}/waves", boot.cove_id),
+        format!("/api/areas/{}/waves", boot.area_id),
         "/api/waves".to_string(),
-        format!("/api/waves?cove_id={}", boot.cove_id),
+        format!("/api/waves?area_id={}", boot.area_id),
     ] {
         let (status, body) = get(boot.app.clone(), &uri).await;
         assert_eq!(status, StatusCode::OK, "{uri} body={body}");
@@ -329,7 +329,7 @@ async fn spec_reset_on_template_wave_is_refused() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "template reset",
             &attached_repo_fixture("1110-s1-reset"),
             Some(true),
@@ -380,7 +380,7 @@ async fn overlay_post_cannot_mark_an_existing_wave_as_template() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "live wave",
             &attached_repo_fixture("1297-forge"),
             Some(false),
@@ -445,7 +445,7 @@ async fn template_overlay_written_internally_blocks_spec_reset() {
         boot.app.clone(),
         "/api/waves",
         create_body(
-            &boot.cove_id,
+            &boot.area_id,
             "later template",
             &attached_repo_fixture("1110-s1-later"),
             Some(false),

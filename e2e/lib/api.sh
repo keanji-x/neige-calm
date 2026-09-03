@@ -76,10 +76,10 @@ login() {
 }
 
 autologin_probe() {
-  api GET /api/coves - || fail "curl failed for GET /api/coves auth probe"
+  api GET /api/areas - || fail "curl failed for GET /api/areas auth probe"
   AUTH_PROBE_STATUS="$API_STATUS"
   [[ "$AUTH_PROBE_STATUS" == 2* || "$AUTH_PROBE_STATUS" == "401" ]] \
-    || fail "GET /api/coves auth probe returned HTTP $AUTH_PROBE_STATUS: $(body_preview "$API_BODY")"
+    || fail "GET /api/areas auth probe returned HTTP $AUTH_PROBE_STATUS: $(body_preview "$API_BODY")"
 }
 
 login_unless_autologin() {

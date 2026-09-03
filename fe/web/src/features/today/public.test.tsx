@@ -3,7 +3,7 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Cove } from '../../../../core/domain/cove.ts';
+import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
 import { TodayPage } from './public.tsx';
 
@@ -26,13 +26,13 @@ afterEach(() => {
 const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 const DAY = 86_400_000;
 
-function cove(overrides: Partial<Cove> = {}): Cove {
+function area(overrides: Partial<Area> = {}): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
 }
 
 function wave(overrides: Partial<Wave> = {}): Wave {
   return {
-    id: 'w1', coveId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    id: 'w1', areaId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -41,7 +41,7 @@ function wave(overrides: Partial<Wave> = {}): Wave {
 
 describe('Today clock', () => {
   it('counts running and waiting waves with the shared predicates', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} nowMs={NOW} coves={[cove()]} waves={[
+    render(<TodayPage renderWaveRow={renderWaveRow} nowMs={NOW} areas={[area()]} waves={[
       wave({ id: 'a', lifecycle: 'working' }),
       wave({ id: 'b', lifecycle: 'planning' }),
       wave({ id: 'c', lifecycle: 'blocked' }),
@@ -55,7 +55,7 @@ describe('Today clock', () => {
   });
 
   it('renders the pinned time instead of the wall clock when nowMs is given', () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} areas={[]} nowMs={NOW} />);
     // The page title is the full date — weekday, month, day — in one element.
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
     // One string, not three elements: the clock is ambient and its whole
@@ -66,7 +66,7 @@ describe('Today clock', () => {
   it('moves the page date across midnight on the clock tick', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 10, 23, 59, 50));
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[]} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} areas={[]} />);
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
 
     await act(() => vi.advanceTimersByTime(15_000));
@@ -79,7 +79,7 @@ describe('Today agenda', () => {
     render(<TodayPage
       renderWaveRow={renderWaveRow}
       waves={[wave({ title: 'Archived attention', lifecycle: 'blocked', archivedAt: NOW - DAY })]}
-      coves={[cove()]}
+      areas={[area()]}
       nowMs={NOW}
     />);
     expect(screen.getByRole('banner').textContent).toContain('0waiting');
@@ -97,32 +97,32 @@ describe('Today agenda', () => {
         seen.push({ id: candidate.id, variant: options.variant });
         return <span>{candidate.title}</span>;
       }}
-      waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      waves={[wave()]} areas={[area()]} nowMs={NOW}
     />);
     expect(seen.some((entry) => entry.id === 'w1' && entry.variant === 'panel')).toBe(true);
   });
 
-  // Resolving a wave's cove *name* is Today's job — the agenda spans coves, so
+  // Resolving a wave's area *name* is Today's job — the agenda spans areas, so
   // the row cannot look it up. Composing that name into an accessible label is
   // the row's job, and is asserted against the real row in
   // `features/wave/row/public.test.tsx`. Asserting a rendered label here would
   // only be re-reading the stand-in defined at the top of this file.
-  it('resolves each agenda wave cove name for the renderer', () => {
+  it('resolves each agenda wave area name for the renderer', () => {
     const seen: (string | undefined)[] = [];
     render(<TodayPage
-      renderWaveRow={(candidate, options) => { seen.push(options.coveName); return <span>{candidate.title}</span>; }}
-      waves={[wave({ lifecycle: 'blocked' })]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={(candidate, options) => { seen.push(options.areaName); return <span>{candidate.title}</span>; }}
+      waves={[wave({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
     />);
     expect(seen).toContain('Work');
   });
 
-  it('falls back to "Unknown cove" when the wave points at a cove we cannot see', () => {
+  it('falls back to "Unknown area" when the wave points at an area we cannot see', () => {
     const seen: (string | undefined)[] = [];
     render(<TodayPage
-      renderWaveRow={(candidate, options) => { seen.push(options.coveName); return <span>{candidate.title}</span>; }}
-      waves={[wave({ coveId: 'gone' })]} coves={[cove()]} nowMs={NOW}
+      renderWaveRow={(candidate, options) => { seen.push(options.areaName); return <span>{candidate.title}</span>; }}
+      waves={[wave({ areaId: 'gone' })]} areas={[area()]} nowMs={NOW}
     />);
-    expect(seen).toContain('Unknown cove');
+    expect(seen).toContain('Unknown area');
   });
 
   it('re-scopes the agenda when another day is selected', async () => {
@@ -138,7 +138,7 @@ describe('Today agenda', () => {
        `variant: 'panel'`, which the stand-in at the top of this file marks. */
     const agenda = () => [...document.querySelectorAll('[data-nc-role="row"][data-nc-state="selected"]')]
       .map((row) => row.textContent ?? '').join('');
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave(), tomorrowOnly]} coves={[cove()]} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave(), tomorrowOnly]} areas={[area()]} nowMs={NOW} />);
     expect(agenda()).not.toContain('Tomorrow only');
 
     // The day cell's accessible name carries its count — that is the only route
@@ -150,10 +150,10 @@ describe('Today agenda', () => {
     expect(screen.getByText('Tuesday, Aug 11')).toBeTruthy();
   });
 
-  // A workspace with a cove, not an empty one: with no waves *and* no coves
+  // A workspace with an area, not an empty one: with no waves *and* no areas
   // Today renders the first-run hero instead, and there is no calendar to move.
   it('moves the week window with the previous/next controls', async () => {
-    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW} />);
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} areas={[area()]} nowMs={NOW} />);
     await userEvent.click(screen.getByRole('button', { name: 'Previous week' }));
     expect(screen.getByRole('button', { name: 'Monday, Aug 3' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Next week' }));

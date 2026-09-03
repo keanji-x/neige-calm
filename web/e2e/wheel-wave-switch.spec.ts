@@ -2,35 +2,35 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 test.setTimeout(90_000);
 
-async function createCove(page: Page): Promise<string> {
+async function createArea(page: Page): Promise<string> {
   const suffix = Date.now();
-  const coveRes = await page.request.post('/api/coves', {
-    data: { name: `E2E wheel wave switch cove ${suffix}`, color: '#6a8' },
+  const areaRes = await page.request.post('/api/areas', {
+    data: { name: `E2E wheel wave switch area ${suffix}`, color: '#6a8' },
     headers: { 'content-type': 'application/json' },
   });
-  if (!coveRes.ok()) {
-    throw new Error(`POST /api/coves failed: ${coveRes.status()}`);
+  if (!areaRes.ok()) {
+    throw new Error(`POST /api/areas failed: ${areaRes.status()}`);
   }
-  const cove = (await coveRes.json()) as { id: string };
-  return cove.id;
+  const area = (await areaRes.json()) as { id: string };
+  return area.id;
 }
 
-async function createWaveInCove(
+async function createWaveInArea(
   page: Page,
-  coveId: string,
+  areaId: string,
   titleSuffix: string,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E wheel wave switch ${titleSuffix}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
-      cove_id: coveId,
+      area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
       // This spec is about wheel wave-switching, not working
-      // directories. See `helpers/reset.ts::createWaveInCove` for why
+      // directories. See `helpers/reset.ts::createWaveInArea` for why
       // the invented `/tmp/playwright-wave-switch-<id>` attached path
       // was never valid. (The per-suffix cwd namespace it needed to
-      // dodge `cove_folders.UNIQUE(path)` goes away with it.)
+      // dodge `area_folders.UNIQUE(path)` goes away with it.)
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },
@@ -78,9 +78,9 @@ test('terminal scrollback persists and wheel works after wave switch', async ({
   await page.goto('/calm/', { waitUntil: 'domcontentloaded' });
 
   const runId = Date.now();
-  const coveId = await createCove(page);
-  const waveA = await createWaveInCove(page, coveId, `A ${runId}`);
-  const waveB = await createWaveInCove(page, coveId, `B ${runId}`);
+  const areaId = await createArea(page);
+  const waveA = await createWaveInArea(page, areaId, `A ${runId}`);
+  const waveB = await createWaveInArea(page, areaId, `B ${runId}`);
 
   await page.goto(`/calm/wave/${waveA.id}?testMounts=1`, {
     waitUntil: 'domcontentloaded',

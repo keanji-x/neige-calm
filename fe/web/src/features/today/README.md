@@ -7,13 +7,13 @@ Running / Recent lists and the conversation module.
 ## Visual contract
 
 Tokens only (`--text*`, `--surface*`, `--space-*`, `--radius-*`, `--font-*`).
-All styling is `today.module.css` in `@layer features`. Cove colour is the one
+All styling is `today.module.css` in `@layer features`. Area colour is the one
 value that arrives as inline `style` — it is per-row data, not a variant.
 
 ## Accessibility contract
 
 - Every navigable row is a `<button>`; the accessible name carries the wave
-  title, the attention/running state, the lifecycle phrase, and the cove name.
+  title, the attention/running state, the lifecycle phrase, and the area name.
   Dot flags are `aria-hidden` decoration for fast scanning only.
 - Day cells are buttons with `aria-pressed` and a full-date accessible name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).
@@ -93,9 +93,9 @@ Running and Recent are ambience and live in the panel.
   cosmetic problem — it would falsify the layout's justification. The overflow
   sits behind one disclosure control rather than being dropped: RUNNING and
   RECENT both exclude anything already counted as waiting.
-- **The first-run page owns a document too.** `coves` is the *user-visible*
-  list — #175 filters the system cove out of `GET /api/coves` and the launchpad
-  lives there — so "no waves, no coves" is an ordinary state for a workspace
+- **The first-run page owns a document too.** `areas` is the *user-visible*
+  list — #175 filters the system area out of `GET /api/areas` and the launchpad
+  lives there — so "no waves, no areas" is an ordinary state for a workspace
   whose only content is the day's report.
 
 ### The refresh chain, and why nothing generated protects it

@@ -20,7 +20,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
-use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave};
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -28,7 +28,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Build a minimal AppState + seed one cove + wave + (optional) card. Returns
+/// Build a minimal AppState + seed one area + wave + (optional) card. Returns
 /// the wave id (and an optional card id) the test will hit.
 async fn boot() -> (AppState, String) {
     let (state, wave_id, _repo) = boot_with_repo().await;
@@ -45,8 +45,8 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
             .await
             .expect("open in-memory sqlite repo"),
     );
-    let cove = repo
-        .cove_create(NewCove {
+    let area = repo
+        .area_create(NewArea {
             name: "demo".into(),
             color: "#fff".into(),
             sort: None,
@@ -56,7 +56,7 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
     let wave = repo
         .wave_create(NewWave {
             template_input: None,
-            cove_id: cove.id.clone(),
+            area_id: area.id.clone(),
             title: "demo".into(),
             sort: None,
             cwd: String::new(),
@@ -80,7 +80,7 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
             EventBus::new(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
-                calm_server::wave_cove_cache::WaveCoveCache::new(),
+                calm_server::wave_area_cache::WaveAreaCache::new(),
             ),
         )),
         Arc::new(calm_server::state::CodexClient::new_stub()),
@@ -507,7 +507,7 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
             EventScope::Card {
                 card: card.id.clone(),
                 wave: wave.id.clone(),
-                cove: wave.cove_id.clone(),
+                area: wave.area_id.clone(),
             },
         ),
         (
@@ -515,7 +515,7 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
             wave.id.as_str(),
             EventScope::Wave {
                 wave: wave.id.clone(),
-                cove: wave.cove_id.clone(),
+                area: wave.area_id.clone(),
             },
         ),
         // `view` / `system` are kernel-reserved since #1297 and can no

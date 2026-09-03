@@ -55,7 +55,7 @@
 
 import { test, expect, type APIRequestContext } from '@playwright/test';
 
-import { REPLAY_PORT, createUserCove, createWaveInCove, resetReplayServer } from './helpers/reset';
+import { REPLAY_PORT, createUserArea, createWaveInArea, resetReplayServer } from './helpers/reset';
 import {
   forceWaveLifecycleRaw,
   patchWaveLifecycle,
@@ -86,11 +86,11 @@ test.describe('wave lifecycle · rejections', () => {
     // an earlier spec parked in some unexpected lifecycle state.
     await resetReplayServer(request);
 
-    // Mint a fresh cove + wave. The wave starts in `draft`; each
+    // Mint a fresh area + wave. The wave starts in `draft`; each
     // test below parks it in whatever state its rejection scenario
     // needs before the negative PATCH/force attempt.
-    const cove = await createUserCove(request, 'AtlasReject');
-    const wave = await createWaveInCove(request, cove.id, 'Rejection test');
+    const area = await createUserArea(request, 'AtlasReject');
+    const wave = await createWaveInArea(request, area.id, 'Rejection test');
     waveId = wave.id;
   });
 
@@ -129,7 +129,7 @@ test.describe('wave lifecycle · rejections', () => {
   test('Kernel force-lifecycle for an illegal skip (draft → done) is rejected with 403', async ({
     request,
   }) => {
-    // The wave is in `draft` (fresh from `createWaveInCove` in
+    // The wave is in `draft` (fresh from `createWaveInArea` in
     // `beforeEach`). `draft → done` has no entry in the validator's
     // per-edge table, so the catch-all `_ => Err(IllegalEdge)` arm
     // fires — the dev handler maps `validate_transition` errors to

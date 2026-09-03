@@ -5,7 +5,7 @@
 //! ### Client → server (text frame, JSON)
 //!
 //! ```json
-//! { "sub": ["wave:w-001", "cove:c-001", "plugin:*"], "since": 1729 }
+//! { "sub": ["wave:w-001", "area:c-001", "plugin:*"], "since": 1729 }
 //! ```
 //!
 //! Replaces the subscription set. Send `{"sub": ["*"]}` for firehose
@@ -947,15 +947,15 @@ fn render_envelope(env: &BroadcastEnvelope) -> Result<String, serde_json::Error>
 mod tests {
     use super::*;
     use crate::event::Event;
-    use crate::model::{Cove, CoveKind};
+    use crate::model::{Area, AreaKind};
 
-    fn sample_cove() -> Cove {
-        Cove {
+    fn sample_area() -> Area {
+        Area {
             id: "c-1".into(),
             name: "n".into(),
             color: "#fff".into(),
             sort: 0.0,
-            kind: CoveKind::User,
+            kind: AreaKind::User,
             created_at: 0,
             updated_at: 0,
         }
@@ -1180,8 +1180,8 @@ mod tests {
             id: 42,
             event_version: SYNC_EVENT_VERSION,
             actor: ActorId::User,
-            scope: EventScope::Cove { cove: "c-1".into() },
-            event: Event::CoveUpdated(sample_cove()),
+            scope: EventScope::Area { area: "c-1".into() },
+            event: Event::AreaUpdated(sample_area()),
         };
         let s = render_envelope(&env).expect("render");
         // Key ordering on the wire is implementation-defined (serde_json
@@ -1193,11 +1193,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["_id"], 42);
         assert_eq!(v["eventVersion"], SYNC_EVENT_VERSION);
-        assert_eq!(v["ev"], "cove.updated");
+        assert_eq!(v["ev"], "area.updated");
         assert_eq!(v["data"]["id"], "c-1");
         assert_eq!(v["data"]["name"], "n");
-        assert_eq!(v["scope"]["kind"], "Cove");
-        assert_eq!(v["scope"]["id"]["cove"], "c-1");
+        assert_eq!(v["scope"]["kind"], "Area");
+        assert_eq!(v["scope"]["id"]["area"], "c-1");
     }
 
     #[test]
@@ -1211,7 +1211,7 @@ mod tests {
             event_version: SYNC_EVENT_VERSION,
             actor: ActorId::Kernel,
             scope: EventScope::System,
-            event: Event::CoveUpdated(sample_cove()),
+            event: Event::AreaUpdated(sample_area()),
         };
         let s = render_envelope(&env).expect("render");
         assert!(s.contains(r#""_id":0"#), "got: {s}");
@@ -1232,7 +1232,7 @@ mod tests {
             event_version: 99,
             actor: ActorId::User,
             scope: EventScope::System,
-            event: Event::CoveUpdated(sample_cove()),
+            event: Event::AreaUpdated(sample_area()),
         };
         let s = render_envelope(&env).expect("render");
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();

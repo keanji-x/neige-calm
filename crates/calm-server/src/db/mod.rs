@@ -13,7 +13,7 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::*;
 use crate::state::WriteContext;
-use crate::{card_role_cache::CardRoleCache, wave_cove_cache::WaveCoveCache};
+use crate::{card_role_cache::CardRoleCache, wave_area_cache::WaveAreaCache};
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 pub mod prelude {
@@ -27,21 +27,21 @@ pub mod prelude {
 
 #[async_trait]
 pub trait ServerRepoReadExt {
-    async fn coves_list(&self) -> Result<Vec<Cove>>;
-    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>>;
-    async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
-    async fn cove_get_system(&self) -> Result<Option<Cove>>;
-    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
-    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
-    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>>;
-    async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
+    async fn areas_list(&self) -> Result<Vec<Area>>;
+    async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
+    async fn area_get(&self, id: &str) -> Result<Option<Area>>;
+    async fn area_get_system(&self) -> Result<Option<Area>>;
+    async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>>;
+    async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>>;
+    async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>>;
+    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
     /// #1253 PR1 — the Today launchpad wave, or `None` before it exists.
     async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
     async fn waves_window(
         &self,
-        cove_id: Option<&str>,
+        area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<Wave>>;
@@ -59,7 +59,7 @@ pub trait ServerRepoReadExt {
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn task_contexts_inflight_stale(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
-    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>>;
+    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
@@ -98,7 +98,7 @@ pub trait ServerRepoReadExt {
     ) -> Result<Vec<(String, serde_json::Value)>>;
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>>;
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()>;
-    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()>;
+    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()>;
     async fn card_mcp_token_lookup_by_hash(
         &self,
         hashed_token: &str,
@@ -121,43 +121,43 @@ impl<T> ServerRepoReadExt for T
 where
     T: calm_truth::db::RepoRead + ?Sized,
 {
-    async fn coves_list(&self) -> Result<Vec<Cove>> {
-        calm_truth::db::RepoRead::coves_list(self)
+    async fn areas_list(&self) -> Result<Vec<Area>> {
+        calm_truth::db::RepoRead::areas_list(self)
             .await
             .map_err(Into::into)
     }
-    async fn coves_list_user_visible(&self) -> Result<Vec<Cove>> {
-        calm_truth::db::RepoRead::coves_list_user_visible(self)
+    async fn areas_list_user_visible(&self) -> Result<Vec<Area>> {
+        calm_truth::db::RepoRead::areas_list_user_visible(self)
             .await
             .map_err(Into::into)
     }
-    async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
-        calm_truth::db::RepoRead::cove_get(self, id)
+    async fn area_get(&self, id: &str) -> Result<Option<Area>> {
+        calm_truth::db::RepoRead::area_get(self, id)
             .await
             .map_err(Into::into)
     }
-    async fn cove_get_system(&self) -> Result<Option<Cove>> {
-        calm_truth::db::RepoRead::cove_get_system(self)
+    async fn area_get_system(&self) -> Result<Option<Area>> {
+        calm_truth::db::RepoRead::area_get_system(self)
             .await
             .map_err(Into::into)
     }
-    async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
-        calm_truth::db::RepoRead::cove_folders_by_cove(self, cove_id)
+    async fn area_folders_by_area(&self, area_id: &str) -> Result<Vec<AreaFolder>> {
+        calm_truth::db::RepoRead::area_folders_by_area(self, area_id)
             .await
             .map_err(Into::into)
     }
-    async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
-        calm_truth::db::RepoRead::cove_folders_list_all(self)
+    async fn area_folders_list_all(&self) -> Result<Vec<AreaFolder>> {
+        calm_truth::db::RepoRead::area_folders_list_all(self)
             .await
             .map_err(Into::into)
     }
-    async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
-        calm_truth::db::RepoRead::cove_folder_get(self, id)
+    async fn area_folder_get(&self, id: i64) -> Result<Option<AreaFolder>> {
+        calm_truth::db::RepoRead::area_folder_get(self, id)
             .await
             .map_err(Into::into)
     }
-    async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
-        calm_truth::db::RepoRead::waves_by_cove(self, cove_id)
+    async fn waves_by_area(&self, area_id: &str) -> Result<Vec<Wave>> {
+        calm_truth::db::RepoRead::waves_by_area(self, area_id)
             .await
             .map_err(Into::into)
     }
@@ -178,11 +178,11 @@ where
     }
     async fn waves_window(
         &self,
-        cove_id: Option<&str>,
+        area_id: Option<&str>,
         since: Option<i64>,
         until: Option<i64>,
     ) -> Result<Vec<Wave>> {
-        calm_truth::db::RepoRead::waves_window(self, cove_id, since, until)
+        calm_truth::db::RepoRead::waves_window(self, area_id, since, until)
             .await
             .map_err(Into::into)
     }
@@ -232,8 +232,8 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>> {
-        calm_truth::db::RepoRead::wave_report_cards_by_cove(self, cove_id)
+    async fn wave_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>> {
+        calm_truth::db::RepoRead::wave_report_cards_by_area(self, area_id)
             .await
             .map_err(Into::into)
     }
@@ -359,8 +359,8 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn seed_wave_cove_cache(&self, cache: &WaveCoveCache) -> Result<()> {
-        calm_truth::db::RepoRead::seed_wave_cove_cache(self, cache)
+    async fn seed_wave_area_cache(&self, cache: &WaveAreaCache) -> Result<()> {
+        calm_truth::db::RepoRead::seed_wave_area_cache(self, cache)
             .await
             .map_err(Into::into)
     }
@@ -439,7 +439,7 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        wave_area_cache: &WaveAreaCache,
         event: Event,
     ) -> Result<i64>;
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()>;
@@ -523,7 +523,7 @@ where
         correlation: Option<&str>,
         bus: &EventBus,
         card_role_cache: &CardRoleCache,
-        wave_cove_cache: &WaveCoveCache,
+        wave_area_cache: &WaveAreaCache,
         event: Event,
     ) -> Result<i64> {
         calm_truth::db::RepoEventWrite::log_pure_event(
@@ -533,7 +533,7 @@ where
             correlation,
             bus,
             card_role_cache,
-            wave_cove_cache,
+            wave_area_cache,
             event,
         )
         .await
@@ -591,9 +591,9 @@ where
 
 #[async_trait]
 pub trait ServerRepoSyncDomainRawExt: ServerRepoReadExt {
-    async fn cove_create(&self, p: NewCove) -> Result<Cove>;
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove>;
-    async fn cove_delete(&self, id: &str) -> Result<()>;
+    async fn area_create(&self, p: NewArea) -> Result<Area>;
+    async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
+    async fn area_delete(&self, id: &str) -> Result<()>;
     async fn wave_create(&self, p: NewWave) -> Result<Wave>;
     async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave>;
     async fn wave_delete(&self, id: &str) -> Result<()>;
@@ -615,18 +615,18 @@ impl<T> ServerRepoSyncDomainRawExt for T
 where
     T: calm_truth::db::RepoSyncDomainRaw + ?Sized,
 {
-    async fn cove_create(&self, p: NewCove) -> Result<Cove> {
-        calm_truth::db::RepoSyncDomainRaw::cove_create(self, p)
+    async fn area_create(&self, p: NewArea) -> Result<Area> {
+        calm_truth::db::RepoSyncDomainRaw::area_create(self, p)
             .await
             .map_err(Into::into)
     }
-    async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
-        calm_truth::db::RepoSyncDomainRaw::cove_update(self, id, p)
+    async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area> {
+        calm_truth::db::RepoSyncDomainRaw::area_update(self, id, p)
             .await
             .map_err(Into::into)
     }
-    async fn cove_delete(&self, id: &str) -> Result<()> {
-        calm_truth::db::RepoSyncDomainRaw::cove_delete(self, id)
+    async fn area_delete(&self, id: &str) -> Result<()> {
+        calm_truth::db::RepoSyncDomainRaw::area_delete(self, id)
             .await
             .map_err(Into::into)
     }
@@ -739,15 +739,15 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()>;
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
-    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
+    async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder>;
     /// Issue #275 — atomic scan+insert. See
-    /// [`calm_truth::db::RepoOutOfDomain::cove_folder_create_checked`].
-    async fn cove_folder_create_checked(
+    /// [`calm_truth::db::RepoOutOfDomain::area_folder_create_checked`].
+    async fn area_folder_create_checked(
         &self,
-        cove_id: &str,
+        area_id: &str,
         path: &str,
-    ) -> Result<calm_truth::cove_folder_claim::CoveFolderClaim>;
-    async fn cove_folder_delete(&self, id: i64) -> Result<()>;
+    ) -> Result<calm_truth::area_folder_claim::AreaFolderClaim>;
+    async fn area_folder_delete(&self, id: i64) -> Result<()>;
 }
 
 #[async_trait]
@@ -897,22 +897,22 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
-        calm_truth::db::RepoOutOfDomain::cove_folder_create(self, cove_id, path)
+    async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder> {
+        calm_truth::db::RepoOutOfDomain::area_folder_create(self, area_id, path)
             .await
             .map_err(Into::into)
     }
-    async fn cove_folder_create_checked(
+    async fn area_folder_create_checked(
         &self,
-        cove_id: &str,
+        area_id: &str,
         path: &str,
-    ) -> Result<calm_truth::cove_folder_claim::CoveFolderClaim> {
-        calm_truth::db::RepoOutOfDomain::cove_folder_create_checked(self, cove_id, path)
+    ) -> Result<calm_truth::area_folder_claim::AreaFolderClaim> {
+        calm_truth::db::RepoOutOfDomain::area_folder_create_checked(self, area_id, path)
             .await
             .map_err(Into::into)
     }
-    async fn cove_folder_delete(&self, id: i64) -> Result<()> {
-        calm_truth::db::RepoOutOfDomain::cove_folder_delete(self, id)
+    async fn area_folder_delete(&self, id: i64) -> Result<()> {
+        calm_truth::db::RepoOutOfDomain::area_folder_delete(self, id)
             .await
             .map_err(Into::into)
     }
