@@ -10,7 +10,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter, createRouteTree, pendingConversationIds } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
-import { pathFor, routeParamFromPath } from './navigation.ts';
+import { pathFor, routeParamFromPath, type NavTarget } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -84,18 +84,74 @@ describe('route registration', () => {
     expect(screen.getByLabelText('Today terminal')).toBeTruthy();
   });
 
-  it('registers the four product routes', () => {
+  function registeredPaths(): (string | undefined)[] {
     const { transport } = recordingTransport();
     const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
-    const paths = (tree.children as { options: { path?: string } }[]).map((child) => child.options.path);
-    expect(paths).toEqual(['/', '/cove/$coveId', '/wave/$waveId', '/settings']);
+    return (tree.children as { options: { path?: string } }[]).map((child) => child.options.path);
+  }
+
+  it('registers the product routes', () => {
+    expect(registeredPaths()).toEqual([
+      '/', '/cove/$coveId', '/wave/$waveId',
+      '/settings', '/settings/templates', '/settings/templates/$templateId',
+      '/settings/plugins', '/settings/appearance', '/settings/about',
+    ]);
   });
 
-  it('builds every navigation target as a path the tree can match', () => {
-    expect(pathFor({ name: 'today' })).toBe('/');
-    expect(pathFor({ name: 'cove', coveId: 'c1' })).toBe('/cove/c1');
-    expect(pathFor({ name: 'wave', waveId: 'w1' })).toBe('/wave/w1');
-    expect(pathFor({ name: 'settings' })).toBe('/settings');
+  /**
+   * Set equality between `NavTarget` and the route tree, in both directions.
+   *
+   * The old version of this test spelled out one `expect(pathFor(...))` per
+   * target, which checks the *shape* of each path and not the thing that
+   * actually breaks: a `NavTarget` variant nobody registered a route for
+   * (`go` then lands on a blank screen), or a route nobody can navigate to.
+   * Adding `settings-templates` in #1230 would have passed that version
+   * untouched.
+   */
+  it('matches every navigation target to a registered route, and no route is unreachable', () => {
+    /*
+     * The forward direction is enforced by the **type**, not by this array.
+     *
+     * The previous version listed targets by hand and claimed set equality with
+     * `NavTarget`. It could not deliver that: adding a variant to `NavTarget`
+     * and a case to `pathFor` left this array untouched, the exhaustive switch
+     * still compiled, and the test stayed green while `go` landed on a blank
+     * screen — literally the failure its own comment said it had fixed.
+     *
+     * A mapped type over the union's discriminant makes the omission a
+     * *compile* error instead: a new `NavTarget` variant means a missing key
+     * here, and `tsc` refuses. That is the only place the coverage can be
+     * enforced, because the union does not exist at runtime.
+     */
+    const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
+      'today': { name: 'today' },
+      'cove': { name: 'cove', coveId: 'c1' },
+      'wave': { name: 'wave', waveId: 'w1' },
+      'settings': { name: 'settings' },
+      'settings-templates': { name: 'settings-templates' },
+      'settings-template': { name: 'settings-template', templateId: 't1' },
+      'settings-plugins': { name: 'settings-plugins' },
+      'settings-appearance': { name: 'settings-appearance' },
+      'settings-about': { name: 'settings-about' },
+    };
+    const targets: NavTarget[] = Object.values(samples);
+    // A registered path with `$param` matches a concrete path of the same
+    // segment count whose other segments are equal.
+    const matches = (pattern: string, path: string): boolean => {
+      const left = pattern.split('/');
+      const right = path.split('/');
+      return left.length === right.length
+        && left.every((segment, index) => segment.startsWith('$') || segment === right[index]);
+    };
+    const paths = registeredPaths().filter((path): path is string => path !== undefined);
+    for (const target of targets) {
+      const path = pathFor(target);
+      expect(paths.some((pattern) => matches(pattern, path))).toBe(true);
+    }
+    // …and nothing is registered that no target produces.
+    for (const pattern of paths) {
+      expect(targets.some((target) => matches(pattern, pathFor(target)))).toBe(true);
+    }
   });
 });
 

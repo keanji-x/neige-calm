@@ -9,6 +9,40 @@ use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
+/// #1252 S0-2 — what a card's harness transcript held, measured before it
+/// is destroyed. `harness_items` has no token-count column, so `params_bytes`
+/// (the summed byte length of the JSON-RPC `params` payloads) is the only
+/// cumulative-size measure the schema can honestly supply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HarnessTranscriptMeasure {
+    pub item_count: i64,
+    pub params_bytes: i64,
+}
+
+/// Measure a card's harness transcript. Call this immediately before
+/// [`harness_items_delete_by_card_tx`] inside the same transaction: after the
+/// delete the rows are gone and the measurement is unrecoverable.
+pub async fn harness_items_measure_by_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<HarnessTranscriptMeasure> {
+    // `LENGTH(CAST(params AS BLOB))` is byte length; bare `LENGTH` on TEXT
+    // counts characters, which would undercount every non-ASCII transcript.
+    let row = sqlx::query(
+        r#"SELECT COUNT(*) AS item_count,
+                  COALESCE(SUM(LENGTH(CAST(params AS BLOB))), 0) AS params_bytes
+           FROM harness_items
+           WHERE card_id = ?1"#,
+    )
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(HarnessTranscriptMeasure {
+        item_count: row.get::<i64, _>("item_count"),
+        params_bytes: row.get::<i64, _>("params_bytes"),
+    })
+}
+
 pub async fn harness_items_delete_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,

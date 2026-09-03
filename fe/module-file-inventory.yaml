@@ -23,6 +23,7 @@
 - { path: fe/tools/architecture, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; enforcement infrastructure" }
 - { path: fe/tools/oracle, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; oracle enforcement infrastructure" }
 - { path: fe/tools/ownership, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; ownership enforcement infrastructure" }
+- { path: fe/tools/projection, type: directory, owner: tooling/architecture, readonly: false, basis: "#1234 忠实投影检查器；验证域，故不入 core/web 运行时" }
 - { path: fe/tools/styles, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; styles enforcement infrastructure" }
 - { path: fe/tools/mutation, type: directory, owner: tooling/mutation-evidence, readonly: false, basis: "#997 tracked, replayable mutation evidence" }
 - { path: fe/tools/test-tier, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-tier policy enforcement infrastructure (#997)" }
@@ -45,6 +46,7 @@
 - { path: fe/core/schemas, type: directory, owner: core/schemas, readonly: false, basis: "architecture §2" }
 - { path: fe/core/state, type: directory, owner: core/state, readonly: true, basis: "frozen interface §6.1a" }
 - { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
+- { path: fe/core/view, type: directory, owner: core/view, readonly: false, basis: "#1234 视口一致性：面板派生层，桌面与手机的唯一视图来源" }
 
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }

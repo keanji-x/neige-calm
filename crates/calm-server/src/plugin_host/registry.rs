@@ -295,7 +295,7 @@ impl PluginRegistry {
     /// 1. **Field-level, single lock.** `insert` swaps the WHOLE `Manifest`.
     ///    A read-modify-write would race a concurrent `/reload` and roll the
     ///    entire manifest back — url, `tools_allow`, permissions, views,
-    ///    workflows — with nothing to notice until the next reload. Confining
+    ///    templates — with nothing to notice until the next reload. Confining
     ///    the write to one field caps the worst case at "stale tool list".
     ///
     /// 2. **No-op when `id` is absent.** If materialization inserted, it would

@@ -123,7 +123,7 @@ fn initial_body() -> &'static str {
     &BODY
 }
 
-/// Report-body prefix for the kernel's built-in workflow templates: writing
+/// Report-body prefix for the kernel's built-in templates: writing
 /// rules + section rules + the `# Plan` note, **already closed**.
 ///
 /// The templates build their body with [`WaveReportPayload::new`], bypassing
@@ -134,7 +134,7 @@ fn initial_body() -> &'static str {
 ///
 /// The return value is **closed**; unclosed fragments never leave this
 /// module. See the module comment above for why.
-pub fn report_contract_prefix_for_workflow_template() -> &'static str {
+pub fn report_contract_prefix_for_template() -> &'static str {
     static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         format!(
             "{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_PLAN_NOTE}{CONTRACT_CLOSE}"
@@ -307,11 +307,11 @@ mod tests {
         assert_eq!(body.matches("-->").count(), 1, "exactly one comment close");
     }
 
-    /// #1185 §1.5 B — the built-in workflow templates must get the same
+    /// #1185 §1.5 B — the built-in templates must get the same
     /// writing policy, or #1146's guardrails silently vanish on them.
     #[test]
-    fn the_workflow_template_prefix_is_closed_and_shares_the_default_contract() {
-        let prefix = report_contract_prefix_for_workflow_template();
+    fn the_template_prefix_is_closed_and_shares_the_default_contract() {
+        let prefix = report_contract_prefix_for_template();
         let body = WaveReportPayload::initial().body;
 
         assert!(prefix.starts_with("<!-- 报告维护契约"));

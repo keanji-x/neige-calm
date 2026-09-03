@@ -35,12 +35,12 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "items rest".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -343,4 +343,123 @@ async fn harness_items_route_preserves_mcp_tool_call_camelcase() {
     assert_eq!(rows[1].item_type.as_deref(), Some("mcpToolCall"));
     let completed_params: Value = serde_json::from_str(&rows[1].params).unwrap();
     assert_eq!(completed_params["item"]["status"], "completed");
+}
+
+/// A stored `turn/plan/updated` row must not occupy a slot in the transcript's
+/// page budget (#1255).
+///
+/// The frontend asks for `HARNESS_ITEMS_PAGE_LIMIT` (300) rows and only then
+/// drops what it cannot render, so an unfiltered query lets every captured plan
+/// frame push one real transcript row behind "Load earlier"; a plan-heavy card
+/// could render a first screen with almost no transcript on it. Rows stay
+/// *stored* either way — that is the point of the capture — so this pins the
+/// read, using a small `limit` as a stand-in for the 300-row one.
+#[tokio::test]
+async fn harness_items_route_page_budget_skips_plan_rows() {
+    let boot = boot().await;
+    let mut item_ids = Vec::new();
+    let mut plan_ids = Vec::new();
+    // Interleaved, plan first, so an unfiltered page of 4 would be
+    // [plan, item, plan, item] and only two real rows would reach the reader.
+    for index in 1..=4 {
+        plan_ids.push(
+            boot.repo
+                .harness_item_insert(
+                    "runtime-budget",
+                    boot.spec_card.id.as_str(),
+                    boot.spec_card.wave_id.as_str(),
+                    "thread-budget",
+                    Some("turn-budget"),
+                    None,
+                    None,
+                    "turn/plan/updated",
+                    &json!({
+                        "threadId": "thread-budget",
+                        "turnId": "turn-budget",
+                        "explanation": null,
+                        "plan": [{ "step": format!("step {index}"), "status": "pending" }]
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap(),
+        );
+        let uuid = format!("item-budget-{index}");
+        item_ids.push(
+            boot.repo
+                .harness_item_insert(
+                    "runtime-budget",
+                    boot.spec_card.id.as_str(),
+                    boot.spec_card.wave_id.as_str(),
+                    "thread-budget",
+                    Some("turn-budget"),
+                    Some(&uuid),
+                    Some("agent_message"),
+                    "item/completed",
+                    &json!({ "item": { "id": uuid, "type": "agent_message", "text": "x" } })
+                        .to_string(),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+
+    // A page of 4 must be 4 *renderable* rows, not 4 rows of which 2 render.
+    let (status, body) = get(
+        boot.app.clone(),
+        format!(
+            "/api/cards/{}/harness/items?limit=4",
+            boot.spec_card.id.as_str()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        item_ids,
+        "a full page must be spent entirely on rows the transcript renders"
+    );
+    assert!(
+        rows.iter().all(|row| row.method == "item/completed"),
+        "no plan row may reach the transcript feed: {:?}",
+        rows.iter()
+            .map(|row| row.method.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // Same from the newest end, which is the direction the frontend actually
+    // pages in.
+    let (status, body) = get(
+        boot.app.clone(),
+        format!(
+            "/api/cards/{}/harness/items?direction=desc&limit=2",
+            boot.spec_card.id.as_str()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![item_ids[2], item_ids[3]],
+        "the newest page must hold the newest two renderable rows, not the newest two rows"
+    );
+
+    // And the plan rows are still THERE — filtering the transcript feed must not
+    // be mistaken for dropping the capture. This raw read is what a later
+    // `SELECT params FROM harness_items WHERE method='turn/plan/updated'` sees.
+    let all = boot
+        .repo
+        .harness_item_list_by_card(boot.spec_card.id.as_str(), 0, 100, false)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 8, "every row must remain stored");
+    assert_eq!(
+        all.iter()
+            .filter(|row| row.method == "turn/plan/updated")
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        plan_ids,
+    );
 }

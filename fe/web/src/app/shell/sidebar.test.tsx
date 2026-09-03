@@ -52,6 +52,7 @@ function renderSidebar(props: Partial<Props> = {}) {
           collapsed={merged.collapsed ?? false}
           onToggleCollapsed={merged.onToggleCollapsed ?? vi.fn()}
           onOpenSettings={merged.onOpenSettings ?? vi.fn()}
+          onOpenPlugins={merged.onOpenPlugins ?? vi.fn()}
           onSignOut={merged.onSignOut ?? vi.fn()}
           userLabel={merged.userLabel}
           readError={merged.readError}
@@ -300,22 +301,27 @@ describe('pin', () => {
 });
 
 describe('user menu', () => {
-  it('opens Settings and Sign out from the avatar, and calls the injected callbacks', async () => {
+  it('opens Settings, Plugins and Sign out from the avatar, and calls the injected callbacks', async () => {
     const onOpenSettings = vi.fn();
+    const onOpenPlugins = vi.fn();
     const onSignOut = vi.fn();
-    renderSidebar({ onOpenSettings, onSignOut, userLabel: 'Kenji Xie' });
+    renderSidebar({ onOpenSettings, onOpenPlugins, onSignOut, userLabel: 'Kenji Xie' });
 
     const avatar = screen.getByRole('button', { name: 'Account menu for Kenji Xie' });
     expect(avatar.textContent).toBe('KX');
     await userEvent.click(avatar);
-    // Theme cycles in place (system -> light -> dark) rather than opening a
-    // submenu: three modes is not enough to earn one, and the current mode has
-    // to be readable without opening anything further.
+    // Two destinations and the way out. The theme cycler is deliberately gone:
+    // it was the one item that acted instead of navigating, and Settings ›
+    // General states the same preference where its effect is visible.
     expect(screen.getAllByRole('menuitem').map((node) => node.textContent))
-      .toEqual(['Theme: system (light)', 'Settings', 'Sign out']);
+      .toEqual(['Settings', 'Plugins', 'Sign out']);
 
     await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Account menu for Kenji Xie' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Plugins' }));
+    expect(onOpenPlugins).toHaveBeenCalledTimes(1);
 
     await userEvent.click(screen.getByRole('button', { name: 'Account menu for Kenji Xie' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
@@ -324,6 +330,12 @@ describe('user menu', () => {
 });
 
 describe('collapse toggle', () => {
+  it('places the mark with the wordmark in the expanded rail', () => {
+    renderSidebar();
+    const brand = screen.getByRole('button', { name: 'neige · calm' });
+    expect(brand.querySelector('[aria-hidden="true"]')).toBeTruthy();
+  });
+
   /*
    * The rail does not own `collapsed` — `AppShell` does, because collapsing
    * changes the *shell grid column*, not just what the rail draws. A version of
@@ -357,7 +369,9 @@ describe('collapse toggle', () => {
     const item = screen.getByRole('button', { name: 'Work' });
     expect(item.textContent).toBe('W');
     expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
+    const expand = screen.getByRole('button', { name: 'Expand sidebar' });
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    expect(expand.querySelector('[aria-hidden="true"]')).toBeTruthy();
 
     update({ collapsed: false });
     expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();

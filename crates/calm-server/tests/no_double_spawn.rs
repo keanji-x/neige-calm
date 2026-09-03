@@ -353,12 +353,12 @@ async fn boot_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "operations-test".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -465,12 +465,12 @@ async fn boot_codex_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "codex-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -597,12 +597,12 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "claude-operations-test".into(),
             sort: None,
             cwd: "/workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

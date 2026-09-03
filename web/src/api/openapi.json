@@ -2292,7 +2292,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
+            "description": "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2439,7 +2439,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
+            "description": "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2813,6 +2813,45 @@
         }
       }
     },
+    "/api/today/launchpad": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad wave* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad wave with no `wave-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The wave and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
+        "operationId": "resolve_today_launchpad",
+        "responses": {
+          "200": {
+            "description": "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TodayLaunchpadResolved"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/today/launchpad/ensure": {
       "post": {
         "tags": [
@@ -2842,6 +2881,58 @@
           },
           "503": {
             "description": "Launchpad exists but harness failed to start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/today/summary": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "Ask the summary conversation to write today's progress.",
+        "description": "See the module docs for the shape of the whole path; the comments below only\nsay what each step's alternative got wrong.",
+        "operationId": "write_today_summary",
+        "responses": {
+          "200": {
+            "description": "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodaySummaryStarted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly",
             "content": {
               "application/json": {
                 "schema": {
@@ -2889,6 +2980,77 @@
                   "items": {
                     "$ref": "#/components/schemas/WaveTemplate"
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wave-templates/{id}": {
+      "put": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "update_wave_template",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Template key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaveTemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The template as stored after the edit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid title, unknown key, or duplicate append",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown template key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -5052,7 +5214,6 @@
         "type": "object",
         "required": [
           "cove_id",
-          "title",
           "theme"
         ],
         "properties": {
@@ -5087,23 +5248,24 @@
             ],
             "format": "double"
           },
-          "theme": {
-            "$ref": "#/components/schemas/RequestTheme"
-          },
-          "title": {
-            "type": "string"
-          },
-          "workflow_id": {
+          "template_id": {
             "type": [
               "string",
               "null"
             ]
           },
-          "workflow_input": {
+          "template_input": {
             "type": [
               "object",
               "null"
             ]
+          },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme"
+          },
+          "title": {
+            "type": "string",
+            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe wave's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled wave` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec\nagent then names the wave via `calm.wave.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
           }
         },
         "additionalProperties": false
@@ -5194,7 +5356,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",
@@ -5263,6 +5425,17 @@
               "null"
             ],
             "description": "Active runtime id, or null when the harness is dormant."
+          },
+          "token_usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpecRunTokenUsage",
+                "description": "#1255 S3 — latest context-window usage, or null when the harness is\ndormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.\n\nKnown consequence, recorded rather than fixed in this commit: a dormant\nconversation reports `null` here even though the reading IS on disk in\n`worker_sessions.handle_state`. This whole endpoint reads the live\nin-memory harness (registry hit on the active runtime row) and answers\n`phase: null` when there is none — see the handler. Token usage\ninherits that exactly, so a card whose harness has been shut down shows\nno meter until something respawns it. The UI slice decides whether\nthat is acceptable or whether the dormant path should fall back to the\npersisted snapshot; the kernel slice does not pick for it."
+              }
+            ]
           }
         }
       },
@@ -5850,25 +6023,25 @@
             ],
             "format": "double"
           },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+          },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
             "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
           },
           "title": {
             "type": "string"
-          },
-          "workflow_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_input": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound workflow. Only\naccepted when `workflow_id` names a running trusted workflow whose\nowning plugin Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           }
         },
         "additionalProperties": false
@@ -6378,6 +6551,42 @@
           }
         }
       },
+      "SpecRunTokenUsage": {
+        "type": "object",
+        "description": "#1255 S3 — the context-usage half of [`GetSpecRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
+        "required": [
+          "used_tokens",
+          "at_ms"
+        ],
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The model's context window, or null when codex has never reported one."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Context occupancy as a whole percentage, `0.0..=100.0`.\n\nNull means \"no percentage can honestly be stated\": no known window, a\nwindow at or below the 12000-token baseline, or `used_tokens` above\nthe window. That last case is deliberately NOT clamped to 100 — see\n`TokenUsage::percent`. Render the raw count with no meter."
+          },
+          "used_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens in the model's context as of the most recent response\n(`tokenUsage.last.totalTokens` upstream). Always present — this is the\nraw evidence, and it ships even when `percent` does not."
+          }
+        }
+      },
       "Terminal": {
         "type": "object",
         "required": [
@@ -6487,6 +6696,41 @@
           },
           "wave_id": {
             "type": "string"
+          }
+        }
+      },
+      "TodayLaunchpadResolved": {
+        "type": "object",
+        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The wave detail already\nreturns the wave's cards and the frontend locates the report by\n`kind == \"wave-report\"` (`fe/core/domain/report.ts::readWaveReport`), so\nsuch a field would have no consumer.",
+        "required": [
+          "wave_id",
+          "report_has_noninitial_content"
+        ],
+        "properties": {
+          "report_has_noninitial_content": {
+            "type": "boolean",
+            "description": "Whether this report's `summary`/`body` differ **right now** from the\ncanonical freshly-minted pair.\n\nIt is NOT \"has anyone ever written it\": no history is consulted, so\nnone can be reported, and restoring the text to the canonical pair\nturns this back to `false`. Do not build a \"the summary has run\" marker\non it — see the first bullet below.\n\nIt is computed server-side by\n[`WaveReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* **It is a statement about the report's CURRENT content, not about its\n  history.** The name says exactly that, and the name is the contract:\n  it is `has_noninitial_content`, not `has_ever_been_written`. Restoring\n  `summary` and `body` byte-for-byte to the canonical initial pair\n  flips it back to `false`, whatever happened in between — no history is\n  consulted, so none can be reported.\n* It therefore also answers \"has *anyone* written it\", not \"has today's\n  summary run\": a user hand-editing the document flips it exactly as a\n  summary agent would, and a stale document still reads as content.\n  Anything that really needs \"did the summary run\" needs a durable\n  marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false` — and so does a report whose\n  text was reverted to canonical while those two stayed non-zero.\n\nThe frontend must not re-derive this by looking at the report body:\n`readWaveReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TodaySummaryStarted": {
+        "type": "object",
+        "description": "What the caller gets back on success.",
+        "required": [
+          "wave_id",
+          "card_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string",
+            "description": "The summary conversation's card. Stable for the launchpad's lifetime\n(INV-TODAYDOC-011) and openable in Today's Conversations module."
+          },
+          "wave_id": {
+            "type": "string",
+            "description": "The launchpad wave, whose report the agent is being asked to rewrite."
           }
         }
       },
@@ -6761,7 +7005,7 @@
               "string",
               "null"
             ],
-            "description": "Owning plugin copied from the bound workflow. Immutable after creation."
+            "description": "Owning plugin copied from the bound template. Immutable after creation."
           },
           "purpose": {
             "type": [
@@ -6773,6 +7017,20 @@
           "sort": {
             "type": "number",
             "format": "double"
+          },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Template this wave was created from.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Template input is validated at creation and otherwise remains opaque.\n\nCarries the same deserialization-only alias as `template_id`."
           },
           "terminal_at": {
             "type": [
@@ -6788,19 +7046,6 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
-          },
-          "workflow_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_input": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Workflow input is validated at creation and otherwise remains opaque."
           },
           "workspace": {
             "$ref": "#/components/schemas/WaveWorkspace"
@@ -7506,7 +7751,7 @@
       },
       "WaveTemplate": {
         "type": "object",
-        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `workflow_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `template_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
         "required": [
           "id",
           "title",
@@ -7515,22 +7760,39 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Template key. Passed back verbatim as `workflow_id` on\n`POST /api/waves` — see the seam note on this module."
+            "description": "Template key. Passed back verbatim as `template_id` on\n`POST /api/waves` — see the seam note on this module."
           },
           "input_schema": {
-            "description": "JSON Schema for `workflow_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `workflow_input` for it is a 400 on create."
+            "description": "JSON Schema for `template_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `template_input` for it is a 400 on create."
           },
           "tasks": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/WaveTemplateTask"
             },
-            "description": "The tasks this template pre-sets, in plan order. Always present and\nnever empty for a real template — a template *is* its task list — so the\nclient can show it without a \"no tasks\" branch that could never render."
+            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
           },
           "title": {
             "type": "string"
           }
         }
+      },
+      "WaveTemplateGoalEdit": {
+        "type": "object",
+        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.\n\n`deny_unknown_fields` is the load-bearing part, not decoration. The whole\nsafety argument for this endpoint is \"privileged task vocabulary has nowhere\nto go in the request\"; without this attribute serde would quietly ignore\nextra keys, the guarantee would rest on nobody ever adding a\n`#[serde(flatten)]` here, and\n`privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing\nwhile the property it names had stopped holding.",
+        "required": [
+          "key",
+          "goal"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "WaveTemplateTask": {
         "type": "object",
@@ -7549,6 +7811,34 @@
             "description": "The task block's `key` in the seeded report."
           }
         }
+      },
+      "WaveTemplateUpdate": {
+        "type": "object",
+        "description": "A template edit from Settings — a **diff**, never a task list.\n\n## Why the client cannot send task payloads (#1230 review round 2)\n\nThe first two cuts took the whole task list back. Both leaked, in ways that\nwere fixed one at a time and kept reappearing in a new shape:\n\n* a client that simply **omitted** a task erased it. For a live task the\n  guard refused the write, but for a **tombstone** it did not —\n  `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`\n  — so omitting a tombstone silently reversed a #1179-governed deletion, and\n  re-appending the key resurrected it.\n* a client could put privileged vocabulary into a payload the server then\n  stored verbatim. Measured, not argued: `released_by_user: true` and\n  `spawn: \"sub-wave\"` were both accepted and persisted.\n\nBoth are the same root cause — the editor was a second author of task\nblocks on a document whose invariants assume one — and neither is fixable by\nadding checks, because the check list has to anticipate every field the task\nvocabulary will ever grow.\n\nSo the write side no longer accepts blocks at all. It accepts *what changed*:\na title, goals for keys that already exist, and tasks to append. The server\nreads the stored payloads, edits them in place and constructs appended ones\nitself. Omission is not expressible, privileged fields are not expressible,\nand a rename is not expressible — all three are structurally impossible\nrather than rejected.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "appends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "Tasks to add, in the order they should appear after the existing ones."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "New goals for tasks that already exist, keyed by the task's `key`.\nA key the template does not declare is a 400, not a silent create."
+          },
+          "title": {
+            "type": "string",
+            "description": "The new title. Trimmed; must not be empty — a template with a blank\ntitle is unpickable in the New wave dialog, which lists templates by\ntitle and nothing else."
+          }
+        },
+        "additionalProperties": false
       },
       "WaveWorkspace": {
         "type": "object",

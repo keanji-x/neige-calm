@@ -492,8 +492,8 @@ function NewWaveDialog({
               `appearance: base-select` + `::picker(select)` in
               calm.css gives Chromium an in-theme dropdown drawer;
               other browsers gracefully fall back to the OS popup. The
-              field binds `workflow_id`: "None" is a plain wave, other
-              options are shipped workflows. Options carry two-part
+              field binds `template_id`: "None" is a plain wave, other
+              options are the shipped templates. Options carry two-part
               content — name + muted one-line description span (rich
               option content is a base-select capability; fallback
               popups flatten it to inline text, which is why the

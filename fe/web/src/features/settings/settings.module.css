@@ -1,49 +1,104 @@
 @layer features {
-  .mobileHeader {
-    display: none;
+  /*
+   * The overlay's two columns. The nav column is fixed at a measure that fits
+   * the longest label plus its padding; the pane takes the rest and is the only
+   * thing that scrolls, so switching groups never moves the nav under the
+   * pointer.
+   *
+   * The block size is a floor, not a height: a short group (General) and a long
+   * one (a template's task list) must not resize the panel between them, which
+   * is §2.6's "no reflow from our own chrome" applied to a dialog.
+   */
+  /*
+   * The overlay's two columns: astryx `SideNav` and the pane it selects.
+   *
+   * The nav column's own width comes from `SideNav` (260 by default, the width
+   * the convention lands on); this only says where the two columns are and that
+   * the pane is the one that scrolls, so switching groups never moves the nav
+   * under the pointer.
+   *
+   * The block size is a floor, not a height: a short group (Appearance) and a
+   * long one (a template's task list) must not resize the panel between them,
+   * which is §2.6's "no reflow from our own chrome" applied to a dialog.
+   */
+  .surface {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-9);
+    /* The overlay is top-aligned by `ui/dialog`'s frozen `.dialog-overlay-wide`
+       (`align-items: start`), which this layer may not change. A taller floor
+       is what is available: the panel then spans most of the viewport's height,
+       so the space above and below it reads as the dialog's own margin rather
+       than as a panel that slid up. It is not centring, and it is not pretending
+       to be. */
+    min-block-size: min(42rem, 78dvh);
   }
 
-  .page {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+  .sectionNav {
+    border-inline-end: 1px solid var(--hairline);
+  }
+
+  .pane {
+    display: flex;
+    min-block-size: 0;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .paneBody {
+    display: flex;
     flex: 1 1 auto;
     min-block-size: 0;
-    overflow: auto;
-    padding-block: 0 var(--space-11);
-    padding-inline: var(--space-10);
+    flex-direction: column;
   }
 
   /*
-   * Capped at 544 and start-aligned. The 636px to its right is page whitespace,
-   * not a hole: a second column there would be work invented to fill space, and
-   * §7.3's empty-rectangle rule measures the main column only.
+   * Capped and start-aligned. The measure is the *list* one, not the form one:
+   * the dialog this pane sits in is the app's wide overlay, and a 544px column
+   * inside 1180 left a third of the panel empty. What is left over at this
+   * measure is §7.3's page whitespace, which that rule measures on the main
+   * column only.
    */
   .form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
-    max-inline-size: var(--measure-form);
+    gap: var(--space-9);
+    max-inline-size: var(--measure-list);
     min-block-size: 0;
   }
 
-  .sectionCard {
+  /* The rows of a pane. `List` draws the hairlines; this only says how wide the
+     column of rows is, which is what makes every control on the pane end at one
+     trailing edge. */
+  .list {
     inline-size: 100%;
-    border-radius: var(--radius-lg) !important;
+    max-inline-size: var(--measure-list);
   }
 
-  .section {
-    display: flex;
-    flex-direction: column;
+  /*
+   * A placeholder is an **example**, and it has to be legible as one at a
+   * glance: astryx's own placeholder tone is --text-2, one step off body text,
+   * so a suggested proxy read as a set one. This is the app's lightest text
+   * token, which is the only step in the scale wide enough to say "not your
+   * value" without a second channel (italics, quotes) doing the saying.
+   */
+  .row input::placeholder {
+    color: var(--text-4);
+  }
+
+  /* A row's own two edges. The text block takes what is left after the control,
+     so a long description wraps instead of pushing the control off the edge. */
+  .row {
     gap: var(--space-6);
   }
 
-  .sectionLabel {
-    font-size: var(--text-base);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
+  /* A group is a heading, its rows, and the space around them. The separation
+     between groups is one hairline (`Divider`) — per the boundary ladder, one
+     channel does the separating, so no box as well. */
+  .group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
   }
 
   .actions {
@@ -59,13 +114,6 @@
     font-weight: var(--weight-medium);
     line-height: var(--leading-none);
     color: var(--success-text);
-  }
-
-  .hint {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
   }
 
   /* The error box: dot, message, and a home of its own — error tones, never
@@ -89,18 +137,21 @@
   }
 
   @media (width < 60rem) {
-    .page {
+    /* One column: the nav becomes a row above the pane. A 12rem column beside a
+       phone-width pane leaves the pane too narrow to hold a form field, so the
+       axis flips rather than the column shrinking. */
+    /* One column: the nav becomes a band above the pane. A 260px column beside
+       a phone-width pane leaves the pane too narrow to hold a form row, so the
+       axis flips rather than the column shrinking. */
+    .surface {
+      grid-template-columns: minmax(0, 1fr);
       gap: var(--space-6);
-      max-inline-size: none;
-      padding-inline: var(--space-8);
+      min-block-size: 0;
     }
 
-    .page > :first-child {
-      display: none;
-    }
-
-    .mobileHeader {
-      display: block;
+    .sectionNav {
+      border-block-end: 1px solid var(--hairline);
+      border-inline-end: none;
     }
 
     .form {
@@ -109,9 +160,34 @@
       padding-block-end: var(--space-8);
     }
 
-    .sectionCard input,
-    .sectionCard button {
-      min-block-size: var(--rail-w-collapsed) !important;
-    }
+  }
+
+
+  /* `ListItem`'s description slot holds up to three lines for a plugin — id
+     and version, the manifest's own sentence, and the failure that explains a
+     red badge. They stack; only the identity line is monospaced, because it is
+     the one the reader copies. */
+  .pluginMeta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    align-items: start;
+  }
+
+  .pluginId {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* Set apart from the tasks above it: this row creates, the ones above edit. */
+  .newTask {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin-block-start: var(--space-4);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--hairline);
   }
 }

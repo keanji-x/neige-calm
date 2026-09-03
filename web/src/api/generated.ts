@@ -757,6 +757,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/today/launchpad": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * #1253 §5.1 — the read-only resolve the Today page load uses.
+         * @description **This handler must never reach the harness.** `ensure_today_launchpad`
+         *     materializes a workspace and then submits `spec-harness-start` and
+         *     `.wait()`s on it; putting that on the page-load path would make the whole
+         *     Today route fail hard whenever codex is unavailable, which is strictly
+         *     worse than the Today page this replaces (it needed nothing to render). So
+         *     this endpoint reads two rows and returns. It does not call `ensure`, does
+         *     not materialize a workspace, and submits no operation — `ensure` hangs off
+         *     an explicit user action only (INV-TODAYDOC-001).
+         *
+         *     **Routine absence is data; anomalous absence is an error.** That is the
+         *     whole rule, and the two branches here are the two sides of it.
+         *
+         *     *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+         *     `200` with a `null` body — not a 404. It was a 404 for one revision, on the
+         *     grounds that 404 is "cheap and fail-closed". That reasoning did not survive
+         *     contact with the fact that this is the **landing route**: every session on
+         *     a fresh workspace hit it, and the browser reports every 404 on its console
+         *     error stream, so an expected state was being transported as an error. CI
+         *     found it — two Playwright specs assert zero console errors and both load
+         *     Today; one CI run logged the 404 thirty times, because the query refetches.
+         *     The alternative was allowlisting a 404 in those specs, which buys a
+         *     permanent hole in a "no console errors" gate for a transient condition:
+         *     once #1253 PR2's trigger lands, first use mints a launchpad and the
+         *     exemption outlives its reason.
+         *
+         *     *A launchpad wave with no `wave-report` card* stays a `404`, and that is
+         *     the same rule rather than an exception to it. The wave and its report card
+         *     are created in **one transaction** (`today_launchpad_ensure_tx`), and the
+         *     adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
+         *     commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
+         *     The state is unreachable, so it produces no console noise in practice — and
+         *     if it ever does occur, an error is the correct signal.
+         *
+         *     Deliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence
+         *     idiom. That 404 is **control flow**: its consumer bootstraps on it, so the
+         *     status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
+         *     would mean "render the empty state" — pure data, no action — so borrowing
+         *     the shape would discard the meaning.
+         */
+        get: operations["resolve_today_launchpad"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/today/launchpad/ensure": {
         parameters: {
             query?: never;
@@ -767,6 +824,27 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["ensure_today_launchpad"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/today/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the summary conversation to write today's progress.
+         * @description See the module docs for the shape of the whole path; the comments below only
+         *     say what each step's alternative got wrong.
+         */
+        post: operations["write_today_summary"];
         delete?: never;
         options?: never;
         head?: never;
@@ -798,6 +876,22 @@ export interface paths {
         };
         get: operations["list_wave_templates"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wave-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_wave_template"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1344,10 +1438,21 @@ export interface components {
             fork_report_from?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
-            title: string;
-            workflow_id?: string | null;
-            workflow_input?: Record<string, never> | null;
+            /**
+             * @description Issue #1211 — on this user-driven create path the title is no longer
+             *     the wave's intent, so the client may omit it entirely. Omitting it
+             *     stores the **empty string** — there is no server-side default; the
+             *     `Untitled wave` a user sees in a list is the frontend's display
+             *     fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec
+             *     agent then names the wave via `calm.wave.rename`, which only succeeds
+             *     while the stored title is still blank. The type
+             *     stays `String`: the empty string has always been a legal title and the
+             *     server applies no non-empty validation.
+             */
+            title?: string;
         };
         DeleteReportBlockBody: {
             /** Format: int32 */
@@ -1385,7 +1490,8 @@ export interface components {
              *     `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
-             *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
+             *     `spec_harness_dormant`, `today_summary_no_activity`,
+             *     `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
              *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
              */
@@ -1427,6 +1533,7 @@ export interface components {
             phase?: null | components["schemas"]["HarnessPhaseTag"];
             /** @description Active runtime id, or null when the harness is dormant. */
             runtime_id?: string | null;
+            token_usage?: null | components["schemas"]["SpecRunTokenUsage"];
         };
         GitChangedFile: {
             /** @description Previous path for renamed files, relative to the repository root. */
@@ -1720,6 +1827,18 @@ export interface components {
             plugin_scope?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            /**
+             * @description Issue #891 / #1110 S2 — JSON input for the bound template. Only
+             *     accepted when `template_id` names a template a running trusted plugin
+             *     binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
+             *     route validates the value against that schema before any DB write. The
+             *     kernel never interprets the blob — it is persisted verbatim and injected
+             *     into the spec harness developer instructions at thread-mint time.
+             *     `#[serde(default)]` keeps the field purely additive under
+             *     `deny_unknown_fields`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end so
              *     the auto-minted spec card's terminal renderer answers codex's
@@ -1737,18 +1856,6 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
-            workflow_id?: string | null;
-            /**
-             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-             *     accepted when `workflow_id` names a running trusted workflow whose
-             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
-             *     route validates the value against that schema before any DB write. The
-             *     kernel never interprets the blob — it is persisted verbatim and injected
-             *     into the spec harness developer instructions at thread-mint time.
-             *     `#[serde(default)]` keeps the field purely additive under
-             *     `deny_unknown_fields`.
-             */
-            workflow_input?: Record<string, never> | null;
         };
         /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
         NewWaveConversationBody: {
@@ -1946,6 +2053,62 @@ export interface components {
                 [key: string]: string | null;
             };
         };
+        /**
+         * @description #1255 S3 — the context-usage half of [`GetSpecRunResponse`].
+         *
+         *     A wire type distinct from the stored [`TokenUsage`], and the differences
+         *     are the point rather than an accident of layering:
+         *
+         *     - **`percent` is computed here, on the server.** One baseline adjustment,
+         *       one over-window rule, one place they can be got wrong. Shipping a
+         *       numerator and a denominator instead would invite the client to divide
+         *       them its own way, and the correct division is not the obvious one.
+         *     - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
+         *       honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
+         *       every response in the thread — unbounded, and measured at 253.8x the
+         *       window in the captured frame this slice's tests run on — and the single
+         *       most likely bug in any future UI is a meter
+         *       drawn from it. Handing the frontend both numbers and trusting it to pick
+         *       the right one is how that bug gets written. It cannot pick wrong if only
+         *       one number crosses the wire.
+         */
+        SpecRunTokenUsage: {
+            /**
+             * Format: int64
+             * @description Wall-clock ms of the codex frame this reading came from.
+             *
+             *     Shipped because the reading survives a reboot: it rides the runtime
+             *     snapshot, so a harness respawned by boot recovery or by lazy recovery
+             *     serves whatever number was last observed — possibly months ago — and
+             *     without this field a rehydrated reading is indistinguishable on the
+             *     wire from a live one. A UI that draws a meter needs to be able to say
+             *     "as of then", or to stop drawing it. The kernel does not pick a
+             *     staleness threshold; it ships the timestamp so a reader can.
+             */
+            at_ms: number;
+            /**
+             * Format: int64
+             * @description The model's context window, or null when codex has never reported one.
+             */
+            context_window?: number | null;
+            /**
+             * Format: double
+             * @description Context occupancy as a whole percentage, `0.0..=100.0`.
+             *
+             *     Null means "no percentage can honestly be stated": no known window, a
+             *     window at or below the 12000-token baseline, or `used_tokens` above
+             *     the window. That last case is deliberately NOT clamped to 100 — see
+             *     `TokenUsage::percent`. Render the raw count with no meter.
+             */
+            percent?: number | null;
+            /**
+             * Format: int64
+             * @description Tokens in the model's context as of the most recent response
+             *     (`tokenUsage.last.totalTokens` upstream). Always present — this is the
+             *     raw evidence, and it ships even when `percent` does not.
+             */
+            used_tokens: number;
+        };
         Terminal: {
             card_id: string;
             /** Format: int64 */
@@ -2012,6 +2175,67 @@ export interface components {
             spec_card_id: string;
             terminal_card_id: string;
             terminal_id: string;
+            wave_id: string;
+        };
+        /**
+         * @description #1253 §5.1 — what the Today **page load** reads.
+         *
+         *     A deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it
+         *     does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
+         *     reader's, and the two answer different questions.
+         *
+         *     There is no `report_card_id` here on purpose. The wave detail already
+         *     returns the wave's cards and the frontend locates the report by
+         *     `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+         *     such a field would have no consumer.
+         */
+        TodayLaunchpadResolved: {
+            /**
+             * @description Whether this report's `summary`/`body` differ **right now** from the
+             *     canonical freshly-minted pair.
+             *
+             *     It is NOT "has anyone ever written it": no history is consulted, so
+             *     none can be reported, and restoring the text to the canonical pair
+             *     turns this back to `false`. Do not build a "the summary has run" marker
+             *     on it — see the first bullet below.
+             *
+             *     It is computed server-side by
+             *     [`WaveReportPayload::report_startup_read_required`], the kernel's one
+             *     canonical "has this been written" predicate. It is deliberately NOT
+             *     named `report_started`, and the difference is not cosmetic (design D7):
+             *
+             *     * **It is a statement about the report's CURRENT content, not about its
+             *       history.** The name says exactly that, and the name is the contract:
+             *       it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
+             *       `summary` and `body` byte-for-byte to the canonical initial pair
+             *       flips it back to `false`, whatever happened in between — no history is
+             *       consulted, so none can be reported.
+             *     * It therefore also answers "has *anyone* written it", not "has today's
+             *       summary run": a user hand-editing the document flips it exactly as a
+             *       summary agent would, and a stale document still reads as content.
+             *       Anything that really needs "did the summary run" needs a durable
+             *       marker or event, not this.
+             *     * It compares `summary + body` only; `doc_rev` and `blocks` are
+             *       deliberately ignored, so a canonical placeholder that CRDT has
+             *       already materialised still reads `false` — and so does a report whose
+             *       text was reverted to canonical while those two stayed non-zero.
+             *
+             *     The frontend must not re-derive this by looking at the report body:
+             *     `readWaveReport` returns non-null for the canonical initial report
+             *     (its body carries the maintenance-contract comment and four H1s), so a
+             *     null-check there renders four empty headings instead of an empty state.
+             */
+            report_has_noninitial_content: boolean;
+            wave_id: string;
+        };
+        /** @description What the caller gets back on success. */
+        TodaySummaryStarted: {
+            /**
+             * @description The summary conversation's card. Stable for the launchpad's lifetime
+             *     (INV-TODAYDOC-011) and openable in Today's Conversations module.
+             */
+            card_id: string;
+            /** @description The launchpad wave, whose report the agent is being asked to rewrite. */
             wave_id: string;
         };
         /**
@@ -2163,12 +2387,25 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
-            /** @description Owning plugin copied from the bound workflow. Immutable after creation. */
+            /** @description Owning plugin copied from the bound template. Immutable after creation. */
             plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public wave creation cannot set this. */
             purpose?: string | null;
             /** Format: double */
             sort: number;
+            /**
+             * @description Template this wave was created from.
+             *
+             *     The `serde(alias)` below is a deserialization-only compatibility read
+             *     for pre-#1209 event-log rows; serialization emits only this name.
+             */
+            template_id?: string | null;
+            /**
+             * @description Template input is validated at creation and otherwise remains opaque.
+             *
+             *     Carries the same deserialization-only alias as `template_id`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * Format: int64
              * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
@@ -2193,9 +2430,6 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
-            workflow_id?: string | null;
-            /** @description Workflow input is validated at creation and otherwise remains opaque. */
-            workflow_input?: Record<string, never> | null;
             workspace?: components["schemas"]["WaveWorkspace"];
         };
         /** @description A report link from another wave that targets this wave. */
@@ -2509,29 +2743,49 @@ export interface components {
          * @description One selectable starting point for a new wave.
          *
          *     "Blank" is not in this list and never will be: it is the *absence* of a
-         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     template (`POST /api/waves` with no `template_id`), so the client renders it
          *     as its own default option rather than the server minting a pseudo-row for
          *     something that has no key, no title source, and no report to fork.
          */
         WaveTemplate: {
             /**
-             * @description Template key. Passed back verbatim as `workflow_id` on
+             * @description Template key. Passed back verbatim as `template_id` on
              *     `POST /api/waves` — see the seam note on this module.
              */
             id: string;
             /**
-             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             * @description JSON Schema for `template_input`, from the manifest of the running
              *     trusted plugin bound to `id`. Absent means the template takes no input;
-             *     sending `workflow_input` for it is a 400 on create.
+             *     sending `template_input` for it is a 400 on create.
              */
             input_schema?: unknown;
             /**
-             * @description The tasks this template pre-sets, in plan order. Always present and
-             *     never empty for a real template — a template *is* its task list — so the
-             *     client can show it without a "no tasks" branch that could never render.
+             * @description The tasks this template pre-sets, in plan order.
+             *
+             *     Always present; **not** always non-empty. That was true while this came
+             *     from the constants, but the projection drops tombstones, so retiring
+             *     every task of a template (through the ordinary report block DELETE)
+             *     leaves this empty. A client must render that state rather than assume it
+             *     away.
              */
             tasks: components["schemas"]["WaveTemplateTask"][];
             title: string;
+        };
+        /**
+         * @description One `(key, goal)` pair — the only two facts the editor may state about a
+         *     task. Everything else about a task block is the server's.
+         *
+         *     `deny_unknown_fields` is the load-bearing part, not decoration. The whole
+         *     safety argument for this endpoint is "privileged task vocabulary has nowhere
+         *     to go in the request"; without this attribute serde would quietly ignore
+         *     extra keys, the guarantee would rest on nobody ever adding a
+         *     `#[serde(flatten)]` here, and
+         *     `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
+         *     while the property it names had stopped holding.
+         */
+        WaveTemplateGoalEdit: {
+            goal: string;
+            key: string;
         };
         /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
@@ -2546,6 +2800,50 @@ export interface components {
             goal: string;
             /** @description The task block's `key` in the seeded report. */
             key: string;
+        };
+        /**
+         * @description A template edit from Settings — a **diff**, never a task list.
+         *
+         *     ## Why the client cannot send task payloads (#1230 review round 2)
+         *
+         *     The first two cuts took the whole task list back. Both leaked, in ways that
+         *     were fixed one at a time and kept reappearing in a new shape:
+         *
+         *     * a client that simply **omitted** a task erased it. For a live task the
+         *       guard refused the write, but for a **tombstone** it did not —
+         *       `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
+         *       — so omitting a tombstone silently reversed a #1179-governed deletion, and
+         *       re-appending the key resurrected it.
+         *     * a client could put privileged vocabulary into a payload the server then
+         *       stored verbatim. Measured, not argued: `released_by_user: true` and
+         *       `spawn: "sub-wave"` were both accepted and persisted.
+         *
+         *     Both are the same root cause — the editor was a second author of task
+         *     blocks on a document whose invariants assume one — and neither is fixable by
+         *     adding checks, because the check list has to anticipate every field the task
+         *     vocabulary will ever grow.
+         *
+         *     So the write side no longer accepts blocks at all. It accepts *what changed*:
+         *     a title, goals for keys that already exist, and tasks to append. The server
+         *     reads the stored payloads, edits them in place and constructs appended ones
+         *     itself. Omission is not expressible, privileged fields are not expressible,
+         *     and a rename is not expressible — all three are structurally impossible
+         *     rather than rejected.
+         */
+        WaveTemplateUpdate: {
+            /** @description Tasks to add, in the order they should appear after the existing ones. */
+            appends?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description New goals for tasks that already exist, keyed by the task's `key`.
+             *     A key the template does not declare is a 400, not a silent create.
+             */
+            edits?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description The new title. Trimmed; must not be empty — a template with a blank
+             *     title is unpickable in the New wave dialog, which lists templates by
+             *     title and nothing else.
+             */
+            title: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4481,7 +4779,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4592,7 +4890,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
+            /** @description Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4892,6 +5190,35 @@ export interface operations {
             };
         };
     };
+    resolve_today_launchpad: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["TodayLaunchpadResolved"];
+                };
+            };
+            /** @description The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     ensure_today_launchpad: {
         parameters: {
             query?: never;
@@ -4920,6 +5247,57 @@ export interface operations {
                 };
             };
             /** @description Launchpad exists but harness failed to start */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    write_today_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodaySummaryStarted"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).
+             *     * `conflict` / `spec_harness_dormant` — from the underlying conversation create or spec input; a dormant harness is retried once automatically before it can reach here.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4966,6 +5344,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_wave_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Template key */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WaveTemplateUpdate"];
+            };
+        };
+        responses: {
+            /** @description The template as stored after the edit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"];
+                };
+            };
+            /** @description Invalid title, unknown key, or duplicate append */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown template key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */

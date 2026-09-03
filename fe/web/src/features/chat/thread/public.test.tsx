@@ -27,7 +27,8 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
 
 function activity(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return {
-    id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done', atMs: NOW,
+    id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done',
+    durationMs: null, detail: null, atMs: NOW,
     ...overrides,
   };
 }
@@ -301,6 +302,75 @@ describe('ChatThread', () => {
     expect(screen.queryByLabelText('Working')).toBeNull();
   });
 
+  /*
+   * ── The reply is markdown; what you typed is not ──────────────────────────
+   *
+   * Both halves are asserted because both are decisions, and the second one is
+   * the one that gets undone by reflex ("why is only one side rendered?").
+   *
+   * The reply case asserts *elements*, not text: before this, the same string
+   * produced one paragraph with `##` and `-` still in it, and every
+   * text-content assertion in this file passed on that. Only the element names
+   * separate "rendered as markdown" from "printed the source".
+   */
+  it('renders the reply as markdown — headings, lists and fenced code', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({
+          id: 't2',
+          author: 'agent',
+          text: '## Findings\n\n- first\n- second\n\n```js\nconst a = 1;\n```\n',
+        })]}
+      />,
+    );
+    const reply = container.querySelector('[data-nc-turn="agent"]')!;
+    /* `##` is one level below `#`, and `#` starts at `h3` — see the case below. */
+    expect(reply.querySelector('h4')?.textContent).toBe('Findings');
+    expect([...reply.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['first', 'second']);
+    /* The fence is a *block* and it still holds its source. `pre, code` alone
+       passed on an implementation that dropped the code and emitted an empty
+       inline `<code>`, which is the shape a weak assertion here would let
+       through — the point of a fence is the code inside it. */
+    const fence = reply.querySelector('pre');
+    expect(fence).toBeTruthy();
+    expect(fence?.textContent).toContain('const a = 1;');
+    /* The source characters are gone, not merely re-styled. */
+    expect(reply.textContent).not.toContain('##');
+    expect(reply.textContent).not.toContain('```');
+  });
+
+  /*
+   * `headingLevelStart={3}`: the page owns `<h1>` and its sections own `<h2>`,
+   * so a reply's own `#` may not mint either. Asserted separately from the
+   * rendering case above because it is a different claim — that markdown is
+   * rendered *at a level*, not merely rendered — and a change to the prop
+   * leaves that case green.
+   */
+  it('starts the reply’s headings below the page’s own', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({ id: 't2', author: 'agent', text: '# Top' })]}
+      />,
+    );
+    const reply = container.querySelector('[data-nc-turn="agent"]')!;
+    expect(reply.querySelector('h1, h2')).toBeNull();
+    expect(reply.querySelector('h3')?.textContent).toBe('Top');
+  });
+
+  it('leaves what you typed as literal text, markdown or not', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({ text: '# not a heading *not* emphasis' })]}
+      />,
+    );
+    const said = container.querySelector('[data-nc-turn="you"]')!;
+    expect(said.textContent).toBe('# not a heading *not* emphasis');
+    expect(said.querySelector('h1, h2, h3, em, strong')).toBeNull();
+  });
+
   it('states failure in text and exposes activity state through the shared attribute', () => {
     const { container } = render(
       <ChatThread conversation={conversation()} turns={[activity({ state: 'failed' })]} />,
@@ -308,6 +378,130 @@ describe('ChatThread', () => {
     expect(screen.getByText('Failed')).toBeTruthy();
     expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
     expect(container.querySelector('[data-nc-activity]')).toBeNull();
+  });
+
+  /*
+   * ── The failed line says what failed ────────────────────────────────────
+   *
+   * `Failed` alone was the whole rendering of a failed shell run, and the
+   * reason had been on the wire the entire time. The word stays — the case
+   * above asserts it and the stylesheet gives failure the *text* role — and the
+   * reason joins it on its own row inside the same `<p>`, so `data-nc-state`
+   * does not move.
+   */
+  it('prints the reason inside the element that carries the state', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[activity({ state: 'failed', detail: 'error: no test specified' })]}
+      />,
+    );
+    expect(screen.getByText('Failed')).toBeTruthy();
+    /* Containment, not co-existence. "the text is somewhere on the page" and
+       "a failed element is somewhere on the page" are both satisfied by the
+       shape this design rejects — the reason rendered as a sibling *outside*
+       the element holding `data-nc-state`, which is what would force the state
+       onto a new host. Reading the text off that element is the assertion. */
+    const line = container.querySelector('[data-nc-state="failed"]')!;
+    expect(line.textContent).toContain('error: no test specified');
+  });
+
+  it('prints nothing but the line itself when the action succeeded', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity()]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+  });
+
+  /**
+   * The duration element's **whole** text, which is the only form of this
+   * assertion that holds.
+   *
+   * These cases used to read `container.textContent` with `toContain`, and a
+   * substring of the page cannot pin a number: `14.3s` contains `4.3s`,
+   * `11.0s` contains `1.0s`, `13m 02s` contains `3m 02s`. The `59_999` case was
+   * the clearest — `11m 00s` satisfies "contains `1m 00s`" *and* "does not
+   * contain `60.0s`" at the same time, so the pair that was supposed to bracket
+   * the boundary bracketed nothing. Every one of those is what a
+   * `formatActivityDuration` that mangles its own leading digit prints.
+   *
+   * The number is the last thing on the line's first row: a duration only
+   * renders on a line that is not running, and the live dot only renders on one
+   * that is. Reached positionally because the spans carry hashed CSS-module
+   * class names, which `architecture/no-class-dom-query` forbids querying.
+   */
+  function durationText(container: HTMLElement): string | null {
+    const row = container.querySelector('[data-nc-state]')!.children[0];
+    return row.children[row.children.length - 1].textContent;
+  }
+
+  /*
+   * A duration is printed only when it is one the reader felt. Both halves are
+   * asserted: the absence is the load-bearing one, because every completed row
+   * carries a `durationMs` and most of them are a 12ms report read.
+   */
+  it('times a long action and stays quiet about a fast one', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
+    );
+    expect(durationText(container)).toBe('4.3s');
+
+    rerender(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+  });
+
+  /* The floor itself, at the two values that straddle it. Asserted against a
+     pair one millisecond apart because any other pair pins an interval rather
+     than a number: `4_320` against `120` passes for every floor in between,
+     including a floor of four seconds. */
+  it('draws the line at one second, to the millisecond', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+
+    rerender(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
+    );
+    expect(durationText(container)).toBe('1.0s');
+  });
+
+  /* `182_000`, not `192_000`: `3m 12s` needs no padding, so it is green against
+     a `formatActivityDuration` with the `padStart` deleted. `3m 02s` is not. */
+  it('reads a multi-minute action in minutes and padded seconds', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 182_000 })]} />,
+    );
+    expect(durationText(container)).toBe('3m 02s');
+  });
+
+  /* One millisecond under a minute, which the seconds form would round to a
+     `60.0s` that means the same thing as the `1m 00s` printed one millisecond
+     later. The two formats exist to be read at a glance; a sixty in the one
+     that counts seconds defeats that. The `not.toContain('60.0s')` that used to
+     stand beside this is gone rather than kept: an equality against the whole
+     string already excludes `60.0s` along with everything else, and as a
+     substring check it was the half of the pair that could be satisfied at the
+     same time as the other one. */
+  it('never says sixty seconds', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
+    );
+    expect(durationText(container)).toBe('1m 00s');
+  });
+
+  /* The view's own `!running` gate, which the domain's gate would otherwise be
+     the only thing standing between a live line and a finished number. */
+  it('says nothing about elapsed time while the action is still running', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[activity({ state: 'running', verb: 'Running', durationMs: 5_000 })]}
+      />,
+    );
+    expect(container.textContent).toBe('Runningnpm test');
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {

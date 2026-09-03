@@ -105,16 +105,16 @@ pub struct NewWave {
     /// verbatim.
     pub cwd: String,
     #[serde(default)]
-    pub workflow_id: Option<String>,
+    pub template_id: Option<String>,
     /// #1110 S4 — copied from the owning Manifest at create. Not accepted on
     /// `POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route
     /// stamps it from the resolved trusted plugin. `#[serde(default)]` keeps
     /// direct repo callers additive under `deny_unknown_fields`.
     #[serde(default)]
     pub plugin_scope: Option<String>,
-    /// Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-    /// accepted when `workflow_id` names a running trusted workflow whose
-    /// owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+    /// Issue #891 / #1110 S2 — JSON input for the bound template. Only
+    /// accepted when `template_id` names a template a running trusted plugin
+    /// binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
     /// route validates the value against that schema before any DB write. The
     /// kernel never interprets the blob — it is persisted verbatim and injected
     /// into the spec harness developer instructions at thread-mint time.
@@ -122,7 +122,7 @@ pub struct NewWave {
     /// `deny_unknown_fields`.
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
-    pub workflow_input: Option<serde_json::Value>,
+    pub template_input: Option<serde_json::Value>,
     /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
     /// `cove_id` as a new folder, in the same transaction as the
     /// wave-create write". Default `false`: the cwd must already be

@@ -1,6 +1,6 @@
 //! Issue #891 / #1110 S2 — hand-rolled JSON-Schema **subset** for
 //! `Manifest.input_schema` and the matching instance validator for
-//! `NewWave.workflow_input`.
+//! `NewWave.template_input`.
 //!
 //! Deliberately not the `jsonschema` crate (twice-recorded decision:
 //! `manifest.rs` module doc + `calm-server/Cargo.toml` dependency notes): the
@@ -8,7 +8,7 @@
 //! validation gives better error messages without a new dependency tree. The
 //! subset is enforced at manifest-validation time so the instance validator
 //! below never has to silently ignore a constraint it does not understand —
-//! whatever a plugin declares, the kernel executes in full. When a workflow
+//! whatever a plugin declares, the kernel executes in full. When a template
 //! ever needs full JSON Schema, replace this module (single-function seam).
 //!
 //! Supported subset:
@@ -22,9 +22,9 @@
 use serde_json::{Map, Value};
 
 /// Byte cap for both the serialized `input_schema` and the serialized
-/// `workflow_input` instance. Bound input is injected into the spec
+/// `template_input` instance. Bound input is injected into the spec
 /// prompt, so user-controlled JSON must stay bounded.
-pub const WORKFLOW_INPUT_MAX_BYTES: usize = 8192;
+pub const TEMPLATE_INPUT_MAX_BYTES: usize = 8192;
 
 const ROOT_KEYWORDS: [&str; 5] = [
     "type",
@@ -61,11 +61,11 @@ pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
     if serde_json::to_string(schema)
         .map(|s| s.len())
         .unwrap_or(usize::MAX)
-        > WORKFLOW_INPUT_MAX_BYTES
+        > TEMPLATE_INPUT_MAX_BYTES
     {
         return Err(SchemaError::new(
             path(""),
-            format!("must serialize to at most {WORKFLOW_INPUT_MAX_BYTES} bytes"),
+            format!("must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"),
         ));
     }
 
@@ -233,24 +233,24 @@ fn validate_property(_name: &str, spec: &Value) -> Result<(), SchemaError> {
     Ok(())
 }
 
-/// Validate a `workflow_input` instance against an already subset-validated
+/// Validate a `template_input` instance against an already subset-validated
 /// `input_schema`. Errors carry the offending field path
-/// (`workflow_input.merge_policy: expected one of […]`) so the route can
+/// (`template_input.merge_policy: expected one of […]`) so the route can
 /// surface them verbatim in a 400.
-pub fn validate_workflow_input(schema: &Value, input: &Value) -> Result<(), String> {
+pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), String> {
     if serde_json::to_string(input)
         .map(|s| s.len())
         .unwrap_or(usize::MAX)
-        > WORKFLOW_INPUT_MAX_BYTES
+        > TEMPLATE_INPUT_MAX_BYTES
     {
         return Err(format!(
-            "workflow_input: must serialize to at most {WORKFLOW_INPUT_MAX_BYTES} bytes"
+            "template_input: must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"
         ));
     }
 
     let object = input
         .as_object()
-        .ok_or_else(|| "workflow_input: expected a JSON object".to_string())?;
+        .ok_or_else(|| "template_input: expected a JSON object".to_string())?;
 
     let empty = Map::new();
     let properties = schema
@@ -261,7 +261,7 @@ pub fn validate_workflow_input(schema: &Value, input: &Value) -> Result<(), Stri
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for key in required.iter().filter_map(Value::as_str) {
             if !object.contains_key(key) {
-                return Err(format!("workflow_input.{key}: required field is missing"));
+                return Err(format!("template_input.{key}: required field is missing"));
             }
         }
     }
@@ -271,11 +271,11 @@ pub fn validate_workflow_input(schema: &Value, input: &Value) -> Result<(), Stri
         // validator — undeclared keys are always rejected.
         let Some(spec) = properties.get(key) else {
             return Err(format!(
-                "workflow_input.{key}: unknown field (schema declares additionalProperties: false)"
+                "template_input.{key}: unknown field (schema declares additionalProperties: false)"
             ));
         };
         check_value(value, spec.as_object().unwrap_or(&empty))
-            .map_err(|reason| format!("workflow_input.{key}: {reason}"))?;
+            .map_err(|reason| format!("template_input.{key}: {reason}"))?;
     }
 
     Ok(())
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn rejects_oversized_schema() {
         let mut v = schema();
-        v["description"] = json!("x".repeat(WORKFLOW_INPUT_MAX_BYTES));
+        v["description"] = json!("x".repeat(TEMPLATE_INPUT_MAX_BYTES));
         let err = validate_input_schema(&v).unwrap_err();
         assert_eq!(err.path, "input_schema");
         assert!(err.reason.contains("8192"));
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn accepts_conforming_input() {
-        validate_workflow_input(
+        validate_template_input(
             &schema(),
             &json!({
                 "issue_url": "https://github.com/o/r/issues/1",
@@ -514,28 +514,28 @@ mod tests {
 
     #[test]
     fn rejects_missing_required_field() {
-        let err = validate_workflow_input(&schema(), &json!({ "issue_url": "u" })).unwrap_err();
-        assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+        let err = validate_template_input(&schema(), &json!({ "issue_url": "u" })).unwrap_err();
+        assert!(err.starts_with("template_input.issue_number:"), "{err}");
     }
 
     #[test]
     fn rejects_type_mismatches() {
         let err =
-            validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": "1" }))
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": "1" }))
                 .unwrap_err();
-        assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+        assert!(err.starts_with("template_input.issue_number:"), "{err}");
         assert!(err.contains("integer"), "{err}");
 
         // fractional value against "integer"
         let err =
-            validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.5 }))
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.5 }))
                 .unwrap_err();
-        assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+        assert!(err.starts_with("template_input.issue_number:"), "{err}");
     }
 
     #[test]
     fn integer_accepts_integer_encoded_value() {
-        validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1 }))
+        validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1 }))
             .expect("integer-encoded 1 accepted");
     }
 
@@ -544,46 +544,46 @@ mod tests {
         // Deliberate strictness (see check_value): `1.0` is float-encoded,
         // so it is rejected even though it is numerically integral.
         let err =
-            validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.0 }))
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.0 }))
                 .unwrap_err();
-        assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+        assert!(err.starts_with("template_input.issue_number:"), "{err}");
         assert!(err.contains("float-encoded"), "{err}");
     }
 
     #[test]
     fn rejects_enum_violation_naming_field_and_members() {
-        let err = validate_workflow_input(
+        let err = validate_template_input(
             &schema(),
             &json!({ "issue_url": "u", "issue_number": 1, "merge_policy": "yolo" }),
         )
         .unwrap_err();
-        assert!(err.starts_with("workflow_input.merge_policy:"), "{err}");
+        assert!(err.starts_with("template_input.merge_policy:"), "{err}");
         assert!(err.contains("hold-for-ratify"), "{err}");
         assert!(err.contains("auto-merge"), "{err}");
     }
 
     #[test]
     fn rejects_undeclared_key() {
-        let err = validate_workflow_input(
+        let err = validate_template_input(
             &schema(),
             &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
         )
         .unwrap_err();
-        assert!(err.starts_with("workflow_input.ghost:"), "{err}");
+        assert!(err.starts_with("template_input.ghost:"), "{err}");
     }
 
     #[test]
     fn rejects_non_object_input() {
-        let err = validate_workflow_input(&schema(), &json!(["not", "an", "object"])).unwrap_err();
+        let err = validate_template_input(&schema(), &json!(["not", "an", "object"])).unwrap_err();
         assert!(err.contains("expected a JSON object"), "{err}");
     }
 
     #[test]
     fn rejects_oversized_input() {
-        let err = validate_workflow_input(
+        let err = validate_template_input(
             &schema(),
             &json!({
-                "issue_url": "x".repeat(WORKFLOW_INPUT_MAX_BYTES),
+                "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
                 "issue_number": 1
             }),
         )

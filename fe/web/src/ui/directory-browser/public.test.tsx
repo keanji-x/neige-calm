@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 import { DirectoryBrowser, type DirectoryListing, type ListDirectory } from './public.tsx';
@@ -77,23 +77,34 @@ describe('DirectoryBrowser behavior', () => {
      not on screen. `block: 'nearest'` and not `center`: it must scroll only
      when the row is actually out of view.
 
+     The initial highlight also scrolls in a passive effect. `findByRole`
+     resolves from its mutation microtask, then RTL's 0ms drain can beat React's
+     scheduled passive-effect flush under load; the empty `act` makes that mount
+     scroll deterministic before its call is cleared.
+
      jsdom implements no scrolling at all, so `scrollIntoView` is installed for
      the case and removed after — the component's own `typeof` guard is what
-     makes it a no-op the rest of the time. */
+     makes it a no-op the rest of the time. The restore lives in `finally`
+     because an assertion failure must not leak the prototype patch into later
+     cases. */
   it('scrolls the highlighted option into view as the keyboard moves it', async () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
-    const deep: DirectoryListing = { path: '/work', parent: '/', entries: [
-      { name: 'a', path: '/work/a', isDirectory: true },
-      { name: 'b', path: '/work/b', isDirectory: true },
-    ] };
-    render(<DirectoryBrowser listDirectory={() => Promise.resolve(deep)} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>);
-    await screen.findByRole('option', { name: 'b' });
-    scrollIntoView.mockClear();
-    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
-    expect(scrollIntoView.mock.instances[0]).toBe(screen.getByRole('option', { name: 'b' }));
-    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    try {
+      const deep: DirectoryListing = { path: '/work', parent: '/', entries: [
+        { name: 'a', path: '/work/a', isDirectory: true },
+        { name: 'b', path: '/work/b', isDirectory: true },
+      ] };
+      render(<DirectoryBrowser listDirectory={() => Promise.resolve(deep)} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+      await screen.findByRole('option', { name: 'b' });
+      await act(async () => {});
+      scrollIntoView.mockClear();
+      fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(scrollIntoView.mock.instances[0]).toBe(screen.getByRole('option', { name: 'b' }));
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
   it('walks up to the listing parent from the pointer', async () => {
     await ready();

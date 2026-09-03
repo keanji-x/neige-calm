@@ -21,8 +21,23 @@ const wave = { id: 'w1', cove_id: 'c1', title: 'Reliable', sort: 1, lifecycle: '
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 
+/* #1253 — none of the cases in this file are about the Today launchpad, and
+   `200 null` is that endpoint's ordinary "no launchpad yet" answer. Answering
+   it here rather than letting each case's catch-all `ok([])` reach it keeps a
+   decode failure out of every Today render below.
+
+   This short-circuit is UNCONDITIONAL: a case's own `reply` never sees this
+   path. That is deliberate — one answer for the whole file beats seven copies
+   of it — but it means a case that needs the resolve to behave differently has
+   to change this wrapper, not its own `reply`. The resolve's own states are
+   covered in `today-document.test.tsx`, which is where they belong. */
+const TODAY_LAUNCHPAD_PATH = '/api/today/launchpad';
+const noLaunchpad = (): ApiTransportResponse => ({ status: 200, statusText: 'OK', body: null });
+
 function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportResponse | Promise<ApiTransportResponse>) {
-  const transport: ApiTransportPort = { send: (request) => Promise.resolve(reply(request)) };
+  const transport: ApiTransportPort = {
+    send: (request) => Promise.resolve(request.path === TODAY_LAUNCHPAD_PATH ? noLaunchpad() : reply(request)),
+  };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });

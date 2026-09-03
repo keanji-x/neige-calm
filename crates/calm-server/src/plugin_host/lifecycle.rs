@@ -463,8 +463,8 @@ impl PluginHost {
 ///   ship, so we surface a 422 `PluginKernelTooOld` carrying both versions
 ///   in the body. That lets the UI render a "upgrade required" hint instead
 ///   of a generic internal-error toast.
-/// * `WorkflowConflict` (#891 slice ④ review fix): the manifest declares a
-///   workflow id another running trusted plugin already registers. That's a
+/// * `TemplateConflict` (#891 slice ④ review fix): the manifest declares a
+///   template id another running trusted plugin already registers. That's a
 ///   409 `PluginConflict` — the request was well-formed and the kernel is
 ///   fine; the refusal is a state conflict the operator resolves by stopping
 ///   the holder — mirroring the install route's duplicate-id 409.
@@ -474,7 +474,7 @@ pub(crate) fn spawn_error_to_calm(e: HostError) -> CalmError {
             "plugin requires kernel >= {}, this kernel is {}",
             k.required, k.actual,
         )),
-        conflict @ HostError::WorkflowConflict { .. } => {
+        conflict @ HostError::TemplateConflict { .. } => {
             CalmError::PluginConflict(conflict.to_string())
         }
         // #1164 §2.2 — an unreachable/misconfigured connector is not a kernel
@@ -586,19 +586,19 @@ mod spawn_error_mapping_tests {
     use crate::plugin_host::HostError;
     use axum::http::StatusCode;
 
-    /// #891 slice ④ review fix — a workflow-id refusal is an operator-visible
+    /// #891 slice ④ review fix — a template-id refusal is an operator-visible
     /// state conflict (409 `plugin_conflict`), not a generic 500.
     #[test]
-    fn workflow_conflict_maps_to_structured_409() {
-        let mapped = spawn_error_to_calm(HostError::WorkflowConflict {
+    fn template_conflict_maps_to_structured_409() {
+        let mapped = spawn_error_to_calm(HostError::TemplateConflict {
             plugin_id: "dev.second".into(),
-            workflow_id: "issue-development".into(),
+            template_id: "issue-development".into(),
             held_by: "dev.first".into(),
         });
         assert!(
             matches!(&mapped, CalmError::PluginConflict(msg)
                 if msg.contains("issue-development") && msg.contains("dev.first")),
-            "expected PluginConflict naming the workflow and holder, got {mapped:?}"
+            "expected PluginConflict naming the template and holder, got {mapped:?}"
         );
         assert_eq!(mapped.status(), StatusCode::CONFLICT);
         assert_eq!(mapped.code(), "plugin_conflict");

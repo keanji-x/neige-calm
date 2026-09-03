@@ -339,10 +339,10 @@ describe('EventBridge', () => {
         // wire shape. The bridge doesn't care about either today;
         // future calendar/terminal-stamp subscribers will read them.
         cwd: '',
-        workflow_id: null,
+        template_id: null,
         plugin_scope: null,
         purpose: null,
-        workflow_input: null,
+        template_input: null,
         terminal_at: null,
         pinned_at: null,
         created_at: 1,
@@ -740,6 +740,9 @@ describe('EventBridge', () => {
           runtime_id: 'runtime_2',
           card_id: 'card_spec',
           wave_id: 'wave_1',
+          cleared_item_count: 12,
+          cleared_params_bytes: 3400,
+          card_age_ms_at_clear: 86400000,
         },
       }),
     ).not.toThrow();

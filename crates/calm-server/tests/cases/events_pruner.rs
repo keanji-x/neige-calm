@@ -139,12 +139,12 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
-                        workflow_input: None,
+                        template_input: None,
                         cove_id,
                         title: "w".into(),
                         sort: None,
                         cwd: String::new(),
-                        workflow_id: None,
+                        template_id: None,
                         plugin_scope: None,
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -413,4 +413,34 @@ fn no_other_suite_seeds_allowlisted_kinds_with_literal_inserts() {
          through the repo write path (stamps now_ms) or extend the pruner's own tests instead:\n{}",
         offenders.join("\n")
     );
+}
+
+/// #1253 D4 — none of the activity projection's four kinds may become prunable.
+///
+/// `activity_window`'s allowlist is chosen for permanence: it drops `turns`
+/// precisely because its only source, `harness.item.added`, IS on the list
+/// below and would decay to zero past the horizon. That reasoning is a claim
+/// about `EVENTS_PRUNE_KINDS` — a `&'static [&str]` in another module — and a
+/// doc comment cannot hold it.
+///
+/// The failure it fails closed on is quiet and one-directional: adding any of
+/// these four to the prune allowlist makes every window older than the horizon
+/// read as an empty day, and `POST /api/today/summary` refuses an empty day. A
+/// user who asked for yesterday's progress would be told nothing happened.
+///
+/// Deliberately shaped like `first_message_dedup_kind_is_never_prunable`, which
+/// guards the same premise for the first-message dedup, and deliberately
+/// iterating `ACTIVITY_KINDS` rather than restating the four strings: a list
+/// restated here would keep passing after a fifth kind was added to the
+/// projection.
+#[test]
+fn activity_window_kinds_are_never_prunable() {
+    for kind in calm_server::activity_window::ACTIVITY_KINDS {
+        assert!(
+            !EVENTS_PRUNE_KINDS.contains(&kind),
+            "`{kind}` is counted by workspace_activity_window, which needs it to \
+             be permanent; pruning it makes every window past the retention \
+             horizon read as an empty day, and an empty day is refused"
+        );
+    }
 }

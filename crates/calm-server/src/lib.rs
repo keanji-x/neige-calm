@@ -35,6 +35,10 @@ pub mod plain_chat;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
+// If this module is ever re-gated for integration-test reuse, revisit its
+// nested `cfg(test)` interceptor and test-module gates at the same time:
+// integration tests compile the library without `cfg(test)`, so both would
+// otherwise disappear from that configuration.
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod worker_flow;
@@ -127,9 +131,10 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
 /// errors pass through untouched on the first attempt.
 ///
 /// Composes with `begin_immediate_tx`'s internal bounded retry (7
-/// attempts, 10-250ms backoff, 5s busy_timeout per attempt): worst-case
-/// error surfacing at boot under sustained writer starvation is minutes —
-/// bounded and accepted (#930 review note).
+/// attempts, 10-250ms backoff,
+/// [`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`] busy timeout per attempt):
+/// worst-case error surfacing at boot under sustained writer starvation is
+/// minutes — bounded and accepted (#930 review note).
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where
     E: SqliteBusyClass + std::fmt::Display,
@@ -566,6 +571,9 @@ pub(crate) async fn probe_supervisor_for_terminal(
     }
 }
 
+/// #1253 D4 — the Today summary's activity source. One caller
+/// (`routes::today_summary`), no MCP surface; see the module docs.
+pub mod activity_window;
 pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_appserver;
@@ -624,15 +632,17 @@ pub mod workspace_repoint;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;
+pub(crate) mod templates;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod wave_report_doc;
 mod wave_report_edit_guard;
 mod wave_report_guard;
+/// #1252 S1 step 1 — write-origin vocabulary. Not wired into production yet.
+pub mod wave_report_origin;
 pub mod wave_report_read;
 pub mod wave_vcs;
-pub(crate) mod workflow_templates;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {

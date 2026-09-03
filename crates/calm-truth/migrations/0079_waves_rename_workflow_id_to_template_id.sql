@@ -1,0 +1,22 @@
+-- Issue #1209 PR-2 — one concept (template), one spelling (`template_id`).
+--
+-- PR-1 collapsed "workflow" and "template" into a single concept on the
+-- create path; this migration finishes the job on the storage side by
+-- renaming the two columns that still carried the old spelling:
+--
+--   waves.workflow_id     (created by 0059_waves_workflow_id.sql)
+--   waves.workflow_input  (created by 0061_waves_workflow_input.sql)
+--
+-- `ALTER TABLE ... RENAME COLUMN` is value-preserving: every existing row
+-- keeps its value verbatim, so this is NOT a destructive migration and
+-- `NEIGE_DB_MIGRATION_POLICY` stays at its default `forwardOnly`. It is
+-- forward-only in the sense docs/upgrade-stability.md:14 asks for: an old
+-- binary cannot read the new schema, so the release carrying this file is
+-- gated as breaking by WEB_COMPAT_VERSION / productMajor instead.
+--
+-- Earlier migrations that mention `waves.workflow_id` (0059, 0061, 0076)
+-- are NOT edited and must never be: sqlx checksums the whole file, and they
+-- each ran against the schema of their own point in history, which is
+-- strictly before this one. Replay order is unchanged.
+ALTER TABLE waves RENAME COLUMN workflow_id TO template_id;
+ALTER TABLE waves RENAME COLUMN workflow_input TO template_input;

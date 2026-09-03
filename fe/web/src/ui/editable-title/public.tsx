@@ -14,7 +14,42 @@ import { OperationFeedback, useOperationFeedback } from '../operation-feedback/p
 import styles from './editable-title.module.css';
 
 export type EditableTitleProps = Readonly<{
+  /**
+   * The stored name, verbatim — the **edit** carrier.
+   *
+   * `begin()` seeds the draft from it and `commit()` compares against it, so a
+   * blank name opens a blank box. What read mode *shows* for a blank name is
+   * `placeholder`, and the split is the point: while there was one `value`
+   * doing both jobs, a caller that handed in a display fallback handed it to
+   * the editor too — the wave page passed `waveDisplayTitle(wave.title)`, so
+   * opening the editor on an unnamed wave put `Untitled wave` in the box and
+   * the reader had to delete it before typing. (It could not be *stored*: the
+   * `next === value` arm below made re-submitting it a no-op. The defect was
+   * the text in the box, not a write.)
+   */
   value: string;
+  /**
+   * What read mode shows while `value` is blank — display only. It never seeds
+   * the draft, and there is no path by which it can be committed.
+   */
+  placeholder?: string;
+  /**
+   * What committing an empty box means, and it is per-caller because the two
+   * callers do not have the same answer.
+   *
+   * `'cancel'` (the default) is the historical behaviour and stays the
+   * default: clearing the field and pressing Enter leaves edit mode and writes
+   * nothing. That is right where nothing else can supply a name — a cove is
+   * named by its owner and by no one else, so an empty cove name is a name the
+   * product cannot recover from.
+   *
+   * `'clear'` makes the empty commit a real request: write the empty name.
+   * A wave has a second namer — the spec agent's `calm.wave.rename` succeeds
+   * only while the title is empty (#1211 S3) — so clearing the name is how a
+   * reader hands naming back to it, and swallowing that keystroke would leave
+   * "I cleared it, pressed Enter, and nothing happened".
+   */
+  emptyCommit?: 'cancel' | 'clear';
   onCommit: (next: string) => void | Promise<void>;
   /** Accessible name for the read-mode button, e.g. "Rename cove". */
   editLabel: string;
@@ -39,7 +74,8 @@ export type EditableTitleProps = Readonly<{
 const CLICK_SUPPRESS_MS = 300;
 
 export function EditableTitle({
-  value, onCommit, editLabel, inputLabel, className, isPageTitle, titleRef,
+  value, placeholder, emptyCommit = 'cancel', onCommit, editLabel, inputLabel,
+  className, isPageTitle, titleRef,
 }: EditableTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -62,7 +98,15 @@ export function EditableTitle({
     if (pending.current) return;
     const next = draft.trim();
     if (restoreFocus) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
-    if (next === '' || next === value) {
+    /*
+     * Two different reasons not to write, and only the second one is a policy.
+     *
+     * `next === value` is arithmetic: the name on screen is already the name
+     * being asked for, so there is no state change to request. It holds under
+     * `'clear'` too — an already-blank title committed blank is still nothing
+     * happening — which is why the empty case is not simply "always send".
+     */
+    if (next === value || (next === '' && emptyCommit === 'cancel')) {
       setEditing(false);
       if (restoreFocus) restoreTitleFocus();
       return;
@@ -76,7 +120,7 @@ export function EditableTitle({
     }).finally(() => {
       pending.current = false;
     });
-  }, [draft, feedback, onCommit, restoreTitleFocus, value]);
+  }, [draft, emptyCommit, feedback, onCommit, restoreTitleFocus, value]);
 
   if (!editing) {
     return (
@@ -94,7 +138,9 @@ export function EditableTitle({
           if (event.key === 'F2') { event.preventDefault(); begin(); }
         }}
       >
-        {value}
+        {/* The display carrier. `placeholder` stands in for a blank name and
+            goes no further than this line — the editor below reads `value`. */}
+        {value.trim() === '' && placeholder !== undefined ? placeholder : value}
       </button>
     );
   }

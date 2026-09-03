@@ -791,6 +791,7 @@
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
     "expected_red": [
+      "#1253 D5 the write-today’s-progress trigger redraws a report that was already written when it is rewritten",
       "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
       "query invalidation adapter drives the conversation-list keys all the way onto the query client",
@@ -798,7 +799,8 @@
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
       "query invalidation adapter removes mapped keys for a remove effect",
-      "query invalidation adapter turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal"
+      "query invalidation adapter turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal",
+      "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve"
     ],
     "selection_paths": [
       "web/src/app/composition.test.tsx"
@@ -999,7 +1001,7 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -248,7 +248,7 @@ function policies(): PolicyMap {\n     ...conversationLists(event.data.wave_id),\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -264,7 +264,7 @@ function policies(): PolicyMap {\n    * `invalidation-plan.contract.test.ts` is the only guard there is.\n    */\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n     ['today-launchpad'], ['wave', event.data.wave_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"

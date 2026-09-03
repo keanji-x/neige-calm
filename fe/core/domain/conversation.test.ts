@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, WAVE_RENAME_TOOL,
+  WAVE_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
 import type { ApiFailure } from '../api/types.js';
@@ -352,7 +353,150 @@ describe('harnessItemToActivity', () => {
         },
       }),
     }));
-    expect(activity).toMatchObject({ verb: 'Ran', target: 'neige state', state: 'done' });
+    expect(activity).toMatchObject({
+      verb: 'Ran', target: 'neige state', state: 'done', durationMs: 120,
+    });
+  });
+
+  /*
+   * ── The two fields the wire always had ──────────────────────────────────
+   *
+   * `durationMs` and `aggregatedOutput` were never missing from `item/completed`
+   * — the capture above has both, and the kernel stores `params` unfiltered.
+   * This function was where they died. These cases pin the two halves of the
+   * rule that brought them back: the number survives on every completed row,
+   * and the text is shown **only** where it is the answer to a question the
+   * reader is actually asking.
+   */
+  const shellRun = (item: Record<string, unknown>): HarnessItem => row({
+    params: JSON.stringify({ completedAtMs: 1786763301566, item: { type: 'commandExecution', ...item } }),
+  });
+
+  it('says why a shell run failed, in its last line of output', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: "/usr/bin/bash -lc 'npm test'",
+      aggregatedOutput: '> vitest run\n\nFAIL core/domain/conversation.test.ts\n\nTests  1 failed | 40 passed\n\n',
+      exitCode: 1, durationMs: 8_400, status: 'completed',
+    }))).toMatchObject({
+      state: 'failed', detail: 'Tests  1 failed | 40 passed', durationMs: 8_400,
+    });
+  });
+
+  /*
+   * The assertion that pins "failure-only". The successful row below carries a
+   * perfectly readable `aggregatedOutput`, and it is still dropped: in a real
+   * session there are three successful actions for every sentence, and a tail
+   * of stdout under each of them is the drawer turning into a log viewer.
+   */
+  it('drops the output of a run that succeeded, even though it is right there', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: 'ls', aggregatedOutput: 'report.md\nnotes.md\n', exitCode: 0,
+      durationMs: 30, status: 'completed',
+    }))).toMatchObject({ state: 'done', detail: null, durationMs: 30 });
+  });
+
+  /* `aggregatedOutput` is the whole capture — kilobytes on a real build. The
+     field is typed as one short line, so the clip is the domain's job. */
+  it('clips a failure reason to one short line instead of a payload', () => {
+    const detail = harnessItemToActivity(shellRun({
+      command: 'build', aggregatedOutput: `ok\n${'x'.repeat(4_000)}`, exitCode: 2,
+      status: 'completed',
+    }))?.detail;
+    expect(detail).not.toBeNull();
+    expect(detail!.length).toBeLessThanOrEqual(64);
+    expect(detail!.endsWith('…')).toBe(true);
+  });
+
+  /*
+   * ── A stated reason outranks a guessed one ──────────────────────────────
+   *
+   * A killed or timed-out command carries both: `error` says why it stopped and
+   * `aggregatedOutput` is a partial capture whose last line is whatever
+   * progress happened to be printed before the axe fell. Reading the tail here
+   * prints `Compiling serde v1.0.219` under a red `Failed` and never says the
+   * word "timed out" — strictly worse than printing nothing at all.
+   */
+  it('says the machine’s own reason, not the tail it was cut off in', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: 'cargo build',
+      aggregatedOutput: '   Compiling serde v1.0.219\n',
+      error: 'command timed out after 600s',
+      exitCode: 124,
+      status: 'completed',
+    }))).toMatchObject({ state: 'failed', detail: 'command timed out after 600s' });
+  });
+
+  /* MCP tools have no stdout at all; their reason is the `error` member, and
+     both spellings of it are on our wire. */
+  it.each([
+    ['an object with a message', { message: 'wave is not attached' }],
+    ['a bare string', 'wave is not attached'],
+  ])('reads the mcp error when it is %s', (_label, error) => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({
+        item: { tool: REPORT_WRITE_TOOLS[0], error, status: 'failed', durationMs: 45, type: 'mcpToolCall' },
+      }),
+    }))).toMatchObject({ state: 'failed', detail: 'wave is not attached', durationMs: 45 });
+  });
+
+  /*
+   * ── The `Caused by:` chain, verbatim from the production database ────────
+   *
+   * These two messages are not constructed for the test: they are the `error`
+   * member of *both* of the only two failed `mcpToolCall` rows the production
+   * database has (`harness_items` 34080 and 34526), and neither of those rows
+   * carries an `aggregatedOutput`, so `error` is the only source there is.
+   * Their shape is the anyhow chain's: a generic wrapper naming the tool, then
+   * `Caused by:`, then the root cause — which is the whole of what the reader
+   * opened the line to find out, and which reading the message from the front
+   * throws away. Same rule as the shell tail above, for the same reason: a
+   * machine writes the thing it is finally reporting last.
+   */
+  const mcpFailure = (error: unknown): HarnessItem => row({
+    item_type: 'mcpToolCall',
+    params: JSON.stringify({
+      item: { tool: REPORT_WRITE_TOOLS[0], error, status: 'failed', type: 'mcpToolCall' },
+    }),
+  });
+
+  it('reads the root cause out of a `Caused by:` chain, not its wrapper', () => {
+    expect(harnessItemToActivity(mcpFailure({
+      message: 'tool call error: tool call failed for `calm/calm.report.edit`\n'
+        + '\nCaused by:\n    Mcp error: -32602: message must be non-empty\n',
+    }))).toMatchObject({ state: 'failed', detail: 'Mcp error: -32602: message must be non-empty' });
+  });
+
+  it('reads the root cause of the other failed row on the wire', () => {
+    expect(harnessItemToActivity(mcpFailure({
+      message: 'tool call error: tool call failed for `calm/calm.plan.upsert`\n'
+        + '\nCaused by:\n    Mcp error: -32602: `tasks` must be a non-empty array\n',
+    }))).toMatchObject({
+      state: 'failed', detail: 'Mcp error: -32602: `tasks` must be a non-empty array',
+    });
+  });
+
+  /* The one-line case the rule must leave exactly where it was: with nothing
+     after it, the last non-empty line *is* the first one. */
+  it('still says a single-line error whole', () => {
+    expect(harnessItemToActivity(mcpFailure('wave is not attached')))
+      .toMatchObject({ state: 'failed', detail: 'wave is not attached' });
+  });
+
+  /* The payload **carries** a `durationMs` here, and that is the whole point: a
+     started row is the item as codex knew it at the start, nothing stops a
+     number riding along on it, and a row still saying `Running` must not print
+     an interval that has not ended. Fed a payload without the key, this case
+     passes with or without the gate that enforces that — and what codex sends
+     today is neither: a JSON `null`, which the `typeof` test rejects on its
+     own. A number is the input that can tell the rule from the type check. */
+  it('has no duration on a row that has not finished', () => {
+    expect(harnessItemToActivity(row({
+      method: 'item/started',
+      params: JSON.stringify({
+        item: { command: 'ls', durationMs: 5_000, type: 'commandExecution' },
+      }),
+    }))).toMatchObject({ state: 'running', durationMs: null, detail: null });
   });
 
   it('says the report was written, because that is the answer', () => {
@@ -388,6 +532,34 @@ describe('harnessItemToActivity', () => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall', params: JSON.stringify({ item: { tool } }),
     }))?.verb).toBe(done);
+  });
+
+  // #1211 S3 — `calm.wave.rename` is the first `calm.wave.*` tool that WRITES.
+  // It used to fall into the prefix bucket and read out as "Read the wave",
+  // which is exactly backwards on the one line a user scans to find out who
+  // named their wave.
+  it('renders the wave rename as a write, not as a look at the wave', () => {
+    expect(WAVE_RENAME_TOOL.startsWith(WAVE_TOOL_PREFIX)).toBe(true);
+    const started = harnessItemToActivity(row({
+      item_type: 'mcpToolCall', method: 'item/started',
+      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL } }),
+    }));
+    const done = harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL, status: 'completed' } }),
+    }));
+    expect(started).toMatchObject({ verb: 'Naming the wave', target: null, state: 'running' });
+    expect(done).toMatchObject({ verb: 'Named the wave', target: null, state: 'done' });
+    for (const activity of [started, done]) {
+      expect(activity?.verb).not.toMatch(/read/i);
+    }
+  });
+
+  it('still reads the other `calm.wave.*` tools as looks', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: `${WAVE_TOOL_PREFIX}state`, status: 'completed' } }),
+    }))).toMatchObject({ verb: 'Read the wave', state: 'done' });
   });
 
   it('is running while only `item/started` has arrived', () => {
@@ -509,6 +681,59 @@ describe('buildTranscript', () => {
     ])).toEqual([]);
   });
 
+  /* The contract, not the mechanism: the transcript renders `item/started` and
+     `item/completed` and nothing else. `turn/plan/updated` (#1255) is the row
+     that made this worth stating — the kernel now writes codex's per-turn TODO
+     checklist into the same table the frontend polls — but the assertion is
+     deliberately written over *arbitrary* unknown methods, because a rule that
+     only names today's method is a rule that a future method walks past.
+
+     Note for anyone mutation-testing this — and this replaces an earlier note
+     here that claimed the opposite: NO mutation of either filter turns this
+     red, in either direction. `isTranscriptMethod` and the two converters
+     (`harnessItemToTurn`, `harnessItemToActivity`) are independent method
+     filters that currently agree, and `buildTranscript` runs them in series.
+     Delete the `isTranscriptMethod` gate and the converters still reject these
+     rows; widen a converter to accept `item/updated` and the gate rejects the
+     row before that converter is ever called. This test pins the *intent* of
+     the allowlist — an unknown method renders nothing — but it cannot tell
+     which filter did the work, and no test can while both filters stand. The
+     converters must keep their own checks (they are exported and called
+     directly, e.g. `harnessItemToTurn` from `web/src/app/router/public.tsx`),
+     so making one of them load-bearing here would mean weakening the other. */
+  it('renders nothing for a method the transcript does not understand', () => {
+    const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
+      id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+      item_uuid: null, item_type: null, method,
+      params: JSON.stringify({
+        threadId: 't', turnId: 'turn-plan-1', explanation: null,
+        plan: [{ step: 'audit', status: 'inProgress' }, { step: 'ship', status: 'pending' }],
+      }),
+      created_at_ms: 1002, ...overrides,
+    });
+
+    for (const method of ['turn/plan/updated', 'thread/realtime/sdp', 'item/updated']) {
+      // The row as the kernel writes a plan: null item_uuid, null item_type.
+      expect(buildTranscript([unknownRow(method)])).toEqual([]);
+
+      // And with everything an `item/*` row would need to render — a known
+      // `item_type` and a well-formed `{ completedAtMs, item }` envelope — so
+      // that the *method* is provably the only reason nothing comes out.
+      expect(buildTranscript([unknownRow(method, {
+        item_type: 'commandExecution',
+        params: JSON.stringify({ completedAtMs: 1002, item: { command: 'ls' } }),
+      })])).toEqual([]);
+    }
+
+    // It also does not disturb the lines around it.
+    expect(buildTranscript([
+      row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
+      unknownRow('turn/plan/updated'),
+      row(3, 'agentMessage', 'item/completed', { text: 'done' }, 'u3'),
+    ]).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['go', 'done']);
+  });
+
   it('does not render empty completed messages as activities', () => {
     expect(buildTranscript([
       row(1, 'agentMessage', 'item/completed', { text: '' }),
@@ -522,7 +747,7 @@ describe('buildTranscript', () => {
 describe('mergeTranscript', () => {
   const thought = {
     id: 'thought', author: 'activity' as const, verb: 'Thought', target: null,
-    state: 'done' as const, atMs: 1,
+    state: 'done' as const, durationMs: null, detail: null, atMs: 1,
   };
   const echo: ConversationTurn = { id: 'echo', author: 'you', text: 'next', atMs: 2 };
 

@@ -1,5 +1,20 @@
-// The new-wave form: a task, what the wave starts from, and optionally the
-// folder it runs in.
+// The new-wave form: what the wave starts from, and optionally the folder it
+// runs in. Nothing else — there is no text field.
+//
+// ## Why the task sentence is gone (#1211 S2)
+//
+// This form used to require one line of text and post it as the wave's
+// `title`, because the kernel seeded the spec agent's opening prompt from it.
+// S1 cut that: the title is no longer the intent, `CreateWaveRequest.title` is
+// `#[serde(default)]`, and the spec agent names the wave itself once it knows
+// what the wave is for (`calm.wave.rename`, which succeeds only while the
+// title is empty). A sentence collected here now lands nowhere and, worse,
+// gives the wave a non-empty title that makes every later `calm.wave.rename`
+// answer `already_named`.
+//
+// So the draft carries **no `title` key at all** — not an empty string — and
+// the first thing the reader says is said in the spec conversation the wave
+// page opens for them. The dialog is two optional choices and a button.
 //
 // Presentational + local form state — it never calls an API. The caller owns
 // POST /api/waves, `submitting`, `error`, and the template list itself.
@@ -35,7 +50,7 @@
 //
 // "No template" is a first-class option and the default, and it is **not** a
 // row the server sent: it is the absence of a template, i.e. a create with no
-// `workflow_id` — precisely today's behaviour. Everything about this list is
+// `template_id` — precisely today's behaviour. Everything about this list is
 // arranged so that staying on it is free. In particular `templates` may be
 // empty because the read failed or has not landed, and the dialog is fully
 // usable in that state: this is the app's only wave-creation entry point, and
@@ -44,12 +59,13 @@
 // The words on screen are the reader's, not the codebase's. The chip asks
 // ("Choose a template") until there is something to name, and the sentinel is
 // "No template" in the list — `Blank` was this file's own word for "no
-// `workflow_id` on the wire", and it had ended up on a control read by someone
-// who has not been told this app has workflows.
+// `template_id` on the wire", and it had ended up on a control read by someone
+// who has not been told this app has templates.
 //
-// The vocabulary seam is deliberate and recorded in #1209: the read side says
-// *template*, the write side says `workflow_id`. This form speaks the read
-// side's word to the user and the write side's word on the wire.
+// One concept, one word, one field: the list, the chip and the wire all say
+// *template* / `template_id`. (#1209 removed the vocabulary seam this comment
+// used to describe, where the read side and the write side used different
+// words for the same thing.)
 //
 // ### Collapsed, not spread out
 //
@@ -152,10 +168,14 @@ import { useState } from '../../../ui/state/public.ts';
 import styles from './new-wave.module.css';
 
 export type NewWaveDraft = Readonly<{
-  title: string;
+  /* No `title` key. The field that collected one is gone (#1211 S2) and the
+     key went with it, so the caller's POST omits it and the kernel takes its
+     `#[serde(default)]` branch — the empty title `calm.wave.rename` may fill
+     in. Absent rather than `''`: the two reach the same stored value but say
+     different things about who decided the name. */
   /** Absent for Blank — never `null` or `''`, which the kernel 400s. */
-  workflow_id?: string;
-  workflow_input?: Readonly<Record<string, unknown>>;
+  template_id?: string;
+  template_input?: Readonly<Record<string, unknown>>;
   /**
    * Absolute path, **or the key is absent**. Absent is not "the empty string":
    * the caller distinguishes the two to decide whether the request carries
@@ -197,10 +217,14 @@ export type NewWaveFormProps = Readonly<{
    * not think about opening focus, and an optional prop lets the next one make
    * the same omission silently.
    *
-   * astryx's `TextInput` forwards its ref to the `<input>` itself, so this
-   * keeps pointing at the element the dialog must focus.
+   * It aims at the **Start from** trigger now, and the rename from `titleRef`
+   * is the point: the input it used to hold is gone (#1211 S2), and a ref left
+   * unattached would have put the dialog straight back on the Close button —
+   * the #1161 defect, restored by deletion rather than by a call site.
+   * `DropdownMenu` forwards `button.ref` to its trigger, so this is a real
+   * handle on the first control the reader can act on.
    */
-  titleRef: RefObject<HTMLInputElement | null>;
+  startFromRef: RefObject<HTMLButtonElement | null>;
   onCancel: () => void;
   onSubmit: (draft: NewWaveDraft) => void;
 }>;
@@ -219,9 +243,9 @@ const BLANK = '';
 /**
  * The two things the template chip can say, and neither of them is "Blank".
  *
- * `Blank` was the codebase's word for "no `workflow_id` on the wire", and it
+ * `Blank` was the codebase's word for "no `template_id` on the wire", and it
  * had leaked onto a chip a person reads before they know this app has
- * workflows at all. What a reader needs from an unset control is what it is
+ * templates at all. What a reader needs from an unset control is what it is
  * *for*, in the words they would use themselves — so unset the chip asks, and
  * once a choice exists it names it. The absence itself keeps a plain name of
  * its own in the menu, because a list of alternatives has to be able to offer
@@ -229,19 +253,6 @@ const BLANK = '';
  */
 const CHOOSE_TEMPLATE = 'Choose a template';
 const NO_TEMPLATE = 'No template';
-
-/**
- * The Task field's accessible name.
- *
- * Not rendered: the field is one line and a label above it spent a whole row
- * to say what the placeholder already says. Hidden, not absent — an unnamed
- * textbox is unusable by screen reader and by voice control alike.
- *
- * It is also no longer "Task". This value becomes the wave's `title`, and
- * calling it Task was a second name for a field that already had one.
- */
-const TASK_LABEL = 'What this wave should do';
-const TASK_PLACEHOLDER = 'What should this wave do?';
 
 /**
  * What the folder chip says while there is no folder — its visible text, its
@@ -281,10 +292,9 @@ function needsInput(template: WaveTemplate | undefined): boolean {
 
 export function NewWaveForm({
   submitting, error, templates, templatesError = null, listDirectory,
-  titleRef, onCancel, onSubmit,
+  startFromRef, onCancel, onSubmit,
 }: NewWaveFormProps) {
   const fieldId = useId();
-  const [title, setTitle] = useState('');
   const [selected, setSelected] = useState<string>(BLANK);
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
@@ -309,7 +319,14 @@ export function NewWaveForm({
   const issueUrlTouched = issueUrl.trim() !== '';
   const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
   const inputBlocker = unsupportedInput || (issueDev && parsedIssue === null);
-  const valid = title.trim() !== '' && !inputBlocker;
+  /*
+   * Nothing is required any more. The half that read `title.trim() !== ''` is
+   * gone with the field (#1211 S2): a wave with no name is the normal way to
+   * start one, so opening this dialog and pressing Create is a complete
+   * gesture. What is left blocks only a template whose input this build cannot
+   * collect or has not been given — a request the kernel would refuse.
+   */
+  const valid = !inputBlocker;
 
   /*
    * One status slot on the field, and the two things that can fill it never
@@ -329,17 +346,17 @@ export function NewWaveForm({
        `cwd: undefined` is a different object from no `cwd` for anything that
        inspects the draft before it is serialized — including the tests. */
     const folder = cwd.trim();
-    const base = { title: title.trim(), ...(folder === '' ? {} : { cwd: folder }) };
+    const base = { ...(folder === '' ? {} : { cwd: folder }) };
     if (effectiveSelection === BLANK) return base;
-    if (parsedIssue === null) return { ...base, workflow_id: effectiveSelection };
+    if (parsedIssue === null) return { ...base, template_id: effectiveSelection };
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     return {
       ...base,
-      workflow_id: effectiveSelection,
-      workflow_input: { ...parsedIssue, merge_policy: mergePolicy },
+      template_id: effectiveSelection,
+      template_input: { ...parsedIssue, merge_policy: mergePolicy },
     };
   }
 
@@ -362,32 +379,19 @@ export function NewWaveForm({
         <Banner status="error" title={error} data-nc-new-wave-error />
       )}
 
-      {/* Single-line, not a textarea: this value is the wave's `title`, and
-          every other place that shows it — sidebar, wave list, page header —
-          renders it as one truncated line, and the wave page edits it through
-          the single-line `EditableTitle`. A three-row box was this one entry
-          point promising a shape the rest of the app cannot keep. */}
-      <TextInput
-        ref={titleRef}
-        label={TASK_LABEL}
-        isLabelHidden
-        placeholder={TASK_PLACEHOLDER}
-        value={title}
-        width="100%"
-        data-nc-new-wave-title
-        onChange={(value) => setTitle(value)}
-      />
-
       {/* ── The two settings, as one row of chips ────────────────────────────
           What this wave starts from and where it runs are the same *kind* of
           thing: one optional choice each, both defaulted, both changing only
-          what the task above them is carried out on. They used to be two
-          stacked full-width rows — a label, a box the width of the dialog, and
-          for the folder a two-line paragraph under it — which gave two
-          secondary settings more of the dialog than the sentence the wave is
-          actually about. Same size, same variant, same row: the input is the
-          dialog, and these sit under it the way a composer's controls sit
-          under its text.
+          what the wave's work is carried out on. They used to be two stacked
+          full-width rows — a label, a box the width of the dialog, and for the
+          folder a two-line paragraph under it — which gave two secondary
+          settings the whole width of the dialog. Same size, same variant, same
+          row.
+
+          They are the dialog's only content now that the task sentence is gone
+          (#1211 S2), and that is the shape the product wants: two settings
+          most readers leave alone, and a Create button that is never blocked
+          by anything they have not typed.
 
           Each chip says what it is for and then what it holds — "Choose a
           template" until one is chosen, then the template's title — so the row
@@ -401,6 +405,10 @@ export function NewWaveForm({
           placement="below"
           button={{
             id: triggerId,
+            /* The dialog's opening focus (#1161, re-aimed by #1211 S2). This
+               is now the first control in the form, and `DropdownMenu`
+               forwards `button.ref` onto the trigger it renders. */
+            ref: startFromRef,
             label: chosen?.title ?? CHOOSE_TEMPLATE,
             /* The chip's text is the choice; its *name* has to survive being
                read on its own, out of the row, with nothing beside it — so it

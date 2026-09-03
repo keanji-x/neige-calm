@@ -21,7 +21,8 @@ use crate::model::{
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
     CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
-    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, ViaToolCall,
+    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, SpecRunTokenUsage,
+    ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -37,7 +38,8 @@ use crate::routes::plugins::{
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
 use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
-use crate::routes::today::TodayLaunchpad;
+use crate::routes::today::{TodayLaunchpad, TodayLaunchpadResolved};
+use crate::routes::today_summary::TodaySummaryStarted;
 use crate::routes::version::VersionInfo;
 use crate::routes::wave_report_blocks::{
     CreateReportBlockBody, DeleteReportBlockBody, MoveReportBlockBody, ReportBlockWriteResponse,
@@ -78,6 +80,7 @@ use utoipa::OpenApi;
         crate::routes::cove_folders::resolve_path,
         // ---- waves ----
         crate::routes::wave_templates::list_wave_templates,
+        crate::routes::wave_templates::update_wave_template,
         // ---- wave conversations (#1189) ----
         crate::routes::wave_conversations::list_wave_conversations,
         crate::routes::wave_conversations::create_wave_conversation,
@@ -99,6 +102,8 @@ use utoipa::OpenApi;
         crate::routes::waves::list_wave_files,
         crate::routes::waves::cat_wave_file,
         crate::routes::today::ensure_today_launchpad,
+        crate::routes::today::resolve_today_launchpad,
+        crate::routes::today_summary::write_today_summary,
         // ---- cards ----
         crate::routes::cards::list_cards_by_wave,
         crate::routes::cards::create_card,
@@ -167,6 +172,8 @@ use utoipa::OpenApi;
         WavePatch,
         WaveWorkspacePatch,
         TodayLaunchpad,
+        TodayLaunchpadResolved,
+        TodaySummaryStarted,
         WavesWindowQuery,
         WaveFsLsQuery,
         WaveFsCatQuery,
@@ -177,6 +184,8 @@ use utoipa::OpenApi;
         WaveBacklinksResponse,
         crate::routes::wave_templates::WaveTemplate,
         crate::routes::wave_templates::WaveTemplateTask,
+        crate::routes::wave_templates::WaveTemplateUpdate,
+        crate::routes::wave_templates::WaveTemplateGoalEdit,
         WaveFsCardMeta,
         WaveFsRunStatus,
         WaveFsRunVerdictSummary,
@@ -208,6 +217,7 @@ use utoipa::OpenApi;
         crate::routes::wave_conversations::NewWaveConversationBody,
         InterruptSpecCardResponse,
         GetSpecRunResponse,
+        SpecRunTokenUsage,
         HarnessPhaseTag,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;

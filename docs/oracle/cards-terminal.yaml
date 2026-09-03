@@ -4036,7 +4036,7 @@
   why: >
     viewer 直接读 kernel 落盘的 JSON；schema 与生成类型漂移会让 viewer 静默
     退化成原始 JSON 而无人察觉
-  source: web/src/wave-fs-viewers/schemas.ts:1-145
+  source: web/src/wave-fs-viewers/schemas.ts:1-215
   authoritative_test: web/src/wave-fs-viewers/schemas.test.ts:42
   owner_slice: systems/fs-viewers/schemas
   intentional_omission: false

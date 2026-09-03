@@ -45,6 +45,7 @@ import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileCoves } from './mobile-coves.tsx';
 import { MobilePages } from './mobile-pages.tsx';
+import { SettingsOverlay } from './settings-overlay.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -52,6 +53,8 @@ export type AppShellProps = Readonly<{
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
+  /** Settings › Plugins, from the rail's account menu. */
+  onOpenPlugins: () => void;
   onSignOut: () => void;
   /** Pinned by tests so `pinned_at` assertions are stable. */
   nowMs?: number;
@@ -115,7 +118,9 @@ export function useOpenMobileSection(): OpenMobileSection {
 type CoveSelection = Readonly<{ coveId: string | null; motion: 'none' | 'forward' | 'back' }>;
 const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'none' });
 
-export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
+export function AppShell({
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
+}: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
   const coveMutations = useCoveMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
@@ -202,9 +207,16 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
-  // Named explicitly rather than left to the dialog's first-focusable default,
-  // which is the Close button (#1161).
-  const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * Named explicitly rather than left to the dialog's first-focusable default,
+   * which is the Close button (#1161).
+   *
+   * It aims at the form's **Start from** trigger. It used to aim at the task
+   * `<input>`, and that field is gone (#1211 S2) — leaving the ref where it
+   * was would have handed the opening focus back to Close, i.e. reintroduced
+   * #1161 by deleting a field rather than by forgetting a prop.
+   */
+  const newWaveStartFromRef = useRef<HTMLButtonElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   /*
@@ -287,13 +299,19 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     setCreateError(null);
     void waveMutations.create({
       cove_id: newWaveCoveId,
-      title: draft.title,
+      /*
+       * No `title`, and not an empty string either (#1211 S2). The kernel's
+       * `#[serde(default)]` branch is what stores the empty title that
+       * `calm.wave.rename` is allowed to fill in; a `title: ''` on the wire
+       * reaches the same stored value today, but it says this client decided
+       * the name — and the whole point is that it did not.
+       */
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: Blank leaves both keys absent, and
-      // `workflow_id: undefined` is not the same request as no `workflow_id`
+      // `template_id: undefined` is not the same request as no `template_id`
       // for anything that inspects the object before it is serialized.
-      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
-      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
+      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
        * already claimed by some cove", which the kernel answers with a 409
@@ -312,7 +330,17 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
     }).then((wave) => {
       setNewWaveCoveId(null);
-      go({ name: 'wave', waveId: wave.id });
+      /*
+       * The wave is created unnamed and with nothing said in it (#1211 S2), so
+       * landing on a wave page with a shut drawer would be landing on a blank
+       * page with no visible way to begin. `openSpec` is a property of *this
+       * move*: it travels in the state of the history entry this navigation
+       * creates, and the wave route redeems it there (`useSpecOpenIntent`).
+       * It is not a request left lying in a provider — this callback also runs
+       * from the rail, with some other wave still on screen, and a global slot
+       * is readable and clearable by that wave's route body too.
+       */
+      go({ name: 'wave', waveId: wave.id, openSpec: true });
     }).catch((error: unknown) => {
       const conflict = folderConflictOf(error);
       if (conflict !== null) {
@@ -399,6 +427,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
               await waveMutations.remove(waveId, coveId, signal);
             }}
             onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
+            onOpenPlugins={() => { closeMobileSection(); onOpenPlugins(); }}
             onSignOut={() => { closeMobileSection(); onSignOut(); }}
             userLabel={userLabel}
           />}
@@ -454,11 +483,16 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           </button>
         ))}
       </nav>
+      {/* Owned here for the same reason the New wave dialog is: it has to stay
+          mounted while the reader navigates *inside* it (General → Plugins is a
+          route change), and the shell is the nearest thing above `<Outlet />`
+          that survives one. See `settings-overlay.tsx`. */}
+      <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
-        initialFocusRef={newWaveTitleRef}>
+        initialFocusRef={newWaveStartFromRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm
-            titleRef={newWaveTitleRef}
+            startFromRef={newWaveStartFromRef}
             submitting={creating}
             error={createError}
             templates={waveTemplates.templates}

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -177,7 +177,7 @@ describe('WavePage task inventory', () => {
        carriers the colour is a shorthand for. */
     const dot = screen.getByRole('img', { name: 'Status: running' });
     expect(dot.getAttribute('title')).toBe('running');
-    expect(dot.dataset.ncTaskStatus).toBe('running');
+    expect(dot.dataset.ncStatus).toBe('running');
   });
 
   /*
@@ -194,7 +194,7 @@ describe('WavePage task inventory', () => {
    *    assertion and fail the reader;
    *  - the `title` carries the same string, which is what a sighted pointer
    *    gets;
-   *  - `data-nc-task-status` stays the bare status word, because it is what the
+   *  - `data-nc-status` stays the bare status word, because it is what the
    *    colour selector keys on: folding the reason into it would leave a failed
    *    row uncoloured.
    */
@@ -208,7 +208,7 @@ describe('WavePage task inventory', () => {
     const dot = screen.getByRole('img', { name: /^Status: failed/ });
     expect(dot.getAttribute('aria-label')).toBe('Status: failed — wave 9a4c is not a git repository');
     expect(dot.getAttribute('title')).toBe('failed — wave 9a4c is not a git repository');
-    expect(dot.dataset.ncTaskStatus).toBe('failed');
+    expect(dot.dataset.ncStatus).toBe('failed');
     /* And the row it sits in reads as one sentence, key first. */
     expect(screen.getByRole('button', {
       name: /^delta.?Status: failed — wave 9a4c is not a git repository$/,
@@ -451,19 +451,36 @@ describe('WavePage card inventory', () => {
     expect(onOpenCard).toHaveBeenCalledWith('k1');
   });
 
-  it('opens a mobile Card detail page without entering Grid', async () => {
+  /*
+   * REPLACES "opens a mobile Card detail page without entering Grid" (#1234
+   * S1b-4a). The detail page is gone, and so is the row that opened it: opening
+   * a card is not offered on this viewport at all (`mobile-painter.tsx`'s
+   * capability table), so the mobile Cards row is not a control.
+   *
+   * What survives of the old case's intent is its first assertion — the mobile
+   * row must not reach `onOpenCard` — and it is stronger now: within the mobile
+   * panel there is no button bearing this row's visible name. That is this
+   * line's reach, and no more: a control renamed away from `/Build log/` would
+   * slip past it. The name-independent guarantee — *no* button under any
+   * `[data-nc-row]`, on a render where the desktop's row actions do exist — is
+   * the pair of button counts in `mobile-projection.test.tsx`'s "offers no card
+   * affordance" case. This case keeps the behavioural half here, where the
+   * desktop's own `onOpenCard` wiring is asserted one test above, so the two
+   * surfaces' opposite answers to the same prop sit side by side.
+   */
+  it('offers no card control on the mobile page: the row is text, not a landing', async () => {
     const onOpenCard = vi.fn();
     renderPage({ cards: [card({ id: 'k1', title: 'Build log' })], onOpenCard });
     await openCards();
-    const cardRow = screen.getByRole('button', { name: 'Build log' });
-    await userEvent.click(cardRow);
+    const panel = document.querySelector('[data-nc-mobile-panel]');
+    expect(panel?.textContent).toContain('Build log');
+    expect(within(panel as HTMLElement).queryByRole('button', { name: /Build log/ })).toBeNull();
     expect(onOpenCard).not.toHaveBeenCalled();
+    /* Still a pushed page with its own return to Report — that half of the old
+       case is about the panel, not about the card. */
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
-    expect(screen.getByRole('heading', { name: 'Build log' })).toBeTruthy();
-    expect(screen.getByText('Card ID').nextElementSibling?.textContent).toBe('k1');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Back to Cards' }));
-    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
+    expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
   it('falls back to the kind when a card has no title', () => {
@@ -498,15 +515,22 @@ describe('WavePage card inventory', () => {
 
   it('invokes onDeleteCard with the wire id of the row it sits on', async () => {
     const onDeleteCard = vi.fn();
+    const onOpenCard = vi.fn();
     renderPage({
       cards: [card({ id: 'k1', title: 'Build log' }), card({ id: 'k2', title: 'Notes' })],
       onDeleteCard,
+      onOpenCard,
     });
     await userEvent.click(screen.getByRole('button', { name: 'Delete card Notes' }));
     expect(onDeleteCard).toHaveBeenCalledWith('k2');
-    // The row button itself must not have fired: the delete is a sibling, and a
-    // click that also opened the card would be one gesture doing two things.
     expect(onDeleteCard).toHaveBeenCalledTimes(1);
+    // The row button itself must not have fired: the delete is a *sibling* of it
+    // rather than a child, precisely so one gesture cannot do two things. The
+    // call count above cannot see that — it only counts deletes — so
+    // `onOpenCard` is supplied for this one assertion. Without it in the props
+    // there is no callback for a nested-interaction regression to reach, and
+    // the claim would be about something the page never had.
+    expect(onOpenCard).not.toHaveBeenCalled();
   });
 
   it('withholds the delete on a kernel-owned card even when onDeleteCard is supplied', () => {

@@ -19,7 +19,9 @@ import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
-import { waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle } from '../../../../../core/domain/wave.ts';
+import {
+  UNTITLED_WAVE_LABEL, waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle,
+} from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
@@ -30,9 +32,13 @@ import {
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
-import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
+import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
+import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
+import type { RowModuleView, WavePageView } from '../../../../../core/view/panel.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
+import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
+import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import styles from './page.module.css';
 
 export type WavePageProps = Readonly<{
@@ -84,10 +90,13 @@ export type WavePageProps = Readonly<{
    *
    * The panel is a navigation *destination*, so its identity lives in the URL
    * (`?panel=`, #1191 §1) and `app/router` reads it — `features/**` may not
-   * import `app/**`, and this page stays a pure renderer. The mobile **card
-   * detail** below is the deliberate exception (§0.1): its legal set is the
-   * panel's cards, which includes cards `?card=` would bounce off the URL, so a
-   * URL-borne detail page could not open them at all.
+   * import `app/**`, and this page stays a pure renderer.
+   *
+   * There used to be a fifth mobile page below — a card **detail** held in
+   * component state rather than the URL, because its legal set included cards
+   * `?card=` would bounce off. #1234 S1b-4a deleted it: opening a card is not
+   * offered on this viewport (`mobile-painter.tsx`'s capability table), so the
+   * page it drilled into had nothing left to be.
    */
   panel?: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
   onOpenPanel?: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;
@@ -106,26 +115,24 @@ function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
   return lifecycle;
 }
 
-/**
- * What the status dot says, in words: the status, then the kernel's reason for
- * it when there is one (#1149 / #1147).
- *
- * The status word comes **first and always**, because this string is the dot's
- * whole accessible name — the colour carries nothing on its own, and a reader
- * who lands here must get `failed` before any prose about it. The reason is
- * appended, never substituted: `failed — wave … is not a git repository` is
- * strictly more than `failed`, whereas a name that printed the reason alone
- * would have traded the one fact the row must carry for a nicer one.
- *
- * The em dash separator is the only formatting decision here; the reason
- * arrives already collapsed to one bounded line from `deriveReportTasks`, which
- * is where that judgement belongs.
- */
-function taskStatusPhrase(status: string, detail: string | null): string {
-  return detail === null ? status : `${status} — ${detail}`;
-}
-
 type MobilePanelKind = 'outline' | 'cards' | 'tasks' | 'conversations';
+
+/**
+ * The view model's module under `key`.
+ *
+ * A lookup by key rather than by index: `deriveWavePageView` derives both row
+ * modules, and reading one out by position would bind this page to the
+ * derivation's *order* — a fact it has no business knowing, and the same
+ * re-derivation `desktop-painter.tsx` avoided by carrying `parts.key` through
+ * its leaves. Missing is an error rather than an empty page, because a mobile
+ * page silently rendering nothing is precisely how a surface goes missing
+ * without anything noticing.
+ */
+function rowModule(view: WavePageView, key: RowModuleView['key']): RowModuleView {
+  const found = view.rowModules.find((module) => module.key === key);
+  if (found === undefined) throw new Error(`the wave page view has no ${key} module`);
+  return found;
+}
 
 export function WavePage({
   wave, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
@@ -139,23 +146,57 @@ export function WavePage({
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  const [mobileCardId, setMobileCardId] = useState<string | null>(null);
+  /** The drill-down page's entrance animation — a *panel* fact, not a card one:
+   *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
+   *  detail page it was named after is gone; the motion is not.) */
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
-  const mobileCard = mobileCardId === null ? undefined : cards.find((card) => card.id === mobileCardId);
   const lifecycle = headerLifecycle(wave.lifecycle);
+  /*
+   * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
+   *
+   * One derivation, one traversal, one painter. What this file used to do — walk
+   * `cards` and `tasks` itself and spell each row's DOM inline — is what let the
+   * two viewports drift apart in the first place.
+   *
+   * **This file may not spell a projection marker.** Not one of the six
+   * attribute names in `core/view/panel.ts`'s `MARKER` table, in either their
+   * attribute spelling or their `dataset` one.
+   * `desktop-projection.test.tsx` asserts that absence mechanically, over this
+   * file's own source and in both spellings — which is why this comment names
+   * none of them.
+   *
+   * **What that scan is, exactly.** It stops this file from *rewriting a marker
+   * literal in place*, which is the cheap way the panel would drift back into
+   * being hand-composed. It is **not** a proof that the painter ran: a marker
+   * can reach the DOM from here with no literal at all — a computed property, a
+   * concatenation, a marker-channel prop (`ui/panel-card` takes three), or a
+   * component imported from a file that carries markers of its own. The claim
+   * that this page goes *through* `paintDesktopPanel` and renders what it hands
+   * back is `desktop-entry.test.tsx`'s, and it is held by holding the call
+   * rather than by any marker's spelling.
+   *
+   * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
+   * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.
+   *
+   * **Since S1b-4a the mobile Cards page is a second renderer of the same
+   * derivation** (`paintMobileModule`), with `mobile-entry.test.tsx` holding
+   * that call the way `desktop-entry.test.tsx` holds the desktop's. The mobile
+   * Tasks page is still hand-composed below; that is S1b-4b.
+   */
+  const panelView = deriveWavePageView({ cards, tasks });
+  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
   const mobilePanelRef = useRef<HTMLElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
   /*
-   * Opening the card grid cannot leave a card detail behind it. The *panel*
-   * needs no closing here: `?card=` and `?panel=` are mutually exclusive by
-   * construction, and `app/router` gives the card precedence when both somehow
-   * appear (§0.1).
+   * Opening the card grid leaves no drill-down animation queued behind it. The
+   * *panel* needs no closing here: `?card=` and `?panel=` are mutually
+   * exclusive by construction, and `app/router` gives the card precedence when
+   * both somehow appear (§0.1).
    */
   useEffect(() => {
     if (!boardOpen) return;
-    setMobileCardId(null);
     setMobileCardMotion('none');
   }, [boardOpen]);
 
@@ -163,19 +204,14 @@ export function WavePage({
     if (!mobilePanelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (mobileCardId !== null) {
-        setMobileCardMotion('back');
-        setMobileCardId(null);
-      } else {
-        // Through the URL, not a local flag: Escape and the hardware Back
-        // button must end in the same place (#1191 §2.4).
-        setMobileCardMotion('none');
-        onClosePanel?.();
-      }
+      // Through the URL, not a local flag: Escape and the hardware Back
+      // button must end in the same place (#1191 §2.4).
+      setMobileCardMotion('none');
+      onClosePanel?.();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mobileCardId, mobilePanelOpen, onClosePanel]);
+  }, [mobilePanelOpen, onClosePanel]);
 
   /*
    * ── The focus contract (#1191 §2.5) ─────────────────────────────────────
@@ -200,21 +236,25 @@ export function WavePage({
     mobileActionsRef.current?.querySelector('button')?.focus({ preventScroll: true });
   }, [panel]);
 
-  /** Every entry into a panel: the card detail is a page *inside* it, never a leftover. */
+  /** Every entry into a panel: the page slides in from the trailing edge. */
   const openMobilePanel = (kind: MobilePanelKind) => {
     setMobileCardMotion('forward');
-    setMobileCardId(null);
     onOpenPanel?.(kind);
   };
   /** Leaving the panel by a navigation that clears `?panel=` on its own (§1.4). */
   const leaveMobilePanel = () => {
     setMobileCardMotion('none');
-    setMobileCardId(null);
   };
   const closeMobilePanel = () => {
     leaveMobilePanel();
     onClosePanel?.();
   };
+
+  /* Rebuilt per render, like the desktop's: the page chrome it closes over —
+     where Back goes, how the page animates in — is a fact about this render. */
+  const mobilePainter = makeMobilePainter({
+    onOpenTask, backLabel: 'Report', onBack: closeMobilePanel, motion: mobileCardMotion,
+  });
 
   const mobileActions = !boardOpen ? (
     <span className={styles.mobilePanelButton} ref={mobileActionsRef}>
@@ -276,8 +316,22 @@ export function WavePage({
                 <Icon name="arrow-left" />
               </button>
             )}
+            {/*
+              The **raw** title, with the fallback handed over as the
+              placeholder (#1211). `waveDisplayTitle(wave.title)` here used to
+              be both, so the editor opened on an unnamed wave holding the
+              words `Untitled wave` — text the reader had to delete before
+              typing. The header still reads the same; only the box changed.
+
+              `emptyCommit="clear"` is the other half: a wave has a second
+              namer (the spec agent's `calm.wave.rename`, which succeeds only
+              while the title is empty), so clearing the name is a real request
+              here and not the cancel it is on a cove.
+            */}
             <h1 className={styles.titleHeading}><EditableTitle
-              value={waveDisplayTitle(wave.title)}
+              value={wave.title}
+              placeholder={UNTITLED_WAVE_LABEL}
+              emptyCommit="clear"
               onCommit={onRenameWave}
               editLabel="Rename wave"
               inputLabel="Wave title"
@@ -374,24 +428,17 @@ export function WavePage({
              lands when the panel opens (§2.5), never a Tab stop of its own. */
           tabIndex={mobilePanelOpen ? -1 : undefined}
         >
-          <div className={styles.mobileListSurface} aria-hidden={mobilePanelOpen ? undefined : true} inert={!mobilePanelOpen}>
-            {mobilePanelOpen && (mobileCard !== undefined ? (
-              <MobileListPage
-                title={mobileCard.title ?? mobileCard.kind}
-                backLabel="Cards"
-                motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('back');
-                  setMobileCardId(null);
-                }}
-              >
-                <dl className={styles.mobileCardFacts}>
-                  <div><dt>Kind</dt><dd>{mobileCard.kind}</dd></div>
-                  <div><dt>Ownership</dt><dd>{mobileCard.deletable ? 'User card' : 'Kernel-owned'}</dd></div>
-                  <div><dt>Card ID</dt><dd>{mobileCard.id}</dd></div>
-                </dl>
-              </MobileListPage>
-            ) : mobilePanelKind === 'outline' ? (
+          <div
+            className={styles.mobileListSurface}
+            /* The projection's root on this surface, and the mirror of
+               `data-nc-desktop-panel` below: the two surfaces are siblings and
+               are in the DOM at the same time, so a whole-page scan would read
+               them as one tree now that both carry markers. */
+            data-nc-mobile-panel=""
+            aria-hidden={mobilePanelOpen ? undefined : true}
+            inert={!mobilePanelOpen}
+          >
+            {mobilePanelOpen && (mobilePanelKind === 'outline' ? (
               <MobileListPage
                 title="Outline"
                 backLabel="Report"
@@ -426,30 +473,24 @@ export function WavePage({
                 </MobileList>
               </MobileListPage>
             ) : mobilePanelKind === 'cards' ? (
-              <MobileListPage
-                title="Cards"
-                backLabel="Report"
-                motion={mobileCardMotion}
-                onBack={closeMobilePanel}
-              >
-                <MobileList>
-                  {cards.map((card) => {
-                    const label = card.title ?? card.kind;
-                    return (
-                      <MobileListItem
-                        key={card.id}
-                        title={label}
-                        meta={card.kind}
-                        onSelect={() => {
-                          setMobileCardMotion('forward');
-                          setMobileCardId(card.id);
-                        }}
-                      />
-                    );
-                  })}
-                  {cards.length === 0 && <MobileListEmpty>No cards yet.</MobileListEmpty>}
-                </MobileList>
-              </MobileListPage>
+              /*
+                ── The mobile Cards page goes through `core/view` (#1234 S1b-4a) ──
+                *
+                * One derivation, one painter, one module. What this branch used
+                * to do — walk `cards` itself and spell each row inline — is the
+                * half of the drift the desktop's own slice could not reach: an
+                * untitled card printed its kind twice here and nowhere else,
+                * `kernel-owned` was missing, and the row opened a detail page
+                * the desktop has no counterpart for.
+                *
+                * **One module, not the panel**: mobile drills into a module at
+                * a time, so this is `paintModule` (Δ2), and the module sequence
+                * lives in the navigation menu above.
+                *
+                * The two card actions are gone by decision, not by
+                * omission — see `mobile-painter.tsx`'s capability table.
+              */
+              paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))
             ) : mobilePanelKind === 'tasks' ? (
               <MobileListPage
                 title="Tasks"
@@ -487,65 +528,17 @@ export function WavePage({
               </MobileListPage>
             ))}
           </div>
-          <div className={styles.desktopPanelSurface} aria-hidden={mobilePanelOpen ? true : undefined} inert={mobilePanelOpen}>
+          <div
+            className={styles.desktopPanelSurface}
+            /* The projection's root on this surface. `.mobileListSurface` is a
+               sibling and is in the DOM at the same time (the desktop side only
+               takes `inert`), so a whole-page scan would mix the two the moment
+               S1b-4 marks the mobile rows. */
+            data-nc-desktop-panel=""
+            aria-hidden={mobilePanelOpen ? true : undefined}
+            inert={mobilePanelOpen}
+          >
           <PanelCard>
-            <PanelModule title="Cards" action={cardsAction}>
-              {cards.length === 0
-                ? <PanelEmpty>No cards yet.</PanelEmpty>
-                : (
-                  <ul className={styles.cards} data-nc-card-inventory="">
-                    {cards.map((card) => {
-                      const title = card.title ?? null;
-                      /*
-                        The delete is a **sibling** of the row button, not a
-                        child of it: nesting one interactive element inside
-                        another is invalid HTML and trips axe's
-                        `nested-interactive`. Same construction, same hover
-                        reveal and same trailing column as `features/wave/row`'s
-                        panel variant — a card row and a wave row are the same
-                        kind of row in the same kind of card.
-
-                        `deletable === false` is the kernel saying it owns this
-                        row (the wave report, the spec harness). Those rows say
-                        `kernel-owned` where the × would be, so the absent
-                        control has a reason printed next to it rather than
-                        being a hole the reader has to explain.
-                      */
-                      const removable = onDeleteCard !== undefined && card.deletable;
-                      return (
-                        <li key={card.id} className={styles.cardItem}>
-                          <button
-                            type="button"
-                            className={`${styles.cardRow} ${removable ? styles.cardRowRemovable : ''}`}
-                            onClick={() => onOpenCard?.(card.id)}
-                          >
-                            <span className={styles.cardKind}>{title ?? card.kind}</span>
-                            <span className={styles.cardMeta}>
-                              {/* Only when a title took the name slot — an
-                                  untitled card is already showing its kind
-                                  there, and printing it twice is noise. */}
-                              {title !== null && <span className={styles.cardKindTag}>{card.kind}</span>}
-                              {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
-                            </span>
-                          </button>
-                          {removable && (
-                            <button
-                              type="button"
-                              data-nc-role="icon"
-                              className={styles.cardRemove}
-                              aria-label={`Delete card ${title ?? card.kind}`}
-                              title="Delete card"
-                              onClick={() => onDeleteCard(card.id)}
-                            >
-                              <Icon name="close" size="sm" />
-                            </button>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-            </PanelModule>
             {/*
               ── FOLDER became TASKS ─────────────────────────────────────────
               *
@@ -576,186 +569,13 @@ export function WavePage({
               * Still not a file browser, and §8.3's reasoning for cutting FILES
               * is untouched: evidence a report wants you to see belongs in the
               * report, as a block.
+              *
+              * Both row modules — Cards and Tasks, in the view model's order —
+              * are one traversal now. Their DOM lives in `desktop-painter.tsx`,
+              * which is where the reasoning about each row's shape moved with
+              * it.
             */}
-            <PanelModule title="Tasks">
-              {tasks.length === 0
-                ? <PanelEmpty>No tasks declared yet.</PanelEmpty>
-                : (
-                  <ul className={styles.tasks} data-nc-task-inventory="">
-                    {tasks.map((task) => {
-                      /* Bound before the JSX: narrowing a property access does
-                         not survive into a click handler, and the alternative
-                         is a cast that would outlive the check it stands in
-                         for. */
-                      const workerCardId = task.workerCardId;
-                      return (
-                      /*
-                        ── Two controls in one row, not one control with two
-                        destinations ───────────────────────────────────────────
-
-                        The row used to *be* a `<button>`, and which of the two
-                        landings it took was decided for the reader: a
-                        dispatched task opened its worker card and everything
-                        else revealed the block. That is one affordance
-                        pretending to be two, and the cost fell on the case it
-                        was meant to help — once a task was running, the panel
-                        could no longer reach its declaration at all.
-
-                        So the row is a plain `<li>` carrying two siblings, and
-                        each says what it does:
-
-                          - the row itself always reveals the block — the same
-                            landing the outline, a `neige://` link and a
-                            backlink all use;
-                          - the *kind* (`terminal` / `codex` / `claude`) is the
-                            card affordance, and only when there is a card to
-                            open. `app/router` has already cleared
-                            `workerCardId` for any card the **registry** cannot
-                            draw, so such a row's kind renders as a label and
-                            routes nowhere rather than bouncing the reader off
-                            the URL.
-
-                        A `<button>` may not nest inside a `<button>`, which is
-                        the mechanical reason the row stopped being one; both
-                        controls are still `<button>` + callback, and there is
-                        still no `<a href>` here (INV-A11Y-061).
-
-                        **"The row reveals the block" is enforced in CSS, not by
-                        DOM containment.** Nesting is what would make it a DOM
-                        fact, and nesting is the one thing forbidden here — so
-                        the reveal button paints an invisible sheet over the
-                        whole `<li>` (`.taskReveal::before`), and the two things
-                        that must stay on top of it are the kind *button* and
-                        the status dot. Everything else in the row is the reveal
-                        control's own target: the kind's non-clickable `<span>`
-                        form, and the trailing lane of a row that has no dot.
-                        Both of those were dead zones, in a row whose whole
-                        contract is that it is clickable, so the claim is
-                        hit-tested in `task-row.browser.test.tsx` rather than
-                        asserted here — jsdom has no layout and reports this
-                        same tree whether the sheet covers the row or nothing.
-                      */
-                      <li key={task.blockId} className={styles.taskRow}>
-                        <button
-                          type="button"
-                          className={styles.taskReveal}
-                          title={`Show ${task.key} in the report`}
-                          onClick={() => onOpenTask?.(task.blockId)}
-                        >
-                          {/* Mono: the key is the literal other reports and the
-                              kernel address this task by (§2.2). */}
-                          <span className={styles.taskKey}>{task.key}</span>
-                          {/*
-                            The declaration's own word — `Not ready`,
-                            `Withdrawn`, `Unreadable` — and nothing else: the
-                            run is the dot. A ready declaration is silent, and
-                            so is one the kernel has since dispatched, because
-                            `deriveReportTasks` drops the readiness word once a
-                            status exists.
-
-                            `Withdrawn` is struck through because the
-                            declaration is struck through, and it cannot collide
-                            with a run: a withdrawn row is never decorated with
-                            one, so it keeps saying it was withdrawn even when
-                            the task's `tasks` row outlived the withdrawal.
-                          */}
-                          {task.declaration !== null && (
-                            <span className={task.state === 'withdrawn'
-                              ? styles.taskWithdrawn
-                              : styles.taskNote}
-                            >
-                              {task.declaration}
-                            </span>
-                          )}
-                          {/*
-                            ── The status, as a dot, and never as colour alone ──
-
-                            Three carriers, not one: the accessible name spells
-                            the status out, the form spells it out (hollow ring
-                            / disc / square / ringed disc — see
-                            `page.module.css`), and colour only reinforces
-                            them. The palette alone could not do it: the four
-                            semantic fills sit within 9 ΔL of one another in
-                            light and 6 in dark, and dark's `--success` and
-                            `--error` are the same lightness exactly.
-
-                            `role="img"` + `aria-label` rather than a
-                            visually-hidden span: the dot IS the graphic, so
-                            naming it is what an accessible name is for, and the
-                            label lands in the row button's own accessible name
-                            (`bench-harness Status: running`) instead of adding
-                            a second stop for a screen reader to walk past.
-                            `title` carries the same fact to a sighted pointer,
-                            which is what makes the colour a shorthand for a
-                            word rather than the only carrier of it.
-
-                            Both carry the kernel's *reason* too when it gave
-                            one (#1147's `status_detail`), which is why the
-                            hover is worth having at all on a failure: `failed`
-                            alone is the thing the reader already sees, and
-                            `failed — wave … is not a git repository` is the
-                            answer they were about to go looking for.
-
-                            It sits *inside* the reveal button on purpose: the
-                            row's whole job is to reveal the block, and a
-                            trailing target that silently did nothing would be a
-                            hole in exactly the corner the eye is drawn to. That
-                            is also what lets the dot own its own hover without
-                            owning the click — being a DOM child is what makes
-                            the click bubble, so the dot never needs
-                            `pointer-events: none`, which is the change that
-                            would take the hover away again. The target itself
-                            is the row's whole trailing lane, not the 8px mark;
-                            see `.taskDot::before` in `page.module.css` for why
-                            the mark alone was unhoverable in practice.
-
-                            `title` is the app's hover carrier everywhere else
-                            (`ui/panel-card`, `app/shell/sidebar`,
-                            `features/report/backlinks`) and there is no tooltip
-                            primitive to reach for instead. Its limits are real
-                            and are not papered over here: no touch, no keyboard
-                            focus, a delay before it appears. What covers those
-                            is the *other* carrier — `aria-label`, which folds
-                            this same sentence into the row button's accessible
-                            name, so focusing the row says it without a pointer
-                            at all. Touch is the one seat left uncovered.
-
-                            Its trailing position is CSS, not DOM order.
-                          */}
-                          {task.status !== null && (
-                            <span
-                              className={styles.taskDot}
-                              data-nc-task-status={task.status}
-                              role="img"
-                              aria-label={`Status: ${taskStatusPhrase(task.status, task.statusDetail)}`}
-                              title={taskStatusPhrase(task.status, task.statusDetail)}
-                            />
-                          )}
-                        </button>
-                        {/*
-                          The kind is a word either way — what changes is
-                          whether it is a control. `title` describes the
-                          destination without touching the accessible name,
-                          which stays the visible word (WCAG 2.5.3).
-                        */}
-                        {task.kind !== null && (workerCardId === null
-                          ? <span className={styles.taskKind}>{task.kind}</span>
-                          : (
-                            <button
-                              type="button"
-                              className={styles.taskKindButton}
-                              title={`Open the worker card for ${task.key}`}
-                              onClick={() => onOpenCard?.(workerCardId)}
-                            >
-                              {task.kind}
-                            </button>
-                          ))}
-                      </li>
-                      );
-                    })}
-                  </ul>
-                )}
-            </PanelModule>
+            {paintDesktopPanel(desktopPainter, panelView)}
             {/*
               `REFERENCED BY` is absent, not empty, when nothing cites this wave
               (§6.1: a section with zero rows is not rendered). Being uncited is

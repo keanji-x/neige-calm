@@ -24,9 +24,14 @@
 /// instructions for the `wave_state.update` / `wave_state.get` MCP tools
 /// once those land.
 ///
-/// `{wave_id}` is the only substitution: when the Codex thread starts,
-/// the kernel replaces it with the freshly minted wave id so the agent has
-/// a stable reference for the `calm.*` wave-state / report tools.
+/// `{wave_id}`: when the Codex thread starts, the kernel replaces it with
+/// the freshly minted wave id so the agent has a stable reference for the
+/// `calm.*` wave-state / report tools.
+///
+/// `{spec_wake_authors}`: rendered from
+/// [`crate::dispatcher::SPEC_WAKE_AUTHORS`], the dispatcher's own wake set
+/// for `wave.report_edited`. Rendered rather than hand-written so editing
+/// the dispatch rule rewrites the prompt in the same commit.
 ///
 /// Kept short on purpose: the codex CLI prepends this to every turn, so
 /// every additional token is a per-turn cost. The substantive instructions
@@ -70,12 +75,16 @@ You are **turn-reactive**, not a polling loop. The kernel re-invokes you \
 once per observation, pushed into your context as the input for a new \
 turn. Each turn begins with exactly one of:
 
-  * the **wave goal** (your first turn);
+  * a **user message** (on a wave the user opened, this is your first \
+    turn — the wave has no goal until the user states one);
+  * the **wave goal**, when a parent spec opened this wave for a declared \
+    task (your first turn on a child wave);
   * a **task gate result** (`task.gate_result`; gate passed or FAILED, \
     with a log tail);
   * an **ungated task completion** (a worker reported `task.completed`);
   * a **task failure** (worker-reported failure or spawn failure);
-  * the **user edited the wave report** (a `wave.report_edited` from the user).
+  * a **report edit made by somebody else** (a `wave.report_edited` whose \
+    `author` is one of {spec_wake_authors}).
 
 On each turn:
 
@@ -97,6 +106,21 @@ writes are transactional.
    revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
+   * **Name the track.** The title is a label for the work, not the user's \
+     instruction. If `neige state` shows this wave's title is still empty, \
+     then as soon as you have worked out from the conversation what this \
+     track is actually about, call `calm.wave.rename(title, message?)` once. \
+     If it already carries a title, someone has already named it — the user, \
+     or the parent spec that opened this wave — so leave it as it is and do \
+     not call the tool. Write a \
+     short noun phrase a human would recognise in a list, not a restatement \
+     of the user's first sentence. Naming is name-once: if the wave already \
+     has a title the call returns \
+     `{\"ok\": false, \"refused\": \"already_named\"}` and changes nothing — \
+     that is not an error, leave the name alone and move on. Template waves \
+     and the per-cove chat wave refuse the same way. \
+     Do not stall the work waiting to name it, and do not name it from a \
+     guess: if you do not yet know what the user wants, ask.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
@@ -203,16 +227,18 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
   * 不要把 `neige state` / `wave_state` 的读取结果、工具调用记录等内核自己\
     就持有的机械事实写进报告。
 
-### Reacting to user edits
+### Reacting to report edits by others
 
-用户可以直接编辑报告。当用户编辑后，内核会用 `wave.report_edited` \
-（author = \"user\"）observation 唤醒你。该 turn 开始时：
+报告不只有你在写：用户可以直接编辑，插件可以在 accept 事务里成批写入，\
+wave assistant 会话也可以写。内核会用 `wave.report_edited` observation \
+唤醒你；会唤醒你的 `author` 只有这几个：{spec_wake_authors}。该 turn 开始时：
 
 1. 调 `calm.report.read` 拿最新 body 和 `docRev`。
-2. 把用户的修改当作 ground truth — 不要覆盖。
+2. 把这次修改当作 ground truth — 不要覆盖。assistant 的编辑和用户的编辑\
+   同一条规则：它来自另一个会话，不是你的草稿的旧版本。
 3. 然后继续你的任务。**不要** 盲目 `report.write` 你之前的草稿。
 
-你不会被自己（`author = \"spec\"`）的编辑唤醒 — 只有用户的会。
+你不会被自己（`author = \"spec\"`）的编辑唤醒。
 
 ## Reading worker outputs (issue #339)
 
@@ -468,11 +494,24 @@ Keep the report's own structure and conventions; you are a guest in a document \
 the spec agent maintains.
 ";
 
-/// Substitute the per-spawn placeholders into a prompt template. Today
-/// the only placeholder is `{wave_id}`; lifted out as its own helper so
-/// PR7+ can extend the substitution set without rewriting call sites.
+/// Render the report-edit authors that wake the spec, straight from the
+/// dispatcher's wake set, in the wire spelling the `wave.report_edited`
+/// payload actually carries (so the prompt names what the agent will see).
+fn spec_wake_authors_prose() -> String {
+    crate::dispatcher::SPEC_WAKE_AUTHORS
+        .iter()
+        .map(|author| format!("`{}`", author.wire_str()))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Substitute the per-spawn placeholders into a prompt template:
+/// `{wave_id}` and `{spec_wake_authors}`. Lifted out as its own helper so
+/// call sites do not need rewriting when the substitution set grows.
 pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
-    template.replace("{wave_id}", wave_id)
+    template
+        .replace("{wave_id}", wave_id)
+        .replace("{spec_wake_authors}", &spec_wake_authors_prose())
 }
 
 #[cfg(test)]
@@ -488,7 +527,7 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
 );
 
 /// Exact paragraph oracle for the static task-block protocol. The shipped
-/// workflow's fully rendered prompt has a separate whole-document golden;
+/// template's fully rendered prompt has a separate whole-document golden;
 /// free-text contradictions cannot be proved absent with a keyword list.
 #[cfg(test)]
 pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> {
@@ -611,6 +650,109 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    /// #1252 S0-1: the prompt's wake list is *rendered* from
+    /// `dispatcher::SPEC_WAKE_AUTHORS`, so a change to who the dispatcher
+    /// wakes rewrites the prompt. The expected wire spellings are pinned
+    /// here on purpose: they are the independent statement of the contract
+    /// that catches a silent shrink of the const.
+    #[test]
+    fn spec_prompt_renders_the_dispatcher_report_edit_wake_set() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-wake");
+
+        assert!(
+            !p.contains("{spec_wake_authors}"),
+            "wake-author placeholder must be substituted; got: {p}"
+        );
+        // The exact rendered sequence, stated independently of the const:
+        // a silent shrink of `SPEC_WAKE_AUTHORS` fails here.
+        let expected_list = "`user` / `plugin` / `assistant`";
+        assert_eq!(
+            spec_wake_authors_prose(),
+            expected_list,
+            "the dispatcher wakes the spec on user/plugin/assistant report edits, \
+             so that is what the prompt must render"
+        );
+        assert_eq!(
+            p.matches(expected_list).count(),
+            2,
+            "both wake-set sites must carry the rendered list; got: {p}"
+        );
+
+        let rendered_list = spec_wake_authors_prose();
+        for excluded in ["spec", "kernel"] {
+            assert!(
+                !rendered_list.contains(excluded),
+                "`{excluded}`-authored edits do not wake the spec, so the rendered \
+                 wake list must not name one; got: {rendered_list}"
+            );
+        }
+        assert!(
+            p.contains("你不会被自己（`author = \"spec\"`）的编辑唤醒。"),
+            "prompt must still state the self-edit exclusion; got: {p}"
+        );
+        assert!(
+            !p.contains("只有用户的会"),
+            "prompt must not claim only user edits wake the spec; got: {p}"
+        );
+    }
+
+    /// #1211 S3 — the prompt is not the guard and the guard is not the
+    /// prompt; both have to exist. `mcp_wave_rename` pins the guard. This
+    /// pins the instruction, because a `calm.wave.rename` no agent is ever
+    /// told about would leave every wave named `Untitled` with a green test
+    /// suite: S1 deleted the only other thing that ever named a wave.
+    ///
+    /// It also pins the name-once *expectation*, not just the tool name. An
+    /// agent told to rename but not told that a refusal is normal is an agent
+    /// that retries a refusal.
+    #[test]
+    fn spec_prompt_instructs_the_agent_to_name_the_wave() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-naming");
+        assert!(
+            p.contains("calm.wave.rename"),
+            "spec prompt must name the naming tool"
+        );
+        // The instruction is CONDITIONAL on observed state, not a blanket
+        // "every wave is unnamed": child waves are born titled from their
+        // parent task's goal, and a create request may still carry a title,
+        // so an unconditional "rename it" instruction buys a guaranteed
+        // `already_named` refusal — a wasted write attempt on every such wave.
+        assert!(
+            p.contains("If `neige state` shows this wave's title is still empty"),
+            "spec prompt must condition naming on the observed empty title"
+        );
+        assert!(
+            p.contains("If it already carries a title") && p.contains("not call the tool"),
+            "spec prompt must tell the agent to skip the call on an already-titled wave"
+        );
+        assert!(
+            !p.contains("A wave is created unnamed") && !p.contains("nobody has named it yet"),
+            "spec prompt must not claim every wave starts unnamed"
+        );
+        assert!(
+            p.contains("Naming is name-once"),
+            "spec prompt must state the name-once rule"
+        );
+        assert!(
+            p.contains("already_named") && p.contains("that is not an error"),
+            "spec prompt must tell the agent a refusal is normal, not a retry signal"
+        );
+        // The instruction belongs to the per-turn action list, not to some
+        // decorative preamble: it has to sit inside step 2, where the agent
+        // decides what to do.
+        let step2 = p
+            .find("2. Decide what to do next and act:")
+            .expect("step 2 is present");
+        let step3 = p.find("3. **END YOUR TURN.**").expect("step 3 is present");
+        let naming = p
+            .find("calm.wave.rename")
+            .expect("naming instruction present");
+        assert!(
+            step2 < naming && naming < step3,
+            "the naming instruction must live inside step 2's action list"
+        );
     }
 
     #[test]
@@ -825,7 +967,7 @@ mod tests {
     ///
     /// Section vocabulary is policy: it belongs to the document, which carries
     /// it in a leading HTML comment that every read returns. A prompt that
-    /// names sections re-imposes one workflow's shape on every document in the
+    /// names sections re-imposes one template's shape on every document in the
     /// cove, and the "rewrite anything unfamiliar" instruction that used to
     /// accompany it flattened any report that arrived with its own structure.
     ///
@@ -846,7 +988,7 @@ mod tests {
         );
 
         // The section ban must be QUALIFIED by the document's own contract
-        // list. Unqualified it contradicts every shipped workflow template:
+        // list. Unqualified it contradicts every shipped template:
         // their seeded body carries a single `# Plan` H1, and the contract
         // inside it requires the agent to add 概要 / 已完成 / 决策. An absolute
         // "never add a section" bullet and the "文档里的维护契约优先" fallback

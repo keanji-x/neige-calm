@@ -95,6 +95,12 @@ pub enum ConnectorKind {
 
 ### 2.2 `mcp-http`
 
+> **【2026-09-02 · #1268】** 下面两个示例里的 `"manifest_version": 1` 仍然**有效**，
+> 无需修改：#1268 把 `manifest_version` 提到 2，但**只对声明了非空 `templates[]`
+> 的 manifest 强制**。connector（`mcp-http` / `cli-query`）从不声明模板绑定
+> （§3「通道上不存在的能力」），在两代内核上读法完全相同，因此留在 1 是对的。
+> 详见 `plugin_host::manifest::Manifest::manifest_version` 的字段文档。
+
 ```jsonc
 { "manifest_version": 1, "kind": "mcp-http",
   "id": "mcp-wisburg", "version": "0.1.0", "min_kernel_version": "0.0.1",
@@ -232,7 +238,7 @@ r4 只写「spawn 成功后」，两路评审共同指出这不够。若放在 `
 pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 ```
 
-`PluginRegistry::insert` 在写锁内**整体替换 Manifest**（`registry.rs:196-203`）。若用 `get`（克隆，`:170`）→ 改 → `insert` 这个非原子读改写，一次插队的 `/reload`（`routes/plugins.rs:684`）会让**整份 manifest 回退**——URL、`tools_allow`、permissions、views、workflows 一起丢，且直到下次 reload 都无从察觉。字段级 mutator 把最坏后果限制为「工具列表陈旧」。
+`PluginRegistry::insert` 在写锁内**整体替换 Manifest**（`registry.rs:196-203`）。若用 `get`（克隆，`:170`）→ 改 → `insert` 这个非原子读改写，一次插队的 `/reload`（`routes/plugins.rs:684`）会让**整份 manifest 回退**——URL、`tools_allow`、permissions、views、templates 一起丢，且直到下次 reload 都无从察觉。字段级 mutator 把最坏后果限制为「工具列表陈旧」。
 
 **(3) `id` 不存在时必须 no-op。** 这一条把 D11 在既有生命周期竞争中的**全部新增伤害**中和掉——尤其是「卸载 vs 正在 spawn」：uninstall 先 `stop()`（对 spawning 条目返回 `NotFound`，被当作良性）、删 DB、再移除 registry 条目（`routes/plugins.rs:545, 551, 563`），而在途的 spawn 仍会继续。若物化是 `insert`，它会把已被卸载的 manifest **复活**回 registry；no-op 语义下不会。
 
@@ -242,7 +248,7 @@ pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 
 **分发臂必须新增：** `transport.rs:696-720` 今天只有两臂（`kind: None` → `mcp_client().tools_call`；`ForgeAction` → forge）。`cli-query` 的 `kind` 也是 `None`，会走进第一臂并因无 MCP client 而 `-32002`。⇒ 第一臂改为按 `ConnectorClient` 变体分派：`Stdio`/`Http` → `tools_call`；`Cli` → 直接执行（§2.3）。
 
-**合成 `ExposedTool` 的校验：** 今天**不存在** `ExposedTool::validate`（`Manifest::validate` 只覆盖 views / workflows / permissions / entrypoint，`manifest.rs:327`）。物化时自行拒绝空名与会造成路由歧义的名字。
+**合成 `ExposedTool` 的校验：** 今天**不存在** `ExposedTool::validate`（`Manifest::validate` 只覆盖 views / templates / permissions / entrypoint，`manifest.rs:327`）。物化时自行拒绝空名与会造成路由歧义的名字。
 
 ---
 
@@ -250,7 +256,7 @@ pub fn set_exposes_tools(&self, id: &str, tools: Vec<ExposedTool>) -> bool
 
 设置页 UI · 动态发现 + 勾选 + digest fail-closed · `connector_tools` / `connector_secrets` 表 · install 路由改动 · registry→spawn 自动水合 · 本地 stdio MCP（`npx` 那类）· `cli-action`（#1167）· 多用户 / 按用户存 key · `mcp.rs:414` 的版本放松（§1.4）· **per-plugin 生命周期串行化（R12，另立 issue）**。
 
-**通道上不存在的能力**：外部 connector 调 `neige.*`（不构造 router + `dispatch_neige_callback` 拒绝非 Stdio）；渲染 `ui://` 或绑 `workflows[]`（parse 期拒绝，且 `can_call_tool` 已 deny-by-default）；`cli-query` 执行任意命令（固定 argv 模板，无 shell）；`cli-query` 拿到 forge 凭据（不走 forge 路径）。
+**通道上不存在的能力**：外部 connector 调 `neige.*`（不构造 router + `dispatch_neige_callback` 拒绝非 Stdio）；渲染 `ui://` 或绑 `templates[]`（parse 期拒绝，且 `can_call_tool` 已 deny-by-default）；`cli-query` 执行任意命令（固定 argv 模板，无 shell）；`cli-query` 拿到 forge 凭据（不走 forge 路径）。
 
 ---
 

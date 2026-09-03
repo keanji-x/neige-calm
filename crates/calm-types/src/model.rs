@@ -355,19 +355,45 @@ pub struct Wave {
     /// existing wire shape.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,
-    #[serde(default)]
-    pub workflow_id: Option<String>,
-    /// Owning plugin copied from the bound workflow. Immutable after creation.
+    /// Template this wave was created from.
+    ///
+    /// The `serde(alias)` below is a deserialization-only compatibility read
+    /// for pre-#1209 event-log rows; serialization emits only this name.
+    // #1209 PR-2 — this field was renamed, and the alias exists for exactly one
+    // carrier: `Wave` is `#[serde(flatten)]`-ed into `WaveUpdatedPayload`, so it
+    // is embedded verbatim in the immutable event log. Rows written before the
+    // rename spell this key with the old name. Without the alias,
+    // `#[serde(default)]` would silently replay them as `None` — a lost field
+    // with no error. Dropping `default` instead would be worse: deserialization
+    // would fail, and `events_since`'s caller of `Event::from_kind_and_payload`
+    // logs and *skips the whole row*. So keep BOTH attributes.
+    //
+    // The asymmetry with `CreateWaveRequest`, which must NOT carry the alias, is
+    // deliberate. A request body is a live contract with someone on the other
+    // end, so the old spelling there is an observable, fixable 400 via
+    // `deny_unknown_fields`. The event log is immutable history, and rejecting
+    // it would break replay.
+    //
+    // Deliberately a non-doc comment: doc comments on this struct are exported
+    // into the OpenAPI spec and the ts-rs bindings, and naming the old spelling
+    // there would put it back into five generated artifacts.
+    #[serde(default, alias = "workflow_id")]
+    pub template_id: Option<String>,
+    /// Owning plugin copied from the bound template. Immutable after creation.
     #[serde(default)]
     pub plugin_scope: Option<String>,
     /// Server-owned structural marker. Public wave creation cannot set this.
     #[serde(default)]
     pub purpose: Option<String>,
-    /// Workflow input is validated at creation and otherwise remains opaque.
-    #[serde(default)]
+    /// Template input is validated at creation and otherwise remains opaque.
+    ///
+    /// Carries the same deserialization-only alias as `template_id`.
+    // #1209 PR-2 — renamed alongside `template_id`; same carrier, same reason,
+    // same non-doc comment rationale. See that field.
+    #[serde(default, alias = "workflow_input")]
     #[schema(value_type = Option<Object>)]
     #[ts(type = "unknown")]
-    pub workflow_input: Option<serde_json::Value>,
+    pub template_input: Option<serde_json::Value>,
     /// Issue #250 PR 2 — unix-ms timestamp the wave most recently
     /// entered a terminal lifecycle state (Done / Canceled / Failed),
     /// or `None` while the wave is non-terminal. Stamped inside the

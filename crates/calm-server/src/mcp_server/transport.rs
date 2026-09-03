@@ -424,7 +424,7 @@ async fn dispatch_request(
                     {
                         Some(identity) => {
                             // #891 slice ④ — plugin tools are scoped to the
-                            // resolved thread's wave (bound workflow ⇒ owning
+                            // resolved thread's wave (bound template ⇒ owning
                             // plugin only).
                             let scope =
                                 plugin_scope_for_wave(ctx, identity.wave_id.as_deref()).await;
@@ -699,7 +699,7 @@ async fn dispatch_plugin_tools_call(
     };
 
     // #891 slice ④ — dispatch-side per-wave scope enforcement (the strict
-    // half of "discovery wide, dispatch strict"): a wave bound to a workflow
+    // half of "discovery wide, dispatch strict"): a wave bound to a template
     // may only call the owning plugin's tools. Rejected via `unknown_tool` —
     // the same object an unknown tool gets — so a bound wave cannot probe
     // for the existence of other plugins' tools.

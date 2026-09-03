@@ -39,12 +39,12 @@ async fn make_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         .await
         .expect("create cove");
     repo.wave_create(NewWave {
-        workflow_input: None,
+        template_input: None,
         cove_id: cove.id,
         title: "runtime repo".into(),
         sort: None,
         cwd: String::new(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),

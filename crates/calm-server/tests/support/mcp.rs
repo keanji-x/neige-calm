@@ -104,12 +104,12 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-test".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -338,7 +338,7 @@ pub fn tools_list_frame(id: i64, thread_id: &str) -> Value {
 }
 
 /// Scripted MCP `tools/call` over a kernel UDS socket (hoisted from
-/// forge_workflow_e2e.rs's fixture-local `call_tool`, generalized off that
+/// forge_template_e2e.rs's fixture-local `call_tool`, generalized off that
 /// file's `Fixture`). `token` may be a card-bound session token or the
 /// shared-daemon token; identity resolves from `_meta.threadId` either way,
 /// so callers that only hold the daemon token (codex forge E2E) can drive

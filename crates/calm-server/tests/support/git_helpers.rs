@@ -30,7 +30,7 @@ pub fn seed_rust_micro_crate(origin: &Path, seed: &Path) {
     );
 }
 
-/// The gate cmd the #840 capstone patches into the git-forge workflow
+/// The gate cmd the #840 capstone patches into the git-forge template
 /// descriptor in place of the production `cargo test` (design P1).
 pub const CAPSTONE_GATE_CMD: &str = "sh ./e2e-gate.sh";
 
@@ -121,9 +121,9 @@ fn init_bare_origin_with_files(origin: &Path, seed: &Path, files: &[(&str, Strin
     run_git(seed, ["init"]);
     run_git(
         seed,
-        ["config", "user.email", "forge-workflow@example.test"],
+        ["config", "user.email", "forge-template@example.test"],
     );
-    run_git(seed, ["config", "user.name", "Forge Workflow Test"]);
+    run_git(seed, ["config", "user.name", "Forge Template Test"]);
     run_git(seed, ["branch", "-M", "main"]);
     for (name, contents) in files {
         let path = seed.join(name);
@@ -153,9 +153,9 @@ pub fn clone_for_wave(origin: &Path, target: &Path) {
 pub fn configure_repo_identity(repo: &Path) {
     run_git(
         repo,
-        ["config", "user.email", "forge-workflow@example.test"],
+        ["config", "user.email", "forge-template@example.test"],
     );
-    run_git(repo, ["config", "user.name", "Forge Workflow Test"]);
+    run_git(repo, ["config", "user.name", "Forge Template Test"]);
 }
 
 pub fn stage_git_change(repo: &Path, name: &str, contents: &str) {

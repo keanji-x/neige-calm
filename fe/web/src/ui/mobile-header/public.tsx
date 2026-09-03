@@ -20,12 +20,25 @@ function scrollHosts(header: HTMLElement): HTMLElement[] {
   return hosts;
 }
 
-export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: Readonly<{
+export function MobileHeader({
+  title, level = 2, backLabel, onBack, actions, titleFieldMarker,
+}: Readonly<{
   title: string;
   level?: 1 | 2;
   backLabel?: string;
   onBack?: () => void;
   actions?: ReactNode;
+  /**
+   * #1234 — the value of `data-nc-field` on the heading, which is the mobile
+   * carrier of a row module's title. **Opt-in**: every other header on the
+   * mobile surface (the wave's own, `app/shell`'s pages) is chrome, and marking
+   * unconditionally would put module-title carriers in trees whose view model
+   * has none. `ui/**` cannot import `core/view`'s `MARKER`, so the attribute
+   * name is a literal here and the *value* arrives as a string — see
+   * `ui/mobile-list/public.tsx`'s head for what keeps the two spellings
+   * together.
+   */
+  titleFieldMarker?: string;
 }>) {
   const headerRef = useRef<HTMLElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -61,7 +74,13 @@ export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: R
           />
         )}
       </span>
-      <AstryxHeading level={level} color="secondary" maxLines={1} className={styles.title}>
+      <AstryxHeading
+        level={level}
+        color="secondary"
+        maxLines={1}
+        className={styles.title}
+        {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
+      >
         {title}
       </AstryxHeading>
       <span className={styles.trailing}>{actions}</span>
