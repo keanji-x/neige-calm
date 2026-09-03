@@ -94,10 +94,10 @@ pub async fn track_recipe_update_tx(
     if changed == 0 {
         return Err(match track_recipe_get_tx(tx, id).await? {
             Some(current) => CalmError::Conflict(format!(
-                "wave recipe {id} is at revision {}, not {if_revision}",
+                "track recipe {id} is at revision {}, not {if_revision}",
                 current.revision
             )),
-            None => CalmError::NotFound(format!("wave recipe {id}")),
+            None => CalmError::NotFound(format!("track recipe {id}")),
         });
     }
     // Read the row back rather than reconstructing it: `created_at` is not
@@ -105,7 +105,7 @@ pub async fn track_recipe_update_tx(
     // column silently gets a wrong default.
     track_recipe_get_tx(tx, id)
         .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave recipe {id}")))
+        .ok_or_else(|| CalmError::NotFound(format!("track recipe {id}")))
 }
 
 pub async fn track_recipe_get_tx(
@@ -137,7 +137,7 @@ pub async fn track_recipe_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) 
         .await?
         .rows_affected();
     if changed == 0 {
-        return Err(CalmError::NotFound(format!("wave recipe {id}")));
+        return Err(CalmError::NotFound(format!("track recipe {id}")));
     }
     Ok(())
 }

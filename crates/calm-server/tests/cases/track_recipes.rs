@@ -3,7 +3,7 @@
 //! What these pin, and why each needs pinning:
 //!
 //!   * **Normalization at the write boundary.** A recipe must not carry one
-//!     track's authority into every wave made from it. The privilege fields
+//!     track's authority into every track made from it. The privilege fields
 //!     go through the same function fork uses; tombstones are dropped, which
 //!     is the one place recipes deliberately differ from fork.
 //!   * **The actor gate, with `ai:claude` as the negative.** `ai:codex`

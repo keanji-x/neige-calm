@@ -13,11 +13,11 @@
 //!
 //! The #1292 design first tried to keep them honest with a meta-test
 //! asserting the two paths normalize *the same field set*. That equality is
-//! not expressible: fork also rewrites `neige://wave/...` links (it has a
-//! source wave to rewrite against; a recipe does not) and **keeps**
+//! not expressible: fork also rewrites report links (it has a
+//! source track to rewrite against; a recipe does not) and **keeps**
 //! tombstones (they are that track's audit history), while a recipe **drops**
 //! them (a tombstone blocks re-declaring its key, so carrying one into a
-//! recipe would poison every wave instantiated from it). The sets can never
+//! recipe would poison every track instantiated from it). The sets can never
 //! be equal, so the equation could only ever have been satisfied by
 //! weakening one side.
 //!
@@ -35,13 +35,13 @@ use serde_json::{Map, Value};
 /// The fields, and why each is a privilege:
 ///
 ///   * **`declared_by`** — `track_report_edit_guard::guard_task_declarations`
-///     treats a `"user"` declaration as user-owned, which no spec author may
+///     treats a `"user"` declaration as user-owned, which no planner agent may
 ///     edit or delete. A copied block claiming user authorship would be a
-///     block the new track's spec can never touch.
+///     block the new track's planner can never touch.
 ///   * **`tombstoned_by`** — the second attribution field, immutable once a
 ///     block is a tombstone, and equally load-bearing for user-ownership.
 ///   * **`released_by_user`** — answers "did a HUMAN approve this task in
-///     THIS wave". Copying a `true` hands the new wave a standing exemption
+///     THIS track". Copying a `true` hands the new track a standing exemption
 ///     from a decision its user never made, and the UI then hides the
 ///     "Allow this task" button (`report-blocks/task.tsx`) because the flag
 ///     is already set — so she cannot even see what to undo.
@@ -58,7 +58,7 @@ use serde_json::{Map, Value};
 /// `track_report_edit_guard`, which compares the raw `Option<&Value>` and
 /// rejects any non-user edit that changes it. Absent is the shape a fresh
 /// declaration has, byte for byte; writing an explicit `false` would make
-/// these the only blocks a spec author must echo the field back on.
+/// these the only blocks a planner agent must echo the field back on.
 ///
 /// # What this deliberately does not do
 ///

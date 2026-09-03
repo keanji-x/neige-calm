@@ -116,6 +116,29 @@
 #   gate. The honest fix at that moment is to write "OpenAPI schema" (which is
 #   what the repo calls it everywhere else) — not to widen the pattern.
 #
+#   THAT ADVICE COVERS PROSE ONLY. "Say it differently" presupposes a synonym
+#   exists. For a PERSISTED VALUE there is none: `declared_by` /
+#   `tombstoned_by` store the literal string `"spec"`, that literal is what is
+#   already in every production database, and
+#   `normalize_task_privilege_fields` writes exactly those bytes. Writing
+#   `"planner"` there is not a rewording, it is a wrong program — the row no
+#   longer matches the rows beside it, and the ownership checks that compare
+#   against `"spec"` stop firing. Changing it needs a data migration, which is
+#   the Spec -> Planner slice's job, not a slice that happens to add a caller.
+#
+#   So this ONE class admits a baseline RAISE with a stated reason. The
+#   criterion, and it is narrow on purpose:
+#     * every added occurrence is either the literal value itself or an
+#       assertion on that literal value;
+#     * NOT ONE added line is prose, and not one is an identifier. A new
+#       comment mentioning the spec agent, or a new `spec_thread_id`, is the
+#       thing this ratchet exists to stop, and it does not become admissible by
+#       riding along in the same commit;
+#     * the raise commit message lists the constituent lines one by one
+#       (path:line + content) so a reviewer can check that claim without
+#       re-deriving the delta.
+#   A raise that cannot produce that list is not this case; it is drift.
+#
 # `runtime_id` — the RETIRED-ID sense ONLY (#1316 B class, narrowed at S0)
 #   `runtime` matches 7307 lines in scope; only 1496 are this. The umbrella
 #   issue originally said "Runtime 退役", which was too wide for its carrier and

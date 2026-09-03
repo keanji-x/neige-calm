@@ -4,8 +4,8 @@
 //!
 //! A saved report: a title (which doubles as the instantiated report's
 //! summary) and a body whose `neige-block` fences **are** its tasks. It is
-//! deliberately not a track. #1300 removed "template = a hidden wave" because
-//! that shape cost seven "this wave is special" exceptions across unrelated
+//! deliberately not a track. #1300 removed "template = a hidden track" because
+//! that shape cost seven "this track is special" exceptions across unrelated
 //! subsystems plus a kernel report write that impersonated the user; storing
 //! recipes as tracks again would buy back every one of those.
 //!
@@ -18,7 +18,7 @@
 //!
 //! # Why the write side is a whole-document PUT, not block ops
 //!
-//! A track's report needs block-level CAS because a user, a spec author and
+//! A track's report needs block-level CAS because a user, a planner agent and
 //! an agent write it concurrently and none of them knows about the others —
 //! losing an update there costs attribution and audit.
 //!
@@ -65,11 +65,11 @@ pub fn router() -> Router<AppState> {
 /// Bring a body into the canonical shape a recipe is allowed to hold.
 ///
 /// Two transforms, and both are about **not carrying one track's authority
-/// into every wave made from this recipe**:
+/// into every track made from this recipe**:
 ///
 /// 1. **Tombstones are dropped**, leaving a blank-line boundary behind. A
 ///    tombstone blocks re-declaring its key (`report_blocks::tasks`), so a
-///    recipe carrying one would poison every instantiated wave — that key
+///    recipe carrying one would poison every instantiated track — that key
 ///    could never be used again in any of them. This is the one place
 ///    recipes deliberately diverge from fork, which *keeps* tombstones
 ///    because they are that track's audit history. A recipe has no history
@@ -151,14 +151,14 @@ fn restore_paragraph_break(out: &mut String) {
     out.push('\n');
 }
 
-/// Validate a candidate recipe body the same way wave creation validates the
+/// Validate a candidate recipe body the same way track creation validates the
 /// payload it is about to instantiate.
 ///
 /// `BadRequest`, not `Internal`: unlike `prepare_template_report`, whose
 /// every byte comes from a Rust constant, this body came from the caller.
 fn validate_recipe_body(body: &str) -> Result<()> {
     crate::track_report_guard::validate_body_fences(body)
-        .map_err(|error| CalmError::BadRequest(format!("wave recipe body: {error}")))
+        .map_err(|error| CalmError::BadRequest(format!("track recipe body: {error}")))
 }
 
 /// The same actor decision the block endpoints make, said in this endpoint's
@@ -186,7 +186,7 @@ fn require_recipe_user_actor(actor: &Actor) -> Result<()> {
 fn validate_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         return Err(CalmError::BadRequest(
-            "wave recipe title must not be empty".into(),
+            "track recipe title must not be empty".into(),
         ));
     }
     Ok(())
@@ -235,7 +235,7 @@ pub(crate) async fn get_recipe(
         .track_recipe_get(&id)
         .await?
         .map(Json)
-        .ok_or_else(|| CalmError::NotFound(format!("wave recipe {id}")))
+        .ok_or_else(|| CalmError::NotFound(format!("track recipe {id}")))
 }
 
 #[utoipa::path(

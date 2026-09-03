@@ -1,9 +1,9 @@
--- #1292 S1 — user-defined wave recipes.
+-- #1292 S1 — user-defined track recipes.
 --
 -- A recipe is a saved `TrackReportPayload`: a title (which doubles as the
 -- report summary) plus a report body whose `neige-block` fences ARE its
 -- tasks. It is deliberately NOT a track — #1300 removed "template = a hidden
--- wave" because that shape cost seven "this wave is special" exceptions
+-- track" because that shape cost seven "this track is special" exceptions
 -- across unrelated subsystems plus a kernel write that impersonated the
 -- user. Recipes carry none of that: nothing schedules them, nothing lists
 -- them among tracks, and every byte in one was written by the user.
