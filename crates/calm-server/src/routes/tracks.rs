@@ -1931,76 +1931,14 @@ fn prepare_fork_report(
                     }
                 }
             }
-            let tombstone = payload
-                .get("tombstone")
-                .is_some_and(|value| !value.is_null());
-            payload.insert(
-                "declared_by".into(),
-                serde_json::Value::String("spec".into()),
-            );
-            if tombstone {
-                // #1111 — `tombstoned_by` is the second *attribution* field on
-                // a task block: `track_report_edit_guard::guard_task_declarations`
-                // treats `declared_by == "user" || tombstoned_by == "user"` as
-                // user-owned, and `tombstoned_by` is immutable once a block is
-                // a tombstone. Copying a template's `tombstoned_by: "user"`
-                // would hand every forked track a block no spec author can ever
-                // edit or delete — the same template-as-backdoor hole §7.2
-                // closed for `declared_by`. Normalize both together.
-                //
-                // Non-tombstone blocks are deliberately left alone: a residual
-                // `tombstoned_by` there is rejected by `validate_payload`
-                // ("must be absent from a non-tombstone task") a few lines
-                // below, so a corrupt source fails the fork closed instead of
-                // being silently repaired into a shape it never validly had.
-                //
-                // `released_by_user` is the third privilege field; it is
-                // normalized in the `else` arm below, because the tombstone
-                // schema (`report_blocks/kinds.rs:158-166`) forbids the field
-                // outright — see that arm's comment.
-                payload.insert(
-                    "tombstoned_by".into(),
-                    serde_json::Value::String("spec".into()),
-                );
-                payload.remove("ready");
-            } else {
-                payload.insert("ready".into(), serde_json::Value::Bool(false));
-                // #1115 — `released_by_user` is the third and last privilege
-                // field on a task block, and the one that answers "did a HUMAN
-                // approve this task in THIS track". `declared_by` is rewritten to
-                // `"spec"` two lines up, which is exactly the shape
-                // `declare_and_wait` exists to hold back
-                // (`task_projection.rs:709-719`: `effective_wait &&
-                // declared_by == "spec" && !released_by_user && !tombstone`).
-                // Copying a template's `released_by_user: true` would hand the
-                // copy a standing exemption from a decision the new track's user
-                // never made — and `report-blocks/task.tsx:185` would then hide
-                // the "Allow this task" button from her, because the flag is
-                // already set. Same source semantics as `ready: false` above:
-                // nothing in a template was decided for *this* track.
-                //
-                // Removed rather than written as an explicit `false`. Absent and
-                // `false` are identical to every reader (`tasks.rs:732-734`
-                // `.unwrap_or(false)`; `task.tsx:185` tests falsiness), but they
-                // are NOT identical to `track_report_edit_guard.rs:162-167`,
-                // which compares the raw `Option<&Value>` and rejects any
-                // non-user edit that changes it. Blocks produced by the
-                // plan-template generator carry no such key
-                // (`plan_template_task_block_payload`; `plan.rs:917-925` lists
-                // `released_by_user` among the template exclusions, pinned by a
-                // field-set equality meta-test) — that is a property of that
-                // one generator, not a global invariant, since an agent writing
-                // blocks over MCP could schema-legally include an explicit
-                // `false`. Absent is nonetheless the canonical shape, so
-                // writing an explicit `false` here would make forked blocks the
-                // only ones a spec author must echo the field back on —
-                // re-creating, on this field, the "template block the spec can
-                // never edit" failure #1111 just closed. `ready` is written explicitly only because
-                // `kinds.rs:243-245` makes it *required* on a live task; this
-                // one is optional, so the absent form is available and is the
-                // one that matches a fresh declaration byte for byte.
-                payload.remove("released_by_user");
-            }
+            // #1292 — the three privilege fields, normalized by the one
+            // function the recipe write path also calls. The long-form
+            // rationale for each field (and for why `released_by_user` is
+            // *removed* rather than written `false`) moved to
+            // `crate::task_privilege::normalize_task_privilege_fields` with
+            // the code; this call site is byte-for-byte equivalent to the
+            // inline block it replaces.
+            crate::task_privilege::normalize_task_privilege_fields(payload);
         }
 
         validate_payload(&block.kind, &block.payload).map_err(|error| {
