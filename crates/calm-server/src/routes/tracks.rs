@@ -897,10 +897,19 @@ impl TemplateAdmission {
     ///     the other two read, and can no longer be handed anything else.
     ///
     /// All three now read the *same borrow*, [`Self::template`], rather than
-    /// three copies of a value someone assigned. A future case-folding or
-    /// aliasing admission rule cannot hand an unnormalized key to any of them:
-    /// to do so it would have to produce a `Template` whose `key` is the
-    /// caller's, and outside `crate::templates` no such value can be built.
+    /// three copies of a value someone assigned.
+    ///
+    /// #1318 S2 (第三轮评审) — state precisely what that buys, because the
+    /// previous wording ("a future case-folding or aliasing admission rule
+    /// cannot hand an unnormalized key to any of them, since outside
+    /// `crate::templates` no such value can be built") claimed more than the
+    /// types deliver. What is closed is the **value of the key**: this struct
+    /// has no key assignment site, and in safe Rust outside
+    /// `crate::templates`'s subtree a `Template` carrying the caller's spelling
+    /// is `E0451`. What is **not** closed is any *decision* an admission rule
+    /// makes — `id` is necessarily in [`admit_template`]'s scope, so a
+    /// conditional on it needs no forged `Template` at all. See the
+    /// `## KNOWN GAPS` block on [`admit_template`].
     ///
     /// The third bullet is not decoration. Leaving the binding on the caller's
     /// string would have re-created, between a different pair of readers, the
@@ -934,18 +943,75 @@ impl TemplateAdmission {
 /// (admitting it as a report-less pseudo-template) was rejected.
 ///
 /// The binding is resolved from the admitted roster entry, **not** from `id`:
-/// [`resolve_template_binding`] takes a `&'static Template`, so `id` is
-/// structurally unreachable past the lookup above. Under today's exact-match
+/// [`resolve_template_binding`] takes a `&'static Template`, so the *argument*
+/// it receives cannot be the caller's spelling. Under today's exact-match
 /// `template_by_key` the two strings are byte-identical on every input that
-/// reaches this line, so this is not a behaviour change — it is what makes
-/// [`TemplateAdmission::key`]'s third bullet true, and true by type rather than
-/// by review.
+/// reaches this line, so this is not a behaviour change.
 ///
-/// #1318 S2 (第二轮评审 MAJOR-2) — `id` is now unreachable past the lookup for
-/// **every** consumer, not just the binding: the admission carries the roster
-/// borrow, so this function has no key to assign. The previous shape did, and
-/// a one-line conditional there reflected the caller's spelling with the suite
-/// still green.
+/// #1318 S2 (第二轮评审 MAJOR-2) — the admission carries the roster borrow, so
+/// this function has no key to assign. The previous shape did, and a one-line
+/// conditional there reflected the caller's spelling with the suite still
+/// green.
+///
+/// # KNOWN GAPS
+///
+/// #1318 S2 (第三轮评审) — three review-built constructions, each independently
+/// compiled or run, show that "the third consumer is closed by the type" is
+/// **not** true, and the retraction is registered here rather than chased with
+/// a fourth round of hardening. The root reason they all share: `id` is
+/// necessarily in this function's scope, and no type design prevents a
+/// conditional on a value that is in scope.
+///
+/// The threat model these gaps sit under is **unintentional drift** — the next
+/// person adding case-folding or aliasing and not noticing they split creation
+/// time from run time. It is not an adversary deliberately hiding a forgery;
+/// against that, none of this is a control at all. (Same posture as
+/// `scripts/report_write_boundary.sh`'s header in S1.)
+///
+/// **Gap 1 — a conditional on `id`, safe Rust, nothing forged.** `template` and
+/// `binding` are two independent field initializers below, and `id` is live for
+/// both. A future case-insensitive lookup admits this:
+///
+/// ```ignore
+/// binding: if id == template.key() { resolve_template_binding(s, template).await } else { None }
+/// ```
+///
+/// A `"SMALL-CHANGE"` create would then store the canonical key and the
+/// canonical recipe but `plugin_scope = NULL`, while `planner_harness_start_adapter`
+/// later finds the plugin from the row's canonical key — creation time and run
+/// time disagreeing about who owns the track, which is exactly what
+/// [`TemplateAdmission::key`]'s third bullet exists to prevent. Every existing
+/// test passes only canonical spellings, so all of them stay green.
+///
+/// **Gap 2 — a second entry point inside `crate::templates`, safe Rust; measured
+/// 68 passed, 0 failed.** `templates::tests::template_by_key_returns_the_rosters_own_borrow`
+/// guards `template_by_key`'s return path, not the module. A channel added
+/// `templates::template_admit`, a case-insensitive find that leaks a rebuilt
+/// `Template` when the spelling differs, repointed this function at it, and ran
+/// `nextest -E 'test(admission) or test(template)'`: **68/68 green**, with the
+/// caller's spelling reaching all three consumers.
+///
+/// **Gap 3 — `transmute`; measured `clippy -D warnings` clean.** The crate has
+/// no `#![forbid(unsafe_code)]` (`calm-server/src` already contains a dozen-odd
+/// `unsafe` blocks) and `transmute` does not consult field visibility, so a
+/// leaked `&'static (&'static str, &'static str)` can be reinterpreted as a
+/// `&'static Template` here. It depends on `repr(Rust)`'s unspecified layout,
+/// so it is not a sound program — but the retracted claim was about what the
+/// **compiler** admits, and the compiler and the lint gate both admit it.
+///
+/// ## Why there is no bad path today
+///
+/// Observed, not inferred: `template_by_key` is an exact `==` match, so an
+/// admitted id is byte-equal to a roster key; both surviving consumers of
+/// [`TemplateAdmission::key`] read the roster borrow; and an un-normalized key
+/// that somehow reached the create transaction would not silently mis-seed —
+/// `templates::template_report`'s exact `match` returns `None`, so
+/// [`prepare_template_report`] raises `CalmError::Internal` and the create
+/// fails loudly instead.
+///
+/// That is a statement about **today's code**, not an impossibility proof. The
+/// day `template_by_key` stops being an exact match, all three gaps above become
+/// live, and nothing in the type system or the test suite will say so.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
     let template = template_by_key(id)?;
     Some(TemplateAdmission {
@@ -978,14 +1044,29 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
 /// produced a `&'static Template` carrying the caller's spelling; two review
 /// channels independently built it and the suite stayed green.
 ///
-/// It is true now, and true for a checkable reason rather than by assertion:
-/// `Template`'s fields are private with no constructor, so that expression is
-/// `E0451` in this module (and in every module but `crate::templates`), and
-/// the only `&'static Template` this file can name is a borrow of a roster
-/// entry. The scope of the claim is exactly that — *this* type in *other*
-/// modules. Inside `crate::templates` the forgery is still expressible, which
-/// is why `templates::tests::template_by_key_returns_the_rosters_own_borrow`
-/// is not redundant with it.
+/// That *particular expression* no longer compiles, for a checkable reason
+/// rather than by assertion: `Template`'s fields are private with no
+/// constructor, so it is `E0451` in this module — and outside
+/// `crate::templates` and its descendant modules generally — and the only
+/// `&'static Template` this file can name in safe Rust is a borrow of a roster
+/// entry.
+///
+/// #1318 S2 (第三轮评审) — that is the whole of the claim, and it is narrower
+/// than it reads. Three qualifications, all of them registered under
+/// `## KNOWN GAPS` on [`admit_template`]:
+///
+///   * *safe* Rust only — `transmute` ignores field visibility and the crate
+///     does not `forbid(unsafe_code)`;
+///   * inside `crate::templates` (and its descendants) the forgery is still
+///     expressible, which is why
+///     `templates::tests::template_by_key_returns_the_rosters_own_borrow` is
+///     not redundant with it — though that test guards `template_by_key`'s
+///     return path, not the module, and a second entry point beside it went
+///     68/68 green;
+///   * and most importantly, it says nothing about a divergence built without
+///     any forged `Template` at all — a conditional on `id` in
+///     [`admit_template`], which is where the caller's spelling actually still
+///     lives.
 pub(crate) async fn resolve_template_binding(
     s: &RouteState,
     template: &'static Template,
@@ -3911,23 +3992,41 @@ mod tests {
     /// `track_template_tracks::create_stores_the_roster_key_as_template_id`
     /// already said so about itself; this one did not.
     ///
-    /// The limitation is now harmless rather than papered over, because the
-    /// conditional mutation no longer compiles. [`TemplateAdmission`] holds the
-    /// `&'static Template` and [`TemplateAdmission::key`] reads it, so there is
-    /// no assignment site to make conditional; producing one would require a
-    /// forged `Template`, and `crate::templates::Template`'s fields are private
-    /// (`E0451` outside that module). What this test still buys is the
-    /// **unconditional** direction and the negative case, cheaply, without
-    /// depending on that reasoning being right.
+    /// One *spelling* of the conditional mutation no longer compiles:
+    /// [`TemplateAdmission`] holds the `&'static Template` and
+    /// [`TemplateAdmission::key`] reads it, so there is no key assignment site
+    /// to make conditional, and producing one would require a forged
+    /// `Template` (`E0451` in safe Rust outside `crate::templates`). What this
+    /// test buys is the **unconditional** direction and the negative case,
+    /// cheaply, without depending on that reasoning being right.
     ///
-    /// The third consumer of an admitted id — the plugin binding — is NOT
-    /// asserted here. It is closed by construction rather than excused: the
-    /// binding is resolved from the same `&'static Template` this admission
-    /// holds, in the same expression that builds it, so there is no second
-    /// value it could be resolved from. The earlier wording ("passing the
-    /// caller's string does not compile") was true of `&str`-vs-`&Template`
-    /// but rested on `Template` being unforgeable, which at the time it was
-    /// not — see [`resolve_template_binding`].
+    /// ## 第三轮评审 — the third-consumer claim is withdrawn
+    ///
+    /// This comment used to say the plugin binding "is closed by construction
+    /// rather than excused", because it is resolved from the same
+    /// `&'static Template` in the same expression that builds the admission.
+    /// That is not a closure. `id` is in [`admit_template`]'s scope for both
+    /// field initializers, so
+    /// `binding: if id == template.key() { resolve_template_binding(..).await } else { None }`
+    /// is ordinary safe Rust that forges nothing and leaves every test in this
+    /// repository green. Two further constructions (a second roster entry
+    /// point inside `crate::templates`, measured 68/68 green; a `transmute`
+    /// forgery, measured `clippy -D warnings` clean) make the same point from
+    /// other directions. All three are registered verbatim under
+    /// `## KNOWN GAPS` on [`admit_template`]; the binding consumer is
+    /// **untested here and knowingly so**, not closed.
+    ///
+    /// ## What the pointer assertion below does and does not discriminate
+    ///
+    /// It compares `admission.key()` against `template.key()` — both sides read
+    /// through the same accessor, so on its own it only pins that the accessor
+    /// is *pointer-stable*, not that it hands back the `static`'s bytes. The
+    /// 第二轮 refactor introduced exactly that weakening (before it, the right
+    /// side was the raw field), and a channel confirmed it by making `key()`
+    /// return an interned leak: 68/68 green. The missing half now lives where
+    /// the private field is nameable —
+    /// `templates::tests::the_accessors_hand_back_the_roster_fields_own_buffer`
+    /// — and the two together restore what the pre-refactor assertion said.
     mod admission {
         use std::path::Path;
         use std::sync::Arc;

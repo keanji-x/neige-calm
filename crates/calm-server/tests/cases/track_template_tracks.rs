@@ -1667,9 +1667,19 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
 /// field.
 ///
 /// What the assertions below actually establish, and nothing wider
-/// (#1318 S2 第二轮评审 MINOR-2): the response is serde's own unknown-field
-/// rejection naming the retired key, it does **not** carry the admission
-/// wording, and the persisted database is byte-identical before and after. An
+/// (#1318 S2 第二轮评审 MINOR-2, narrowed again 第三轮): the response has the
+/// **shape** of serde's unknown-field rejection — status 422, the substring
+/// `unknown field`, and the retired key named — it does **not** carry the
+/// admission wording, and each table's all-column value digest is unchanged
+/// before and after.
+///
+/// Two things that phrasing deliberately stops short of. First, three string
+/// and status checks cannot establish *which component authored* the response;
+/// they are consistent with serde's rejection and would also pass for any
+/// other producer of the same shape. Second, `db_snapshot` is not a byte
+/// image: it is a per-table digest of every column rendered through SQLite's
+/// `quote()`, with row order normalized by `ORDER BY 1`, so it sees values and
+/// not storage. An
 /// earlier version of this comment went on to claim the handler "is never
 /// entered" and that `admit_template` "does not run" — that is a statement
 /// about control flow, and neither a response body nor a database snapshot

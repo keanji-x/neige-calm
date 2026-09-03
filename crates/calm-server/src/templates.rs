@@ -25,24 +25,39 @@ pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 
-/// One roster entry. **Constructible only inside this module.**
+/// One roster entry. **Constructible only inside this module and its
+/// descendants — in safe Rust.**
 ///
 /// #1318 S2 (第二轮评审 MAJOR) — both fields are private and there is no
 /// constructor, no `Clone`, no `Copy` and no `Default`, so a struct literal
-/// written anywhere else is `E0451` and `*template` cannot be moved out of a
-/// borrow either. That is what makes "a `&'static Template` came from
-/// [`TEMPLATES`]" a fact the compiler checks rather than a review convention:
-/// outside this module the only way to name a `Template` value at all is to
+/// written outside this module's subtree is `E0451` and `*template` cannot be
+/// moved out of a borrow either. That is what the compiler checks about "a
+/// `&'static Template` came from [`TEMPLATES`]": in **safe** Rust, outside
+/// this module's subtree the only way to name a `Template` value at all is to
 /// borrow one of the three roster entries.
 ///
+/// #1318 S2 (第三轮评审) — the scope of that sentence is exactly *safe Rust
+/// outside this subtree*, and no wider. This crate does not carry
+/// `#![forbid(unsafe_code)]`, and `std::mem::transmute` does not consult field
+/// visibility: a review channel compiled a forged entry from a
+/// `&'static (&'static str, &'static str)` and `cargo clippy -D warnings`
+/// reported nothing. The forgery relies on `repr(Rust)`'s unspecified layout,
+/// so it is not a *sound* program — but the claim being made here was about
+/// what the compiler rejects, and the compiler accepts it. See the
+/// `## KNOWN GAPS` block on
+/// [`crate::routes::tracks::admit_template`] for the registered gaps.
+///
 /// This is load-bearing, not tidiness. While the fields were `pub`, the
-/// sentence "a `&'static Template` can only come from `TEMPLATES`" was simply
-/// false — `Box::leak(Box::new(Template { key: String::leak(caller.to_owned()),
-/// title: t.title }))` compiled and produced one from the caller's own
-/// spelling. Two independent review channels built exactly that value and the
-/// whole suite stayed green, because `routes::tracks` used the false sentence
-/// to *excuse* the plugin-binding consumer from any test. The claim is now
-/// true, so the excuse is now valid; see
+/// sentence "a `&'static Template` can only come from `TEMPLATES`" was false
+/// even in safe Rust — `Box::leak(Box::new(Template { key:
+/// String::leak(caller.to_owned()), title: t.title }))` compiled and produced
+/// one from the caller's own spelling. Two independent review channels built
+/// exactly that value and the whole suite stayed green, because
+/// `routes::tracks` used the false sentence to *excuse* the plugin-binding
+/// consumer from any test. Privacy removes that particular expression from
+/// other modules; it does **not** restore the excuse, because the binding
+/// decision never needed a forged `Template` in the first place — see the
+/// `## KNOWN GAPS` block cited above and
 /// [`crate::routes::tracks::resolve_template_binding`].
 ///
 /// The accessors hand back `&'static str`, not `&'a str` tied to `&self`: the
@@ -745,11 +760,21 @@ mod tests {
     /// shorter `.map(|_| Template { .. })` spelling in an earlier draft of this
     /// comment did not type-check.)
     ///
-    /// Since #1318 S2 (第二轮评审) that mutation is only *writable inside this
-    /// module*: [`Template`]'s fields are private, so the same expression in
-    /// any other module is `E0451`. This test is therefore the guard for the
-    /// one place the forgery is still expressible — which is precisely why it
-    /// has to stay, and why it is not redundant with the type-level closure.
+    /// Since #1318 S2 (第二轮评审) that mutation is, in safe Rust, only
+    /// *writable inside this module's subtree*: [`Template`]'s fields are
+    /// private, so the same expression outside it is `E0451`.
+    ///
+    /// #1318 S2 (第三轮评审) — what this test guards is therefore **one return
+    /// path**, [`template_by_key`]'s, and not "the module". A review channel
+    /// added a *second* roster entry point in this same module
+    /// (`fn template_admit(key: &str) -> Option<&'static Template>` doing a
+    /// case-insensitive find and leaking a rebuilt entry when the spelling
+    /// differed), pointed `admit_template` at it, and
+    /// `nextest -E 'test(admission) or test(template)'` ran **68 passed, 0
+    /// failed**. The test is still worth keeping — it is the cheap
+    /// unconditional guard on the path production uses — but it is not a guard
+    /// on the class. See the `## KNOWN GAPS` block on
+    /// [`crate::routes::tracks::admit_template`].
     #[test]
     fn template_by_key_returns_the_rosters_own_borrow() {
         for template in &TEMPLATES {
@@ -767,6 +792,39 @@ mod tests {
             assert!(
                 std::ptr::eq(found.key.as_ptr(), template.key.as_ptr()),
                 "the admitted key must be the roster's &'static str, not the caller's"
+            );
+        }
+    }
+
+    /// #1318 S2 (第三轮评审) — [`Template::key`] / [`Template::title`] hand back
+    /// **the `static`'s own buffer**, not merely a pointer-stable one.
+    ///
+    /// This closes a regression the 第二轮 refactor introduced. That round
+    /// rewrote `routes::tracks`'s admission assertion so that *both* sides read
+    /// through the accessor (`ptr::eq(admission.key().as_ptr(),
+    /// template.key().as_ptr())`), which downgraded it from "the accessor is
+    /// the roster buffer" to "the accessor is pointer-stable". A review channel
+    /// made `key()` return an interned leak — same pointer on every call for a
+    /// given entry, but *not* the field's bytes — and the whole selection ran
+    /// **68 passed, 0 failed**, i.e. `tracks.template_id` and
+    /// `TrackInit::Template` were no longer carrying `static` bytes and nothing
+    /// in the repository noticed.
+    ///
+    /// It has to live here, in the defining module, because the discriminating
+    /// comparison is accessor-against-**private-field**: `t.key` is not
+    /// nameable from `routes::tracks`, so no test over there can express it.
+    #[test]
+    fn the_accessors_hand_back_the_roster_fields_own_buffer() {
+        for template in &TEMPLATES {
+            assert!(
+                std::ptr::eq(template.key().as_ptr(), template.key.as_ptr()),
+                "`{}`: key() must be the `key` field's own buffer",
+                template.key
+            );
+            assert!(
+                std::ptr::eq(template.title().as_ptr(), template.title.as_ptr()),
+                "`{}`: title() must be the `title` field's own buffer",
+                template.key
             );
         }
     }
