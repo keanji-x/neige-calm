@@ -60,9 +60,13 @@
 //!      [`validate_block_content`] from the caller's op *before* running
 //!      the rewrite, so these bytes never arrive. Checking them would
 //!      let a stored task the current schema rejects — a legacy `key`,
-//!      say — answer its owner's delete with a 400, closing the one
-//!      route that retires it. `ReportDoc::upsert_block` still parses
-//!      this fence and matches its kind.
+//!      say — answer its owner's delete with a 400, and for a
+//!      user-controlled task that is the route the other guards leave:
+//!      a whole-document write either drops the live task, which
+//!      `guard_task_declarations` refuses, or carries a same-key
+//!      tombstone fence, which [`validate_body_fences`] refuses on that
+//!      same invalid `key`. `ReportDoc::upsert_block` still parses this
+//!      fence and matches its kind.
 //!
 //!   For the prose half that enumeration does close the door: only (1)
 //!   and (2) can emit `kind: "prose"`, and both have run
@@ -694,10 +698,14 @@ mod tests {
     /// synthesized op on the payload schema would make the delete's
     /// verdict depend on bytes the caller never sent. A task whose
     /// stored `key` the current schema rejects would answer its owner's
-    /// delete with a 400 — and `guard_task_declarations` refuses to drop
-    /// a live task through the whole-document shapes, and refuses a
-    /// non-user author on a user-controlled one, so that user would be
-    /// left with no way to retire it. `wave_report::apply_report_op`
+    /// delete with a 400 — and the whole-document shapes are no way
+    /// round it: dropping the live task is what `guard_task_declarations`
+    /// refuses, and retiring it there means writing a same-key tombstone
+    /// fence, which [`super::validate_body_fences`] refuses on the same
+    /// invalid `key` (run as a probe: both `Replace` and `WriteMarkdown`
+    /// come back `invalid \`task\` block payload: key: must match …`).
+    /// No other author may touch a user-controlled task at all.
+    /// `wave_report::apply_report_op`
     /// therefore reads the content it checks off the caller's own op
     /// (`caller_block_content`), before the rewrite runs.
     ///
