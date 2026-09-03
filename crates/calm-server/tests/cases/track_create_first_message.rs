@@ -1012,7 +1012,7 @@ async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
 /// edited sentence resent after a failure is accepted.
 ///
 /// This is the kernel's established behaviour (`retryable_operation_key` is
-/// shared with `create_area_conversation`), so nothing here changes it. The
+/// shared with `create_track_conversation`), so nothing here changes it. The
 /// test exists because the documentation fix is only trustworthy if the
 /// sentence it adds is the one the code actually implements — and because the
 /// interesting half is what happens to the *abandoned* draft: it must not be

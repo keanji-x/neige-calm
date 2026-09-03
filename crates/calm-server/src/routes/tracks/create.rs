@@ -19,13 +19,13 @@
 //!
 //! # Why the delivery lives in the operation
 //!
-//! `routes/area_conversations.rs` documents two known gaps — a first-message
+//! `routes/track_conversations.rs` documents two known gaps — a first-message
 //! claim that is neither request-scoped nor transactional — and names the fix:
 //! *fold the first message into the same operation*. This slice does exactly
 //! that for `POST /api/tracks`; `PlannerHarnessStartAdapter::prepare_tx` seeds the
 //! `Observation::UserMessage` and writes its audit row inside the transaction
-//! that starts the harness. The two conversation routes migrate in #1314 and
-//! are deliberately untouched here.
+//! that starts the harness. The conversation route migrates in #1314 and is
+//! deliberately untouched here.
 //!
 //! # What `Idempotency-Key` means here, and when it is required
 //!
@@ -40,7 +40,7 @@
 //! would be worse: there would be no dedup key at all, so a retried create
 //! would mint a second track and deliver the instruction twice.
 //!
-//! Given the key, the contract is the four-arm one `create_area_conversation`
+//! Given the key, the contract is the four-arm one `create_track_conversation`
 //! documents, reused verbatim through `retryable_operation_key`: a success
 //! replays, a terminal failure genuinely retries under a `#N` operation key, a
 //! `Stuck` predecessor keeps failing closed, and 64 failed attempts exhaust the
@@ -133,13 +133,13 @@ use crate::model::{NewTrack, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::RouteState;
 
 use super::{CreateTrackOptions, create_track_structure};

@@ -308,9 +308,9 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `Observation::UserMessage { text }` onto the harness snapshot's
     /// `pending_queue` and writes `harness.user_message.enqueued` in the same
     /// transaction, so the mint and the delivery commit together. That is the
-    /// structural fix `routes/area_conversations.rs` documents for its two
+    /// structural fix `routes/track_conversations.rs` documents for its two
     /// known gaps; #1299 S1 puts `POST /api/tracks` on it, and #1314 migrates
-    /// the two conversation routes.
+    /// the conversation route.
     ///
     /// It is `Observation::UserMessage`, never `TrackGoal`: the two are
     /// different semantic slots (`TrackGoal` renders bare and does not
@@ -826,7 +826,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // SAME transaction as the queue that carries it. `send_planner_input`
         // writes this row *after* a non-transactional `harness.observe`, which
         // is the "non-transactional evidence" half of the two gaps
-        // `area_conversations.rs` documents; here the observation and its
+        // `track_conversations.rs` documents; here the observation and its
         // evidence commit or roll back together, so neither a re-send nor a
         // silently unrecorded send is reachable on this path.
         //

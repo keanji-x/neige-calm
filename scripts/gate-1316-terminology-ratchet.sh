@@ -157,10 +157,26 @@
 #
 #   So this is the SECOND class that admits a baseline RAISE with a stated
 #   reason, and like the first it is narrow on purpose:
-#     * every added occurrence is a STRUCT- OR VARIANT-FIELD INITIALISER — the
-#       field name, or a same-named local binding handed to it — inside a
-#       construction expression for a type whose definition this slice does not
-#       touch;
+#     * every added occurrence is a STRUCT- OR VARIANT-FIELD INITIALISER inside
+#       a construction expression, and it is either
+#         (i) the FIELD NAME, where that name is declared by a type-definition
+#             line this slice's diff does NOT add — note this is per FIELD, not
+#             per type: a slice may add other fields to the same type (#1299 S1
+#             adds `first_message` to `PlannerHarnessStartOperationPayload`)
+#             and still count `reset_harness_items:` under this clause, because
+#             `reset_harness_items` is not a name it introduced. An earlier
+#             draft said "a type whose definition this slice does not touch",
+#             which its own first use violated on the letter; or
+#         (ii) a SAME-NAMED LOCAL BINDING handed to that field — and ONLY when
+#             the binding itself is not introduced by this slice (its `let` is
+#             not in this slice's diff). This branch is the narrow one and the
+#             restriction is the whole point: `let runtime_id = new_id();
+#             Foo { runtime_id }` inside one slice is TWO fresh retiring-name
+#             identifiers, which is exactly what this ratchet exists to stop,
+#             and the earlier wording let it through. A slice that needs a new
+#             local there names it something else and spells the field
+#             explicitly (`Foo { runtime_id: fresh }`), paying the one
+#             unavoidable occurrence instead of two;
 #     * NOT ONE added line is prose, and not one is an identifier this slice
 #       itself coined. A new comment mentioning a retiring concept, or a fresh
 #       `runtime_id`-shaped name minted here, is precisely what this ratchet
