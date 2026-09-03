@@ -6210,7 +6210,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Same wire-name set as [`PluginListItem::state`], including the\nconnector-only `unavailable` — see that field's doc."
+            "description": "Same wire-name set as [`PluginListItem::state`], including\n`unavailable` — which is reachable for both connectors and `app`\nplugins; see that field's doc for what the state asserts."
           },
           "updated_at": {
             "type": "integer",
@@ -6264,7 +6264,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:\n`running | spawning | crashed | unavailable | disabled | installing |\ninstalled`.\n\n`unavailable` is the NORMAL terminal state of a connector\n(`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable\nupstream, rejected `secrets.json`, boot budget exhausted. It is not an\nerror state of the kernel, and unlike `crashed` there is no supervisor\nthat will retry it: it stands until an operator re-enables. `last_error`\ncarries the reason."
+            "description": "Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:\n`running | spawning | crashed | unavailable | disabled | installing |\ninstalled`.\n\n`unavailable` is a NORMAL terminal state, and what it states is\nnarrower than \"something failed\": **no process was started, nothing is\nwatching, and so nothing will retry.** Unlike `crashed` there is no\nsupervisor and no backoff behind it — it stands until an operator\nintervenes, and `last_error` is their only diagnostic. It is not an\nerror state of the kernel.\n\nTwo families of plugin reach it, and the shared property above is why\nthey share the name rather than each getting one:\n\n  * a connector (`kind: mcp-http` / `cli-query`) whose bring-up failed\n    — unreachable upstream, rejected `secrets.json`, boot budget\n    exhausted (#1164 §2.2);\n  * an `app` the kernel refused to start because its stored\n    configuration is unusable — a `config_schema.required` key that\n    neither the operator nor a manifest default supplies, or a stored\n    configuration that could not be read at all (#1284 §2.4).\n\nRecovery is the same operator action in every case: fix the cause,\nthen start the plugin again."
           },
           "version": {
             "type": "string"

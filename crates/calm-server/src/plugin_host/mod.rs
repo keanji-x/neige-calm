@@ -37,8 +37,8 @@ pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::{HttpCredential, HttpMcpClient};
 pub use manifest::{CONFIG_SCHEMA_KEY, ConnectorKind, Manifest};
 pub use mcp::{
-    CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
-    ResourceContent, ResourceContents, RpcError,
+    CallToolResult, ContentBlock, InboundNotification, InboundRequest, InitializeMeta, McpClient,
+    RequestId, ResourceContent, ResourceContents, RpcError,
 };
 pub use process::PluginProcess;
 pub use registry::{PluginRegistry, PluginRegistryBuilder};
@@ -102,12 +102,22 @@ pub enum PluginRuntimeStatus {
     Crashed {
         reason: String,
     },
-    /// #1164 §2.2 / §2.3 — a **connector** could not be brought up: the remote
-    /// MCP host timed out or errored, the CLI could not be resolved on PATH,
-    /// or `secrets.json` was refused. Distinct from [`Self::Crashed`] because
-    /// nothing crashed and there is no supervisor: connectors have no child
-    /// process, so there is no automatic retry. Recovery is an operator
-    /// re-enable.
+    /// #1164 §2.2 / §2.3 — a plugin could not be brought up: the remote MCP
+    /// host timed out or errored, the CLI could not be resolved on PATH,
+    /// `secrets.json` was refused, or (#1284 §2.4) required configuration is
+    /// missing. Distinct from [`Self::Crashed`] because nothing crashed and
+    /// no supervisor is installed, so there is no automatic retry. Recovery is
+    /// an operator re-enable.
+    ///
+    /// **#1284 widened this past connectors, deliberately.** Every original
+    /// occupant was a connector, and the defining property was stated as
+    /// "connectors have no child process". The property that actually matters
+    /// is the one shared with an `app` refused for missing configuration:
+    /// **no process was started and no supervisor is watching**, so the state
+    /// is terminal until an operator acts, and the `reason` is their only
+    /// diagnostic. The alternative — `Crashed` — would additionally be a lie
+    /// about a crash that did not happen, and (see the `app` spawn path)
+    /// carries no `last_error` a route can read.
     Unavailable {
         reason: String,
     },
@@ -1239,6 +1249,54 @@ impl PluginHost {
         Arc::clone(&self.events_arc)
     }
 
+    /// #1284 §2.3 — what this plugin will actually run with: the stored
+    /// `plugins.user_config` merged with the manifest's declared defaults, via
+    /// the one [`config::effective_config`] every consumer goes through.
+    ///
+    /// **A missing row is `{}`, not an error.** The registry and the DB are
+    /// separate stores and the host spawns from the registry; a plugin present
+    /// in one and not the other still gets its manifest defaults, which is the
+    /// truthful answer to "what did the operator configure" (nothing). A DB
+    /// *failure*, by contrast, is not an answer at all — reading it as `{}`
+    /// would deliver defaults over the top of an operator's real configuration
+    /// and, worse, let a `required` key look satisfied by a default when the
+    /// operator's actual value could not be read. So it fails the spawn.
+    ///
+    /// **How far the `Ok(None)` arm actually reaches, measured rather than
+    /// assumed** (S2 review P2-2). Writing a test for it turned up a ceiling
+    /// one layer down: an `app` with no `plugins` row cannot complete a spawn
+    /// regardless of what this function answers, because
+    /// [`Self::ensure_plugin_token`] writes `plugin_tokens`, whose `plugin_id`
+    /// is `REFERENCES plugins(id)` (`0002_plugins.sql`), and the insert fails
+    /// the foreign key. So today the arm decides exactly one thing: the
+    /// `required` verdict taken immediately after this call, which runs
+    /// *before* the token mint. That is where
+    /// `a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults`
+    /// pins it. `{}` is still the right answer here — the alternative would
+    /// report a store failure that did not happen — but it is not on its own
+    /// enough to make the registry and the DB separable for `app` plugins, and
+    /// this doc should not be read as claiming it is.
+    ///
+    /// The failure is reported as a bare `Err(String)` rather than a
+    /// [`HostError`] on purpose: the caller has to publish an `Unavailable`
+    /// live entry before it returns (S2 review P2-1 — a plain `?` here drops
+    /// the [`AdmissionGuard`] and leaves the plugin reading back as if it had
+    /// never been enabled), so the error has to be *handled* at the call site,
+    /// not merely propagated. A type that cannot be `?`-ed into `HostError` is
+    /// what makes that non-optional.
+    async fn effective_config_for_spawn(
+        &self,
+        id: &str,
+        manifest: &Manifest,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let user_config = match self.repo.plugin_get_by_id(id).await {
+            Ok(Some(row)) => row.user_config,
+            Ok(None) => serde_json::Value::Object(Default::default()),
+            Err(e) => return Err(e.to_string()),
+        };
+        Ok(config::effective_config(manifest, &user_config))
+    }
+
     /// Mint + persist a fresh process token for `id`, returning the raw value
     /// the caller can put into the spawn env. The hash lands in
     /// `plugin_tokens`; the raw value is **not** kept anywhere persistent —
@@ -1911,6 +1969,72 @@ impl PluginHost {
             }
         }
 
+        // #1284 §2.3(a) + §2.4 — the plugin's effective configuration, read
+        // **before** the token mint and the exec, for the same reason the kind
+        // branch above is: a refusal here must leave nothing behind. A missing
+        // required key is decided while the only state in play is this
+        // function's stack.
+        let effective = match self.effective_config_for_spawn(id, manifest).await {
+            Ok(effective) => effective,
+            Err(detail) => {
+                // S2 review P2-1. This branch used to be a `?`, which fell
+                // into exactly the hole argued against in (a) below: the `?`
+                // drops `guard` un-disarmed, inserts no live entry and emits no
+                // state event, so `PluginHost::status` answers `None` and the
+                // plugin renders as though it had never been enabled — with
+                // the DB error visible nowhere. Every connector-side failure of
+                // the same shape publishes `Unavailable`; so does this one.
+                let reason = format!("could not read stored configuration: {detail}");
+                let _ = self
+                    .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
+                    .await;
+                return Err(HostError::ConfigUnreadable {
+                    plugin_id: id.to_string(),
+                    reason,
+                });
+            }
+        };
+        let missing = config::missing_required(manifest, &effective);
+        if !missing.is_empty() {
+            // §2.2's v6 adjudication landing on its consumption side: the write
+            // path stopped enforcing `required` (a partial Save is a legitimate
+            // intermediate state), so the plugin not coming up is what
+            // "required" now means. The wording contract is `missing_required`'s
+            // own doc — this list and no other enumeration.
+            let reason = format!(
+                "missing required configuration: {}. Set it under Settings › Plugins, \
+                 then start the plugin again.",
+                missing.join(", ")
+            );
+            // **`Unavailable`, not `Crashed`, and the choice is not cosmetic.**
+            //
+            // (a) `Crashed` is the only other candidate and it cannot carry the
+            //     `last_error` §2.4 demands: `emit_crashed_under` publishes a
+            //     state *event* and nothing else, so `PluginHost::status` — the
+            //     one thing `GET /api/plugins/{id}` reads — answers `None` and
+            //     the plugin renders as if it had never been enabled. That is
+            //     precisely the failure mode `mark_unavailable_under`'s live
+            //     entry exists to prevent, and it is why the app spawn path's
+            //     other pre-process refusal (the template conflict) is not the
+            //     precedent to copy here.
+            // (b) The semantics match: nothing crashed — no child was ever
+            //     spawned — and no supervisor is installed, so there is no
+            //     respawn and no backoff to describe. Recovery is an operator
+            //     action (fix the config, re-enable), which is exactly the
+            //     contract `Unavailable` documents.
+            //
+            // The cost is that `Unavailable` was until now a connector-only
+            // status; its doc comment is widened to match, rather than the
+            // status being quietly reused against its own definition.
+            let _ = self
+                .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
+                .await;
+            return Err(HostError::MissingRequiredConfig {
+                plugin_id: id.to_string(),
+                reason,
+            });
+        }
+
         // Slice H: mint a fresh process token + persist its hash. The raw value
         // returned here is the same value we pass via env and the same value
         // we'll require the plugin to echo back inside `initialize`.
@@ -1935,7 +2059,21 @@ impl PluginHost {
         let (stdin, stdout) = process
             .take_stdio()
             .ok_or_else(|| HostError::Mcp(McpError::TransportClosed("stdio not piped".into())))?;
-        let mcp = match McpClient::connect_with_auth(stdout, stdin, Some(token.as_str())).await {
+        let mcp = match McpClient::connect_with_auth(
+            stdout,
+            stdin,
+            InitializeMeta {
+                expected_echo: Some(token.as_str()),
+                // #1284 §2.3(a). `Some` even when the map is empty: "this
+                // kernel delivers configuration and you have none" and "this
+                // kernel predates configuration delivery" are different facts,
+                // and a plugin that must tell them apart can only do so if the
+                // namespace is unconditionally present.
+                config: Some(&effective),
+            },
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 // Failed handshake — try to clean up the child before bailing.
@@ -2538,7 +2676,9 @@ impl PluginHost {
                 },
             );
         }
-        tracing::warn!(plugin_id = %id, reason = %reason, "connector unavailable");
+        // #1284: no longer connector-only — an `app` refused for missing
+        // required configuration lands here too, so the line says "plugin".
+        tracing::warn!(plugin_id = %id, reason = %reason, "plugin unavailable");
         true
     }
 

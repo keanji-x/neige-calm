@@ -112,12 +112,26 @@ async fn host_parts(
         plugins_data_dir,
         Vec::new(),
         events.clone(),
-        calm_server::state::WriteContext::new(
-            calm_server::card_role_cache::CardRoleCache::new(),
-            calm_server::wave_area_cache::WaveAreaCache::new(),
-        ),
+        test_write_context(),
     );
     (host, repo, tmp, events)
+}
+
+/// The cold `WriteContext` a `PluginHost` fixture is built with: both caches
+/// start empty and no case in `tests/plugin_suite.rs` reads them back, so one
+/// constructor serves the whole suite.
+///
+/// Shared, rather than re-spelled in each case module, for a reason that is not
+/// only tidiness: the two cache paths spell vocabulary that
+/// `scripts/gate-1316-terminology-ratchet.sh` ratchets by occurrence under
+/// `crates/`, so a new case that inlines this construction again raises those
+/// counts and fails the gate while adding no coverage at all. Call this
+/// instead; `plugin_config_delivery` does.
+pub(super) fn test_write_context() -> calm_server::state::WriteContext {
+    calm_server::state::WriteContext::new(
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_area_cache::WaveAreaCache::new(),
+    )
 }
 
 /// #1196 acceptance 13 — [`boot_host`] with the crash-window / backoff knobs

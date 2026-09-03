@@ -881,6 +881,7 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::model::{NewArea, NewCard, NewPlugin, NewWave};
+    use crate::plugin_host::InitializeMeta;
     use crate::plugin_host::manifest::Manifest;
     use crate::plugin_host::mcp::McpClient;
     use crate::plugin_host::registry::PluginRegistry;
@@ -996,9 +997,16 @@ mod tests {
             }
         });
 
-        McpClient::connect_with_auth(k_r, k_w, None)
-            .await
-            .expect("stub connect")
+        McpClient::connect_with_auth(
+            k_r,
+            k_w,
+            InitializeMeta {
+                expected_echo: None,
+                config: None,
+            },
+        )
+        .await
+        .expect("stub connect")
     }
 
     impl Harness {
