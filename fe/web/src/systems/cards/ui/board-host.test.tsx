@@ -107,7 +107,7 @@ describe('BoardHost react-grid-layout wiring', () => {
     expect(screen.getByText('Build log')).toBeTruthy();
   });
 
-  it('keeps a dragged position on the next layout pass', () => {
+  it('keeps dragged positions across synchronous animation-frame callbacks', () => {
     renderBoard();
     act(() => {
       grid.onLayoutChange?.([{ i: 'card-a', x: 4, y: 2, w: 6, h: 8 }]);
@@ -115,6 +115,86 @@ describe('BoardHost react-grid-layout wiring', () => {
     expect(grid.layout).toEqual([
       { i: 'card-a', x: 4, y: 2, w: 6, h: 8, minW: 4, minH: 6 },
     ]);
+
+    act(() => {
+      grid.onLayoutChange?.([{ i: 'card-a', x: 2, y: 3, w: 6, h: 9 }]);
+    });
+    expect(grid.layout).toEqual([
+      { i: 'card-a', x: 2, y: 3, w: 6, h: 9, minW: 4, minH: 6 },
+    ]);
+  });
+
+  it('cancels the held timeout fallback without updating after unmount', () => {
+    vi.stubGlobal('requestAnimationFrame', undefined);
+    vi.stubGlobal('cancelAnimationFrame', undefined);
+
+    const timeoutHandle = 47;
+    const heldTimeouts = new Map<number, () => void>();
+    const scheduledCallback = vi.fn();
+    const setTimeoutStub = vi.fn((callback: TimerHandler) => {
+      if (typeof callback !== 'function') throw new Error('Expected a function timer callback');
+      const invoke = callback as () => void;
+      heldTimeouts.set(timeoutHandle, vi.fn(() => {
+        scheduledCallback();
+        invoke();
+      }));
+      return timeoutHandle;
+    });
+    const clearTimeoutStub = vi.fn((handle: number | undefined) => {
+      if (handle !== undefined) heldTimeouts.delete(handle);
+    });
+    vi.stubGlobal('setTimeout', setTimeoutStub);
+    vi.stubGlobal('clearTimeout', clearTimeoutStub);
+
+    const board = renderBoard();
+    const layoutBeforeUnmount = grid.layout;
+    act(() => {
+      grid.onLayoutChange?.([{ i: 'card-a', x: 3, y: 2, w: 6, h: 8 }]);
+    });
+
+    expect(setTimeoutStub).toHaveBeenCalledOnce();
+    expect.soft(() => board.unmount()).not.toThrow();
+    expect.soft(clearTimeoutStub).toHaveBeenCalledWith(timeoutHandle);
+
+    act(() => {
+      const due = Array.from(heldTimeouts.values());
+      heldTimeouts.clear();
+      for (const callback of due) callback();
+    });
+    expect.soft(scheduledCallback).not.toHaveBeenCalled();
+    expect(grid.layout).toBe(layoutBeforeUnmount);
+  });
+});
+
+describe('BoardHost lifecycle', () => {
+  it('replays the current visible and focused state when replacing the host', () => {
+    const registry = createCardRegistry();
+    registry.register(entry);
+    const hostA = createCardHost(registry);
+    const hostB = createCardHost(registry);
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
+    const board = render(
+      <BoardHost host={hostA} items={items} activeCardId="card-a" visible />,
+    );
+
+    expect(hostA.resolve('card-a')?.lifecycle.getSnapshot()).toMatchObject({
+      visible: true,
+      focused: true,
+    });
+
+    board.rerender(
+      <BoardHost host={hostB} items={items} activeCardId="card-a" visible />,
+    );
+
+    expect(hostA.resolve('card-a')).toBeNull();
+    expect(hostB.resolve('card-a')?.lifecycle.getSnapshot()).toMatchObject({
+      visible: true,
+      focused: true,
+    });
+
+    board.unmount();
+    expect(hostB.resolve('card-a')).toBeNull();
   });
 });
 
