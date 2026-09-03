@@ -25,6 +25,9 @@ import {
 } from '../../../../core/domain/track.ts';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
+import type {
+  ScheduledEvent, TodayCompactProps, TodayPageProps, TrackRowRenderer,
+} from './page-props.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
@@ -33,34 +36,11 @@ import { useState } from '../../ui/state/public.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './today.module.css';
 
-/**
- * INV-TODAY-002 — an hour-bucketed scheduled event.
- *
- * The list of these is **permanently empty today, and that is a seam, not dead
- * code**. The mockup carried a synthetic `SURF_SCHEDULE` keyed on hand-written
- * track ids; under real kernel data those ids never appear, so hour-scheduled
- * events stay empty until a scheduling plugin lands (drop-in: derive
- * `ScheduledEvent[]` from overlays where `kind === 'scheduled'`).
- *
- * The two agenda sources — scheduled events and live track activity — **must
- * co-exist**: a day with scheduled work *and* an open track shows both, rather
- * than letting the schedule layer monopolise the surface. That is why this
- * arrives as a prop with an empty default instead of a hard-coded `[]` inside
- * the component: deleting the branch would silently delete the seam, and the
- * contract test feeds a synthetic event through it to prove it still works.
- */
-export type ScheduledEvent = Readonly<{ track: Track; date: Date; hour: number }>;
-
-/**
- * How Today draws one track. It is injected rather than imported because the row
- * belongs to `features/track` and a feature domain may not import a sibling;
- * `app/router` supplies it so Today does not import a sibling feature. The
- * variant vocabulary is §6.3's, so every surface still renders the one row.
- */
-export type TrackRowRenderer = (
-  track: Track,
-  options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
-) => ReactNode;
+// `ScheduledEvent`, `TrackRowRenderer` and `TodayPageProps` are declared in
+// `page-props.ts`, next to the viewport ledger that has to enumerate every one
+// of `TodayPageProps`' keys, and are re-exported here so this module stays the
+// feature's entry. See that file's header for why the ledger cannot live here.
+export type { ScheduledEvent, TodayPageProps, TrackRowRenderer } from './page-props.ts';
 
 /** The copy for "the day has no document yet". */
 const NO_PROGRESS_YET = 'Nothing written today yet.';
@@ -82,92 +62,6 @@ const NO_PROGRESS_YET = 'Nothing written today yet.';
  */
 const WRITE_SUMMARY = 'Write today\u2019s progress';
 const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
-
-export type TodayPageProps = Readonly<{
-  tracks: readonly Track[];
-  areas: readonly Area[];
-  /**
-   * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
-   *
-   * `undefined` while the read is in flight, `null` when the server answered
-   * "there is no launchpad yet" — a 200 with a null body, which is an empty
-   * state and not a failure.
-   *
-   * **`report_has_noninitial_content` is the empty-state predicate, and it is
-   * the server's** (INV-TODAYDOC-003). Nothing on this page may re-derive it
-   * from the document: the kernel's freshly-minted report is a well-formed
-   * document carrying the maintenance-contract comment and four empty H1s, so
-   * `readTrackReport` returns non-null for it and a null-check here would
-   * render four empty headings where the empty state belongs. Matching on the
-   * body text would be worse — it is mirror code for a body the kernel owns.
-   */
-  launchpad?: TodayLaunchpadWire | null;
-  /**
-   * The launchpad's report, already rendered. Injected rather than imported
-   * for the same reason `renderTrackRow` is: `ReportDocument` is
-   * `features/report` and a feature domain may not import a sibling.
-   */
-  launchpadDocument?: ReactNode;
-  /**
-   * A failure of the resolve, already rendered as an error.
-   *
-   * INV-TODAYDOC-002 — when this is present the document region shows it and
-   * **not** the empty state. A 5xx quietly turning into "nothing written
-   * today" would tell the reader their day was empty when in fact the server
-   * could not be reached.
-   */
-  launchpadError?: ReactNode;
-  /**
-   * Ask the server to write today's progress (#1253 D5), or `undefined` when
-   * the composition layer has no trigger to offer.
-   *
-   * **The control is shown whether or not anything happened today, and that is
-   * deliberate.** The design's gate lives on the server: `POST
-   * /api/today/summary` computes the day's activity itself and refuses an empty
-   * window, creating no conversation and sending no message
-   * (INV-TODAYDOC-007). This page cannot make the same decision — there is no
-   * read that would tell it, by design (D4 deleted the layer that would have
-   * offered one) — so hiding the button here would be a guess, and a guess that
-   * is wrong in the direction that makes the feature look broken. The refusal
-   * comes back as `summaryNotice` and reads as a fact about the day.
-   */
-  onWriteSummary?: () => void;
-  /** The trigger is in flight: the control says so and does not fire again. */
-  summaryPending?: boolean;
-  /**
-   * What the last trigger said, when it did not simply work — already worded
-   * and rendered by the composition layer, the same way `launchpadError` is.
-   *
-   * It sits beside the button rather than replacing the document: a refused or
-   * failed trigger changes nothing about the report already on screen, and
-   * swapping the document out for an error would claim otherwise.
-   */
-  summaryNotice?: ReactNode;
-  /** Navigation lives inside the injected row; Today itself opens nothing. */
-  renderTrackRow: TrackRowRenderer;
-  /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
-  scheduledEvents?: readonly ScheduledEvent[];
-  /**
-   * The panel card's second module, composed by `app/router`.
-   *
-   * A slot rather than props for the same reason `renderTrackRow` is a callback:
-   * `features/**` may not import a sibling domain, and the conversation list is
-   * `features/chat`. The same slot appears on all three routes — that identical
-   * second module is the point of the skeleton.
-   *
-   * It reads as a duplicate of the track pages and is not one: on Today this is
-   * the **cross-track index** (#1189 S5). It is the only place a track's
-   * conversations stay reachable after you navigate away from that track, and
-   * G6 opens one from here — the row navigates to the track *and* opens its
-   * assistant drawer. `app/router/track-conversation.test.tsx` owns that
-   * contract; dropping the module turns 18 of its assertions red.
-   */
-  conversationList?: ReactNode;
-  /** The conversation module head's `+`, composed by `app/router`. */
-  conversationAction?: ReactNode;
-  /** Tests pin "now" so assertions cannot drift across midnight or DST. */
-  nowMs?: number;
-}>;
 
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
@@ -228,13 +122,16 @@ function isoDate(day: Date): ISODateString {
   return `${day.getFullYear()}-${month}-${date}` as ISODateString;
 }
 
-export function TodayPage({
-  tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
-  launchpad, launchpadDocument, launchpadError, nowMs,
-  onWriteSummary, summaryPending, summaryNotice,
-}: TodayPageProps) {
+/**
+ * The current time, and the day it falls in.
+ *
+ * Both viewports read the clock the same way, so it is one hook rather than two
+ * copies: a pinned `nowMs` freezes it (tests assert across midnight and DST
+ * without waiting), and an unpinned one ticks slowly — 15s is enough for a
+ * minute-resolution clock and for the day to roll over on its own.
+ */
+function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }> {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
-  const compact = useCompactViewport();
 
   useEffect(() => {
     if (nowMs !== undefined) {
@@ -251,19 +148,58 @@ export function TodayPage({
     return start;
   }, [now]);
 
-  if (compact) {
-    return (
-      <main className={styles.mobileToday}>
-        <MobileHeader title="Today" level={1} />
-        <AstryxCalendar
-          key={isoDate(today)}
-          defaultValue={isoDate(today)}
-          weekStartsOn="mon"
-          hasVariableRowCount
-        />
-      </main>
-    );
-  }
+  return { now, today };
+}
+
+/**
+ * Today, picking a renderer per viewport — and that is all it does.
+ *
+ * The compact renderer takes `TodayCompactProps`, which is `Pick<TodayPageProps,
+ * …>` over the keys `TODAY_VIEWPORT_LEDGER` marks as rendered. That is the
+ * point of the split: what the phone leaves out is declared in the ledger, and
+ * a prop declared as left out is *not a member of the type* the phone renderer
+ * receives, so touching it does not compile. Before #1234 the phone branch sat
+ * inside this function with all thirteen props in scope, and #1253 added six
+ * of them that the phone never drew, with nobody the wiser.
+ *
+ * Keep this body a dispatch and nothing else: props read *here* are outside the
+ * ledger's reach, so drawing anything in the compact arm other than
+ * `<TodayCompact />` would step around it.
+ */
+export function TodayPage(props: TodayPageProps) {
+  const compact = useCompactViewport();
+  if (compact) return <TodayCompact nowMs={props.nowMs} />;
+  return <TodayDesktop {...props} />;
+}
+
+/**
+ * The phone: a header and the month calendar.
+ *
+ * Its props type is the ledger's `render: true` half, so the list of things it
+ * *could* draw is exactly the list the ledger claims. Everything else Today
+ * receives is unreachable from in here, by construction and not by convention.
+ */
+function TodayCompact({ nowMs }: TodayCompactProps) {
+  const { today } = useNow(nowMs);
+  return (
+    <main className={styles.mobileToday}>
+      <MobileHeader title="Today" level={1} />
+      <AstryxCalendar
+        key={isoDate(today)}
+        defaultValue={isoDate(today)}
+        weekStartsOn="mon"
+        hasVariableRowCount
+      />
+    </main>
+  );
+}
+
+function TodayDesktop({
+  tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
+  launchpad, launchpadDocument, launchpadError, nowMs,
+  onWriteSummary, summaryPending, summaryNotice,
+}: TodayPageProps) {
+  const { now, today } = useNow(nowMs);
 
   const shownTracks = visibleTracks(tracks);
   const waiting = shownTracks.filter(needsUserAttention);

@@ -54,6 +54,33 @@ value that arrives as inline `style` — it is per-row data, not a variant.
 - Day cells are buttons with `aria-pressed` and a full-date accessible name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).
 
+## The phone, and the ledger that declares it (#1234)
+
+The compact viewport draws a header and the month calendar, and that is all it
+draws. **The gap is allowed; leaving it undeclared is not.** #1253 added six
+props to `TodayPageProps` — `launchpad`, `launchpadDocument`, `launchpadError`,
+`onWriteSummary`, `summaryPending`, `summaryNotice` — none of which the phone
+renders, and the whole review chain missed it, because nothing anywhere stated
+what the phone leaves out.
+
+`page-props.ts` states it. `TODAY_VIEWPORT_LEDGER` maps **every** key of
+`TodayPageProps` to `{ render: true }` or `{ render: false, why }`, and two
+things follow mechanically from `tsc -b`:
+
+- a prop added to `TodayPageProps` and not to the ledger does not compile, and
+  the diagnostic names the prop;
+- a prop declared `render: false` is not a member of `TodayCompactProps`
+  (`Pick<TodayPageProps, …>` over the rendered keys), so `TodayCompact` cannot
+  read it even by accident.
+
+Consequences for whoever touches this next: the props type lives in
+`page-props.ts` rather than `public.tsx` (which re-exports it) because a ledger
+that names `keyof TodayPageProps` and a page that consumes the derived keys
+would otherwise import each other, and `no-circular` counts type-only edges.
+`TodayPage` is a two-line dispatch on purpose — props read *there* are outside
+the ledger's reach. And `render: true` only guarantees the phone renderer *may*
+name the prop; that it reaches the DOM is a liveness property no type carries.
+
 ## Test contract
 
 `getByRole` only. `public.test.tsx` holds behavior; `public.contract.test.tsx`
