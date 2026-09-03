@@ -101,8 +101,9 @@
 //! are plain control flow inside `wave_report::apply_report_op` today, with no
 //! parameter that can switch any of them off. (Which content rule runs on an
 //! `UpsertBlock` does vary with the op's own `kind`: `validate_block_content`
-//! calls `check_prose_markdown` when `kind` is prose, and schema-validates the
-//! fence payload otherwise. But that selector is a
+//! calls `check_prose_markdown` when `kind` is prose, and otherwise — when, and
+//! only when, `parse_fence` accepts the whole content as one canonical fence —
+//! schema-validates that fence's payload. But that selector is a
 //! field of the op, sitting next to the content it selects a rule for; it is not
 //! a [`WriteOrigin`], and `apply_report_op` has no [`WriteOrigin`] parameter —
 //! this module is not wired into it at all, see the status section above.)

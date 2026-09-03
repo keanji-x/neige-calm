@@ -434,12 +434,16 @@ pub(crate) fn apply_report_op(
                 // a kind match, so a direct `apply_report_op` call used
                 // to carry a ```neige-block fence straight into a
                 // `kind: "prose"` block, and a schema-invalid payload
-                // straight into a data block. Nothing a user sends
-                // through the MCP (#971) or REST (#990) block surfaces
-                // arrives that way — they run `check_prose_markdown` on
-                // a prose argument and build data content with
-                // `render_data_block` — and the point is that the op
-                // stops depending on them to do so. Which rule each
+                // straight into a data block. Content a user sends to
+                // the block *upsert* endpoints (MCP #971 / REST #990)
+                // never arrives that way — they run
+                // `check_prose_markdown` on a prose argument and build
+                // data content with `render_data_block` — and the point
+                // is that the op stops depending on them to do so. The
+                // REST block *delete* does arrive carrying content
+                // neither of those built: `normalize_report_op` rewrites
+                // a user's task delete into a `kind: "task"` upsert
+                // whose fence comes from bare `render_fence`. Which rule each
                 // `kind` gets, which production caller is *not* covered
                 // upstream, and what is left to `upsert_block` (and so
                 // still surfaces as a 500 rather than a 400), is written

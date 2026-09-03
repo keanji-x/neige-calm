@@ -34,9 +34,13 @@
 //!   evidence below — but note the third bullet, which is why "not a
 //!   user-reachable hole" is *not* stated flatly for the non-prose half.
 //!   Production code constructs a `ReportDocOp::UpsertBlock` in exactly
-//!   four places, in three modules (grep `ReportDocOp::UpsertBlock`; the
-//!   remaining hits are `#[cfg(test)]` or the unrelated
-//!   `calm_types::proposal::ProposalOp::UpsertBlock`):
+//!   four places, in three modules. Grep `ReportDocOp::UpsertBlock`: apart
+//!   from those four, the only non-test hits it returns are
+//!   `wave_report::apply_report_op`'s match arm — which *consumes* the op
+//!   rather than building one — and this comment; every other hit is under
+//!   `#[cfg(test)]`. (`calm_types::proposal::ProposalOp::UpsertBlock` is a
+//!   different enum and does not match that grep at all; it only shows up
+//!   under an unqualified `UpsertBlock` grep.)
 //!
 //!   1. `mcp_server::tools::wave_report_blocks` (#971) — prose content
 //!      goes through `check_prose_markdown`, data content through
@@ -147,14 +151,23 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
 ///   doc for why that leaves the *status* coarse without accepting
 ///   anything extra.
 ///
-/// Neither half closes a hole a user could reach through the MCP surface
-/// (#971) or the REST surface (#990): both have refused fenced prose on
-/// their own argument, and rendered their non-prose content through
-/// `render_data_block`, since long before this. The op itself now refuses
-/// both, so the invariant no longer rests on every present and future
-/// caller remembering to check first — and the module doc names the one
-/// production caller, the task-tombstone rewrite, whose payload nothing
-/// upstream schema-validates.
+/// The two halves stand differently with respect to what reaches them,
+/// and the module doc's third bullet is why. The **prose** half closes no
+/// hole a user could reach: the only production sites that can emit
+/// `kind: "prose"` are the MCP surface (#971) and the REST surface
+/// (#990), and both have run `check_prose_markdown` on their own argument
+/// since long before this — so here it is defence in depth, aimed at a
+/// direct `apply_report_op` caller. The **non-prose** half is not only
+/// that: `wave_report_edit_guard::normalize_report_op` rewrites a user's
+/// block-level delete of a *live* task into an `UpsertBlock { kind:
+/// "task", .. }`
+/// whose content it builds with bare `render_fence`, which does not
+/// validate, so this check is the first thing to schema-validate that
+/// payload. That path is user-reachable — `routes::wave_report_blocks::
+/// delete_block` commits as `EditAuthor::User`, the author the rewrite
+/// keys on (the MCP delete tool is `require_role_any([Spec, Assistant])`
+/// and so never triggers it). The module doc carries the full caller
+/// enumeration this rests on, and what each half therefore buys.
 ///
 /// The prose half is deliberately stricter than [`validate_body_fences`], which tolerates
 /// a well-formed, schema-valid fence. The op layer must not be weaker
@@ -659,6 +672,55 @@ mod tests {
             .find(|block| block.id == created)
             .expect("the replaced block is live");
         assert_eq!(block.payload, json!({ "src": "/apps/x", "height": 600 }));
+    }
+
+    /// The regression pin for the task-tombstone path — the one production
+    /// caller whose `UpsertBlock` payload [`super::validate_block_content`]
+    /// is the *first* thing to schema-validate.
+    ///
+    /// `wave_report_edit_guard::normalize_report_op` builds its fence with
+    /// bare `render_fence`, which does not validate, so nothing upstream
+    /// stands between that payload and this check: if the tombstone shape
+    /// ever stopped satisfying the `task` schema, every user block-level
+    /// task delete would start failing with a 400. The op is not
+    /// hand-written here — it is taken from `normalize_report_op` itself,
+    /// so the shape under test cannot drift away from the shape production
+    /// emits.
+    #[test]
+    fn task_tombstone_payload_from_the_delete_rewrite_passes_the_content_check() {
+        let task_fence = calm_types::report_blocks::render_fence(
+            "task",
+            &json!({
+                "key": "build",
+                "goal": "build it",
+                "kind": "codex",
+                "ready": true,
+                "declared_by": "spec",
+            }),
+        );
+        let doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &task_fence));
+        let task = doc
+            .blocks_snapshot()
+            .unwrap()
+            .into_iter()
+            .find(|block| block.kind == "task")
+            .expect("the seeded task block is live");
+
+        let rewritten = crate::wave_report_edit_guard::normalize_report_op(
+            &doc,
+            ReportDocOp::DeleteBlock {
+                id: task.id.clone(),
+                if_rev: task.rev,
+            },
+            EditAuthor::User,
+        )
+        .expect("a user's delete of a live task is rewritten, not refused");
+        let ReportDocOp::UpsertBlock { kind, content, .. } = &rewritten else {
+            panic!("the user delete must become an UpsertBlock, got {rewritten:?}");
+        };
+        assert_eq!(kind, "task", "the rewrite emits a task upsert");
+        super::validate_block_content(kind, content)
+            .expect("the tombstone payload must pass the op-layer content check");
     }
 
     /// The residual that [`super::validate_block_content`]'s prose branch
