@@ -164,42 +164,44 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * and not as a label regex either — "Generate", "Run" or a Chinese label
      * would walk straight past one.
      *
-     * The workspace is seeded with ONE BLOCKED TRACK, and that is what makes
-     * the walk verifiable rather than merely plausible. The element this test
-     * ends up on has to be pinned from both sides, and each side is pinned by
-     * a different fact about that fixture:
+     * THE COLUMN IS FOUND FROM THE OUTSIDE IN, not by walking up from the
+     * empty line, and that is the whole point of the shape below.
      *
-     *   too high (past `.mainColumn` into `.content` or above) — the sibling
-     *   panel column renders the calendar, whose week nav is two `<button>`s,
-     *   so the zero-button assertion itself goes red;
+     * Walking up N `parentElement` hops cannot state which element it landed
+     * on; it can only state how far it climbed, so any wrapper inserted
+     * between the column and the empty line moves the landing spot down while
+     * the test stays green. Adding "…and it contains the waiting heading" does
+     * not fix that:
+     * one wrapper around BOTH `WaitingSection` and `TodayDocument` satisfies
+     * it, and a button added in the column outside that wrapper then goes
+     * unseen. So the walk is replaced by an identification: `.content` has
+     * exactly two children, the panel is the one carrying `role=complementary`
+     * (`<aside>`), and the main column is the other one. Nothing inside the
+     * column can change that, which is what makes "anywhere in the main
+     * column" true as written.
      *
-     *   too low (stopping on some wrapper inside `.mainColumn`, which is the
-     *   real regression: someone adds one around `TodayDocument` and the
-     *   claim silently narrows to "this wrapper has no button") — the waiting
-     *   section is a SIBLING of the document region inside the column and
-     *   nowhere else, so requiring the landed element to contain its heading
-     *   fails on any wrapper below the column.
-     *
-     * That sibling is doing the job the retired terminal placeholder used to
-     * do here. One blocked track and not six: `WAITING_ROW_LIMIT` is 5, and
-     * the sixth would add the "+N more waiting" disclosure — a real button in
-     * the main column, which this assertion would then have to carve out.
+     * The workspace is seeded with ONE BLOCKED TRACK so the column has a
+     * second region besides the document — the assertions below check the
+     * landed element really does hold both, i.e. it is the column and not one
+     * of its children. One blocked track and not six: `WAITING_ROW_LIMIT` is
+     * 5, and the sixth would add the "+N more waiting" disclosure — a real
+     * button in the main column, which this assertion would have to carve out.
      */
     render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
-    const empty = screen.getByText(EMPTY_COPY);
-    /* Two hops, not one: the empty line sits inside the document region, and
-       the region sits in the main column. The walk used to be one hop because
-       the region had no wrapper — it gained one when the document took the
-       prose type rank. */
-    const documentRegion = empty.parentElement;
-    expect(documentRegion).not.toBeNull();
-    const mainColumn = documentRegion?.parentElement;
-    expect(mainColumn).not.toBeNull();
-    // The identity anchor, per the note above: a sibling that lives in the
-    // main column and in no wrapper inside it.
+    const panel = screen.getByRole('complementary');
+    const content = panel.parentElement;
+    expect(content).not.toBeNull();
+    // Pinned rather than assumed: if the row ever grows a third child, the
+    // "the other one" step below stops being well defined and this says so.
+    expect(content?.children.length).toBe(2);
+    const mainColumn = [...(content?.children ?? [])].find((child) => child !== panel);
+    expect(mainColumn).toBeDefined();
+    // It is the column: it holds the document region and the status bar, the
+    // two things the column is made of.
+    expect(mainColumn?.contains(screen.getByText(EMPTY_COPY))).toBe(true);
     expect(mainColumn?.contains(screen.getByText('Waiting on you'))).toBe(true);
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
   });

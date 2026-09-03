@@ -28,6 +28,23 @@ const renderTrackRow: TodayPageProps['renderTrackRow'] = (track) => (
   <span data-nc-role="row">{track.title}</span>
 );
 
+/**
+ * What one type token resolves to right now, as a computed `font-size`.
+ *
+ * A probe element rather than reading the custom property off `:root`: the
+ * property's value is a token, and the thing the assertions compare against is
+ * the *resolved* `font-size` string the engine reports, so the probe has to go
+ * through the same resolution the page does.
+ */
+function fontSizeOf(token: '--text-lg' | '--text-base'): string {
+  const probe = document.createElement('span');
+  probe.style.fontSize = `var(${token})`;
+  document.body.append(probe);
+  const size = getComputedStyle(probe).fontSize;
+  probe.remove();
+  return size;
+}
+
 function area(): Area {
   return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
 }
@@ -57,13 +74,27 @@ describe('the summary notice answers a control, not the document', () => {
     const region = container.querySelector('p')?.parentElement;
     expect(notice).not.toBeNull();
     expect(trigger).not.toBeNull();
+    /*
+     * Compared against the tokens as the engine resolves them, not against
+     * `18px` / `13px`.
+     *
+     * What this locks is "the notice reads at the interface rank and not at
+     * the prose rank" — a statement about which token it takes. Pinning the
+     * numbers would additionally lock what those tokens are *worth*, so a
+     * legitimate global retune of `--text-lg` or `--text-base` would fail this
+     * test while the implementation stayed correct. The probes below make the
+     * comparison relative, and the ranks staying distinct is asserted first so
+     * the two cannot pass by collapsing into each other.
+     */
+    const prose = fontSizeOf('--text-lg');
+    const interfaceRank = fontSizeOf('--text-base');
+    expect(prose).not.toBe(interfaceRank);
     // The region really is at the prose rank — otherwise this test would pass
     // for the trivial reason that nothing here is enlarged at all.
-    expect(getComputedStyle(region as Element).fontSize).toBe('18px');
-    // …and the notice is not: 13px is the interface rank, which is what it read
-    // at before the region gained its type, and what the button beside it is
-    // sized against.
-    expect(getComputedStyle(notice as Element).fontSize).toBe('13px');
+    expect(getComputedStyle(region as Element).fontSize).toBe(prose);
+    // …and the notice is not: it reads at the rank it had before the region
+    // gained its type, and the rank the button beside it is sized against.
+    expect(getComputedStyle(notice as Element).fontSize).toBe(interfaceRank);
     // Not the darkest text either: it is an aside about a press.
     expect(getComputedStyle(notice as Element).color)
       .not.toBe(getComputedStyle(region as Element).color);

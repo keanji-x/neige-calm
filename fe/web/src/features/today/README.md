@@ -16,28 +16,48 @@ without one:
   never the same list.
 
   What *did* overlap: the calendar's agenda one module up is
-  `activeTracksOn(selected)` — every track whose lifetime overlaps the selected
-  day, **uncapped** — so on the default selection (today) every non-waiting,
-  non-running track still alive today was drawn twice inside one card. The
-  de-dup that existed (`shown`) only excluded waiting and running; it never
-  looked at the agenda, so "one track appearing twice on a page distorts both
-  the counts and the scan" was violated by the card against itself.
+  `activeTracksOn(selected)` over the visible tracks — every one of those whose
+  activity interval overlaps the selected day, with no cap on how many rows it
+  draws (the module scrolls at eight) — while RECENT took the same visible
+  tracks minus waiting and running, ordered them by `updatedAt`, and **kept 12**.
+  So on the default selection a quiet track whose interval covers today was
+  drawn twice inside one card, and the cap is the only thing that ever excused
+  it: 13 such tracks put 13 rows in the agenda and 12 in RECENT, and the row
+  RECENT dropped was the least recently touched. The de-dup that existed
+  (`shown`) only excluded waiting and running; it never looked at the agenda,
+  so "one track appearing twice on a page distorts both the counts and the
+  scan" was violated by the card against itself for each of those tracks except
+  the ones the cap had already discarded.
 
   What did **not** overlap, and is the part being given up: RECENT applied no
-  date filter at all — it took every visible non-waiting, non-running track by
-  `updatedAt` — so a track that finished *before* today was in RECENT and is in
-  no agenda for today, because `activeTracksOn` closes a terminal track's
-  interval at `terminalAt` and that interval no longer reaches today's start.
-  That class is exactly "what happened while I was away", which is what RECENT
-  was for.
+  date filter, so it also carried tracks whose interval had already closed
+  before today, and today's agenda holds none of those. That class is not the
+  clean "finished before today" it sounds like, because `activeTracksOn` closes
+  the interval at
 
-  Those tracks are not lost, they stop being one glance away: move the
-  calendar's selection to the day such a track ran or finished and
-  `activeTracksOn` puts it in the agenda there, under the same row. The cost is
-  one page-turn on an entry point to finished work, and the reason it is worth
-  paying is what this route is for — Today answers *what needs me*, and a list
-  ordered by `updatedAt` with no date bound is an archive browser, which is a
-  surface this page is not and should not grow into.
+      end = terminalAt ?? (isTerminal(lifecycle) ? updatedAt : nowMs)
+
+  and `terminalAt` is nullable. A terminal track with `terminalAt === null` — a
+  pre-migration row — is closed at `updatedAt` instead, so editing its title
+  today puts it back in *today's* agenda even though the work finished last
+  month. What RECENT could show and today's agenda cannot is therefore the
+  quiet tracks the overlap test rejects for today: those whose `end` fell
+  before today's start, plus the degenerate row whose `createdAt` is still in
+  the future. The `terminalAt` case is worth knowing precisely because it means
+  "what happened while I was away" was never a clean class here — a null
+  `terminalAt` moves a row between the two lists on a metadata edit.
+
+  Those tracks are not lost. A row is in the agenda of the day its own `end`
+  falls on — that day satisfies both endpoints of the overlap test by
+  construction, for any row whose close is not earlier than its creation — and
+  stepping the calendar there costs one `Previous week` press per week back,
+  since a press moves the selection seven days and the grid follows its week.
+  What is given up is the glance, and the price rises with age: a track that
+  closed six weeks ago is six presses away instead of one row on the landing
+  page. It is worth paying because of what this route is for — Today answers
+  *what needs me*, and a list ordered by `updatedAt` with no date bound is an
+  archive browser, which is a surface this page is not and should not grow
+  into.
 
 **The conversation module was proposed for removal in the same pass and kept.**
 It looks like a duplicate of the track pages' module and is not one: on Today it

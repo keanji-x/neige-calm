@@ -369,18 +369,23 @@ export function TodayPage({
                 RUNNING module would read as a gap.
 
                 RECENT used to sit here and no longer does — a trade, not a
-                de-duplication. The overlap was real: the agenda above is
-                `activeTracksOn(selected)`, uncapped, so on the default
-                selection every non-waiting, non-running track still alive
-                today was drawn twice in one card, and the de-dup that was here
+                de-duplication. The overlap was real: the agenda above draws
+                every visible track overlapping the selected day with no row
+                cap, RECENT kept 12, so on the default selection a quiet track
+                whose interval covers today was drawn twice in one card unless
+                the cap had already dropped it, and the de-dup that was here
                 only excluded waiting/running and never looked at the agenda.
-                But RECENT applied no date filter at all, so it also held the
-                tracks that finished BEFORE today — which no agenda for today
-                contains, since `activeTracksOn` closes a terminal track's
-                interval at `terminalAt`. Those stay reachable one selection
-                away, on the day they ran; giving up that page-turn is the
-                price of Today staying "what needs me" rather than an archive
-                ordered by `updatedAt`. See this feature's README. */}
+                What RECENT could show and today's agenda cannot is the quiet
+                tracks the day's overlap test rejects — in practice those whose
+                interval closed before today's start, where "closed" is
+                `terminalAt ?? (isTerminal ? updatedAt : nowMs)`, so a terminal
+                row with a null `terminalAt` is closed at `updatedAt` and a
+                metadata edit today pulls it back into today's agenda. Those
+                rows stay reachable in the agenda of the day their interval
+                closed, one `Previous week` press per week back; giving up that
+                glance is the price of Today staying "what needs me" rather
+                than an archive ordered by `updatedAt`. See this feature's
+                README. */}
             <PanelRows title="Running" tracks={running} render={renderTrackRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
