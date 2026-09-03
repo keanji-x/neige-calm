@@ -466,6 +466,52 @@ async fn template_id_and_recipe_id_together_are_a_400() {
     assert_eq!(error["code"], json!("bad_request"), "{error}");
 }
 
+/// Ambiguity outranks the fork priority rule.
+///
+/// `fork_report_from` wins over *one* named starting point (pinned by
+/// `an_explicit_fork_source_still_wins_over_a_recipe`). It does not get to
+/// resolve a request that named *two*: `template_id + recipe_id` is
+/// contradictory whether or not a fork source rides along, so this is the same
+/// 400 as the no-fork case — not a `201` that silently takes the fork path and
+/// drops the contradiction on the floor.
+///
+/// As above, the `code` assertion separates the refusal from a `500`/`internal`
+/// panic body, so this case stays decisive if the early guard is removed.
+#[tokio::test]
+async fn template_id_and_recipe_id_with_a_fork_source_are_still_a_400() {
+    let boot = boot().await;
+    let recipe = create_recipe(boot.app.clone(), "mine", &two_task_body()).await;
+
+    // A real, forkable source track, so the request is rejected for its
+    // ambiguity and not for a dangling fork source.
+    let (_, source) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(&boot.area_id, "fork-source", json!({}))),
+    )
+    .await;
+    let source_id = source["id"].as_str().unwrap().to_string();
+
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(
+            &boot.area_id,
+            "ambiguous-with-fork",
+            json!({
+                "template_id": "small-change",
+                "recipe_id": recipe["id"].as_str().unwrap(),
+                "fork_report_from": source_id,
+            }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["code"], json!("bad_request"), "{error}");
+}
+
 /// An explicit `fork_report_from` still wins, unchanged by #1292 — the same
 /// property `explicit_fork_report_from_is_not_overwritten` pins for
 /// `template_id`.

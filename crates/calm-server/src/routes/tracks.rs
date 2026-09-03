@@ -849,21 +849,29 @@ pub(crate) async fn create_track(
     // #1292 — a recipe is a third source, resolved at the same priority as a
     // built-in template. An explicit `fork_report_from` still wins over both.
     let init = match (&admission, recipe_id, fork_report_from) {
-        (_, _, Some(source_track_id)) => TrackInit::Fork { source_track_id },
-        (Some(admission), None, None) => TrackInit::Template { key: admission.key },
-        (None, Some(recipe_id), None) => TrackInit::Recipe { recipe_id },
-        (None, None, None) => TrackInit::Blank,
         // Both a built-in and a recipe. The guard at the top of this function
         // already refused this combination before any work, so reaching here
         // means that guard was removed or bypassed. That is a reason to return
         // the same 400 — not to panic: the exclusivity is a property of *this*
         // match's inputs, and it should hold locally instead of depending on a
         // caller ~180 lines up that nothing mechanically ties to this arm.
-        (Some(_), Some(_), None) => {
+        //
+        // This arm sits *before* the fork arm, and matches `_` on
+        // `fork_report_from`, on purpose: a request naming two starting points
+        // is ambiguous whether or not it also asks for a fork, and ambiguity is
+        // not something a priority rule gets to resolve. Ordering it after the
+        // fork arm would let `template_id + recipe_id + fork_report_from`
+        // silently take the fork path and swallow the contradiction — exactly
+        // the hole this fallback exists to close.
+        (Some(_), Some(_), _) => {
             return Err(CalmError::BadRequest(
                 "track create: give `template_id` or `recipe_id`, not both".into(),
             ));
         }
+        (_, _, Some(source_track_id)) => TrackInit::Fork { source_track_id },
+        (Some(admission), None, None) => TrackInit::Template { key: admission.key },
+        (None, Some(recipe_id), None) => TrackInit::Recipe { recipe_id },
+        (None, None, None) => TrackInit::Blank,
     };
 
     let workspace_root = s.workspace_root.clone();
