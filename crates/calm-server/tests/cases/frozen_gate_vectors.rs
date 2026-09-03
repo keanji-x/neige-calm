@@ -15,7 +15,7 @@
 //! These vectors are CHARACTERIZATION — they pin current `main` behavior,
 //! including cells that look like bugs (see the `note` fields in
 //! `06_task_report_and_reportcard.json`: the kernel gate allows
-//! AiSpec→task.completed and performs no self-scope check for
+//! AiPlanner→task.completed and performs no self-scope check for
 //! ReportCard-bound actors). Do not "fix" a vector to match intuition:
 //! changing any file under `tests/vectors/` requires a commit message
 //! carrying `FROZEN-VECTOR-CHANGE:` + rationale (CI-enforced, see
@@ -83,7 +83,7 @@ enum Expected {
 
 /// Real-sqlite fixture mirroring `dispatcher_role_scope.rs`: two areas,
 /// each with one track; the home track hosts a codex worker, a claude
-/// worker, a spec card, a report card, and a second ("other") worker.
+/// worker, a planner card, a report card, and a second ("other") worker.
 /// Roles land in both the cards table and the in-memory caches the
 /// write entry consults.
 struct Fixture {
@@ -111,7 +111,7 @@ impl Fixture {
 
         let worker = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
         let claude_worker = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
-        let spec = seed_card(&repo, &cache, &home_track, CardRole::Spec).await;
+        let planner = seed_card(&repo, &cache, &home_track, CardRole::Planner).await;
         let report = seed_card(&repo, &cache, &home_track, CardRole::ReportCard).await;
         let other = seed_card(&repo, &cache, &home_track, CardRole::Worker).await;
         // #1189 — the Assistant arm needs an assistant card in the home
@@ -129,12 +129,12 @@ impl Fixture {
             WorkerContract::Executor,
         )
         .await;
-        let spec_session = seed_worker_session(
+        let planner_session = seed_worker_session(
             &repo,
             &home_track,
-            "session-spec-vector-0001",
+            "session-planner-vector-0001",
             WorkerSessionState::Running,
-            Some(spec.clone()),
+            Some(planner.clone()),
             WorkerContract::Planner,
         )
         .await;
@@ -171,12 +171,12 @@ impl Fixture {
             ("$CARDLESS_SESSION", cardless_session.as_str().to_string()),
             ("$UNKNOWN_SESSION", "session-never-minted-0000".to_string()),
             ("$WORKER_SESSION", worker_session.as_str().to_string()),
-            ("$SPEC_SESSION", spec_session.as_str().to_string()),
+            ("$PLANNER_SESSION", planner_session.as_str().to_string()),
             ("$UNKNOWN_CARD", "card-never-minted-0000".to_string()),
             ("$WORKER_CARD", worker.as_str().to_string()),
             ("$REPORT_CARD", report.as_str().to_string()),
             ("$OTHER_CARD", other.as_str().to_string()),
-            ("$SPEC_CARD", spec.as_str().to_string()),
+            ("$PLANNER_CARD", planner.as_str().to_string()),
             ("$HOME_TRACK", home_track.as_str().to_string()),
             ("$HOME_AREA", home_area.as_str().to_string()),
             ("$OTHER_TRACK", other_track.as_str().to_string()),

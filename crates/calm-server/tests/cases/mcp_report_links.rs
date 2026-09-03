@@ -6,7 +6,7 @@ use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
 use serde_json::{Value, json};
 
-use crate::mcp_track_report::{boot, call_tool, spec_identity, worker_identity};
+use crate::mcp_track_report::{boot, call_tool, planner_identity, worker_identity};
 
 async fn add_track(
     boot: &crate::mcp_track_report::Boot,
@@ -102,7 +102,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         "# Outside\n".into(),
     )
     .await;
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let tracks = value["tracks"].as_array().unwrap();
@@ -130,7 +130,7 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
     .await;
     strip_report_cache_and_crdt(&boot, &legacy).await;
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let track = value["tracks"]
@@ -156,7 +156,7 @@ async fn outline_track_cap_is_reported_and_exact() {
         .await;
     }
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(value["tracks"].as_array().unwrap().len(), 50);
@@ -181,7 +181,7 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
     let boot = boot().await;
     let track = add_track(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let entry = value["tracks"]
@@ -242,7 +242,7 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
         );
     }
 
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, spec_identity(&boot), json!({}))
+    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     let bytes = serde_json::to_vec(&value).unwrap().len();
@@ -324,7 +324,7 @@ async fn backlinks_returns_linking_track_for_callers_track() {
     let value = call_tool(
         &boot,
         TOOL_REPORT_BACKLINKS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({}),
     )
     .await
@@ -347,7 +347,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
     let value = call_tool(
         &boot,
         TOOL_REPORT_BACKLINKS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({}),
     )
     .await
@@ -373,7 +373,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
 }
 
 #[tokio::test]
-async fn report_link_reads_reject_non_spec_caller() {
+async fn report_link_reads_reject_non_planner_caller() {
     let boot = boot().await;
     for tool in [TOOL_AREA_OUTLINE, TOOL_REPORT_BACKLINKS] {
         let error = call_tool(
@@ -384,6 +384,6 @@ async fn report_link_reads_reject_non_spec_caller() {
         )
         .await
         .unwrap_err();
-        assert!(error.message.contains("requires role=Spec"));
+        assert!(error.message.contains("requires role=Planner"));
     }
 }

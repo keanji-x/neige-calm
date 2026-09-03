@@ -12,7 +12,7 @@
 // and leaves the inputs editable so the user can pivot.
 //
 // Without the B1 fix, the error would read "claimed by another area"
-// regardless of cache state — this spec specifically locks in the
+// regardless of cache state — this planner specifically locks in the
 // area-name lookup path.
 //
 // Prereq: `make dev` serving http://localhost:4041 with the default
@@ -57,9 +57,9 @@ test('NewTaskForm surfaces conflicting area name in 409 error', async ({ page })
   // #1147 S3 — this path is submitted, so it has to clear
   // `validate_attached_workspace` (exists + inside a Git work tree)
   // BEFORE the request can reach the folder-claim scan that produces
-  // the 409 this spec is about. A non-existent path would now 400 with
+  // the 409 this planner is about. A non-existent path would now 400 with
   // "attached workspace: … does not exist" — a different failure that
-  // does not name area A, so the spec would fail rather than silently
+  // does not name area A, so the planner would fail rather than silently
   // pass on the wrong error. See `helpers/attached-workspace.ts`.
   const blockedPath = createGitWorkTree(
     attachedWorkspacePath(`neige-e2e-conflict-${ts}`),
@@ -89,7 +89,7 @@ test('NewTaskForm surfaces conflicting area name in 409 error', async ({ page })
   // The sidebar has no `overflow: auto` (body { overflow: hidden }),
   // so once enough areas accumulate from prior runs the "+ New area"
   // row gets pushed outside the document and Playwright cannot scroll
-  // to it. This spec doesn't exercise the sidebar-create flow
+  // to it. This planner doesn't exercise the sidebar-create flow
   // (`track-create.spec.ts` owns that contract); it only needs area B
   // to exist as the surrounding page for the form. REST + direct goto
   // gives identical post-conditions without depending on viewport

@@ -1,7 +1,7 @@
 # meta:
 #   scope: web/e2e/**  (34 spec files + 4 helpers + 3 _setup files) + web/playwright.config.ts
 #   spec files read: 34 / 34 (all *.spec.ts under web/e2e/)
-#   helper/infra files read: helpers/{lifecycle,reset,spec-chat,trace}.ts,
+#   helper/infra files read: helpers/{lifecycle,reset,planner-chat,trace}.ts,
 #                            _setup/{replay-server.setup,replay-server.shared,replay-server.teardown}.ts,
 #                            playwright.config.ts, e2e/README.md
 #   entries: 258 total — 129 capability, 118 invariant, 11 gate
@@ -22,7 +22,7 @@
 #       because the new fe must still own those surfaces even though nothing gates them today.
 #   authoritative_test: NONE appears on 7 entries — behaviours the specs DOCUMENT as
 #     deliberately ungated (track archive UI, area-folder management UI, the resolve
-#     longest-prefix tiebreak, the folder-overlap 409, the dormant-spec-input 409, and the
+#     longest-prefix tiebreak, the folder-overlap 409, the dormant-planner-input 409, and the
 #     scroll-probe inventory). Each is an intentional scope decision, not an oversight.
 #   ONLY-E2E signal: entries whose `why` contains "ONLY e2e" have no unit/vitest counterpart
 #     per the spec's own header comment — losing the spec loses the entire safety net.
@@ -81,7 +81,7 @@
     with the replay baseURL, separate from `a11y`.
   why: >
     It drives a dedicated `color-anchor.html` harness page rather than the SPA,
-    so it cannot share the a11y project's spec glob.
+    so it cannot share the a11y project's planner glob.
   source: web/playwright.config.ts:128-135
   authoritative_test: web/playwright.config.ts:128
   owner_slice: none/e2e/infra
@@ -117,7 +117,7 @@
     `**/_scroll-probe.spec.ts` and `**/color-system-anchor.spec.ts`.
   why: >
     Keeps `npx playwright test --project=chromium` runnable without cargo on PATH
-    (playwright.config.ts:28-32); the probe and color-anchor specs need harnesses chromium
+    (playwright.config.ts:28-32); the probe and color-anchor planners need harnesses chromium
     does not provide.
   source: web/playwright.config.ts:108-113
   authoritative_test: web/playwright.config.ts:108
@@ -283,12 +283,12 @@
   statement: >
     Setup must probe for a usable `codex` CLI (CALM_CODEX_BIN → pinned nvm path →
     ~/.local/bin, ~/bin → nvm dir scan → `bash -lc 'command -v codex'`) and write the
-    absolute path or the `__missing__` sentinel to a cache file that codex-dependent specs
+    absolute path or the `__missing__` sentinel to a cache file that codex-dependent planners
     read synchronously to self-skip.
   why: >
     _setup/replay-server.shared.ts:77-96 — the login-shell fallback honours profile-augmented
     PATH (nvm/asdf/pnpm) even when the Playwright worker inherited a stripped env; the file
-    handoff is needed because setup runs in a different worker than the spec.
+    handoff is needed because setup runs in a different worker than the planner.
   source: web/e2e/_setup/replay-server.shared.ts:97-139
   authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:77-79
   owner_slice: none/e2e/infra
@@ -305,7 +305,7 @@
     Codex resolution must run AFTER the replay server is confirmed ready.
   why: >
     _setup/replay-server.setup.ts:152-156 (#177) — a codex-resolution hiccup must gate only
-    the spec that needs codex, never the rest of the a11y suite.
+    the planner that needs codex, never the rest of the a11y suite.
   source: web/e2e/_setup/replay-server.setup.ts:151-167
   authoritative_test: web/e2e/_setup/replay-server.setup.ts:157
   owner_slice: none/e2e/infra
@@ -320,7 +320,7 @@
   family: reset-hook
   statement: >
     A `POST /dev/reset` hook on the replay binary must wipe every row from the in-memory repo
-    and reseed the original fixture event stream, and every a11y spec must call it in
+    and reseed the original fixture event stream, and every a11y planner must call it in
     `beforeEach`.
   why: >
     helpers/reset.ts:1-17 — a single in-memory kernel serves the whole a11y project; without a
@@ -375,7 +375,7 @@
     (`POST /api/tracks/:id/cards`), and a per-track view-mode overlay (`POST /api/overlays`).
   why: >
     helpers/reset.ts:42-59,81-87,125,148-153,178-190 — post-#175 the sidebar has no seeded
-    area, so every spec must create the areas/tracks it needs; the iframe card exists so card
+    area, so every planner must create the areas/tracks it needs; the iframe card exists so card
     surfaces can be populated without a terminal/codex daemon.
   source: web/e2e/helpers/reset.ts:61-219
   authoritative_test: web/e2e/helpers/reset.ts:61
@@ -397,7 +397,7 @@
     #250 PR2 put cwd into this body (since #1131 the server takes it as optional); #177 made
     theme required end-to-end. Funnelling this helper's
     callers through one literal is what keeps the shared seed path from drifting away from the
-    server's accepted body. Scope is exactly this helper: specs that inline their own
+    server's accepted body. Scope is exactly this helper: planners that inline their own
     `POST /api/tracks` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
     do not go through it, and this entry does not claim anything about them. The server-side
     contract itself (a body missing theme is rejected 422) is
@@ -503,12 +503,12 @@
   family: lifecycle-hook
   statement: >
     `POST /dev/force-track-lifecycle {track_id, to}` must stamp the transition as
-    `ActorId::Kernel` (classified SpecAgent), route through the same
+    `ActorId::Kernel` (classified PlannerAgent), route through the same
     `write_with_events_typed` pipeline as production `update_track`, and return
     `{track, emitted_events}`.
   why: >
-    helpers/lifecycle.ts:1-18 (#269 P1) — the spec daemon does not run in the replay binary,
-    so spec-only edges can never happen organically; the hook changes only WHO drives the
+    helpers/lifecycle.ts:1-18 (#269 P1) — the planner daemon does not run in the replay binary,
+    so planner-only edges can never happen organically; the hook changes only WHO drives the
     edge, never whether the edge is legal.
   source: web/e2e/helpers/lifecycle.ts:53-92
   authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:74
@@ -564,7 +564,7 @@
     reviewing|done|canceled|failed) must be pinned as a TS string-literal union in the e2e
     tree, mirroring the Rust enum's lowercase serde tags.
   why: >
-    helpers/lifecycle.ts:24-30 — compile-time typo detection in specs instead of runtime
+    helpers/lifecycle.ts:24-30 — compile-time typo detection in planners instead of runtime
     404/403 confusion.
   source: web/e2e/helpers/lifecycle.ts:31-40
   authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:80
@@ -577,17 +577,17 @@
 
 - id: E2E-CAP-INFRA-028
   kind: capability
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
-    `POST /dev/force-spec-phase {card_id, to}` must stand a paused harness up on registry
+    `POST /dev/force-planner-phase {card_id, to}` must stand a paused harness up on registry
     miss and force the FSM through the regular `persist_snapshot` path, returning
     `{ok, card_id, runtime_id, old_phase, new_phase}`.
   why: >
-    helpers/spec-chat.ts:1-12 (#682 PR-1) — the codex app-server is stubbed in replay so the
-    `spec-harness-start` op fails at validate; the hook is what makes `GET /spec/run`, the
+    helpers/planner-chat.ts:1-12 (#682 PR-1) — the codex app-server is stubbed in replay so the
+    `planner-harness-start` op fails at validate; the hook is what makes `GET /planner/run`, the
     `harness.phase.changed` WS event and the DB snapshot agree by construction.
-  source: web/e2e/helpers/spec-chat.ts:74-91
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:51
+  source: web/e2e/helpers/planner-chat.ts:74-91
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:51
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -597,16 +597,16 @@
 
 - id: E2E-GATE-INFRA-029
   kind: gate
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
     The forceable harness phase set is exactly pending_thread_start | idle | issuing_turn |
     issuing_interrupt | turn_running | turn_completed | resumed; `wedged` must be rejected 400.
   why: >
-    helpers/spec-chat.ts:43-48 — a failed runtime row is no longer projectable by
-    `GET /spec/run`, so forcing `wedged` would produce an unrepresentable state.
-  source: web/e2e/helpers/spec-chat.ts:49-56
-  authoritative_test: web/e2e/helpers/spec-chat.ts:49
-  owner_slice: features/spec/chat
+    helpers/planner-chat.ts:43-48 — a failed runtime row is no longer projectable by
+    `GET /planner/run`, so forcing `wedged` would produce an unrepresentable state.
+  source: web/e2e/helpers/planner-chat.ts:49-56
+  authoritative_test: web/e2e/helpers/planner-chat.ts:49
+  owner_slice: features/planner/chat
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -615,16 +615,16 @@
 
 - id: E2E-INV-INFRA-030
   kind: invariant
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
     Forced phases are stable EXCEPT `resumed`, which decays to `idle` after ~5s with an extra
     `harness.phase.changed`; tests must never assert `resumed` stays put.
   why: >
-    helpers/spec-chat.ts:14-21 — probed stub-runtime fact pinned against the live replay
+    helpers/planner-chat.ts:14-21 — probed stub-runtime fact pinned against the live replay
     binary (2026-06); the dev harness issues no codex RPCs so every other phase is inert.
-  source: web/e2e/helpers/spec-chat.ts:14-24
-  authoritative_test: web/e2e/helpers/spec-chat.ts:18
-  owner_slice: features/spec/chat
+  source: web/e2e/helpers/planner-chat.ts:14-24
+  authoritative_test: web/e2e/helpers/planner-chat.ts:18
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -633,16 +633,16 @@
 
 - id: E2E-INV-INFRA-031
   kind: invariant
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
-    `POST /spec/interrupt` at `turn_running` parks the harness at `issuing_interrupt` where a
+    `POST /planner/interrupt` at `turn_running` parks the harness at `issuing_interrupt` where a
     30s watchdog wedges it; interrupt tests must act, assert, and let the next `/dev/reset`
     clean up — never idle >30s.
   why: >
-    helpers/spec-chat.ts:21-24 — the stub can never complete the codex `turn/interrupt` RPC.
-  source: web/e2e/helpers/spec-chat.ts:21-24
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:71
-  owner_slice: features/spec/chat
+    helpers/planner-chat.ts:21-24 — the stub can never complete the codex `turn/interrupt` RPC.
+  source: web/e2e/helpers/planner-chat.ts:21-24
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:71
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -651,17 +651,17 @@
 
 - id: E2E-CAP-INFRA-032
   kind: capability
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
-    Helpers must resolve the auto-created spec card from track detail by the predicate
-    `kind === 'codex' && payload.spec_harness === true`, and throw when absent.
+    Helpers must resolve the auto-created planner card from track detail by the predicate
+    `kind === 'codex' && payload.planner_harness === true`, and throw when absent.
   why: >
-    helpers/spec-chat.ts:93-101 — the same predicate `TrackReportPage.selectSpecCard` resolves
+    helpers/planner-chat.ts:93-101 — the same predicate `TrackReportPage.selectPlannerCard` resolves
     against FE card slots; throwing makes a seeding regression fail at setup, not at a later
     locator.
-  source: web/e2e/helpers/spec-chat.ts:102-128
-  authoritative_test: web/e2e/helpers/spec-chat.ts:117
-  owner_slice: features/spec/chat
+  source: web/e2e/helpers/planner-chat.ts:102-128
+  authoritative_test: web/e2e/helpers/planner-chat.ts:117
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -670,17 +670,17 @@
 
 - id: E2E-CAP-INFRA-033
   kind: capability
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
     A helper must be able to intercept `/api/events` over `page.routeWebSocket` and drop ONLY
     server→client `harness.phase.changed` frames while proxying everything else (including
     the client's `{sub, since}` publishes and the server's `_replay_complete`).
   why: >
-    helpers/spec-chat.ts:156-170 — the stream subscribes with `since: 0`, so a phase forced
+    helpers/planner-chat.ts:156-170 — the stream subscribes with `since: 0`, so a phase forced
     BEFORE navigation is replayed anyway; without the filter a seed-path test would stay green
-    even if the component never consumed `GET /spec/run`.
-  source: web/e2e/helpers/spec-chat.ts:172-190
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:57
+    even if the component never consumed `GET /planner/run`.
+  source: web/e2e/helpers/planner-chat.ts:172-190
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:57
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -690,15 +690,15 @@
 
 - id: E2E-INV-INFRA-034
   kind: invariant
-  family: spec-chat-hook
+  family: planner-chat-hook
   statement: >
     The WS phase-frame drop filter must be installed BEFORE `page.goto` and used only by
     seed-path tests.
   why: >
-    helpers/spec-chat.ts:169-170 — live / input / interrupt specs depend on real phase frames
+    helpers/planner-chat.ts:169-170 — live / input / interrupt planners depend on real phase frames
     and would hang forever with the filter installed.
-  source: web/e2e/helpers/spec-chat.ts:166-171
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:57
+  source: web/e2e/helpers/planner-chat.ts:166-171
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:57
   owner_slice: none/e2e/infra
   intentional_omission: true
   runtime_layer: none
@@ -749,7 +749,7 @@
   kind: capability
   family: auth
   statement: >
-    Chromium-project specs must be able to log in via `POST /api/auth/login` with
+    Chromium-project planners must be able to log in via `POST /api/auth/login` with
     `{username, password}` defaulting to owner/dev and overridable via PROBE_USERNAME /
     PROBE_PASSWORD.
   why: >
@@ -768,10 +768,10 @@
   kind: invariant
   family: cleanup
   statement: >
-    Every chromium-project spec that mints areas must track their ids and
+    Every chromium-project planner that mints areas must track their ids and
     `DELETE /api/areas/<id>` them in `afterEach`, tolerating 404.
   why: >
-    track-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break specs
+    track-create.spec.ts:21-26 (#250 PR5 triage) — leftover areas accumulate and break planners
     that assume a zero-area baseline (notably golden-path). The delete cascades through
     tracks → cards → terminals.
   source: web/e2e/track-create.spec.ts:27-43
@@ -1016,7 +1016,7 @@
     accumulate the `+ New area` row is pushed outside the document and cannot be scrolled to.
   why: >
     track-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
-    multi-area specs to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
+    multi-area planners to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
     silently changes which flows are reachable.
   source: web/e2e/track-create-auto-match.spec.ts:82-90
   authoritative_test: web/e2e/track-create-auto-match.spec.ts:91
@@ -1057,7 +1057,7 @@
     NewTaskForm must expose a `Task description` textarea, a `Working directory` input, and a
     `Create task` submit button.
   why: >
-    track-create.spec.ts:81-96 — these three are the minimal field set every creation spec in
+    track-create.spec.ts:81-96 — these three are the minimal field set every creation planner in
     the suite drives.
   source: web/e2e/track-create.spec.ts:81-96
   authoritative_test: web/e2e/track-create.spec.ts:82
@@ -1580,7 +1580,7 @@
     what keeps the resolve handler's filter set to AT MOST ONE row per query path — so the
     handler's `max_by_key(path.len())` longest-prefix tiebreak is dead from the HTTP surface.
   why: >
-    a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright spec;
+    a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright planner;
     the branch is only reachable by seeding overlapping rows through the raw repo, which is a
     Rust-integration-test concern.
   source: web/e2e/a11y-cwd-resolve.spec.ts:264-272
@@ -1789,7 +1789,7 @@
   family: card-create
   statement: >
     Activating the terminal menuitem must create a card immediately with no modal (zero config)
-    and persist a terminal card row on the track — the spec polls `/api/tracks` for that track until
+    and persist a terminal card row on the track — the planner polls `/api/tracks` for that track until
     `containsTerminalCard` holds, so a UI-only success does not satisfy this.
   why: >
     a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
@@ -2031,7 +2031,7 @@
     such cards can retain focus and wedge the walk.
   why: >
     a11y-keyboard.spec.ts:838-841 — a real, load-bearing testing constraint that a rewrite's
-    new specs will re-discover the hard way.
+    new planners will re-discover the hard way.
   source: web/e2e/a11y-keyboard.spec.ts:838-842
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:841
   owner_slice: none/e2e/a11y-keyboard
@@ -2049,7 +2049,7 @@
     `HTTPS proxy` textboxes plus `Reset` and `Save` buttons, all reachable by Tab from body.
   why: >
     a11y-keyboard.spec.ts:851-882 — Reset and Save both start disabled (form clean, no edits);
-    the spec asserts existence + reachability, not enabled state.
+    the planner asserts existence + reachability, not enabled state.
   source: web/e2e/a11y-keyboard.spec.ts:860-882
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
   owner_slice: features/settings
@@ -2113,7 +2113,7 @@
     terminal-user expectations, not app design tokens); the real interactive surface is the
     `.xterm-helper-textarea`. `aria-hidden` + `role="presentation"` (commit 20669b3) did NOT
     stop axe's contrast walker; `.exclude()` is the documented escape hatch. Global (not
-    per-test) because every track with a spec or worker card mounts an xterm.
+    per-test) because every track with a planner or worker card mounts an xterm.
   source: web/e2e/a11y-axe.spec.ts:126-154
   authoritative_test: web/e2e/a11y-axe.spec.ts:152
   owner_slice: none/e2e/a11y-axe
@@ -2490,7 +2490,7 @@
     a11y-track-area-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
     empty or unchanged; without it a stray Enter blanks the track title.
     The scope narrowing is #1211 S2's, and the rewrite does the opposite on purpose: a track there
-    has a second namer (the spec agent, whose rename only fires while the title is empty), so
+    has a second namer (the planner agent, whose rename only fires while the title is empty), so
     clearing the name is a real request. INV-TRACKNAME-013 states that, and the two do not
     contradict each other — this row is about a front-end that has no such agent behind it. The
     owner_slice below is where the *rewrite* would put this behaviour, not a claim that the
@@ -2530,7 +2530,7 @@
     opens an `<input aria-label="Area name">` that auto-focuses with the value pre-selected.
   why: >
     a11y-track-area-ops.spec.ts:253-265 — EditableTitle in Area.tsx; the microtask `select()` in
-    `enter()` is why specs must `selectText()` before `fill()` for determinism.
+    `enter()` is why planners must `selectText()` before `fill()` for determinism.
   source: web/e2e/a11y-track-area-ops.spec.ts:253-282
   authoritative_test: web/e2e/a11y-track-area-ops.spec.ts:241
   owner_slice: features/area/page
@@ -2747,7 +2747,7 @@
   statement: >
     `DELETE /api/areas/:id` must cascade through tracks → cards → terminals.
   why: >
-    track-create.spec.ts:24-26 — relied on by every chromium spec's cleanup hook; without the
+    track-create.spec.ts:24-26 — relied on by every chromium planner's cleanup hook; without the
     cascade the suite leaks orphan tracks and terminals.
   source: web/e2e/track-create.spec.ts:21-26
   authoritative_test: web/e2e/track-create.spec.ts:33
@@ -2823,11 +2823,11 @@
   kind: invariant
   family: lifecycle-actors
   statement: >
-    `draft → planning` (kickoff) is the only edge allowed for BOTH User and SpecAgent; every
-    edge from planning through done is spec-only.
+    `draft → planning` (kickoff) is the only edge allowed for BOTH User and PlannerAgent; every
+    edge from planning through done is planner-only.
   why: >
     a11y-track-lifecycle.spec.ts:82-101 and a11y-track-lifecycle-rejections.spec.ts:171-175 — the
-    validator's edge table is `(allow_user, allow_spec)` per edge; kickoff is the one
+    validator's edge table is `(allow_user, allow_planner)` per edge; kickoff is the one
     both-allowed row.
   source: web/e2e/a11y-track-lifecycle.spec.ts:85-102
   authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:87
@@ -2897,7 +2897,7 @@
   kind: invariant
   family: lifecycle-actors
   statement: >
-    Reopen (`done → planning`) is USER-ONLY: even the Spec Agent may not reopen a terminal track.
+    Reopen (`done → planning`) is USER-ONLY: even the Planner Agent may not reopen a terminal track.
   why: a11y-track-lifecycle.spec.ts:138-141 — a hard kernel rule in `validate_transition`.
   source: web/e2e/a11y-track-lifecycle.spec.ts:138-146
   authoritative_test: web/e2e/a11y-track-lifecycle.spec.ts:141
@@ -2951,7 +2951,7 @@
   kind: invariant
   family: lifecycle-rejections
   statement: >
-    A User-actor PATCH for a spec-only edge (`planning → dispatching`) must return 403 with
+    A User-actor PATCH for a planner-only edge (`planning → dispatching`) must return 403 with
     body `code: "forbidden"`, and the track's lifecycle must be UNCHANGED.
   why: >
     a11y-track-lifecycle-rejections.spec.ts:14-22,97-127 — the validator runs BEFORE the write.
@@ -3185,7 +3185,7 @@
     sidebar live, via the resulting `EventScope::System` `area.updated` / `track.updated` WS
     frames, with no reload.
   why: >
-    helpers/reset.ts:42-52 — every a11y spec depends on this; it is also the everyday multi-tab /
+    helpers/reset.ts:42-52 — every a11y planner depends on this; it is also the everyday multi-tab /
     agent-driven-mutation contract.
   source: web/e2e/helpers/reset.ts:42-79
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:157
@@ -3197,21 +3197,21 @@
   migration: pending
 
 # =============================================================================
-# SECTION 10 — Spec chat / SpecCurrentRun (#682, pinning #676 + #657)
+# SECTION 10 — Planner chat / PlannerCurrentRun (#682, pinning #676 + #657)
 # =============================================================================
 
 - id: E2E-CAP-SPECCHAT-001
   kind: capability
-  family: spec-card
+  family: planner-card
   statement: >
-    `POST /api/tracks` must auto-create a spec card: a `kind: "codex"` card whose payload carries
-    `spec_harness: true`.
+    `POST /api/tracks` must auto-create a planner card: a `kind: "codex"` card whose payload carries
+    `planner_harness: true`.
   why: >
-    helpers/spec-chat.ts:93-101 — the same marker `routes/tracks.rs::spec_harness_card_payload`
-    writes and `TrackReportPage.selectSpecCard` reads; it is how every surface finds "the" spec card.
-  source: web/e2e/helpers/spec-chat.ts:102-128
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:38
-  owner_slice: features/spec/chat
+    helpers/planner-chat.ts:93-101 — the same marker `routes/tracks.rs::planner_harness_card_payload`
+    writes and `TrackReportPage.selectPlannerCard` reads; it is how every surface finds "the" planner card.
+  source: web/e2e/helpers/planner-chat.ts:102-128
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:38
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3226,10 +3226,10 @@
     `<aside role="complementary" aria-label="Conversation drawer">` gaining the
     `report-conversation-drawer--open` class, and a `Close conversation` button to close it.
   why: >
-    a11y-spec-chat-seed.spec.ts:63-67 and track-report-view.spec.ts:330-333 — the liveness UI
+    a11y-planner-chat-seed.spec.ts:63-67 and track-report-view.spec.ts:330-333 — the liveness UI
     (status chip + stop affordances + typing indicator) renders ONLY in conversation mode.
-  source: web/e2e/a11y-spec-chat-seed.spec.ts:63-67
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:65
+  source: web/e2e/a11y-planner-chat-seed.spec.ts:63-67
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:65
   owner_slice: features/report/page
   intentional_omission: false
   runtime_layer: features
@@ -3242,14 +3242,14 @@
   family: liveness-gate
   statement: >
     Every stop/liveness affordance must gate on the HARNESS PHASE, seeded from
-    `GET /api/cards/{id}/spec/run` on mount — never on an overlay-derived `fsm === 'Working'`.
+    `GET /api/cards/{id}/planner/run` on mount — never on an overlay-derived `fsm === 'Working'`.
   why: >
-    a11y-spec-chat-seed.spec.ts:1-15 (#676 root cause) — spec cards never publish a status overlay
+    a11y-planner-chat-seed.spec.ts:1-15 (#676 root cause) — planner cards never publish a status overlay
     in production, so the Stop chip / ■ / Esc shipped DEAD: they never showed even while a turn was
     visibly running. #657's typing indicator was the same class of bug.
-  source: web/e2e/a11y-spec-chat-seed.spec.ts:41-83
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:41
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-seed.spec.ts:41-83
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:41
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3260,16 +3260,16 @@
   kind: capability
   family: seed-path
   statement: >
-    Opening a track MID-TURN must render, from the REST seed alone: a `Stop spec turn` button
+    Opening a track MID-TURN must render, from the REST seed alone: a `Stop planner turn` button
     (header chip), a `Stop turn` button (input line ■), a
-    `<div role="status" aria-label="Spec Agent is working">` typing indicator, and a
+    `<div role="status" aria-label="Planner Agent is working">` typing indicator, and a
     `.report-convo-state` chip reading `Turn Running` with `data-fsm="Working"`.
   why: >
-    a11y-spec-chat-seed.spec.ts:41-83 — with WS phase frames dropped, the seed read is provably
+    a11y-planner-chat-seed.spec.ts:41-83 — with WS phase frames dropped, the seed read is provably
     the ONLY liveness source, which is exactly the "open the track mid-turn" situation #676 broke.
-  source: web/e2e/a11y-spec-chat-seed.spec.ts:69-83
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:41
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-seed.spec.ts:69-83
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:41
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3283,11 +3283,11 @@
     Opening a track while IDLE must render the chip as `Idle` / `data-fsm="Idle"` and NONE of the
     working affordances must exist (count 0, not merely hidden).
   why: >
-    a11y-spec-chat-seed.spec.ts:85-114 — the inverse pin; absence checks are anchored AFTER the
+    a11y-planner-chat-seed.spec.ts:85-114 — the inverse pin; absence checks are anchored AFTER the
     chip assertion so they run against a settled, seeded UI rather than a still-loading one.
-  source: web/e2e/a11y-spec-chat-seed.spec.ts:85-114
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:85
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-seed.spec.ts:85-114
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:85
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3298,14 +3298,14 @@
   kind: capability
   family: run-snapshot
   statement: >
-    `GET /api/cards/{id}/spec/run` must answer `{card_id, runtime_id, phase}` and a dormant card
+    `GET /api/cards/{id}/planner/run` must answer `{card_id, runtime_id, phase}` and a dormant card
     (no harness stood up yet) must answer `{runtime_id: null, phase: null}`.
   why: >
-    helpers/spec-chat.ts:130-140 — the null shape is what drives the FE's overlay-derived
+    helpers/planner-chat.ts:130-140 — the null shape is what drives the FE's overlay-derived
     'Starting' fallback.
-  source: web/e2e/helpers/spec-chat.ts:130-154
-  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:53
-  owner_slice: features/spec/chat
+  source: web/e2e/helpers/planner-chat.ts:130-154
+  authoritative_test: web/e2e/a11y-planner-chat-seed.spec.ts:53
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3321,11 +3321,11 @@
     `Turn Running`/Working; `turn_completed` → `Turn Completed`/Idle; `issuing_interrupt` →
     `Issuing Interrupt`/Working.
   why: >
-    a11y-spec-chat-live.spec.ts:46-79 and a11y-spec-chat-interrupt.spec.ts:52-56 — the Working
+    a11y-planner-chat-live.spec.ts:46-79 and a11y-planner-chat-interrupt.spec.ts:52-56 — the Working
     bucket is what opens the stop affordances; the exact Title Case strings are user-visible.
-  source: web/e2e/a11y-spec-chat-live.spec.ts:46-79
-  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:30
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-live.spec.ts:46-79
+  authoritative_test: web/e2e/a11y-planner-chat-live.spec.ts:30
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3339,11 +3339,11 @@
     The typing indicator's `working` gate must EXCLUDE `issuing_interrupt` — it opens at
     issuing_turn/turn_running and closes the moment an interrupt is in flight.
   why: >
-    a11y-spec-chat-interrupt.spec.ts:16-18,59-62 — the chip stays in the Working bucket at
+    a11y-planner-chat-interrupt.spec.ts:16-18,59-62 — the chip stays in the Working bucket at
     issuing_interrupt but the agent is no longer producing, so a still-animating indicator lies.
-  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:52-69
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:60
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-interrupt.spec.ts:52-69
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:60
+  owner_slice: features/planner/chat
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -3358,11 +3358,11 @@
     `harness.phase.changed` WS event — no reload, no re-seed — for the full lifecycle
     idle → issuing_turn → turn_running → turn_completed.
   why: >
-    a11y-spec-chat-live.spec.ts:1-11 — the counterpart to the seed path; every affordance must
+    a11y-planner-chat-live.spec.ts:1-11 — the counterpart to the seed path; every affordance must
     both open and close again live.
-  source: web/e2e/a11y-spec-chat-live.spec.ts:30-79
-  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:30
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-live.spec.ts:30-79
+  authoritative_test: web/e2e/a11y-planner-chat-live.spec.ts:30
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3376,11 +3376,11 @@
     `harness.phase.changed` payloads must be snake_case — `card_id`, `new_phase`, `runtime_id`
     all present as strings, and `newPhase` / `cardId` must be ABSENT.
   why: >
-    a11y-spec-chat-live.spec.ts:81-98 — a camelCase drift leaves `ev.data.new_phase` undefined and
+    a11y-planner-chat-live.spec.ts:81-98 — a camelCase drift leaves `ev.data.new_phase` undefined and
     the UI frozen: the exact "tests green, feature dead" failure mode this suite exists to catch.
-  source: web/e2e/a11y-spec-chat-live.spec.ts:87-98
-  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:93
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-live.spec.ts:87-98
+  authoritative_test: web/e2e/a11y-planner-chat-live.spec.ts:93
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3394,10 +3394,10 @@
     Forced phase events must arrive in order; ordering assertions must filter to the explicitly
     forced tags so an allowed initial `pending_thread_start` emit from harness stand-up cannot
     flake them.
-  why: a11y-spec-chat-live.spec.ts:99-106 — harness stand-up legitimately emits an extra frame.
-  source: web/e2e/a11y-spec-chat-live.spec.ts:99-106
-  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:106
-  owner_slice: features/spec/chat
+  why: a11y-planner-chat-live.spec.ts:99-106 — harness stand-up legitimately emits an extra frame.
+  source: web/e2e/a11y-planner-chat-live.spec.ts:99-106
+  authoritative_test: web/e2e/a11y-planner-chat-live.spec.ts:106
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3408,16 +3408,16 @@
   kind: capability
   family: input-path
   statement: >
-    The conversation must expose a `<textarea aria-label="Ask the Spec Agent">`; Enter sends the
-    draft via `POST /api/cards/{id}/spec/input` (200), the textarea clears and re-enables, the
+    The conversation must expose a `<textarea aria-label="Ask the Planner Agent">`; Enter sends the
+    draft via `POST /api/cards/{id}/planner/input` (200), the textarea clears and re-enables, the
     message text lands in the transcript, and an author label `You · queued` marks the FE-local
     echo entry.
   why: >
-    a11y-spec-chat-input.spec.ts:1-9 — `/spec/input` is a pure MPSC enqueue; the queued echo is the
+    a11y-planner-chat-input.spec.ts:1-9 — `/planner/input` is a pure MPSC enqueue; the queued echo is the
     user's only feedback until the harness emits the real item.
-  source: web/e2e/a11y-spec-chat-input.spec.ts:48-90
-  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:28
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-input.spec.ts:48-90
+  authoritative_test: web/e2e/a11y-planner-chat-input.spec.ts:28
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3431,12 +3431,12 @@
     Sending input must NOT churn the harness phase: the chip stays `Idle` and zero
     `harness.phase.changed` events are recorded.
   why: >
-    a11y-spec-chat-input.spec.ts:92-106 — `observe(UserMessage)` is enqueue-only; a phase move on
+    a11y-planner-chat-input.spec.ts:92-106 — `observe(UserMessage)` is enqueue-only; a phase move on
     send would mean the route is starting turns behind the user's back. Anchored deterministically
     on the `harness.user_message.enqueued` event rather than a bare sleep.
-  source: web/e2e/a11y-spec-chat-input.spec.ts:92-107
-  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:106
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-input.spec.ts:92-107
+  authoritative_test: web/e2e/a11y-planner-chat-input.spec.ts:106
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3447,13 +3447,13 @@
   kind: capability
   family: input-path
   statement: >
-    `POST /spec/input` on a DORMANT spec card must answer a typed `spec_harness_dormant` 409.
+    `POST /planner/input` on a DORMANT planner card must answer a typed `planner_harness_dormant` 409.
   why: >
-    a11y-spec-chat-input.spec.ts:33-35 — a live (idle) harness must exist first; the dormant path
+    a11y-planner-chat-input.spec.ts:33-35 — a live (idle) harness must exist first; the dormant path
     is unit-tested and deliberately not re-covered in e2e.
-  source: web/e2e/a11y-spec-chat-input.spec.ts:33-35
+  source: web/e2e/a11y-planner-chat-input.spec.ts:33-35
   authoritative_test: NONE
-  owner_slice: features/spec/chat
+  owner_slice: features/planner/chat
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -3465,10 +3465,10 @@
   family: input-path
   statement: >
     Sending input must produce NO `role="alert"` surface on the happy path.
-  why: a11y-spec-chat-input.spec.ts:89-90 — a spurious error banner on a 200 destroys trust.
-  source: web/e2e/a11y-spec-chat-input.spec.ts:89-90
-  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:90
-  owner_slice: features/spec/chat
+  why: a11y-planner-chat-input.spec.ts:89-90 — a spurious error banner on a 200 destroys trust.
+  source: web/e2e/a11y-planner-chat-input.spec.ts:89-90
+  authoritative_test: web/e2e/a11y-planner-chat-input.spec.ts:90
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3480,14 +3480,14 @@
   family: interrupt
   statement: >
     A running turn must offer THREE equivalent interrupt paths, each firing
-    `POST /api/cards/{id}/spec/interrupt` and receiving 200 `{stopped: true}`: the header
-    `Stop spec turn` chip, the input-line `Stop turn` ■ button, and Escape.
+    `POST /api/cards/{id}/planner/interrupt` and receiving 200 `{stopped: true}`: the header
+    `Stop planner turn` chip, the input-line `Stop turn` ■ button, and Escape.
   why: >
-    a11y-spec-chat-interrupt.spec.ts:1-6 (#682/#676) — three separate tests so a regression in one
+    a11y-planner-chat-interrupt.spec.ts:1-6 (#682/#676) — three separate tests so a regression in one
     path cannot be masked by the others.
-  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:71-152
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:71
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-interrupt.spec.ts:71-152
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:71
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3501,10 +3501,10 @@
     Entering conversation mode must AUTO-FOCUS the input, so a keyboard user can press Escape to
     interrupt without a single Tab; Escape is handled by a document-level listener for any focus
     inside the conversation region.
-  why: a11y-spec-chat-interrupt.spec.ts:130-137 — keyboard parity with the two click affordances.
-  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:125-152
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:137
-  owner_slice: features/spec/chat
+  why: a11y-planner-chat-interrupt.spec.ts:130-137 — keyboard parity with the two click affordances.
+  source: web/e2e/a11y-planner-chat-interrupt.spec.ts:125-152
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:137
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3518,11 +3518,11 @@
     While an interrupt is in flight both stop affordances must stay VISIBLE but DISABLED — never
     removed.
   why: >
-    a11y-spec-chat-interrupt.spec.ts:56-58 — prevents a double interrupt while keeping the control
+    a11y-planner-chat-interrupt.spec.ts:56-58 — prevents a double interrupt while keeping the control
     in place so the layout doesn't jump under the user's cursor.
-  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:52-69
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:57
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-interrupt.spec.ts:52-69
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:57
+  owner_slice: features/planner/chat
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -3536,11 +3536,11 @@
     After a successful interrupt the FE must append a local `.report-convo-system` note reading
     `Turn stopped`, and must show no `role="alert"`.
   why: >
-    a11y-spec-chat-interrupt.spec.ts:18-21 (#668) — interrupted turns never emit `item/completed`,
+    a11y-planner-chat-interrupt.spec.ts:18-21 (#668) — interrupted turns never emit `item/completed`,
     so this FE-local row is the user's ONLY "it stopped" feedback.
-  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:63-68
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:64
-  owner_slice: features/spec/chat
+  source: web/e2e/a11y-planner-chat-interrupt.spec.ts:63-68
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:64
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3551,14 +3551,14 @@
   kind: gate
   family: copy-constants
   statement: >
-    User-visible spec-chat copy pinned by e2e (`Turn stopped`, `You · queued`) must live in ONE
+    User-visible planner-chat copy pinned by e2e (`Turn stopped`, `You · queued`) must live in ONE
     shared constant, not be duplicated across assertions.
   why: >
-    helpers/spec-chat.ts:30-41 — so a copy change breaks exactly one constant instead of
+    helpers/planner-chat.ts:30-41 — so a copy change breaks exactly one constant instead of
     assertions scattered across the input + interrupt specs.
-  source: web/e2e/helpers/spec-chat.ts:36-41
-  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:65
-  owner_slice: features/spec/chat
+  source: web/e2e/helpers/planner-chat.ts:36-41
+  authoritative_test: web/e2e/a11y-planner-chat-interrupt.spec.ts:65
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -3982,7 +3982,7 @@
     params (JSON string), created_at_ms}` with `method: "item/completed"` and a
     `params.item.content[].text` payload.
   why: >
-    track-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the spec
+    track-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the planner
     route-fulfills it, so this IS the pinned contract.
   source: web/e2e/track-report-view.spec.ts:78-101
   authoritative_test: web/e2e/track-report-view.spec.ts:149
@@ -4156,16 +4156,16 @@
 
 - id: E2E-CAP-TERMINAL-009
   kind: capability
-  family: spec-card-pty
+  family: planner-card-pty
   statement: >
-    The track-create path must mint a spec card synchronously, and (when codex is available) that
+    The track-create path must mint a planner card synchronously, and (when codex is available) that
     card mounts an XtermView.
   why: >
     a11y-177-theme-toggle-no-remount.spec.ts:44-47 (#136 PR6 / #182) — no `+ Add → terminal` step
     is needed to get a live PTY on a fresh track.
   source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:124-138
   authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:127
-  owner_slice: features/spec/chat
+  owner_slice: features/planner/chat
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -4174,16 +4174,16 @@
 
 - id: E2E-INV-TERMINAL-010
   kind: invariant
-  family: spec-card-pty
+  family: planner-card-pty
   statement: >
-    Post-#510 PR-del the spec card is a CHAT PANEL with no XtermView; a fresh track therefore has
+    Post-#510 PR-del the planner card is a CHAT PANEL with no XtermView; a fresh track therefore has
     ZERO registered xterm dump hooks until a terminal card is added.
   why: >
     new-terminal-osc-echo.spec.ts:174-178 and tui-theme-protocol.spec.ts:117-119 — an explicit
-    architectural change; specs count "+1 dump hook" relative to a likely-zero baseline.
+    architectural change; planners count "+1 dump hook" relative to a likely-zero baseline.
   source: web/e2e/new-terminal-osc-echo.spec.ts:174-178
   authoritative_test: web/e2e/tui-theme-protocol.spec.ts:119
-  owner_slice: features/spec/chat
+  owner_slice: features/planner/chat
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
@@ -4449,8 +4449,8 @@
     `web/src/api/themeRgb.ts` and be importable by e2e specs.
   why: >
     new-terminal-card.spec.ts:54-57 and tui-theme-protocol.spec.ts:4 — every track-creating fixture
-    in the suite carries the dark sentinel, and the tui-theme spec imports the real constants so a
-    palette change cannot silently desync spec from app.
+    in the suite carries the dark sentinel, and the tui-theme planner imports the real constants so a
+    palette change cannot silently desync planner from app.
   source: web/e2e/tui-theme-protocol.spec.ts:4
   authoritative_test: web/e2e/tui-theme-protocol.spec.ts:167
   owner_slice: app/theme
@@ -4761,7 +4761,7 @@
     the same path but `/tmp` is NOT shared.
   why: >
     track-create-browse-cwd.spec.ts:13-21 — a directory the test mkdirs under /tmp is invisible to
-    the kernel, so the picker spec times out hunting an entry that does not exist from the
+    the kernel, so the picker planner times out hunting an entry that does not exist from the
     kernel's POV. Directory-picker fixtures must live under $HOME.
   source: web/e2e/track-create-browse-cwd.spec.ts:13-25
   authoritative_test: web/e2e/track-create-browse-cwd.spec.ts:57
@@ -4794,7 +4794,7 @@
   kind: invariant
   family: timeouts
   statement: >
-    Specs that traverse lazy-loaded chunks against a cold Vite dev server must raise their timeout
+    Planners that traverse lazy-loaded chunks against a cold Vite dev server must raise their timeout
     to 60–90s; the 30s default routinely blows on the first cold run.
   why: >
     a11y-177-theme-toggle-no-remount.spec.ts:85-89, new-terminal-osc-echo.spec.ts:113-117,
@@ -4813,7 +4813,7 @@
   family: hermeticity
   statement: >
     Only the replay-backed `a11y` project is hermetic; the `chromium` project targets a shared
-    developer stack, so every chromium spec must namespace its cwds/titles with `Date.now()` (and
+    developer stack, so every chromium planner must namespace its cwds/titles with `Date.now()` (and
     where needed `Math.random()`) to avoid tripping `area_folders.UNIQUE(path)`.
   why: >
     track-create.spec.ts:12-17 and a11y-track-area-ops.spec.ts:20-27 — concurrent or repeated runs
@@ -4836,7 +4836,7 @@
     no real PTY/codex flow can be exercised there.
   why: >
     a11y-keyboard.spec.ts:19-29 and new-terminal-osc-echo.spec.ts:47-54 — this is why terminal
-    OSC/exit/wheel specs must live in the chromium project and cannot be moved into the a11y gate.
+    OSC/exit/wheel planners must live in the chromium project and cannot be moved into the a11y gate.
   source: web/e2e/a11y-keyboard.spec.ts:19-29
   authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:47-54
   owner_slice: none/e2e/infra
@@ -4850,7 +4850,7 @@
   kind: invariant
   family: hermeticity
   statement: >
-    Every a11y spec must clear the trace ring buffer AFTER bootstrap completes, so per-test
+    Every a11y planner must clear the trace ring buffer AFTER bootstrap completes, so per-test
     assertions never see the bootstrap path's own `area.updated` / `track.updated` frames.
   why: >
     a11y-keyboard.spec.ts:203-212 — bootstrap pollution is the single most common source of
@@ -5048,7 +5048,7 @@
     omits it and the kernel stores the empty title that `calm.track.rename` is allowed to fill in.
   why: >
     #1211 S1 made the title stop being the track's intent, so a title collected here reaches
-    nothing; worse, any non-empty title makes every later spec-agent rename answer
+    nothing; worse, any non-empty title makes every later planner-agent rename answer
     `already_named`, which would leave S3 dead code. Absence rather than the empty string because
     the two reach the same stored value but say different things about who decided the name, and
     the point of the slice is that this client did not.
@@ -5099,7 +5099,7 @@
     passes `emptyCommit` "clear" and a PATCH carrying the empty title leaves. The area header
     keeps the primitive's "cancel" default, and an already-blank title stays a no-op on both.
   why: >
-    A track has a second namer — the spec agent's `calm.track.rename`, which succeeds only while the
+    A track has a second namer — the planner agent's `calm.track.rename`, which succeeds only while the
     title is empty (#1211 S3) — so clearing the name is how a reader hands naming back to it, and
     swallowing the keystroke leaves "I cleared it, pressed Enter, and nothing happened". An area has
     no such agent, so the same gesture there must stay write-free: this is why the semantics is an
@@ -5141,10 +5141,10 @@
   kind: capability
   family: track-rename
   statement: >
-    Creating a track must land the reader in its spec conversation with the caret in the composer:
-    the create site marks the navigation it makes (`go({ openSpec: true })`), the track route consumes
+    Creating a track must land the reader in its planner conversation with the caret in the composer:
+    the create site marks the navigation it makes (`go({ openPlanner: true })`), the track route consumes
     that mark the first time its body mounts — striking it off unconditionally, and opening the
-    spec card in the same pass when the detail in hand has one — and the composer takes focus
+    planner card in the same pass when the detail in hand has one — and the composer takes focus
     through `focusOnMount`. The mark belongs to that one history entry and to nothing else: no
     other route may read or clear it, that first mount strikes it off whether or not anything was
     opened, and an entry whose body never mounted keeps it — so
@@ -5153,9 +5153,9 @@
   why: >
     The track arrives with no name and nothing said in it, so a shut drawer is a blank page with no
     visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
-    card id — `POST /api/tracks` answers with a Track and the spec card's id only exists once the
+    card id — `POST /api/tracks` answers with a Track and the planner card's id only exists once the
     detail has landed, and widening the create response to carry it would tie the create contract
-    to what a spec card looks like, which #1189 is still moving. It is carried by the navigation
+    to what a planner card looks like, which #1189 is still moving. It is carried by the navigation
     rather than in a provider because a global slot has no owner: the create runs from the rail
     with another track still mounted, so that track's route body can read and clear a request
     addressed to a different one, while a body that clears only its own leaves the request

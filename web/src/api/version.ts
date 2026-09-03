@@ -109,7 +109,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 20;
+export const WEB_COMPAT_VERSION = 21;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here
@@ -145,14 +145,14 @@ export type ServerVersionInfo = {
    */
   syncEventVersion: number;
   /**
-   * Diagnostic-only MCP spec date for the kernel-as-MCP-server surface.
+   * Diagnostic-only MCP planner date for the kernel-as-MCP-server surface.
    * PR 1 of #396 moved the plugin-host MCP date to
    * `pluginMcpProtocolVersion`; do NOT use either MCP date as a frontend
    * hard gate.
    */
   mcpProtocolVersion: string;
   /**
-   * Diagnostic-only MCP spec date advertised by the plugin host to plugin
+   * Diagnostic-only MCP planner date advertised by the plugin host to plugin
    * processes. Split from `mcpProtocolVersion` in #396 PR 1.
    */
   pluginMcpProtocolVersion: string;

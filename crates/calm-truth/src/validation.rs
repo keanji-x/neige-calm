@@ -107,7 +107,7 @@ pub const OVERLAY_TEMPLATE_KIND: &str = "template";
 /// the `view` layout and template markers).
 ///
 /// Rows under this namespace are read as kernel-authored fact by scheduler
-/// admission, spec-harness start and track-list visibility, so nothing outside
+/// admission, planner-harness start and track-list visibility, so nothing outside
 /// the process may write it: the plugin RPC path forces `plugin_id` to the
 /// calling plugin's own id, and the public REST endpoints reject it outright
 /// (issue #1297). Kept here as the single definition so those call sites and
@@ -351,7 +351,7 @@ pub struct OverlayEntityScopeEntry {
     ///
     /// `false` marks a kernel-reserved namespace: `view` and `system` carry
     /// projections the kernel itself reads back as fact (the `template`
-    /// marker gates scheduler dispatch and spec-harness start; `layout` is
+    /// marker gates scheduler dispatch and planner-harness start; `layout` is
     /// rebuilt by the kernel's own track structure code), so both entry
     /// points must refuse them. Renamed from `plugin_writable` in #1297 —
     /// the plugin RPC path had been asking this column since it was

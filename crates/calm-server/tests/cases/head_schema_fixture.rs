@@ -20,6 +20,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0080_cove_to_area.sql",
     "0081_wave_to_track.sql",
     "0082_track_recipes.sql",
+    "0083_spec_to_planner.sql",
 ];
 
 #[test]

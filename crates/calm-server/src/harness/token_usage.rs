@@ -1,4 +1,4 @@
-//! Context-window occupancy for a spec harness thread (#1255 S3).
+//! Context-window occupancy for a planner harness thread (#1255 S3).
 //!
 //! codex pushes `thread/tokenUsage/updated` after every upstream response.
 //! The frame is:
@@ -53,7 +53,7 @@
 //!
 //! [`TokenUsage::total_tokens`] is kept because it is the honest answer to a
 //! *different* question (lifetime cost), which a later slice may want. It is
-//! deliberately **not** shipped on `GET /spec/run`: the surest way to
+//! deliberately **not** shipped on `GET /planner/run`: the surest way to
 //! reintroduce the bug is to hand the frontend both numbers and let it pick.
 
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,7 @@ pub struct TokenUsage {
     /// Wall clock of the frame that produced this value. Not used by any
     /// computation here; it exists so a reader can tell a live number from one
     /// rehydrated out of a months-old snapshot — and it is shipped on
-    /// `GET /spec/run` (`SpecRunTokenUsage::at_ms`) so that reader can be the
+    /// `GET /planner/run` (`PlannerRunTokenUsage::at_ms`) so that reader can be the
     /// UI, which is the only reader that can act on it. A field whose stated
     /// purpose is "let a reader distinguish" and which no reader receives
     /// would be a doc comment describing a property its carrier does not have.

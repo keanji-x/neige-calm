@@ -2,7 +2,7 @@
 //
 // This file intentionally violates the rule — raw `role="dialog"`,
 // `role="menu"`, and `role="menuitem"` on plain JSX elements outside
-// the `web/src/ui/` primitive layer. The companion vitest spec
+// the `web/src/ui/` primitive layer. The companion vitest planner
 // (`../no-raw-primitive-role.test.ts`) runs ESLint programmatically
 // against this file and asserts that all three violations are
 // reported with the expected per-role message ids. The fixture is

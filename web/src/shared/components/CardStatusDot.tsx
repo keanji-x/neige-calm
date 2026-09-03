@@ -68,7 +68,7 @@ export function CardStatusDot({
       // — semantically image-like, conveying meaning beyond the
       // surrounding text — so `img` is the right shoe-horn until
       // we promote it to a real `<output>` or `<status>` element.
-      // Surfaced by PR6: the new spec card on the track page made
+      // Surfaced by PR6: the new planner card on the track page made
       // the `Starting` dot visible to the a11y-axe scan of
       // `/calm/track/<id>`, which previously had no rendered card.
       role="img"

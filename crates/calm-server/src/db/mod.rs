@@ -83,7 +83,7 @@ pub trait ServerRepoReadExt {
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
     async fn terminals_running(&self) -> Result<Vec<Terminal>>;
-    async fn shared_spec_cards_for_initial_prompt_takeover(
+    async fn shared_planner_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>>;
     async fn plugins_list(&self) -> Result<Vec<Plugin>>;
@@ -308,10 +308,10 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn shared_spec_cards_for_initial_prompt_takeover(
+    async fn shared_planner_cards_for_initial_prompt_takeover(
         &self,
     ) -> Result<Vec<(String, String, String, i64)>> {
-        calm_truth::db::RepoRead::shared_spec_cards_for_initial_prompt_takeover(self)
+        calm_truth::db::RepoRead::shared_planner_cards_for_initial_prompt_takeover(self)
             .await
             .map_err(Into::into)
     }

@@ -24,7 +24,7 @@ pub use config::HarnessConfig;
 pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
-pub use run_loop::{SpecHarness, SpecHarnessParams};
+pub use run_loop::{PlannerHarness, PlannerHarnessParams};
 pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
 pub use state::{HarnessState, IssuingKind, run_status_for};
 pub use token_usage::{BASELINE_TOKENS, TokenUsage};
@@ -54,7 +54,7 @@ pub enum ClaimMode {
 /// Outcome of [`spawn_recovered_harness`].
 pub enum RecoveryOutcome {
     /// A harness was built and installed under the claim.
-    Installed(SpecHarness),
+    Installed(PlannerHarness),
     /// Nothing installed: the runtime is not recoverable (missing card /
     /// snapshot), the slot was already claimed ([`ClaimMode::SkipIfClaimed`]),
     /// or the install lost against a newer claim (stale-install shutdown).
@@ -69,7 +69,7 @@ pub enum RecoveryOutcome {
 impl RecoveryOutcome {
     /// The installed handle, if any ([`ClaimMode::Replace`] callers keep
     /// their old `Option` semantics through this).
-    pub fn installed(self) -> Option<SpecHarness> {
+    pub fn installed(self) -> Option<PlannerHarness> {
         match self {
             Self::Installed(handle) => Some(handle),
             Self::Skipped | Self::DaemonIneligible => None,
@@ -82,8 +82,8 @@ impl RecoveryOutcome {
 /// a failed install must never leak the handle's run loop (test 14 iv).
 async fn install_or_shutdown(
     reservation: HarnessReservation,
-    handle: SpecHarness,
-) -> Result<Option<SpecHarness>> {
+    handle: PlannerHarness,
+) -> Result<Option<PlannerHarness>> {
     if reservation.install(handle.clone()) {
         Ok(Some(handle))
     } else {
@@ -111,7 +111,7 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
-    if role == Some(CardRole::Spec) {
+    if role == Some(CardRole::Planner) {
         let track = repo
             .track_get(card.track_id.as_str())
             .await?
@@ -121,7 +121,7 @@ pub async fn spawn_recovered_harness(
                 runtime_id = %runtime.id,
                 card_id = %card.id,
                 track_id = %track.id,
-                "recovered spec harness is disabled for area chat track; skipping runtime"
+                "recovered planner harness is disabled for area chat track; skipping runtime"
             );
             return Ok(RecoveryOutcome::Skipped);
         }
@@ -130,11 +130,11 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
-    // #1189 — the catch-up replay is a SPEC-push catch-up, and it belongs to
-    // the spec card alone. `replay_harness_events_since` filters with
-    // `event_warrants_spec_push_with_role`, i.e. task completions, gate
+    // #1189 — the catch-up replay is a PLANNER-push catch-up, and it belongs to
+    // the planner card alone. `replay_harness_events_since` filters with
+    // `event_warrants_planner_push_with_role`, i.e. task completions, gate
     // verdicts, report edits, forge/workspace notifications — the stream the
-    // live dispatcher pushes only to the track's spec harness. A conversation
+    // live dispatcher pushes only to the track's planner harness. A conversation
     // harness (area chat or track assistant) is never a live recipient of any of
     // it, so replaying it here would not be "catching up": it would inject a
     // backlog the conversation was never meant to see, starting from watermark
@@ -144,9 +144,9 @@ pub async fn spawn_recovered_harness(
     // Dispatch on the persisted role rather than on a payload marker: the role
     // is what the live push path itself resolves, and an unknown/absent role
     // falls into the no-replay arm, which is the fail-closed direction (a
-    // missed catch-up is a stale spec, an unwanted one is a conversation
+    // missed catch-up is a stale planner, an unwanted one is a conversation
     // talking about somebody else's tasks).
-    if role == Some(CardRole::Spec) {
+    if role == Some(CardRole::Planner) {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),
@@ -204,7 +204,7 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
-    let handle = SpecHarness::run(SpecHarnessParams {
+    let handle = PlannerHarness::run(PlannerHarnessParams {
         runtime_id: runtime_id.clone(),
         track_id: card.track_id,
         card_id: CardId::from(runtime.card_id.clone()),
@@ -273,14 +273,14 @@ async fn replay_harness_events_since(
         .await?;
     let mut replayed = 0usize;
     for row in rows {
-        let role = role_needed_for_spec_push_filter(repo.as_ref(), &row.event).await?;
-        if !dispatcher::event_warrants_spec_push_with_role(&row.event, &row.actor, |_| role) {
+        let role = role_needed_for_planner_push_filter(repo.as_ref(), &row.event).await?;
+        if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
             continue;
         }
         // Issue #644 PR-C (§6.5) — the SAME gated-self-report
         // consultation the live push branch runs: a crash between the
         // emit tx and the live push must not replay a gated task's
-        // raw self-report to the spec.
+        // raw self-report to the planner.
         if dispatcher::is_gated_self_report(repo.as_ref(), &row.event).await {
             continue;
         }
@@ -301,13 +301,13 @@ async fn replay_harness_events_since(
             track_id = %track_id,
             watermark,
             replayed,
-            "harness recovery: replayed spec push catch-up events into pending queue",
+            "harness recovery: replayed planner push catch-up events into pending queue",
         );
     }
     Ok(())
 }
 
-async fn role_needed_for_spec_push_filter(
+async fn role_needed_for_planner_push_filter(
     repo: &dyn Repo,
     event: &Event,
 ) -> Result<Option<CardRole>> {
@@ -408,7 +408,7 @@ pub struct DeferredRecoveryParams {
 }
 
 /// #953 §5 — deferred claim-based harness recovery. Armed ONLY when the boot
-/// daemon spawn failed (boot used to skip spec-harness recovery forever);
+/// daemon spawn failed (boot used to skip planner-harness recovery forever);
 /// triggered by the first `running: true` observed on the supervisor's
 /// readiness watch. Claim-based: fresh DB re-read of recoverable runtimes at
 /// trigger time, per-runtime readiness re-check (running + unchanged
@@ -438,7 +438,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
         };
         tracing::info!(
             generation = observed.generation,
-            "shared daemon became ready; running deferred spec harness recovery"
+            "shared daemon became ready; running deferred planner harness recovery"
         );
         // Fresh re-read: the recoverable set may have changed since boot
         // (user resumes, shutdowns, new runtimes).
@@ -515,7 +515,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 }
             }
         }
-        tracing::info!(recovered, "deferred spec harness recovery complete");
+        tracing::info!(recovered, "deferred planner harness recovery complete");
         return;
     }
 }
@@ -555,7 +555,7 @@ mod tests {
         let (winner, previous_live) = registry.reserve_replacing(runtime_id.clone());
         assert!(previous_live.is_none());
 
-        let handle = SpecHarness::run(SpecHarnessParams {
+        let handle = PlannerHarness::run(PlannerHarnessParams {
             runtime_id: runtime_id.clone(),
             track_id: TrackId::from("track-install-failure".to_string()),
             card_id: CardId::from("card-install-failure".to_string()),
@@ -641,7 +641,7 @@ mod tests {
         track_area_cache.insert(track.id.clone(), area.id.clone());
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let spec_card = card_create_with_id_tx(
+        let planner_card = card_create_with_id_tx(
             &mut tx,
             new_id(),
             NewCard {
@@ -649,9 +649,9 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "spec_harness": true}),
+                payload: json!({"schemaVersion": 1, "planner_harness": true}),
             },
-            CardRole::Spec,
+            CardRole::Planner,
             false,
             &role_cache,
         )
@@ -711,8 +711,8 @@ mod tests {
             &mut tx,
             WorkerSessionInit {
                 id: runtime_id.clone(),
-                card_id: spec_card.id.to_string(),
-                kind: WorkerSessionKind::SharedSpec,
+                card_id: planner_card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,
@@ -730,7 +730,7 @@ mod tests {
 
         replay_harness_events_since(
             repo.clone(),
-            spec_card.id.as_str(),
+            planner_card.id.as_str(),
             &track.id,
             0,
             &mut snapshot,
@@ -836,7 +836,7 @@ mod tests {
         track_area_cache.insert(track.id.clone(), area.id.clone());
 
         let mut tx = repo.pool().begin().await.unwrap();
-        let spec_card = card_create_with_id_tx(
+        let planner_card = card_create_with_id_tx(
             &mut tx,
             new_id(),
             NewCard {
@@ -844,9 +844,9 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "spec_harness": true}),
+                payload: json!({"schemaVersion": 1, "planner_harness": true}),
             },
-            CardRole::Spec,
+            CardRole::Planner,
             false,
             &role_cache,
         )
@@ -886,7 +886,7 @@ mod tests {
         let event_id = append_decision_event_in_tx(
             &mut tx,
             &PermissiveGate,
-            &ActorId::AiSpec(spec_card.id.clone()),
+            &ActorId::AiPlanner(planner_card.id.clone()),
             &scope,
             None,
             &review_event,
@@ -905,8 +905,8 @@ mod tests {
             &mut tx,
             WorkerSessionInit {
                 id: runtime_id.clone(),
-                card_id: spec_card.id.to_string(),
-                kind: WorkerSessionKind::SharedSpec,
+                card_id: planner_card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,
@@ -924,7 +924,7 @@ mod tests {
 
         replay_harness_events_since(
             repo.clone(),
-            spec_card.id.as_str(),
+            planner_card.id.as_str(),
             &track.id,
             0,
             &mut snapshot,

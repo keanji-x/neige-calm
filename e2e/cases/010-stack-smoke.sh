@@ -32,22 +32,22 @@ if (!Array.isArray(cards)) {
   console.error("cards response was not an array");
   process.exit(2);
 }
-const spec = cards.find((c) => c.kind === "codex" && c.payload?.spec_harness === true);
+const planner = cards.find((c) => c.kind === "codex" && c.payload?.planner_harness === true);
 const report = cards.find((c) => c.kind === "track-report");
-if (typeof spec?.id !== "string") {
-  console.error("spec card missing from track cards");
+if (typeof planner?.id !== "string") {
+  console.error("planner card missing from track cards");
   process.exit(2);
 }
 if (typeof report?.id !== "string") {
   console.error("track-report card missing from track cards");
   process.exit(2);
 }
-process.stdout.write(`${spec.id}\t${report.id}\n`);
+process.stdout.write(`${planner.id}\t${report.id}\n`);
 '
 }
 
 case_run() {
-  local auth_probe_status area_id track_id cards_json spec_card_id report_card_id code
+  local auth_probe_status area_id track_id cards_json planner_card_id report_card_id code
 
   autologin_probe
   auth_probe_status="$AUTH_PROBE_STATUS"
@@ -60,9 +60,9 @@ case_run() {
 
   expect_2xx GET "/api/tracks/$track_id/cards" -
   cards_json="$API_BODY"
-  IFS=$'\t' read -r spec_card_id report_card_id \
+  IFS=$'\t' read -r planner_card_id report_card_id \
     < <(stack_smoke_card_ids "$cards_json") \
-    || fail "track $track_id did not contain spec and report cards"
+    || fail "track $track_id did not contain planner and report cards"
 
   api GET "/api/cards/e2e-missing-$RUN_ID/harness/items" - \
     || fail "curl failed for bogus card GET"
@@ -72,6 +72,6 @@ case_run() {
   [[ "$code" == "not_found" ]] \
     || fail "bogus card GET returned 404 without code=not_found: $(body_preview "$API_BODY")"
 
-  printf 'Smoke OK area=%s track=%s spec_card=%s report_card=%s\n' \
-    "$area_id" "$track_id" "$spec_card_id" "$report_card_id"
+  printf 'Smoke OK area=%s track=%s planner_card=%s report_card=%s\n' \
+    "$area_id" "$track_id" "$planner_card_id" "$report_card_id"
 }

@@ -133,7 +133,7 @@ BIN      := $(WORKTREE)/target/release/calm-server
 BRIDGE   := $(WORKTREE)/target/release/neige-codex-bridge
 APP      := $(WORKTREE)/target/release/neige-app
 # Issue #236 followup — kernel-as-MCP-server stdio bridge. Codex inside
-# the docker container spawns this per spec/worker card (config.toml's
+# the docker container spawns this per planner/worker card (config.toml's
 # `[mcp_servers.calm].command`); without it the handshake exits with
 # `os error 2`. docker-compose.yml bind-mounts the built binary into
 # /usr/local/bin/.
@@ -243,7 +243,7 @@ proxy-forwarder-up: ## Ensure the host-loopback → docker0 proxy forwarder cont
 	    existing=$$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo ""); \
 	    running=$$(docker inspect -f '{{.State.Running}}' $(PROXY_FORWARDER_NAME) 2>/dev/null || echo "false"); \
 	    if [ "$$existing" != "$$spec" ]; then \
-	        echo "  Forwarder spec changed ($$existing → $$spec); recreating"; \
+	        echo "  Forwarder planner changed ($$existing → $$spec); recreating"; \
 	        docker rm -f $(PROXY_FORWARDER_NAME) >/dev/null; \
 	    elif [ "$$running" != "true" ]; then \
 	        docker start $(PROXY_FORWARDER_NAME) >/dev/null; \

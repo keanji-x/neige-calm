@@ -360,7 +360,9 @@ fn actor_for_principal(principal: &Principal) -> ActorId {
     match principal {
         Principal::User => ActorId::User,
         Principal::Kernel => ActorId::Kernel,
-        Principal::Agent { session_id, .. } => ActorId::AiSpec(CardId::from(session_id.as_str())),
+        Principal::Agent { session_id, .. } => {
+            ActorId::AiPlanner(CardId::from(session_id.as_str()))
+        }
     }
 }
 
@@ -447,9 +449,9 @@ impl DecisionGate for RootOnlyGate {
                 "root-only gate requires track scope".into(),
             ));
         };
-        // PR5 fake-only: actor_for_principal stores the session id in AiSpec's CardId slot.
+        // PR5 fake-only: actor_for_principal stores the session id in AiPlanner's CardId slot.
         let caller_session_id = match actor {
-            ActorId::AiSpec(card_id) => WorkerSessionId::from(card_id.as_str()),
+            ActorId::AiPlanner(card_id) => WorkerSessionId::from(card_id.as_str()),
             _ => {
                 return Ok(GateDecision::Deny(format!(
                     "actor {actor} is not an agent session"
@@ -863,11 +865,11 @@ mod tests {
 
         assert_eq!(
             actor_for_principal(&root),
-            ActorId::AiSpec(CardId::from("actor-map-root"))
+            ActorId::AiPlanner(CardId::from("actor-map-root"))
         );
         assert_eq!(
             actor_for_principal(&non_root),
-            ActorId::AiSpec(CardId::from("actor-map-non-root"))
+            ActorId::AiPlanner(CardId::from("actor-map-non-root"))
         );
         assert_eq!(actor_for_principal(&Principal::Kernel), ActorId::Kernel);
     }

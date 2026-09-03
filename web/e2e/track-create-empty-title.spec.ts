@@ -1,6 +1,6 @@
 // E2E: create a track with an empty task description.
 //
-// Issue #409 makes NewTaskForm's task description optional. This spec
+// Issue #409 makes NewTaskForm's task description optional. This planner
 // drives the auto-match branch: seed an area folder claim, open
 // "+ New track", leave the description blank, type a cwd under the
 // claimed folder, submit, and assert the track detail page renders the

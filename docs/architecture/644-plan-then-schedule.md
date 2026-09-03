@@ -4,14 +4,14 @@
 
 ## 权威分工
 
-- Spec/用户决定做什么，并在报告中维护任务声明。
+- Planner/用户决定做什么，并在报告中维护任务声明。
 - `tasks` 表是可重建的执行投影，不是第二份计划真源。
 - Scheduler 只做机械判定：依赖、track lifecycle、并发预算、任务状态和 gate policy。
 - Operation saga 负责启动 worker 或 gate，并提供幂等、恢复和补偿。
 - Worker 报告执行结果；内核验证所有权和状态迁移。
 - Gate 由内核运行，决定任务能否从 `verifying` 进入终态。
 
-Scheduler 不解释任务目标，不替 spec 做质量判断，也不能用“看起来成功”代替明确报告或 gate 结果。
+Scheduler 不解释任务目标，不替 planner 做质量判断，也不能用“看起来成功”代替明确报告或 gate 结果。
 
 ## 状态机
 
@@ -26,7 +26,7 @@ dispatch/spawn/report/gate 失败       → failed
 
 终态 `done | failed | canceled` 不再迁移。同一次报告、恢复或 sweep 重放必须通过 compare-and-set 变成无副作用的重复。
 
-`worker_card_id` 在 dispatch/worker 建立时绑定，此后 worker 报告必须证明自己拥有该任务。Spec verdict 与 worker report 是不同权限类别，不能共享一个宽松写入口。
+`worker_card_id` 在 dispatch/worker 建立时绑定，此后 worker 报告必须证明自己拥有该任务。Planner verdict 与 worker report 是不同权限类别，不能共享一个宽松写入口。
 
 ## Ready 集合
 
@@ -122,7 +122,7 @@ Scheduler 可以被 task/report/lifecycle/gate 事件唤醒，但正确性不能
 ## 必须保持的测试
 
 - 并发 claim 只有一个 winner，且只创建一个 worker operation。
-- Worker 报告、reaper 和 spec verdict 的竞态不会产生两次终态。
+- Worker 报告、reaper 和 planner verdict 的竞态不会产生两次终态。
 - Gate 在 T1 后、spawn 后、park 后和结果写入前崩溃均能收敛。
 - Lost broadcast、boot 和周期 sweep 得到相同 task 终态。
 - Incremental report projection 与 rebuild 产生同一 plan，scheduler 不读取已失效声明。

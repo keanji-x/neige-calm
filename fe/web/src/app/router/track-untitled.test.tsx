@@ -6,7 +6,7 @@
 // Two things had to be built for that to be a usable product rather than a
 // blank page, and both are wiring that no single component can be asked about:
 //
-//   1. **Creating lands in the spec conversation, with the caret in it.** The
+//   1. **Creating lands in the planner conversation, with the caret in it.** The
 //      create site cannot name the card to open — `POST /api/tracks` answers
 //      with a `Track` — so it marks the *navigation* it makes, and
 //      `TrackRouteBody` redeems that mark against its own cards. That hand-off
@@ -15,7 +15,7 @@
 //      than a dialog; the hand-off is the same one and this file drives it
 //      through the page.
 //   2. **Clearing the title is a request, not a cancel.** The track header
-//      passes `emptyCommit="clear"` so the spec agent's `calm.track.rename` can
+//      passes `emptyCommit="clear"` so the planner agent's `calm.track.rename` can
 //      name the track again; what proves it is the PATCH on the wire.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -48,11 +48,11 @@ const NAMED_TRACK = { ...TRACK, title: 'Test track' };
    start another" is an ordinary move and the track being left is still
    mounted. */
 const OTHER_TRACK = { ...TRACK, id: 'w2', sort: 2, created_at: 3, updated_at: 3 };
-const SPEC_CARD = {
-  id: 'card-spec', track_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1,
-  payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2,
+const PLANNER_CARD = {
+  id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1,
+  payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2,
 };
-const OTHER_SPEC_CARD = { ...SPEC_CARD, id: 'card-spec-w2', track_id: 'w2' };
+const OTHER_PLANNER_CARD = { ...PLANNER_CARD, id: 'card-planner-w2', track_id: 'w2' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -73,7 +73,7 @@ type Options = {
 
 function setup(options: Options = {}) {
   const track = options.track ?? TRACK;
-  const cards = options.cards ?? [SPEC_CARD];
+  const cards = options.cards ?? [PLANNER_CARD];
   const created = options.created ?? track;
   const createdCards = options.createdCards ?? cards;
   const gate = { createdDetailFails: options.createdDetailFails ?? false };
@@ -106,8 +106,8 @@ function setup(options: Options = {}) {
         }
         return Promise.resolve(ok({ track: detail.track, cards: detail.cards, overlays: [] }));
       }
-      if (request.path.endsWith('/spec/run')) {
-        return Promise.resolve(ok({ card_id: SPEC_CARD.id, runtime_id: 'r', phase: 'idle' }));
+      if (request.path.endsWith('/planner/run')) {
+        return Promise.resolve(ok({ card_id: PLANNER_CARD.id, runtime_id: 'r', phase: 'idle' }));
       }
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
       return Promise.resolve(ok([]));
@@ -154,7 +154,7 @@ function messageField(): HTMLElement {
    `role="dialog"`, and Create stays disabled until that field says something.
    What is typed is the track's **intent**, not its name: no title is collected
    (#1211 S2) and the sentence is not delivered from here yet (#1299) — which is
-   exactly why the landing below has to open the spec composer. */
+   exactly why the landing below has to open the planner composer. */
 async function composerOnScreen() {
   await userEvent.type(await screen.findByLabelText('What this track should do'), 'Read it');
 }
@@ -193,10 +193,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('creating a track lands in its spec conversation', () => {
+describe('creating a track lands in its planner conversation', () => {
   /*
    * The landing, end to end. Nothing is typed into the composer — the sentence
-   * is not delivered from it yet (#1299) — and what the reader gets is the spec
+   * is not delivered from it yet (#1299) — and what the reader gets is the planner
    * conversation open with the caret in the composer, because their first
    * sentence is the track's intent.
    *
@@ -204,10 +204,10 @@ describe('creating a track lands in its spec conversation', () => {
    * redeeming it, the panel drops the `focusComposer` flag on the way to the
    * composer, or `ChatComposer` stops honouring `focusOnMount`.
    */
-  it('opens the spec conversation with the caret in the composer', async () => {
+  it('opens the planner conversation with the caret in the composer', async () => {
     setup();
     await createATrack();
-    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await screen.findByRole('complementary', { name: 'Planner chat' });
     await waitFor(() => { expect(document.activeElement).toBe(messageField()); });
   });
 
@@ -229,10 +229,10 @@ describe('creating a track lands in its spec conversation', () => {
    * the shape that is shipping — and not evidence that a bug was fixed.
    *
    * Red when the create started from the rail stops landing the reader in the
-   * new track's spec conversation, whatever the reason.
+   * new track's planner conversation, whatever the reason.
    */
-  it('opens the spec conversation of the new track when the create started on another track', async () => {
-    const { router } = setup({ created: OTHER_TRACK, createdCards: [OTHER_SPEC_CARD] });
+  it('opens the planner conversation of the new track when the create started on another track', async () => {
+    const { router } = setup({ created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD] });
     await goToTrack(router, 'w1');
     await screen.findByRole('button', { name: 'Rename track' });
 
@@ -241,7 +241,7 @@ describe('creating a track lands in its spec conversation', () => {
     await waitFor(() => { expect(router.state.location.pathname.endsWith('/track/w2')).toBe(true); });
     /* The drawer lives in `TrackRouteBody`, which is keyed by track and unmounts
        with the route — so a drawer open on this page is this track's own. */
-    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await screen.findByRole('complementary', { name: 'Planner chat' });
     await waitFor(() => { expect(document.activeElement).toBe(messageField()); });
   });
 
@@ -262,7 +262,7 @@ describe('creating a track lands in its spec conversation', () => {
    */
   it('does not open on a later visit when the landing never reached the track', async () => {
     const { router, gate } = setup({
-      created: OTHER_TRACK, createdCards: [OTHER_SPEC_CARD], createdDetailFails: true,
+      created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD], createdDetailFails: true,
     });
     await createATrack();
     await screen.findByRole('button', { name: 'Retry' });
@@ -273,7 +273,7 @@ describe('creating a track lands in its spec conversation', () => {
     gate.createdDetailFails = false;
     await goToTrack(router, 'w2');
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 
   /*
@@ -299,7 +299,7 @@ describe('creating a track lands in its spec conversation', () => {
    */
   it('opens the conversation when Back returns to the entry whose landing had failed', async () => {
     const { router, gate } = setup({
-      created: OTHER_TRACK, createdCards: [OTHER_SPEC_CARD], createdDetailFails: true,
+      created: OTHER_TRACK, createdCards: [OTHER_PLANNER_CARD], createdDetailFails: true,
     });
     await createATrack();
     await screen.findByRole('button', { name: 'Retry' });
@@ -315,7 +315,7 @@ describe('creating a track lands in its spec conversation', () => {
     });
 
     await waitFor(() => { expect(router.state.location.pathname.endsWith('/track/w2')).toBe(true); });
-    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await screen.findByRole('complementary', { name: 'Planner chat' });
   });
 
   /*
@@ -329,43 +329,43 @@ describe('creating a track lands in its spec conversation', () => {
   it('does not re-open the conversation on a later visit to the same track', async () => {
     const { router } = setup();
     await createATrack();
-    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await screen.findByRole('complementary', { name: 'Planner chat' });
 
     /* Leaving the route takes the drawer with it — that is the "closed" state
        this case needs, and it is one the reader reaches every time they walk
        away. Coming back is then an ordinary visit, and it must stay one. */
     await act(async () => { await router.navigate({ to: '/area/$areaId', params: { areaId: 'c1' } }); });
     await screen.findByRole('button', { name: 'Rename area' });
-    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
 
     await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 
   /*
    * A landing that found nothing to open must not leave the mark standing.
    *
    * "Nothing opened" on its own is not that claim — it is true of a page with
-   * no spec card whatever the mark does, which is why this case goes on: the
-   * spec card arrives on a *later* read of the same track, on the same history
+   * no planner card whatever the mark does, which is why this case goes on: the
+   * planner card arrives on a *later* read of the same track, on the same history
    * entry, and the drawer must still be shut. A reader three actions past the
    * create is not asking for a conversation.
    *
    * Red when the redemption stops disarming on the no-card arm.
    */
-  it('opens nothing, and arms nothing, when the track has no spec card', async () => {
+  it('opens nothing, and arms nothing, when the track has no planner card', async () => {
     const { client, setCardsOf } = setup({ cards: [] });
     await createATrack();
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
 
-    setCardsOf('w1', [SPEC_CARD]);
+    setCardsOf('w1', [PLANNER_CARD]);
     await act(async () => { await client.invalidateQueries(); });
-    /* The row for the spec card, which is proof the second read landed — and
-       the only place `Spec chat` may appear, because the drawer is shut. */
-    await screen.findByText('Spec chat');
-    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+    /* The row for the planner card, which is proof the second read landed — and
+       the only place `Planner chat` may appear, because the drawer is shut. */
+    await screen.findByText('Planner chat');
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
   });
 });
 

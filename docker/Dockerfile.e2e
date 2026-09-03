@@ -16,13 +16,13 @@
 #                  forwarder's unix socket (the container runs --network none;
 #                  this is its only egress). Also the fence-preflight client.
 #   procps       — pgrep, for the opt-in DECOYS=1 diagnostic mode.
-#   ripgrep      — real codex spec-agents shell out to `rg` for code search
+#   ripgrep      — real codex planner-agents shell out to `rg` for code search
 #                  (the model prompt prefers `rg`/`rg --files`); without it the
 #                  agent's search/plan returns empty and the test fails (#923
 #                  defect 3). Audited the vendored codex prompts + git-forge
 #                  fixture: `rg` and `zstd` are the only agent-/worker-facing
 #                  CLIs that must be apt-installed here — `neige` is agent-facing
-#                  too (the spec agent's track-read CLI) but is host-compiled and
+#                  too (the planner agent's track-read CLI) but is host-compiled and
 #                  bind-mounted onto PATH like codex (run.sh `ensure_neige_bin`),
 #                  `jq` is consumed inside the shimmed `gh` (never a separate
 #                  process), and fd/ast-grep/bat/tree/node/python are unused.

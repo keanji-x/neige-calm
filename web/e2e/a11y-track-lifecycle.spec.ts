@@ -11,12 +11,12 @@
 // frames so the assertions prove **the wire contract**, not just the
 // in-process state machine.
 //
-// The spec-only edges (`planning → dispatching → working → reviewing
+// The planner-only edges (`planning → dispatching → working → reviewing
 // → done`) can't be driven by REST under the default `user` actor —
 // `validate_transition` rejects them with 403. The replay binary
 // exposes `POST /dev/force-track-lifecycle` (see
 // `crates/calm-server/src/bin/replay.rs`) which stamps the edge as
-// `ActorId::Kernel` (classified as SpecAgent by
+// `ActorId::Kernel` (classified as PlannerAgent by
 // `track_lifecycle::actor_kind`) but routes through the exact same
 // `write_with_events_typed` pipeline — same validator, same paired
 // `TrackLifecycleChanged` + `TrackUpdated` events. The user-driven edges
@@ -43,7 +43,7 @@ test.describe('track lifecycle', () => {
   test.beforeEach(async ({ page, request }) => {
     // Hermetic state — see `helpers/reset.ts`. Without this every
     // assertion below would interact with whatever tracks the previous
-    // spec left behind in the shared replay binary.
+    // planner left behind in the shared replay binary.
     await resetReplayServer(request);
 
     // Mint a fresh area + track for each test. `createTrackInArea`
@@ -81,7 +81,7 @@ test.describe('track lifecycle', () => {
     expect(initial.terminal_at).toBeNull();
 
     // Step 1: Draft -> Planning. User-driven kickoff (PATCH with no
-    // actor header -> ActorId::User). Both User and SpecAgent are
+    // actor header -> ActorId::User). Both User and PlannerAgent are
     // allowed to drive this edge; we use PATCH to mirror the "user
     // clicks Start in the UI" production path.
     await runTransition(page, request, trackId, areaId, {
@@ -90,15 +90,15 @@ test.describe('track lifecycle', () => {
       driver: 'user',
     });
 
-    // Steps 2-5: spec-only edges. Each goes through
-    // `/dev/force-track-lifecycle` (ActorId::Kernel = SpecAgent).
+    // Steps 2-5: planner-only edges. Each goes through
+    // `/dev/force-track-lifecycle` (ActorId::Kernel = PlannerAgent).
     for (const { from, to } of [
       { from: 'planning' as const, to: 'dispatching' as const },
       { from: 'dispatching' as const, to: 'working' as const },
       { from: 'working' as const, to: 'reviewing' as const },
       { from: 'reviewing' as const, to: 'done' as const },
     ]) {
-      await runTransition(page, request, trackId, areaId, { from, to, driver: 'spec' });
+      await runTransition(page, request, trackId, areaId, { from, to, driver: 'planner' });
     }
 
     // Final state: Done is terminal, so `terminal_at` is stamped with
@@ -137,7 +137,7 @@ test.describe('track lifecycle', () => {
 
     // Reopen via plain PATCH — `done -> planning` is user-only per
     // `track_lifecycle::validate_transition`. The kernel rule is hard:
-    // even the Spec Agent can't reopen a terminal track.
+    // even the Planner Agent can't reopen a terminal track.
     const reopened = await patchTrackLifecycle(request, trackId, 'planning');
     expect(reopened.lifecycle).toBe<TrackLifecycle>('planning');
     // The whole point of P1's reopen path test: terminal_at MUST be
@@ -233,10 +233,10 @@ test.describe('track lifecycle', () => {
     // with WS backpressure, where a 200ms negative window can false-
     // green.
     //
-    // First step into a spec-only state via the dev endpoint so we have
+    // First step into a planner-only state via the dev endpoint so we have
     // a known non-default lifecycle the kernel actor is allowed to
     // re-emit (the force endpoint runs as `ActorId::Kernel`, which
-    // can't drive `draft → draft` — only spec-reachable states).
+    // can't drive `draft → draft` — only planner-reachable states).
     await patchTrackLifecycle(request, trackId, 'planning');
     const stepped = await forceTrackLifecycle(request, trackId, 'dispatching');
     expect(stepped.track.lifecycle).toBe<TrackLifecycle>('dispatching');
@@ -277,7 +277,7 @@ test.describe('track lifecycle', () => {
 interface TransitionStep {
   from: TrackLifecycle;
   to: TrackLifecycle;
-  driver: 'user' | 'spec';
+  driver: 'user' | 'planner';
 }
 
 /**

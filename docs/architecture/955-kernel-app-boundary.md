@@ -22,7 +22,7 @@ App 进程是本机安装并受信的协作代码。当前没有 OS sandbox，�
 - 是多个 workflow 共用的领域原语；
 - 错误实现可能破坏一致性、权限、磁盘配额或回收安全。
 
-其余能力可以由 app 实现。报告正文仍由 spec agent 负责组织；app 提供数据和建议，不成为新的报告写者。
+其余能力可以由 app 实现。报告正文仍由 planner agent 负责组织；app 提供数据和建议，不成为新的报告写者。
 
 内核拥有：
 
@@ -56,7 +56,7 @@ Manifest 可以声明工具、workflow、card view、entrypoint 和 permissions�
 
 - 自己的 card kind 和 `ui://` 界面；
 - 附着在 track/card 上的 overlay；
-- workflow 的任务模板、输入和 spec 指令；
+- workflow 的任务模板、输入和 planner 指令；
 - 提供给 Agent 的外部工具；
 - 私有 KV 与事件驱动行为。
 
@@ -75,4 +75,4 @@ App 不能通过 Neige 通道：
 
 当前 trust 来自内核配置，没有签名或进程隔离。后续实现可以替换信任来源，但必须保持“由内核判定、消费端 fail closed”。
 
-报告采用单一逻辑作者：spec agent 组织正文，人可以直接编辑，app 通过工具、overlay 和自有 UI 贡献。该规则目前是产品策略，不是完整并发机制；整文档写入仍需要独立的版本冲突控制。
+报告采用单一逻辑作者：planner agent 组织正文，人可以直接编辑，app 通过工具、overlay 和自有 UI 贡献。该规则目前是产品策略，不是完整并发机制；整文档写入仍需要独立的版本冲突控制。

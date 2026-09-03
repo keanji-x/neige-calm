@@ -4,7 +4,7 @@
 //!
 //! Each test:
 //!   * Boots an `McpServer` against an in-memory `SqlxRepo`.
-//!   * Mints either a Spec or Worker card (with its per-card MCP token).
+//!   * Mints either a Planner or Worker card (with its per-card MCP token).
 //!   * Connects, `initialize`s with the token, then calls one tool.
 //!   * Verifies either the retired dispatch shim payload or an event
 //!     broadcast frame with the correct actor + scope.
@@ -94,7 +94,7 @@ fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> s
 
 #[tokio::test]
 async fn dispatch_request_returns_retired_refusal_without_emitting() {
-    let b = boot_with_role(CardRole::Spec).await;
+    let b = boot_with_role(CardRole::Planner).await;
     let mut rx = b.events.subscribe();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     handshake(&mut rd, &mut wr, &b.raw_token).await;
@@ -138,7 +138,7 @@ async fn dispatch_request_returns_retired_refusal_without_emitting() {
 
 #[tokio::test]
 async fn legacy_dispatch_alias_inherits_retired_refusal() {
-    let b = boot_with_role(CardRole::Spec).await;
+    let b = boot_with_role(CardRole::Planner).await;
     let mut rx = b.events.subscribe();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     handshake(&mut rd, &mut wr, &b.raw_token).await;
@@ -202,8 +202,11 @@ async fn dispatch_request_rejects_worker_identity() {
         .and_then(|v| v.as_i64())
         .expect("error has code");
     // require_role surfaces as InvalidParams (-32602) — matches the soft
-    // role gate convention used by other spec-only MCP tools.
-    assert_eq!(code, -32602, "expected spec-only soft gate; got {err:#?}");
+    // role gate convention used by other planner-only MCP tools.
+    assert_eq!(
+        code, -32602,
+        "expected planner-only soft gate; got {err:#?}"
+    );
     let _ = (&b.server, &b.repo);
 }
 
@@ -451,7 +454,7 @@ async fn smuggled_card_id_in_args_is_ignored() {
             json!({
                 "idempotency_key": "tc-smuggle",
                 "card_id": b.other_card_id, // <-- smuggled
-                "actor": "ai_spec",          // <-- smuggled
+                "actor": "ai_planner",          // <-- smuggled
             }),
         ),
     )

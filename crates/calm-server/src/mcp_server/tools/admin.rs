@@ -73,7 +73,7 @@ async fn track_gc(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let track_vcs = track_vcs_repo(&ctx)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
 
@@ -133,7 +133,7 @@ async fn vacuum(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let track_vcs = track_vcs_repo(&ctx)?;
     track_vcs.vacuum().await.map_err(|e| {
         RpcError::internal(format!(

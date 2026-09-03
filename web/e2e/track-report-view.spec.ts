@@ -57,7 +57,7 @@ async function createTrack(
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This spec is about the report view, not working directories. See
+      // This planner is about the report view, not working directories. See
       // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-report-view-<ts>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
@@ -81,7 +81,7 @@ function harnessUserRow(id: number, text: string) {
   return {
     id,
     runtime_id: 'runtime',
-    card_id: 'card_spec',
+    card_id: 'card_planner',
     track_id: 'track',
     thread_id: 'thread',
     turn_id: 'turn',
@@ -133,7 +133,7 @@ test('track report view renders real report data and report rail controls', asyn
   await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
     .toHaveClass(/report-conversation-drawer--open/);
 
-  const followUp = page.getByRole('textbox', { name: /Ask the Spec Agent/ });
+  const followUp = page.getByRole('textbox', { name: /Ask the Planner Agent/ });
   await followUp.fill('Can you summarize the key risk?');
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });
@@ -467,7 +467,7 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
     page,
     track.id,
     [
-      '## [Short heading](https://example.com/spec)',
+      '## [Short heading](https://example.com/planner)',
       '',
       '##',
       '',

@@ -63,7 +63,7 @@ const LISTING = {
 };
 
 /* The created track, as the kernel returns it under #1211: **an empty title**.
-   The client sends none, the kernel stores the empty string, and the spec agent
+   The client sends none, the kernel stores the empty string, and the planner agent
    names the track later through `calm.track.rename`. */
 const TRACK_ROW = {
   id: 'w-new', area_id: 'c1', title: '', sort: 0, archived_at: null, pinned_at: null,
@@ -123,7 +123,7 @@ function harness(options: {
           : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
       }
       /* The track page reads the detail on arrival, and that read is where the
-         spec card — the one the landing opens — comes from. Served here rather
+         planner card — the one the landing opens — comes from. Served here rather
          than left to fall through to `[]`, because a decode failure would look
          identical to "the feature did not run". No first message rides on it —
          that is #1299. */
@@ -135,8 +135,8 @@ function harness(options: {
           body: {
             track: { ...TRACK_ROW },
             cards: [{
-              id: 'card-spec', track_id: 'w-new', kind: 'codex', title: 'Spec',
-              payload: { spec_harness: true }, sort: 0, created_at: 1, updated_at: 1,
+              id: 'card-planner', track_id: 'w-new', kind: 'codex', title: 'Planner',
+              payload: { planner_harness: true }, sort: 0, created_at: 1, updated_at: 1,
             }],
             overlays: [],
           },
@@ -213,9 +213,9 @@ function composerText(): string {
   return screen.getByLabelText(TASK_LABEL).textContent ?? '';
 }
 
-/** The text of every first message delivered to the spec card (#1211). */
-function specInputTexts(sent: readonly ApiRequest[]): unknown[] {
-  return sent.filter((request) => request.method === 'POST' && request.path.endsWith('/spec/input'))
+/** The text of every first message delivered to the planner card (#1211). */
+function plannerInputTexts(sent: readonly ApiRequest[]): unknown[] {
+  return sent.filter((request) => request.method === 'POST' && request.path.endsWith('/planner/input'))
     .map((request) => (request.body as { text?: unknown } | undefined)?.text);
 }
 
@@ -340,13 +340,13 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
     expect(body).toMatchObject({ area_id: 'c2' });
     expect(body).toHaveProperty('theme');
     /* #1211 — the sentence is the track's *intent*, not its name. No `title` on
-       the wire at all: the kernel stores the empty string and the spec agent
+       the wire at all: the kernel stores the empty string and the planner agent
        renames later through `calm.track.rename`. The sentence itself is not on
        the wire either yet (#1299, asserted just below) — a create that quietly
        went back to posting it as the title would satisfy neither. */
     expect(body).not.toHaveProperty('title');
     /* #1299 — nothing is delivered from this page yet. */
-    expect(specInputTexts(sent)).toEqual([]);
+    expect(plannerInputTexts(sent)).toEqual([]);
     // The managed-workspace branch is keyed on *absence*, not on a value:
     // `cwd: null` and `attach_folder: false` are both a different kernel path.
     expect(body).not.toHaveProperty('cwd');
@@ -491,7 +491,7 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
     const body = createdTrackBodies(sent)[0] as Record<string, unknown>;
     expect(body).toMatchObject({ template_id: 'small-change' });
     expect(body).not.toHaveProperty('title');
-    expect(specInputTexts(sent)).toEqual([]);
+    expect(plannerInputTexts(sent)).toEqual([]);
     expect(body).not.toHaveProperty('template_input');
   });
 
@@ -518,7 +518,7 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     expect(createdTrackBodies(sent)[0]).toMatchObject({ area_id: 'c2' });
     expect(createdTrackBodies(sent)[0]).not.toHaveProperty('title');
-    expect(specInputTexts(sent)).toEqual([]);
+    expect(plannerInputTexts(sent)).toEqual([]);
   });
 });
 
@@ -528,11 +528,11 @@ describe('the new-track page is a route, and both `+` entry points navigate to i
  * The failure matrix that used to live here drove the three-write sequence.
  * Both review channels showed the sequence cannot be made sound from a
  * component (an unmount mid-flight loses the sentence silently, and
- * `/spec/input` has no idempotency key so any retry can double-send), so the
+ * `/planner/input` has no idempotency key so any retry can double-send), so the
  * write moves into `POST /api/tracks` under #1299 and the tests move with it.
  *
  * What is left is the property this slice does promise, and its counterpart:
- * the track is created, nothing is sent, and the reader lands with the spec
+ * the track is created, nothing is sent, and the reader lands with the planner
  * conversation open so they can say it there.
  */
 describe('the sentence is not delivered yet, and the track opens ready for it', () => {
@@ -547,23 +547,23 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     /* The assertion that keeps this slice honest in both directions: no
-       `/spec/input` went out, so nothing can be half-delivered — and if someone
+       `/planner/input` went out, so nothing can be half-delivered — and if someone
        re-adds delivery here without moving it into the create, this fails and
        sends them to #1299. */
-    expect(specInputTexts(sent)).toEqual([]);
+    expect(plannerInputTexts(sent)).toEqual([]);
   });
 
   /*
-   * The positive half: the create states `openSpec` on the navigation it makes
+   * The positive half: the create states `openPlanner` on the navigation it makes
    * and the track route body redeems it against its own cards, so the reader
    * lands ready to say the sentence again.
    *
    * Asserted through the drawer the track page opens, not by spying on the
    * router state: the marker is an implementation detail and the drawer is the
-   * thing the reader gets. Without this case the `openSpec: true` on the `go()`
+   * thing the reader gets. Without this case the `openPlanner: true` on the `go()`
    * below could be deleted and every other case here would stay green.
    */
-  it('opens the track\'s spec conversation on arrival', async () => {
+  it('opens the track\'s planner conversation on arrival', async () => {
     harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
@@ -574,20 +574,20 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     /* Named, not by bare role: the track page's panel column is a
        `complementary` too, so the role alone matches two elements. `Drawer`
-       names itself from the conversation's title, and the spec card's is
-       "Spec". */
-    expect(await screen.findByRole('complementary', { name: 'Spec' })).toBeTruthy();
+       names itself from the conversation's title, and the planner card's is
+       "Planner". */
+    expect(await screen.findByRole('complementary', { name: 'Planner' })).toBeTruthy();
   });
 
   /*
    * A slow landing must not hold the reader on the form.
    *
    * The create used to read the track detail *here*, race it against a deadline,
-   * and write the spec card's id into the conversation registry before
+   * and write the planner card's id into the conversation registry before
    * navigating. The registry outlives every route, so a landing that never
    * reached the track left that request standing and sprang a drawer open on a
    * later visit — which is why the intent moved onto the history entry
-   * (`openSpec`) and the read moved to the track page that owns it.
+   * (`openPlanner`) and the read moved to the track page that owns it.
    *
    * So the guarantee here is now two-sided and this case pins both: the
    * navigation does not wait on any read, and the drawer opens when the read it
@@ -608,11 +608,11 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     await waitFor(() => { expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`); });
     expect(createdTrackBodies(sent)).toHaveLength(1);
     await findTrackPage();
-    expect(screen.queryByRole('complementary', { name: 'Spec' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner' })).toBeNull();
 
     releaseDetail();
     await held;
-    expect(await screen.findByRole('complementary', { name: 'Spec' })).toBeTruthy();
+    expect(await screen.findByRole('complementary', { name: 'Planner' })).toBeTruthy();
   }, 10_000);
 
   /*
@@ -650,7 +650,7 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
      * Asserting only the pathname above is not enough, and that gap is exactly
      * what review caught by execution on the shape this replaced: a drawer
      * request written into a provider after the reader left was invisible
-     * *here* and surfaced on their **next** visit to the track as a Spec drawer
+     * *here* and surfaced on their **next** visit to the track as a Planner drawer
      * nobody opened. The intent now rides on the history entry the create would
      * have made — and it never made one — so the later visit is the observable
      * that says so, and it stays the observable regardless of how the intent is
@@ -663,7 +663,7 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
        that is asserting that nothing has happened yet, which is true either
        way; the first two attempts at this test both failed that way. */
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByRole('complementary', { name: 'Spec' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Planner' })).toBeNull();
   }, 10_000);
 
   /* A track detail that will not load costs a closed drawer and nothing else, so
@@ -695,6 +695,6 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
-    expect(specInputTexts(sent)).toEqual([]);
+    expect(plannerInputTexts(sent)).toEqual([]);
   });
 });

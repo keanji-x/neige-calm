@@ -12,8 +12,8 @@ use serde_json::Value;
 use crate::error::CalmError;
 
 pub use builtins::{
-    ClaudeCardHandler, CodexCardHandler, PluginUiCardHandler, SpecCardHandler, TerminalCardHandler,
-    TrackReportCardHandler,
+    ClaudeCardHandler, CodexCardHandler, PlannerCardHandler, PluginUiCardHandler,
+    TerminalCardHandler, TrackReportCardHandler,
 };
 
 pub type CardKindResult<T> = std::result::Result<T, CardKindError>;
@@ -107,7 +107,7 @@ impl CardKindRegistry {
             Box::new(CodexCardHandler),
             Box::new(ClaudeCardHandler),
             Box::new(TrackReportCardHandler),
-            Box::new(SpecCardHandler),
+            Box::new(PlannerCardHandler),
             Box::new(PluginUiCardHandler),
         ])
     }

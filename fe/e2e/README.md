@@ -19,4 +19,4 @@ CALM_CODEX_HOST_BIN=<repo>/target/release/osc-probe-child
 ```
 
 This is what `ci.yml`'s `fe e2e` job does. `CALM_CODEX_HOST_BIN=/bin/true` still brings the stack
-up, but the conversation-create spec will fail against it.
+up, but the conversation-create planner will fail against it.

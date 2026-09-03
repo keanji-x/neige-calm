@@ -11,7 +11,7 @@
 //! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a track is scoped
 //! to a plugin that is not currently running ∧ trusted (plugin stopped,
 //! trust revoked, track row unreadable), the scope is
-//! [`TrackPluginScope::None`] — zero plugin tools. This mirrors the spec
+//! [`TrackPluginScope::None`] — zero plugin tools. This mirrors the planner
 //! harness's descriptor-unresolved degradation (vanilla prompt): the tools
 //! are withdrawn together with the plugin context rather than silently
 //! widened back to the union. The gate reads `tracks.plugin_scope` only —

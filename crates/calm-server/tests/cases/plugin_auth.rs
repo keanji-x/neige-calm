@@ -274,7 +274,7 @@ fn auth_helpers_reachable_from_public_surface() {
 // 6. M1: no kernel-callbacks capability → MethodNotFound on neige.*
 // ===========================================================================
 //
-// Spec contract (migration doc §6/M1): a plugin opts into the `neige.*`
+// Planner contract (migration doc §6/M1): a plugin opts into the `neige.*`
 // host-callback namespace by echoing `experimental.dev.neige/kernel-callbacks`
 // back in its `initialize` response. If absent, the kernel installs a
 // MethodNotFound drainer in place of the real dispatcher — so the caller-stub

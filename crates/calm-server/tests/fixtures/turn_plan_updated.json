@@ -30,7 +30,7 @@
     "`threadId` here is a PLACEHOLDER and is not part of the transcription. The",
     "kernel's `on_notification` prologue drops any notification whose `threadId` is",
     "not the harness's current thread, so the test substitutes its own seeded id",
-    "(`SEED_THREAD_ID` in tests/cases/spec_harness_items_persist.rs) over this value",
+    "(`SEED_THREAD_ID` in tests/cases/planner_harness_items_persist.rs) over this value",
     "before emitting the frame. Changing the literal below changes nothing.",
     "",
     "Once the kernel arm that persists these rows ships,",

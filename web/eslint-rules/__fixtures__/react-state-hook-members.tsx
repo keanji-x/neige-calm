@@ -1,7 +1,7 @@
 // Smoke-test fixture for `neige-calm/no-react-state-hook-members`.
 //
 // These calls intentionally bypass `src/shared/state.ts` via namespace and
-// default React imports. The companion vitest spec asserts that all three
+// default React imports. The companion vitest planner asserts that all three
 // calls are reported.
 
 import * as React from 'react';

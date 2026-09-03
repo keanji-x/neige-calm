@@ -41,7 +41,7 @@ fn derive_session_identity_frozen_table_satisfies_0045_checks() {
             ),
         ),
         (
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             (
                 WorkerProviderKind::Codex,
                 SessionMode::Resumable,

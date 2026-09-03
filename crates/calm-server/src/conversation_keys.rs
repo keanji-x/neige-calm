@@ -9,7 +9,7 @@
 //!
 //! Both derivations are pure functions of their `(scope, key)` pair, which is
 //! what makes a retry land on the same card even when operation dedup misses:
-//! `SpecHarnessStartAdapter::validate` refuses to re-mint an existing card, so
+//! `PlannerHarnessStartAdapter::validate` refuses to re-mint an existing card, so
 //! every attempt under one key aims at one id.
 //!
 //! # The two namespaces must not collide

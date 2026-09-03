@@ -70,7 +70,7 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     track_area_cache: &TrackAreaCache,
 ) -> std::result::Result<(), RoleViolation> {
     let session_id = match actor {
-        ActorId::AiSpecSession(session)
+        ActorId::AiPlannerSession(session)
         | ActorId::AiCodexSession(session)
         | ActorId::AiClaudeSession(session) => session.clone(),
         _ => return enforce_role(actor, event, scope, cache, track_area_cache),
@@ -105,19 +105,19 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         })?;
 
     let synthetic = match actor {
-        ActorId::AiSpecSession(_) => {
-            // Live read gave ground-truth card_id; the AiSpec path in enforce_role
+        ActorId::AiPlannerSession(_) => {
+            // Live read gave ground-truth card_id; the AiPlanner path in enforce_role
             // does not re-check role/scope for ordinary events, so verify the card
-            // is actually Spec-roled before granting spec authority. Fail-closed on
-            // non-Spec or unknown card. Worker variants below stay delegated;
+            // is actually Planner-roled before granting planner authority. Fail-closed on
+            // non-Planner or unknown card. Worker variants below stay delegated;
             // enforce_role's self-scope/UnknownCard arms already cover every role.
-            if cache.get(&card_id) != Some(CardRole::Spec) {
-                return Err(RoleViolation::SessionSpecRoleMismatch {
+            if cache.get(&card_id) != Some(CardRole::Planner) {
+                return Err(RoleViolation::SessionPlannerRoleMismatch {
                     session: session_id,
                     card: card_id,
                 });
             }
-            ActorId::AiSpec(card_id)
+            ActorId::AiPlanner(card_id)
         }
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
@@ -239,11 +239,11 @@ impl PrincipalDecisionGate {
     /// #1189 §3.6 — may this agent session record into `track`'s report?
     ///
     /// The criterion is **the session's card**, not the track's root session:
-    /// `card.track_id == track` ∧ `role ∈ {Spec, Assistant}`.
+    /// `card.track_id == track` ∧ `role ∈ {Planner, Assistant}`.
     ///
     /// The two halves carry different weight and are worth naming:
     ///
-    /// * `role ∈ {Spec, Assistant}` keeps worker-card sessions out (G-A).
+    /// * `role ∈ {Planner, Assistant}` keeps worker-card sessions out (G-A).
     ///   The MCP entry points have a `require_role` of their own, so a
     ///   mutation here is masked on the production path — this half is
     ///   pinned at the gate-unit level only, and that is admitted.
@@ -257,9 +257,9 @@ impl PrincipalDecisionGate {
     /// `session_mark_track_root_tx` never checks the root session's card
     /// role or home track, so a root-marked worker session would sail
     /// straight past the very check G-A exists to make. The root session
-    /// of a track is bound to that track's Spec card, so it is covered by
+    /// of a track is bound to that track's Planner card, so it is covered by
     /// the new criterion on its own merits; what it loses is the ability
-    /// to be the *only* spec-roled session that may record, which #1189
+    /// to be the *only* planner-roled session that may record, which #1189
     /// deliberately gives up (an assistant is by construction not root).
     ///
     /// Liveness is checked explicitly, mirroring
@@ -313,7 +313,7 @@ impl PrincipalDecisionGate {
                 "session {session_id} is bound to unknown card {card_id}"
             )));
         };
-        if !matches!(role, CardRole::Spec | CardRole::Assistant) {
+        if !matches!(role, CardRole::Planner | CardRole::Assistant) {
             return Ok(GateDecision::Deny(format!(
                 "session {session_id} card {card_id} has role {role:?}, which may not record"
             )));
@@ -595,7 +595,7 @@ mod tests {
     }
 
     /// #1189 §3.6 — one table for the whole recorder criterion, so the two
-    /// halves (`role ∈ {Spec, Assistant}` and `card.track_id == track`) are
+    /// halves (`role ∈ {Planner, Assistant}` and `card.track_id == track`) are
     /// each pinned by a row that flips when that half is removed.
     async fn recorder_grant_for(
         session: &str,
@@ -616,17 +616,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recorder_grant_admits_spec_and_assistant_cards_of_the_target_track() {
+    async fn recorder_grant_admits_planner_and_assistant_cards_of_the_target_track() {
         assert!(
             recorder_grant_for(
-                "s-spec",
-                Some("card-spec"),
-                CardRole::Spec,
+                "s-planner",
+                Some("card-planner"),
+                CardRole::Planner,
                 "track-1",
                 "track-1"
             )
             .await,
-            "the track's spec card may record — this is the path the old \
+            "the track's planner card may record — this is the path the old \
              root-session criterion used to serve"
         );
         assert!(
@@ -686,14 +686,14 @@ mod tests {
         );
         assert!(
             !recorder_grant_for(
-                "s-foreign-spec",
-                Some("card-foreign-spec"),
-                CardRole::Spec,
+                "s-foreign-planner",
+                Some("card-foreign-planner"),
+                CardRole::Planner,
                 "track-2",
                 "track-1"
             )
             .await,
-            "and neither may another track's spec — the role whitelist alone \
+            "and neither may another track's planner — the role whitelist alone \
              is not containment"
         );
     }
@@ -710,7 +710,7 @@ mod tests {
         );
         // Session row, no card binding.
         assert!(
-            !recorder_grant_for("s-cardless", None, CardRole::Spec, "track-1", "track-1").await
+            !recorder_grant_for("s-cardless", None, CardRole::Planner, "track-1", "track-1").await
         );
         // Session bound to a card that has no `cards` row.
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
@@ -730,11 +730,14 @@ mod tests {
     /// `session_get_tx` is `WHERE id = ?1` with no state filter, so every one
     /// of these rows resolves; only `is_active_authority` separates them.
     async fn recorder_decision_for_state(state: WorkerSessionState) -> GateDecision {
-        let mut session = worker_session("s-spec", Some(CardId::from("card-spec")));
+        let mut session = worker_session("s-planner", Some(CardId::from("card-planner")));
         session.state = state;
-        let mut tx =
-            FakeWriteTx::with_worker_session(session).with_card("card-spec", CardRole::Spec, "w-1");
-        PrincipalDecisionGate::new(agent("s-spec"))
+        let mut tx = FakeWriteTx::with_worker_session(session).with_card(
+            "card-planner",
+            CardRole::Planner,
+            "w-1",
+        );
+        PrincipalDecisionGate::new(agent("s-planner"))
             .decide_recorder(&mut tx, &TrackId::from("w-1"))
             .await
             .expect("recorder decision computes")
@@ -762,7 +765,7 @@ mod tests {
                     recorder_decision_for_state(state).await,
                     GateDecision::Deny(_)
                 ),
-                "a {state:?} session on this track's spec card must not record"
+                "a {state:?} session on this track's planner card must not record"
             );
         }
         for state in [
@@ -774,7 +777,7 @@ mod tests {
             assert_eq!(
                 recorder_decision_for_state(state).await,
                 GateDecision::Allow,
-                "a {state:?} session on this track's spec card still records"
+                "a {state:?} session on this track's planner card still records"
             );
         }
     }
@@ -855,15 +858,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_resolver_allows_spec_track_updated() {
-        let spec_card = CardId::from("spec-card");
-        let (cache, wcc) = seeded_caches(&spec_card, CardRole::Spec);
+    async fn session_resolver_allows_planner_track_updated() {
+        let planner_card = CardId::from("planner-card");
+        let (cache, wcc) = seeded_caches(&planner_card, CardRole::Planner);
         let mut tx =
-            FakeWriteTx::with_worker_session(worker_session("s2", Some(spec_card.clone())));
+            FakeWriteTx::with_worker_session(worker_session("s2", Some(planner_card.clone())));
 
         let res = enforce_role_resolving_session(
             &mut tx,
-            &ActorId::AiSpecSession(WorkerSessionId::from("s2")),
+            &ActorId::AiPlannerSession(WorkerSessionId::from("s2")),
             &track_updated(),
             &track_scope("w", "c"),
             &cache,
@@ -871,33 +874,33 @@ mod tests {
         )
         .await;
 
-        assert!(res.is_ok(), "spec session should update track: {res:?}");
+        assert!(res.is_ok(), "planner session should update track: {res:?}");
         assert_eq!(tx.worker_session_reads, 1);
     }
 
     #[tokio::test]
-    async fn session_resolver_denies_spec_session_bound_to_worker_card_on_ordinary_event() {
+    async fn session_resolver_denies_planner_session_bound_to_worker_card_on_ordinary_event() {
         let worker_card = CardId::from("worker-card");
         let (cache, wcc) = seeded_caches(&worker_card, CardRole::Worker);
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
-            "s-spec-worker",
+            "s-planner-worker",
             Some(worker_card.clone()),
         ));
 
         let err = enforce_role_resolving_session(
             &mut tx,
-            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-worker")),
+            &ActorId::AiPlannerSession(WorkerSessionId::from("s-planner-worker")),
             &area_updated(),
             &card_scope(worker_card.as_str(), "w", "c"),
             &cache,
             &wcc,
         )
         .await
-        .expect_err("spec session bound to worker card must deny");
+        .expect_err("planner session bound to worker card must deny");
 
         match err {
-            RoleViolation::SessionSpecRoleMismatch { session, card } => {
-                assert_eq!(session, WorkerSessionId::from("s-spec-worker"));
+            RoleViolation::SessionPlannerRoleMismatch { session, card } => {
+                assert_eq!(session, WorkerSessionId::from("s-planner-worker"));
                 assert_eq!(card, worker_card);
             }
             other => panic!("unexpected violation: {other:?}"),
@@ -906,27 +909,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_resolver_denies_spec_session_bound_to_unknown_card_on_ordinary_event() {
+    async fn session_resolver_denies_planner_session_bound_to_unknown_card_on_ordinary_event() {
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let ghost = CardId::from("ghost");
-        let mut tx =
-            FakeWriteTx::with_worker_session(worker_session("s-spec-ghost", Some(ghost.clone())));
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-planner-ghost",
+            Some(ghost.clone()),
+        ));
 
         let err = enforce_role_resolving_session(
             &mut tx,
-            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ghost")),
+            &ActorId::AiPlannerSession(WorkerSessionId::from("s-planner-ghost")),
             &area_updated(),
             &card_scope(ghost.as_str(), "w", "c"),
             &cache,
             &wcc,
         )
         .await
-        .expect_err("spec session bound to unknown card must deny");
+        .expect_err("planner session bound to unknown card must deny");
 
         match err {
-            RoleViolation::SessionSpecRoleMismatch { session, card } => {
-                assert_eq!(session, WorkerSessionId::from("s-spec-ghost"));
+            RoleViolation::SessionPlannerRoleMismatch { session, card } => {
+                assert_eq!(session, WorkerSessionId::from("s-planner-ghost"));
                 assert_eq!(card, ghost);
             }
             other => panic!("unexpected violation: {other:?}"),
@@ -935,19 +940,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_resolver_allows_spec_session_bound_to_spec_card_on_ordinary_event() {
-        let spec_card = CardId::from("spec-card");
-        let (cache, wcc) = seeded_caches(&spec_card, CardRole::Spec);
+    async fn session_resolver_allows_planner_session_bound_to_planner_card_on_ordinary_event() {
+        let planner_card = CardId::from("planner-card");
+        let (cache, wcc) = seeded_caches(&planner_card, CardRole::Planner);
         let mut tx = FakeWriteTx::with_worker_session(worker_session(
-            "s-spec-ordinary",
-            Some(spec_card.clone()),
+            "s-planner-ordinary",
+            Some(planner_card.clone()),
         ));
 
         let res = enforce_role_resolving_session(
             &mut tx,
-            &ActorId::AiSpecSession(WorkerSessionId::from("s-spec-ordinary")),
+            &ActorId::AiPlannerSession(WorkerSessionId::from("s-planner-ordinary")),
             &area_updated(),
-            &card_scope(spec_card.as_str(), "w", "c"),
+            &card_scope(planner_card.as_str(), "w", "c"),
             &cache,
             &wcc,
         )
@@ -955,7 +960,7 @@ mod tests {
 
         assert!(
             res.is_ok(),
-            "spec session bound to spec card should pass ordinary event: {res:?}"
+            "planner session bound to planner card should pass ordinary event: {res:?}"
         );
         assert_eq!(tx.worker_session_reads, 1);
     }
@@ -1166,7 +1171,7 @@ mod tests {
         .await
         .expect_err("worker session must not update track");
 
-        assert!(matches!(err, RoleViolation::NotSpecForTrack { .. }));
+        assert!(matches!(err, RoleViolation::NotPlannerForTrack { .. }));
         assert_eq!(tx.worker_session_reads, 1);
     }
 

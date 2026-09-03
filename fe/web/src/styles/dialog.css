@@ -1,9 +1,9 @@
 /*
  * The frozen dialog primitive hard-codes its class names (ui/dialog/public.tsx),
- * so this is the only place their visual spec can live — and the only non-module
+ * so this is the only place their visual planner can live — and the only non-module
  * CSS file in the `ui` layer (§2.7). Every class here is registered in
  * global-classes.yaml; the manifest is a closed list, so a tenth dialog class is
- * a spec change, not an implementation detail.
+ * a planner change, not an implementation detail.
  */
 @layer ui {
   .dialog-overlay {

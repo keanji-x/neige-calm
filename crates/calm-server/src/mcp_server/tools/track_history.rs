@@ -3,7 +3,7 @@
 //! These handlers are registered as wire-callable tools but use
 //! `visible_to_roles: &[]`, so they do not appear in `tools/list` for any
 //! role. Human-facing drill-in goes through `neige diff`, `neige cat-at`, and
-//! `neige log`; spec turns receive the summarized since-last-turn block.
+//! `neige log`; planner turns receive the summarized since-last-turn block.
 
 use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;
@@ -99,7 +99,7 @@ async fn track_diff(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_DIFF)?;
@@ -137,7 +137,7 @@ async fn track_cat_at(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_CAT_AT)?;
@@ -158,7 +158,7 @@ async fn track_log(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Spec, CardRole::Worker])?;
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_LOG)?;

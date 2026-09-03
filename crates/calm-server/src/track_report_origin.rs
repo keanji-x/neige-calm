@@ -67,7 +67,7 @@
 //!
 //! `routes/tracks.rs` carries an explicit #1115 contract: the fork path
 //! **deliberately derives no `EditAuthor`**. It used to (`User` with no
-//! `X-Calm-Actor` header, `Spec` otherwise), and handing that author to
+//! `X-Calm-Actor` header, `Planner` otherwise), and handing that author to
 //! `routes::tracks::fork_guard::guard_forked_blocks` made the guard a no-op for
 //! the browser fork, because a browser fork sends no header. `fork_guard`
 //! states both halves of that in its own words: gating on
@@ -175,9 +175,9 @@ use crate::error::CalmError;
 /// The track this carries is the **track being written**, as resolved for the
 /// call: `mcp_server::tools::track_report::resolve_report_for_caller` looks up
 /// the caller's *own* card by `identity.card_id` and takes that card's
-/// `track_id`. It is not always a spec card — `calm.report.write_markdown` and
+/// `track_id`. It is not always a planner card — `calm.report.write_markdown` and
 /// the block tools admit `CardRole::Assistant` too
-/// (`require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])` in
+/// (`require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])` in
 /// `mcp_server/tools/track_report_blocks.rs`), and for such a call the track
 /// comes from the Assistant card. That resolved track is what
 /// `decision_sink::CardDecisionSink::commit_report_op` puts in the recorder
@@ -424,7 +424,7 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
     Ok(match origin {
         WriteOrigin::Agent(agent) => {
             let (author, auto_promote_draft) = match agent.role {
-                CardRole::Spec => (EditAuthor::Spec, true),
+                CardRole::Planner => (EditAuthor::Planner, true),
                 CardRole::Assistant => (EditAuthor::Assistant, false),
                 role @ (CardRole::Worker | CardRole::ReportCard) => {
                     return Err(CalmError::Forbidden(format!(
@@ -455,13 +455,13 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
 }
 
 /// Mirrors `ToolCallIdentity::to_actor_id`: MCP writes are keyed by worker
-/// session, and the spec role gets its own actor rather than a provider one.
+/// session, and the planner role gets its own actor rather than a provider one.
 /// `Worker` / `ReportCard` never reach here — [`policy_for`] refuses them
 /// first — so this function only has to cover the two roles that may write.
 fn agent_actor(agent: &AgentOrigin) -> ActorId {
     let session_id = agent.session_id.clone();
     match agent.role {
-        CardRole::Spec => ActorId::AiSpecSession(session_id),
+        CardRole::Planner => ActorId::AiPlannerSession(session_id),
         CardRole::Assistant | CardRole::Worker | CardRole::ReportCard => match agent.provider {
             AgentProvider::Codex => ActorId::AiCodexSession(session_id),
             AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
@@ -501,18 +501,18 @@ mod tests {
             RecorderRequirement,
         )> = vec![
             (
-                "agent/spec/codex",
-                agent(CardRole::Spec, AgentProvider::Codex),
-                ActorId::AiSpecSession(WorkerSessionId::from("sess_1".to_string())),
-                WriteAttribution::Authored(EditAuthor::Spec),
+                "agent/planner/codex",
+                agent(CardRole::Planner, AgentProvider::Codex),
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess_1".to_string())),
+                WriteAttribution::Authored(EditAuthor::Planner),
                 true,
                 RecorderRequirement::AgentGate,
             ),
             (
-                "agent/spec/claude",
-                agent(CardRole::Spec, AgentProvider::Claude),
-                ActorId::AiSpecSession(WorkerSessionId::from("sess_1".to_string())),
-                WriteAttribution::Authored(EditAuthor::Spec),
+                "agent/planner/claude",
+                agent(CardRole::Planner, AgentProvider::Claude),
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess_1".to_string())),
+                WriteAttribution::Authored(EditAuthor::Planner),
                 true,
                 RecorderRequirement::AgentGate,
             ),
@@ -566,7 +566,7 @@ mod tests {
     }
 
     /// Same refusal `decision_sink::report_op_attribution` already makes: these
-    /// two roles are rejected outright rather than folded in with `Spec`.
+    /// two roles are rejected outright rather than folded in with `Planner`.
     #[test]
     fn policy_for_refuses_the_two_agent_roles_that_may_not_write_the_report() {
         for role in [CardRole::Worker, CardRole::ReportCard] {
@@ -599,10 +599,10 @@ mod tests {
             ActorId::Kernel => "Kernel",
             ActorId::KernelDispatcher => "KernelDispatcher",
             ActorId::Plugin(_) => "Plugin",
-            ActorId::AiSpec(_) => "AiSpec",
+            ActorId::AiPlanner(_) => "AiPlanner",
             ActorId::AiCodex(_) => "AiCodex",
             ActorId::AiClaude(_) => "AiClaude",
-            ActorId::AiSpecSession(_) => "AiSpecSession",
+            ActorId::AiPlannerSession(_) => "AiPlannerSession",
             ActorId::AiCodexSession(_) => "AiCodexSession",
             ActorId::AiClaudeSession(_) => "AiClaudeSession",
         }
@@ -618,10 +618,10 @@ mod tests {
             // track — the most plausible future non-`User` fork initiator.
             ActorId::KernelDispatcher,
             ActorId::Plugin("git-forge".to_string()),
-            ActorId::AiSpec(CardId::from("c_2".to_string())),
+            ActorId::AiPlanner(CardId::from("c_2".to_string())),
             ActorId::AiCodex(CardId::from("c_2".to_string())),
             ActorId::AiClaude(CardId::from("c_2".to_string())),
-            ActorId::AiSpecSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::AiPlannerSession(WorkerSessionId::from("sess_fork".to_string())),
             ActorId::AiCodexSession(WorkerSessionId::from("sess_fork".to_string())),
             ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string())),
         ];
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn structural_attribution_belongs_to_the_fork_origin_alone() {
         let origins = [
-            agent(CardRole::Spec, AgentProvider::Codex),
+            agent(CardRole::Planner, AgentProvider::Codex),
             agent(CardRole::Assistant, AgentProvider::Codex),
             WriteOrigin::RestUser,
         ];
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn only_the_agent_origin_declares_a_recorder_gate() {
         assert_eq!(
-            policy_for(&agent(CardRole::Spec, AgentProvider::Codex))
+            policy_for(&agent(CardRole::Planner, AgentProvider::Codex))
                 .unwrap()
                 .recorder(),
             RecorderRequirement::AgentGate

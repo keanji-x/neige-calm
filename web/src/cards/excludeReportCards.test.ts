@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { excludeReportCards } from './excludeReportCards';
 import type { TrackCardSlot } from '../types';
 import type { TerminalCardData } from './builtins/terminal';
-import type { SpecCardData } from './builtins/spec';
+import type { PlannerCardData } from './builtins/planner';
 import type { TrackReportCardData } from './builtins/track-report';
 
 function terminal(id: string): TrackCardSlot {
@@ -26,9 +26,9 @@ function report(id = 'report_1'): TrackCardSlot {
   return { kind: 'card', card, sort: -1, deletable: false };
 }
 
-function spec(id = 'spec_1'): TrackCardSlot {
-  const card: SpecCardData = {
-    type: 'spec',
+function planner(id = 'planner_1'): TrackCardSlot {
+  const card: PlannerCardData = {
+    type: 'planner',
     id,
     goal: 'Plan the work',
   };
@@ -52,8 +52,8 @@ describe('excludeReportCards', () => {
     expect(excludeReportCards([report()])).toEqual([]);
   });
 
-  it('excludes a spec card', () => {
-    expect(excludeReportCards([spec()])).toEqual([]);
+  it('excludes a planner card', () => {
+    expect(excludeReportCards([planner()])).toEqual([]);
   });
 
   it('preserves original indexes through a mixed card list', () => {
@@ -61,7 +61,7 @@ describe('excludeReportCards', () => {
       terminal('term_1'),
       report(),
       terminal('term_2'),
-      spec(),
+      planner(),
       terminal('term_3'),
     ];
 

@@ -54,7 +54,7 @@ describe('CardMetaViewer', () => {
         data={{
           id: 'card_1',
           kind: 'terminal',
-          role: 'spec',
+          role: 'planner',
           sort: 0,
           deletable: true,
           created_at: 0,
@@ -68,7 +68,7 @@ describe('CardMetaViewer', () => {
     expect(screen.getByText('Created -')).toBeInTheDocument();
     expect(screen.getByText('Updated -')).toBeInTheDocument();
     expect(screen.getByText('deletable: yes')).toBeInTheDocument();
-    expect(screen.getByText('spec')).toHaveClass('track-fs-viewer-chip');
+    expect(screen.getByText('planner')).toHaveClass('track-fs-viewer-chip');
   });
 
   it('throws when required fields are missing', () => {

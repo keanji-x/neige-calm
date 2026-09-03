@@ -107,7 +107,7 @@ it('shows the placeholder for a blank name and still opens an empty box', async 
 /*
  * #1211 — the two answers to "what does an empty commit mean", pinned as a
  * pair. `'cancel'` is the default and the area's; `'clear'` is the track's,
- * where the spec agent can take the name back once the title is empty.
+ * where the planner agent can take the name back once the title is empty.
  */
 it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
   const cancels = vi.fn();

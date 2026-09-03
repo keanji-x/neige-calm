@@ -23,7 +23,7 @@ use crate::worker::WorkerSessionState;
 pub enum CardRole {
     #[default]
     Worker,
-    Spec,
+    Planner,
     ReportCard,
     /// #1189 — a track-scoped assistant conversation. Reads/writes the
     /// track report through the block channel, runs shell in the track
@@ -36,7 +36,7 @@ impl CardRole {
     pub fn as_db_str(self) -> &'static str {
         match self {
             CardRole::Worker => "worker",
-            CardRole::Spec => "spec",
+            CardRole::Planner => "planner",
             CardRole::ReportCard => "reportcard",
             CardRole::Assistant => "assistant",
         }
@@ -49,7 +49,7 @@ impl TryFrom<String> for CardRole {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
             "worker" => Ok(CardRole::Worker),
-            "spec" => Ok(CardRole::Spec),
+            "planner" => Ok(CardRole::Planner),
             "reportcard" => Ok(CardRole::ReportCard),
             "assistant" => Ok(CardRole::Assistant),
             other => Err(format!("unknown cards.role value `{other}`")),
@@ -176,7 +176,7 @@ pub struct AreaResolve {
 /// Issue #145 — Track lifecycle state machine.
 ///
 /// One explicit state per track, advanced through a typed state machine
-/// (see `crate::track_lifecycle`). The Spec Agent drives the happy path
+/// (see `crate::track_lifecycle`). The Planner Agent drives the happy path
 /// (`draft → planning → dispatching → working → reviewing → done`);
 /// the user can cancel any non-terminal state and reopen terminals;
 /// worker cards have no authority to touch this field at all.
@@ -199,21 +199,21 @@ pub struct AreaResolve {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum TrackLifecycle {
     /// New track; user is editing goal/context and hasn't handed off to
-    /// the Spec Agent yet. **Default for every newly minted track.**
+    /// the Planner Agent yet. **Default for every newly minted track.**
     #[default]
     Draft,
-    /// Spec Agent is reading the goal + code context and producing a plan.
+    /// Planner Agent is reading the goal + code context and producing a plan.
     Planning,
-    /// Spec Agent has emitted one or more dispatch requests and the
+    /// Planner Agent has emitted one or more dispatch requests and the
     /// Dispatcher is spawning worker cards.
     Dispatching,
     /// At least one worker card is executing; the track has not reached
     /// review.
     Working,
-    /// Track needs human input, or a worker failed in a way the Spec
+    /// Track needs human input, or a worker failed in a way the Planner
     /// Agent cannot recover from autonomously.
     Blocked,
-    /// Workers have produced results; Spec Agent or the user is
+    /// Workers have produced results; Planner Agent or the user is
     /// validating them.
     Reviewing,
     /// Track goal achieved; results accepted. **Terminal.**
@@ -468,7 +468,7 @@ pub struct CardRuntimeView {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackConversationSummary {
     /// The assistant card's id. This is the conversation's identity everywhere,
-    /// and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+    /// and it is also the card the CARDS panel and `/api/cards/{id}/planner/*`
     /// address.
     pub id: String,
     /// The track this conversation lives on. Always the track in the request
@@ -555,7 +555,7 @@ pub struct Card {
     /// Issue #229 PR A — system-card guard. `true` for user-facing cards
     /// (the default; all pre-#229 rows backfill via the column DEFAULT in
     /// migration 0013). `false` for kernel-owned cards that the user
-    /// cannot remove via REST / plugin callbacks — currently spec cards
+    /// cannot remove via REST / plugin callbacks — currently planner cards
     /// (retroactively undeletable via the same migration's UPDATE) and
     /// PR B's track-report cards.
     ///
@@ -630,7 +630,7 @@ mod card_role_tests {
         // silently desync code-vs-DB.
         for (role, json) in [
             (CardRole::Worker, "\"worker\""),
-            (CardRole::Spec, "\"spec\""),
+            (CardRole::Planner, "\"planner\""),
             // Issue #229 PR A — track-report card role. Lowercase, no
             // hyphen, matches the existing variant style. Migration
             // 0013's partial unique index hardcodes the same literal.
@@ -654,7 +654,7 @@ mod card_role_tests {
         // derive the enum carried in calm-server. Pin the DB string to the
         // serde wire string so the storage shape can't silently drift from
         // the wire shape (#679 PR1).
-        for role in [CardRole::Worker, CardRole::Spec, CardRole::ReportCard] {
+        for role in [CardRole::Worker, CardRole::Planner, CardRole::ReportCard] {
             let wire = serde_json::to_string(&role).expect("serialize");
             assert_eq!(format!("\"{}\"", role.as_db_str()), wire);
             let back = CardRole::try_from(role.as_db_str().to_string()).expect("decode");

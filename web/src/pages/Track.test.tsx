@@ -594,7 +594,7 @@ describe('TrackPage report view mode', () => {
 
     expect(
       await screen.findByText(
-        'Report not ready. The spec agent has not produced a report yet.',
+        'Report not ready. The planner agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -619,7 +619,7 @@ describe('TrackPage report view mode', () => {
 
     expect(
       screen.getByText(
-        'Report not ready. The spec agent has not produced a report yet.',
+        'Report not ready. The planner agent has not produced a report yet.',
       ),
     ).toBeInTheDocument();
     expect(

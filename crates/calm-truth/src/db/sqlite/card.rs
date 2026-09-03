@@ -54,7 +54,7 @@ pub async fn card_create_with_id_tx(
     // callers cover the policy:
     //   * `card_create_tx`              → `true`  (user-facing Worker cards)
     //   * dispatcher worker terminals    → `true`  (workers are user-facing)
-    //   * `card_with_codex_create_tx`    → caller decides (`false` for spec)
+    //   * `card_with_codex_create_tx`    → caller decides (`false` for planner)
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
@@ -107,7 +107,7 @@ pub async fn card_create_with_id_tx(
     let title = p.title.filter(|t| !t.trim().is_empty());
     // `role` lands in the `cards.role` column added by migration 0008
     // (PR3, #136). User-facing card creation now uniformly passes
-    // `CardRole::Worker`; track-create passes `CardRole::Spec`.
+    // `CardRole::Worker`; track-create passes `CardRole::Planner`.
     //
     // `deletable` lands in the column added by migration 0013 (#229 PR A).
     // SQLite has no native bool; we encode as `1` / `0`, matching the
@@ -160,7 +160,7 @@ pub async fn card_create_tx(
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
     // User-facing Worker cards are user-deletable by default — the user
-    // added them via REST and can remove them the same way. Spec / report
+    // added them via REST and can remove them the same way. Planner / report
     // cards take the explicit `false` route via
     // `card_with_codex_create_tx`.
     card_create_with_id_tx(tx, new_id(), p, CardRole::Worker, true, card_role_cache).await

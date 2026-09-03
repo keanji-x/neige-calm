@@ -46,7 +46,7 @@ const track: Track = {
  *  the jsdom class assertion uses, so the two tests are about one row set. */
 const TASKS: readonly ReportTaskRow[] = [
   {
-    blockId: 'b-gone', key: 'gamma-spec', state: 'withdrawn', declaration: 'Withdrawn',
+    blockId: 'b-gone', key: 'gamma-planner', state: 'withdrawn', declaration: 'Withdrawn',
     status: null, statusDetail: null, kind: null, workerCardId: null,
   },
   {

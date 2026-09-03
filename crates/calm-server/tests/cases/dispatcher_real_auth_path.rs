@@ -18,7 +18,7 @@
 //! Composition under test, exercised in ONE flow:
 //!
 //!   1. Area → track → codex card seeded. The track-create route
-//!      mints a spec card with `CardRole::Spec`; we add a second
+//!      mints a planner card with `CardRole::Planner`; we add a second
 //!      `kind: 'codex'` card via the route surface to get a worker-
 //!      adjacent `CardRole::Worker` row whose `card_id` is valid for
 //!      the `/internal/codex/hook` ingest.
@@ -45,7 +45,7 @@
 //!      denies the typed `AiCodex(CardId)` actor it can't look up).
 //!
 //! The `CardRole` cache write-through invariant is verified
-//! transitively: step 1's track-create has to put the spec card
+//! transitively: step 1's track-create has to put the planner card
 //! into the cache for the dispatcher / role gate to see it; step 2's
 //! success and step 4's failure both depend on that cache being
 //! seeded correctly.
@@ -128,7 +128,7 @@ async fn boot() -> Boot {
         )),
         {
             // Deterministically-broken codex bin (absolute, absent) so the
-            // spec-push app-server boot fails fast regardless of PATH. Track
+            // planner-push app-server boot fails fast regardless of PATH. Track
             // create tolerates this (#293 / PR #311) and returns 201.
             let mut codex = CodexClient::new_stub();
             codex.codex_bin = "/nonexistent-codex-bin-dispatcher-real-auth".into();
@@ -190,8 +190,8 @@ async fn event_count(repo: &SqlxRepo) -> i64 {
 async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     let boot = boot().await;
 
-    // ---- 1. Track create through the route → spec card lands with
-    //         CardRole::Spec, role cache reflects it.
+    // ---- 1. Track create through the route → planner card lands with
+    //         CardRole::Planner, role cache reflects it.
     let (status, _track_body) = post_with_actor(
         boot.app.clone(),
         "/api/tracks",
@@ -202,7 +202,7 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     assert_eq!(
         status,
         StatusCode::CREATED,
-        "track create returns 201 even when the spec app-server boot fails (issue #293 / PR #311 — boot is non-fatal); spec card + role-cache write-through still happen pre-boot so the assertions below still hold",
+        "track create returns 201 even when the planner app-server boot fails (issue #293 / PR #311 — boot is non-fatal); planner card + role-cache write-through still happen pre-boot so the assertions below still hold",
     );
 
     let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
@@ -210,22 +210,22 @@ async fn dispatcher_real_auth_path_cardrole_eventscope_semantics() {
     let track = tracks.into_iter().next().unwrap();
     let cards_after_track = boot.repo.cards_by_track(track.id.as_str()).await.unwrap();
     // Issue #229 PR B — track create now mints two kernel-owned cards
-    // (spec + track-report). Find the spec card by kind.
+    // (planner + track-report). Find the planner card by kind.
     assert_eq!(
         cards_after_track.len(),
         2,
-        "track create mints spec + track-report cards",
+        "track create mints planner + track-report cards",
     );
-    let spec_card_id = cards_after_track
+    let planner_card_id = cards_after_track
         .iter()
         .find(|c| c.kind == "codex")
-        .expect("spec card present")
+        .expect("planner card present")
         .id
         .clone();
     assert_eq!(
-        boot.card_role_cache.get(&spec_card_id),
-        Some(CardRole::Spec),
-        "spec card's role lives in the cache after track create",
+        boot.card_role_cache.get(&planner_card_id),
+        Some(CardRole::Planner),
+        "planner card's role lives in the cache after track create",
     );
 
     // Seed a worker `kind: 'codex'` card so we have a card_id the codex

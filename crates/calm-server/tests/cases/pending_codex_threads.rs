@@ -387,7 +387,7 @@ async fn bind_entry_clears_terminal_run_id() {
         &repo,
         &track_id,
         "term-bind-clear",
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
     )
     .await;
     let runtime_id = repo
@@ -453,7 +453,7 @@ async fn on_thread_started_drops_entry_when_registered_runtime_inactive() {
         &repo,
         &track_id,
         "term-missing",
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
     )
     .await;
     registry
@@ -484,7 +484,7 @@ async fn on_thread_started_drops_registered_runtime_even_if_runtime_reappears() 
         &repo,
         &track_id,
         "term-retry",
-        WorkerSessionKind::SharedSpec,
+        WorkerSessionKind::SharedPlanner,
     )
     .await;
     registry
@@ -495,8 +495,13 @@ async fn on_thread_started_drops_registered_runtime_even_if_runtime_reappears() 
         .await
         .unwrap();
 
-    let runtime_id =
-        start_runtime_for_card(&repo, &card_id, "term-retry", WorkerSessionKind::SharedSpec).await;
+    let runtime_id = start_runtime_for_card(
+        &repo,
+        &card_id,
+        "term-retry",
+        WorkerSessionKind::SharedPlanner,
+    )
+    .await;
 
     assert_eq!(registry.on_thread_started("T-retry").await.unwrap(), None);
     assert_eq!(registry.pending_count().await, 0);

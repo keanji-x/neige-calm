@@ -142,11 +142,11 @@ impl CardKindHandler for TrackReportCardHandler {
     }
 }
 
-pub struct SpecCardHandler;
+pub struct PlannerCardHandler;
 
-impl CardKindHandler for SpecCardHandler {
+impl CardKindHandler for PlannerCardHandler {
     fn kind_id(&self) -> &'static str {
-        "spec"
+        "planner"
     }
 
     fn create_mode(&self) -> CardCreateMode {

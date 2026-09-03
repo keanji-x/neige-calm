@@ -5,11 +5,11 @@ use crate::support;
 use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{
-    boot_shared_daemon_with_spec_thread, boot_with_role, connect, handshake, handshake_daemon,
+    boot_shared_daemon_with_planner_thread, boot_with_role, connect, handshake, handshake_daemon,
     recv_frame, send_frame, tools_list_frame,
 };
 
-fn expected_spec_toolset() -> Vec<&'static str> {
+fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
         "calm.area.outline",
         "calm.plan.cancel",
@@ -25,7 +25,7 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.report.write_markdown",
         "calm.review.round",
         "calm.task.verdict",
-        // #1211 S3 — the spec agent's naming write. Added as an entry, not by
+        // #1211 S3 — the planner agent's naming write. Added as an entry, not by
         // loosening the assertion: the exact set is the contract.
         "calm.track.rename",
     ]
@@ -71,14 +71,14 @@ async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn tools_list_for_spec_role_returns_spec_toolset() {
-    let names = tools_list_names_for_role(CardRole::Spec).await;
-    assert_eq!(names, expected_spec_toolset());
+async fn tools_list_for_planner_role_returns_planner_toolset() {
+    let names = tools_list_names_for_role(CardRole::Planner).await;
+    assert_eq!(names, expected_planner_toolset());
 }
 
 #[tokio::test]
-async fn tools_list_for_spec_role_does_not_leak_aliases() {
-    let names = tools_list_names_for_role(CardRole::Spec).await;
+async fn tools_list_for_planner_role_does_not_leak_aliases() {
+    let names = tools_list_names_for_role(CardRole::Planner).await;
     for hidden_name in [
         "calm.dispatch_request",
         "calm.task.dispatch",
@@ -119,7 +119,7 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
 }
 
 /// #1189 F6 — the `visible_to_roles` widening on the block channel had no
-/// test of its own (Spec / Worker / ReportCard each have an exact-set
+/// test of its own (Planner / Worker / ReportCard each have an exact-set
 /// assertion; Assistant did not). Exact set, not `contains`: a future
 /// descriptor that quietly adds `CardRole::Assistant` — say
 /// `calm.report.write`, whose whole point is that it can carry lifecycle —
@@ -153,7 +153,7 @@ async fn tools_list_for_report_card_role_is_empty() {
 
 #[tokio::test]
 async fn tools_list_for_shared_daemon_resolves_thread_role() {
-    let boot = boot_shared_daemon_with_spec_thread().await;
+    let boot = boot_shared_daemon_with_planner_thread().await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     let daemon_token = boot.daemon_token.as_deref().expect("daemon token");
     handshake_daemon(&mut rd, &mut wr, daemon_token).await;
@@ -162,13 +162,13 @@ async fn tools_list_for_shared_daemon_resolves_thread_role() {
     let resp = recv_frame(&mut rd).await;
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
     let names = tool_names_from_response(&resp);
-    assert_eq!(names, expected_spec_toolset());
+    assert_eq!(names, expected_planner_toolset());
     let _ = (&boot.server, &boot.repo);
 }
 
 #[tokio::test]
 async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
-    let boot = boot_shared_daemon_with_spec_thread().await;
+    let boot = boot_shared_daemon_with_planner_thread().await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     let daemon_token = boot.daemon_token.as_deref().expect("daemon token");
     handshake_daemon(&mut rd, &mut wr, daemon_token).await;

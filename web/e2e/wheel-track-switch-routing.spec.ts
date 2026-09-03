@@ -50,7 +50,7 @@ async function createTrack(
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This spec is about wheel routing, not working directories. See
+      // This planner is about wheel routing, not working directories. See
       // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-wheel-routing-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },

@@ -54,7 +54,7 @@ pub const API_VERSION: &str = "3";
 /// and gates its event stream on `cove.updated` / `cove.deleted` discriminators
 /// that migration 0080 rewrote. Any one of those alone would justify the bump;
 /// together they would produce a bundle that renders an empty, silent shell.
-pub const WEB_COMPAT_VERSION: u32 = 20;
+pub const WEB_COMPAT_VERSION: u32 = 21;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

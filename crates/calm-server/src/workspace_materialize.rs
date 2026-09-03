@@ -107,7 +107,7 @@ pub fn managed_workspace_path(workspace_root: &Path, area_id: &str, track_id: &s
 /// Short, stable digest of a workspace path, for use inside an idempotency key
 /// (#1147 S2 red-team B1, extended to child-track bootstraps in S4).
 ///
-/// Both call sites submit a `spec-harness-start` payload that contains a `cwd`.
+/// Both call sites submit a `planner-harness-start` payload that contains a `cwd`.
 /// The operation runtime treats "same idempotency key, different payload hash"
 /// as a permanent conflict, and operation rows are never deleted — so a key
 /// that does not name the path turns any re-point of that path into a

@@ -12,7 +12,7 @@
 //! ## What the gate enforces
 //!
 //! 1. **Empty-CardId guard.** `ActorId::AiCodex(CardId(""))`,
-//!    `ActorId::AiClaude(CardId(""))`, and `ActorId::AiSpec(CardId(""))`
+//!    `ActorId::AiClaude(CardId(""))`, and `ActorId::AiPlanner(CardId(""))`
 //!    are rejected outright. This catches
 //!    the PR2 stopgap path in `crate::actor::Actor::to_actor_id` where
 //!    the `X-Calm-Actor: ai:codex` header has no card context to attach.
@@ -20,9 +20,9 @@
 //!    `routes::codex::ingest_hook`), so this branch ends up firing only
 //!    when something else regresses — fail loud, not silent.
 //!
-//! 2. **`Event::TrackUpdated` is gated to spec cards.** The actor must be
-//!    `User`, `Kernel`, or `AiSpec(card_id)` where the cache confirms
-//!    `CardRole::Spec`. Any `AiCodex` / `AiClaude` actor — even one bound
+//! 2. **`Event::TrackUpdated` is gated to planner cards.** The actor must be
+//!    `User`, `Kernel`, or `AiPlanner(card_id)` where the cache confirms
+//!    `CardRole::Planner`. Any `AiCodex` / `AiClaude` actor — even one bound
 //!    to a card — is rejected: worker cards must not edit track-level state.
 //!
 //! 3. **Worker/ReportCard self-scope check.** When an
@@ -35,10 +35,10 @@
 //!    to emit a `Track` or `Area` scope event — or a Card scope with a
 //!    spoofed `track` or `area` — is refused.
 //!
-//! 4. **Dispatch-request events are gated to spec cards.** Issue #583.
+//! 4. **Dispatch-request events are gated to planner cards.** Issue #583.
 //!    `Event::CodexWorkerRequested` and `Event::TerminalWorkerRequested` are
 //!    refused for any `AiCodex` / `AiClaude` actor, mirroring the
-//!    `TrackUpdated` rule. Spec card (`AiSpec`) with cached role `Spec`
+//!    `TrackUpdated` rule. Planner card (`AiPlanner`) with cached role `Planner`
 //!    passes; User / Kernel / KernelDispatcher / Plugin keep their
 //!    unrestricted access for forward compatibility (no current emitter
 //!    in those families).
@@ -69,7 +69,9 @@ use thiserror::Error;
 /// without parsing a free-form string.
 #[derive(Debug, Error)]
 pub enum RoleViolation {
-    #[error("AiCodex/AiClaude/AiSpec actor has empty card id (likely from legacy AI header path)")]
+    #[error(
+        "AiCodex/AiClaude/AiPlanner actor has empty card id (likely from legacy AI header path)"
+    )]
     EmptyAiCardId,
 
     /// A session-keyed actor reached the sync gate; session→authority
@@ -99,18 +101,18 @@ pub enum RoleViolation {
     SessionResolutionError { session: WorkerSessionId },
 
     #[error(
-        "session {session} claims spec authority but its resolved card {card} is not Spec-roled (or unknown); denied fail-closed (#770)."
+        "session {session} claims planner authority but its resolved card {card} is not Planner-roled (or unknown); denied fail-closed (#770)."
     )]
-    SessionSpecRoleMismatch {
+    SessionPlannerRoleMismatch {
         session: WorkerSessionId,
         card: CardId,
     },
 
-    #[error("only spec cards (or User/Kernel) may emit track.updated (actor={actor})")]
-    NotSpecForTrack { actor: String },
+    #[error("only planner cards (or User/Kernel) may emit track.updated (actor={actor})")]
+    NotPlannerForTrack { actor: String },
 
-    #[error("only spec cards (or User/Kernel) may emit dispatch-request events (actor={actor})")]
-    NotSpecForDispatch { actor: String },
+    #[error("only planner cards (or User/Kernel) may emit dispatch-request events (actor={actor})")]
+    NotPlannerForDispatch { actor: String },
 
     #[error(
         "task.dispatched is a kernel-only scheduler record; no card-derived actor may emit it (actor={actor})"
@@ -132,8 +134,8 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskGateResult { actor: String },
 
-    #[error("only spec cards may emit review/ratify request events (actor={actor})")]
-    NotSpecForReviewRatify { actor: String },
+    #[error("only planner cards may emit review/ratify request events (actor={actor})")]
+    NotPlannerForReviewRatify { actor: String },
 
     #[error("only User may emit ratify.resolved (actor={actor})")]
     NotUserForRatifyResolved { actor: String },
@@ -196,21 +198,21 @@ pub fn enforce_role(
     // empty CardId against any real card — that would be a
     // gate-bypass. We reject loud and let the call site (the codex
     // bridge ingest in routes/codex.rs) attribute a real card.
-    if let ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiSpec(c) = actor
+    if let ActorId::AiCodex(c) | ActorId::AiClaude(c) | ActorId::AiPlanner(c) = actor
         && c.as_str().is_empty()
     {
         return Err(RoleViolation::EmptyAiCardId);
     }
-    if let ActorId::AiSpecSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
+    if let ActorId::AiPlannerSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
         actor
         && s.as_str().is_empty()
     {
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
-    // --- (2) `TrackUpdated` is spec-only. ---
+    // --- (2) `TrackUpdated` is planner-only. ---
     //
-    // The track-level authority decision: only the spec card (PR6) is
+    // The track-level authority decision: only the planner card (PR6) is
     // allowed to update the track row. User + Kernel keep their
     // unrestricted authority (the user is *the* authority; Kernel is
     // the FSM projector / sweeper / plugin dispatcher, which writes
@@ -227,25 +229,25 @@ pub fn enforce_role(
                 // which is server-internal). If PR4+ tightens this,
                 // it lands here.
             }
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 let role = cache.get(card_id);
-                if role != Some(CardRole::Spec) {
-                    return Err(RoleViolation::NotSpecForTrack {
-                        actor: format!("AiSpec({card_id})"),
+                if role != Some(CardRole::Planner) {
+                    return Err(RoleViolation::NotPlannerForTrack {
+                        actor: format!("AiPlanner({card_id})"),
                     });
                 }
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
                 // Even an AI worker actor whose card happens to be
-                // `Spec`-roled (impossible in PR3 — spec cards are
-                // bound to `AiSpec`) is rejected here. The actor
+                // `Planner`-roled (impossible in PR3 — planner cards are
+                // bound to `AiPlanner`) is rejected here. The actor
                 // variant is the wire-level claim; the gate sticks
                 // to it rather than re-binding via the cache.
-                return Err(RoleViolation::NotSpecForTrack {
+                return Err(RoleViolation::NotPlannerForTrack {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -255,9 +257,9 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.5) Dispatch-request + plan-revision events are spec-only. ---
+    // --- (2.5) Dispatch-request + plan-revision events are planner-only. ---
     //
-    // Issue #583. `calm.task.dispatch` is gated to Spec at the MCP
+    // Issue #583. `calm.task.dispatch` is gated to Planner at the MCP
     // soft gate (`emit.rs::dispatch_request`), but the in-tx gate must
     // also refuse worker AI actors from emitting these events to provide
     // real kernel-level defense-in-depth — otherwise an internal caller
@@ -278,20 +280,20 @@ pub fn enforce_role(
         match actor {
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
             ActorId::Plugin(_) => {}
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 let role = cache.get(card_id);
-                if role != Some(CardRole::Spec) {
-                    return Err(RoleViolation::NotSpecForDispatch {
-                        actor: format!("AiSpec({card_id})"),
+                if role != Some(CardRole::Planner) {
+                    return Err(RoleViolation::NotPlannerForDispatch {
+                        actor: format!("AiPlanner({card_id})"),
                     });
                 }
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
-                return Err(RoleViolation::NotSpecForDispatch {
+                return Err(RoleViolation::NotPlannerForDispatch {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -306,10 +308,10 @@ pub fn enforce_role(
     // Issue #644 PR-B. The scheduler appends `Event::TaskDispatched`
     // inside its claim tx as the projection's dispatch record (§5.6).
     // It is a *kernel observation* of plan execution, not a card
-    // authority: a spec forging it could fabricate "the kernel claimed
+    // authority: a planner forging it could fabricate "the kernel claimed
     // this task" records that desynchronize the runs projection from
     // the tasks table, and a worker forging it is the #583 recursive
-    // hole again. Every card-derived actor (AiSpec included) AND
+    // hole again. Every card-derived actor (AiPlanner included) AND
     // plugins are refused — unlike sections (2)/(2.5), a plugin has no
     // business writing the scheduler's claim record, so this gate is
     // narrower: only User / Kernel / KernelDispatcher pass.
@@ -321,9 +323,9 @@ pub fn enforce_role(
                     actor: format!("Plugin({name})"),
                 });
             }
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
-                    actor: format!("AiSpec({card_id})"),
+                    actor: format!("AiPlanner({card_id})"),
                 });
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
@@ -331,7 +333,7 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -358,9 +360,9 @@ pub fn enforce_role(
                     actor: format!("Plugin({name})"),
                 });
             }
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextFrozen {
-                    actor: format!("AiSpec({card_id})"),
+                    actor: format!("AiPlanner({card_id})"),
                 });
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
@@ -368,7 +370,7 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -391,9 +393,9 @@ pub fn enforce_role(
                     actor: format!("Plugin({name})"),
                 });
             }
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextAdvanced {
-                    actor: format!("AiSpec({card_id})"),
+                    actor: format!("AiPlanner({card_id})"),
                 });
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
@@ -401,7 +403,7 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -417,7 +419,7 @@ pub fn enforce_role(
     // in the same tx as the `verifying → done|failed` tasks-row flip.
     // It is the kernel's *machine verdict* for a verification gate — a
     // card forging it could fabricate "the gate passed" evidence that
-    // the spec (and the lifecycle promotion) treats as ground truth.
+    // the planner (and the lifecycle promotion) treats as ground truth.
     // Same narrow gate as (2.6): only User / Kernel / KernelDispatcher
     // pass; every card-derived actor AND plugins are refused.
     if matches!(event, Event::TaskGateResult { .. }) {
@@ -428,9 +430,9 @@ pub fn enforce_role(
                     actor: format!("Plugin({name})"),
                 });
             }
-            ActorId::AiSpec(card_id) => {
+            ActorId::AiPlanner(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskGateResult {
-                    actor: format!("AiSpec({card_id})"),
+                    actor: format!("AiPlanner({card_id})"),
                 });
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
@@ -438,7 +440,7 @@ pub fn enforce_role(
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
-            ActorId::AiSpecSession(session)
+            ActorId::AiPlannerSession(session)
             | ActorId::AiCodexSession(session)
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
@@ -448,27 +450,27 @@ pub fn enforce_role(
         }
     }
 
-    // --- (2.8) `review.round` + `ratify.requested` are spec-only. ---
+    // --- (2.8) `review.round` + `ratify.requested` are planner-only. ---
     //
-    // Issue #760 slice 5b. These are policy records authored by the spec
+    // Issue #760 slice 5b. These are policy records authored by the planner
     // agent after it has correlated reviewer channels or decided a human
     // ratify gate is needed. Unlike the older track-write/dispatch arms,
-    // User/Kernel/Plugin do NOT pass here: letting any non-spec actor forge
+    // User/Kernel/Plugin do NOT pass here: letting any non-planner actor forge
     // `converged=true` or a ratify request would bypass the review protocol.
     if matches!(
         event,
         Event::ReviewRound { .. } | Event::RatifyRequested { .. }
     ) {
         match actor {
-            ActorId::AiSpec(card_id) => {
-                if cache.get(card_id) != Some(CardRole::Spec) {
-                    return Err(RoleViolation::NotSpecForReviewRatify {
+            ActorId::AiPlanner(card_id) => {
+                if cache.get(card_id) != Some(CardRole::Planner) {
+                    return Err(RoleViolation::NotPlannerForReviewRatify {
                         actor: actor.to_string(),
                     });
                 }
             }
             _ => {
-                return Err(RoleViolation::NotSpecForReviewRatify {
+                return Err(RoleViolation::NotPlannerForReviewRatify {
                     actor: actor.to_string(),
                 });
             }
@@ -478,7 +480,7 @@ pub fn enforce_role(
     // --- (2.9) `ratify.resolved` is User-only. ---
     //
     // The grant/deny decision is the human half of the ratify gate. It must
-    // not be forgeable by the spec, workers, plugins, or the kernel, or an
+    // not be forgeable by the planner, workers, plugins, or the kernel, or an
     // AI actor could self-approve the pause.
     if matches!(event, Event::RatifyResolved { .. }) {
         match actor {
@@ -499,7 +501,7 @@ pub fn enforce_role(
     // the envelope actor's plugin id. The gate is a pure function over
     // `(actor, event, scope)`, so this field comparison IS the in-tx
     // hard clause; the connection-injection itself happens upstream.
-    // Every other actor family (User, Kernel, spec, workers, sessions)
+    // Every other actor family (User, Kernel, planner, workers, sessions)
     // is refused — a proposal forged by anything but the named plugin
     // would corrupt the channel's attribution invariant (§5.3).
     if let Event::ProposalSubmitted { plugin_id, .. } = event {
@@ -520,7 +522,7 @@ pub fn enforce_role(
     //   * `accepted` / `rejected` / `stale` are the human half of the
     //     adjudication (stale is the accept attempt whose in-tx
     //     anchoring checks failed — still user-triggered). User-only:
-    //     a plugin, spec, or the kernel must never self-approve.
+    //     a plugin, planner, or the kernel must never self-approve.
     //   * `withdrawn` is the submitting plugin reclaiming its own
     //     pending slot — `ActorId::Plugin(id)` with `id` equal to the
     //     payload's submitter `plugin_id`, nothing else. The
@@ -576,7 +578,7 @@ pub fn enforce_role(
     //     one level up). Area is immutable per track so the lookup is
     //     stable for the card's lifetime.
     //
-    if let ActorId::AiSpecSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
+    if let ActorId::AiPlannerSession(s) | ActorId::AiCodexSession(s) | ActorId::AiClaudeSession(s) =
         actor
     {
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
@@ -594,29 +596,29 @@ pub fn enforce_role(
             }
             // Lifecycle carveout — hook bridges run as subprocesses of
             // their worker regardless of the card's role, and the REST
-            // spec-input route may receive the legacy `ai:codex` header
-            // before route context rebinds it to the spec card. These
+            // planner-input route may receive the legacy `ai:codex` header
+            // before route context rebinds it to the planner card. These
             // events are pure card-scoped observations, *not* track-level
             // authority claims, so we accept them from an AI-worker
-            // spec-card actor as long as the scope matches the card's own
+            // planner-card actor as long as the scope matches the card's own
             // home (card_id + track + area cached values — same shape as
             // the Worker arm). Anything else from that actor is still
-            // refused; write authority for spec-roled cards lives with
-            // `AiSpec`. Note that `Event::TrackUpdated` is already gated
+            // refused; write authority for planner-roled cards lives with
+            // `AiPlanner`. Note that `Event::TrackUpdated` is already gated
             // in section (2) above and unconditionally refuses any AI
             // worker actor, so this carveout cannot regress the
             // track-authority invariant.
-            Some(CardRole::Spec) if is_own_worker_lifecycle_event(actor, event) => {
+            Some(CardRole::Planner) if is_own_worker_lifecycle_event(actor, event) => {
                 enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
-            // PR3 invariant: spec cards are bound to AiSpec, not an AI
+            // PR3 invariant: planner cards are bound to AiPlanner, not an AI
             // worker actor. Anything other than the hook carveout above
             // (which is a stateless bridge ingest path) from a
-            // worker-variant spec-card actor is rejected.
-            Some(CardRole::Spec) => {
-                return Err(RoleViolation::NotSpecForTrack {
+            // worker-variant planner-card actor is rejected.
+            Some(CardRole::Planner) => {
+                return Err(RoleViolation::NotPlannerForTrack {
                     actor: format!(
-                        "{} — card is Spec-roled but actor variant is not AiSpec",
+                        "{} — card is Planner-roled but actor variant is not AiPlanner",
                         ai_worker_actor_label(actor, card_id),
                     ),
                 });
@@ -650,8 +652,8 @@ pub fn enforce_role(
 /// Cross-check that `scope` describes the card's own home — `card`
 /// matches, `track` matches the cached home track, `area` matches the
 /// home track's persisted area. Shared between the Worker and ReportCard
-/// arms (which use it for *every* event) and the Spec arm's `CodexHook`
-/// carveout (bug A — the codex bridge ingest path for a spec card).
+/// arms (which use it for *every* event) and the Planner arm's `CodexHook`
+/// carveout (bug A — the codex bridge ingest path for a planner card).
 ///
 /// Returns `Err(RoleViolation::WorkerOutOfScope)` on any mismatch. The
 /// variant name is historical (the check originated in the Worker
@@ -903,13 +905,13 @@ mod tests {
     }
 
     #[test]
-    fn ai_spec_with_spec_role_can_update_track() {
+    fn ai_planner_with_planner_role_can_update_track() {
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
-        let spec_id = CardId::from("spec-1");
-        cache.insert(spec_id.clone(), CardRole::Spec, TrackId::from("w"));
+        let planner_id = CardId::from("planner-1");
+        cache.insert(planner_id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
-            &ActorId::AiSpec(spec_id),
+            &ActorId::AiPlanner(planner_id),
             &track_updated(),
             &track_scope("w", "c"),
             &cache,
@@ -917,26 +919,26 @@ mod tests {
         );
         assert!(
             res.is_ok(),
-            "AiSpec(spec-card) should update track: {res:?}"
+            "AiPlanner(planner-card) should update track: {res:?}"
         );
     }
 
     #[test]
-    fn ai_spec_without_spec_role_cannot_update_track() {
-        // An AiSpec actor whose cached role is `Worker` (mismatch
+    fn ai_planner_without_planner_role_cannot_update_track() {
+        // An AiPlanner actor whose cached role is `Worker` (mismatch
         // between wire claim + persisted truth) is denied.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let id = CardId::from("c1");
         cache.insert(id.clone(), CardRole::Worker, TrackId::from("w"));
         let res = enforce_role(
-            &ActorId::AiSpec(id),
+            &ActorId::AiPlanner(id),
             &track_updated(),
             &track_scope("w", "c"),
             &cache,
             &wcc,
         );
-        assert!(matches!(res, Err(RoleViolation::NotSpecForTrack { .. })));
+        assert!(matches!(res, Err(RoleViolation::NotPlannerForTrack { .. })));
     }
 
     #[test]
@@ -953,24 +955,24 @@ mod tests {
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
+            matches!(res, Err(RoleViolation::NotPlannerForTrack { .. })),
             "AiCodex must never emit track.updated regardless of role: {res:?}",
         );
     }
 
     /// Belt-and-suspenders companion to the Worker test above: the
-    /// CodexHook carveout added for spec cards must not let `TrackUpdated`
-    /// through. Section 2 (`TrackUpdated` is spec-only via `AiSpec`) runs
-    /// before section 3's `Some(CardRole::Spec) if CodexHook` arm, so
+    /// CodexHook carveout added for planner cards must not let `TrackUpdated`
+    /// through. Section 2 (`TrackUpdated` is planner-only via `AiPlanner`) runs
+    /// before section 3's `Some(CardRole::Planner) if CodexHook` arm, so
     /// the invariant is structural — this test pins it explicitly so a
     /// future refactor that reorders the sections can't silently regress
     /// it.
     #[test]
-    fn spec_codex_cannot_update_track() {
+    fn planner_codex_cannot_update_track() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id),
             &track_updated(),
@@ -979,8 +981,8 @@ mod tests {
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
-            "AiCodex(spec_card) must still be refused on track.updated even after the CodexHook carveout: {res:?}",
+            matches!(res, Err(RoleViolation::NotPlannerForTrack { .. })),
+            "AiCodex(planner_card) must still be refused on track.updated even after the CodexHook carveout: {res:?}",
         );
     }
 
@@ -1122,7 +1124,7 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let res = enforce_role(
-            &ActorId::AiSpec(CardId::from("")),
+            &ActorId::AiPlanner(CardId::from("")),
             &area_updated(),
             &EventScope::System,
             &cache,
@@ -1179,18 +1181,18 @@ mod tests {
     }
 
     #[test]
-    fn spec_codex_hook_in_own_scope_ok() {
+    fn planner_codex_hook_in_own_scope_ok() {
         // Bug A regression unit. The codex bridge runs as a subprocess
-        // of codex regardless of the card's role; for a spec card, the
+        // of codex regardless of the card's role; for a planner card, the
         // bridge still surfaces hook events through the
-        // `AiCodex(spec_card)` actor. The gate accepts `Event::CodexHook`
+        // `AiCodex(planner_card)` actor. The gate accepts `Event::CodexHook`
         // from that actor as a pure lifecycle observation, scoped to the
         // card's own home (card_id + track + area). Mirror of
-        // `worker_in_card_scope_ok` for the Spec arm.
+        // `worker_in_card_scope_ok` for the Planner arm.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_hook(id.as_str()),
@@ -1200,16 +1202,16 @@ mod tests {
         );
         assert!(
             res.is_ok(),
-            "AiCodex(spec) CodexHook in own card scope should be accepted: {res:?}",
+            "AiCodex(planner) CodexHook in own card scope should be accepted: {res:?}",
         );
     }
 
     #[test]
-    fn spec_codex_harness_user_message_in_own_scope_ok() {
+    fn planner_codex_harness_user_message_in_own_scope_ok() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &harness_user_message_enqueued(id.as_str(), "w"),
@@ -1219,22 +1221,22 @@ mod tests {
         );
         assert!(
             res.is_ok(),
-            "AiCodex(spec) HarnessUserMessageEnqueued in own card scope should be accepted: {res:?}",
+            "AiCodex(planner) HarnessUserMessageEnqueued in own card scope should be accepted: {res:?}",
         );
     }
 
     #[test]
-    fn spec_codex_non_hook_event_still_rejected() {
-        // The Spec-arm carveout is intentionally limited to pure
+    fn planner_codex_non_hook_event_still_rejected() {
+        // The Planner-arm carveout is intentionally limited to pure
         // lifecycle observations. Anything else from
-        // `AiCodex(spec_card)` is still refused — write authority for
-        // spec-roled cards lives with `AiSpec`, not `AiCodex`.
+        // `AiCodex(planner_card)` is still refused — write authority for
+        // planner-roled cards lives with `AiPlanner`, not `AiCodex`.
         // AreaUpdated chosen because it's outside that lifecycle set and
         // is not a track-updated event variant.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &area_updated(),
@@ -1243,22 +1245,22 @@ mod tests {
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
-            "AiCodex(spec) non-hook event must still be refused: {res:?}",
+            matches!(res, Err(RoleViolation::NotPlannerForTrack { .. })),
+            "AiCodex(planner) non-hook event must still be refused: {res:?}",
         );
     }
 
     #[test]
-    fn spec_codex_hook_out_of_scope_rejected() {
+    fn planner_codex_hook_out_of_scope_rejected() {
         // The carveout reuses the same scope cross-check as the Worker
-        // arm — an `AiCodex(spec_card)` CodexHook with a forged track id
+        // arm — an `AiCodex(planner_card)` CodexHook with a forged track id
         // is still refused. This pins that the new helper is wired into
-        // the Spec arm, not just nominally accepted.
+        // the Planner arm, not just nominally accepted.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         wcc.insert(TrackId::from("home-track"), AreaId::from("c"));
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("home-track"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("home-track"));
         let res = enforce_role(
             &ActorId::AiCodex(id.clone()),
             &codex_hook(id.as_str()),
@@ -1274,7 +1276,7 @@ mod tests {
                 Err(RoleViolation::WorkerOutOfScope { ref scope, .. })
                     if scope.contains("scope.track mismatch")
             ),
-            "AiCodex(spec) CodexHook with forged scope.track must be refused: {res:?}",
+            "AiCodex(planner) CodexHook with forged scope.track must be refused: {res:?}",
         );
     }
 
@@ -1292,7 +1294,7 @@ mod tests {
             &wcc,
         );
         assert!(
-            matches!(res, Err(RoleViolation::NotSpecForTrack { .. })),
+            matches!(res, Err(RoleViolation::NotPlannerForTrack { .. })),
             "AiClaude must never emit track.updated regardless of role: {res:?}",
         );
     }
@@ -1330,11 +1332,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_claude_hook_in_own_scope_ok() {
+    fn planner_claude_hook_in_own_scope_ok() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-claude-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-claude-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
             &ActorId::AiClaude(id.clone()),
             &claude_hook(id.as_str()),
@@ -1344,7 +1346,7 @@ mod tests {
         );
         assert!(
             res.is_ok(),
-            "AiClaude(spec) ClaudeHook in own card scope should be accepted: {res:?}",
+            "AiClaude(planner) ClaudeHook in own card scope should be accepted: {res:?}",
         );
     }
 
@@ -1400,7 +1402,7 @@ mod tests {
     //     card scope is permitted (PR5's job request fan-out path);
     //   * a worker card emitting `task.completed` within its own card
     //     scope is permitted (the dispatcher push delivery path);
-    //   * an AiSpec actor with an empty CardId is rejected via the
+    //   * an AiPlanner actor with an empty CardId is rejected via the
     //     section-1 guard, even when the payload is a new variant — the
     //     guard is variant-agnostic by design;
     //   * the same goes for AiCodex with empty CardId.
@@ -1484,8 +1486,8 @@ mod tests {
     fn session_actors() -> [(ActorId, &'static str); 3] {
         [
             (
-                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
-                "sess-spec",
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                "sess-planner",
             ),
             (
                 ActorId::AiCodexSession(WorkerSessionId::from("sess-codex")),
@@ -1590,8 +1592,8 @@ mod tests {
         )
         .expect_err("worker AI actor must be refused codex.worker_requested");
         assert!(
-            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
-            "expected NotSpecForDispatch, got {err:?}",
+            matches!(err, RoleViolation::NotPlannerForDispatch { .. }),
+            "expected NotPlannerForDispatch, got {err:?}",
         );
     }
 
@@ -1610,30 +1612,33 @@ mod tests {
         )
         .expect_err("worker AI actor must be refused terminal.worker_requested");
         assert!(
-            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
-            "expected NotSpecForDispatch, got {err:?}",
+            matches!(err, RoleViolation::NotPlannerForDispatch { .. }),
+            "expected NotPlannerForDispatch, got {err:?}",
         );
     }
 
     #[test]
-    fn spec_can_emit_codex_worker_requested_in_own_scope() {
+    fn planner_can_emit_codex_worker_requested_in_own_scope() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
-            &ActorId::AiSpec(id.clone()),
+            &ActorId::AiPlanner(id.clone()),
             &codex_worker_requested(),
             &card_scope(id.as_str(), "w", "c"),
             &cache,
             &wcc,
         );
-        assert!(res.is_ok(), "spec emitting codex.worker_requested: {res:?}");
+        assert!(
+            res.is_ok(),
+            "planner emitting codex.worker_requested: {res:?}"
+        );
     }
 
     #[test]
     fn worker_cannot_emit_plan_updated_644() {
-        // Issue #644. `plan.updated` joins the section-(2.5) spec-only
+        // Issue #644. `plan.updated` joins the section-(2.5) planner-only
         // list: a worker AI actor must not commit task-plan revisions
         // (the PR-B scheduler dispatches whatever the plan says, so this
         // would be the #583 recursive-mint hole one hop removed).
@@ -1654,19 +1659,19 @@ mod tests {
         )
         .expect_err("worker AI actor must be refused plan.updated");
         assert!(
-            matches!(err, RoleViolation::NotSpecForDispatch { .. }),
-            "expected NotSpecForDispatch, got {err:?}",
+            matches!(err, RoleViolation::NotPlannerForDispatch { .. }),
+            "expected NotPlannerForDispatch, got {err:?}",
         );
     }
 
     #[test]
-    fn spec_can_emit_plan_updated_in_own_track() {
+    fn planner_can_emit_plan_updated_in_own_track() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let id = CardId::from("spec-1");
-        cache.insert(id.clone(), CardRole::Spec, TrackId::from("w"));
+        let id = CardId::from("planner-1");
+        cache.insert(id.clone(), CardRole::Planner, TrackId::from("w"));
         let res = enforce_role(
-            &ActorId::AiSpec(id.clone()),
+            &ActorId::AiPlanner(id.clone()),
             &Event::PlanUpdated {
                 track_id: TrackId::from("w"),
                 changed_keys: vec!["impl-parser".into()],
@@ -1676,20 +1681,20 @@ mod tests {
             &cache,
             &wcc,
         );
-        assert!(res.is_ok(), "spec emitting plan.updated: {res:?}");
+        assert!(res.is_ok(), "planner emitting plan.updated: {res:?}");
     }
 
     #[test]
     fn task_dispatched_is_kernel_only_644_pr_b() {
         // Issue #644 PR-B. `task.dispatched` is the scheduler's claim
-        // record — every card-derived actor is refused, spec included
+        // record — every card-derived actor is refused, planner included
         // (it is a kernel observation, not a card authority), while the
         // kernel families pass.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = Event::TaskDispatched {
             idempotency_key: "w:impl-parser".into(),
@@ -1698,7 +1703,7 @@ mod tests {
         };
 
         for (actor, label) in [
-            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
@@ -1720,13 +1725,13 @@ mod tests {
     #[test]
     fn task_gate_result_is_kernel_only_644_pr_c() {
         // Issue #644 PR-C. `task.gate_result` is the gate runner's
-        // machine verdict — every card-derived actor (spec included)
+        // machine verdict — every card-derived actor (planner included)
         // and plugins are refused; the kernel families pass.
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = Event::TaskGateResult {
             task_id: "w:impl-parser".into(),
@@ -1741,7 +1746,7 @@ mod tests {
         };
 
         for (actor, label) in [
-            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
@@ -1828,17 +1833,17 @@ mod tests {
     }
 
     #[test]
-    fn review_round_and_ratify_requested_are_spec_only_760() {
+    fn review_round_and_ratify_requested_are_planner_only_760() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
 
         for event in [review_round(), ratify_requested()] {
             let res = enforce_role(
-                &ActorId::AiSpec(spec.clone()),
+                &ActorId::AiPlanner(planner.clone()),
                 &event,
                 &track_scope("w", "c"),
                 &cache,
@@ -1846,7 +1851,7 @@ mod tests {
             );
             assert!(
                 res.is_ok(),
-                "spec should emit {}: {res:?}",
+                "planner should emit {}: {res:?}",
                 event.kind_tag()
             );
 
@@ -1858,15 +1863,15 @@ mod tests {
                 (ActorId::Kernel, "Kernel"),
                 (ActorId::KernelDispatcher, "KernelDispatcher"),
                 (
-                    ActorId::AiSpecSession(WorkerSessionId::from("sess-unresolved")),
-                    "AiSpecSession(unresolved)",
+                    ActorId::AiPlannerSession(WorkerSessionId::from("sess-unresolved")),
+                    "AiPlannerSession(unresolved)",
                 ),
             ] {
                 let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
                     .expect_err(&format!("{label} must be refused {}", event.kind_tag()));
                 assert!(
-                    matches!(err, RoleViolation::NotSpecForReviewRatify { .. }),
-                    "{label}: expected NotSpecForReviewRatify, got {err:?}",
+                    matches!(err, RoleViolation::NotPlannerForReviewRatify { .. }),
+                    "{label}: expected NotPlannerForReviewRatify, got {err:?}",
                 );
             }
         }
@@ -1876,9 +1881,9 @@ mod tests {
     fn ratify_resolved_is_user_only_760() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = ratify_resolved_grant();
 
@@ -1886,15 +1891,15 @@ mod tests {
         assert!(res.is_ok(), "User should emit ratify.resolved: {res:?}");
 
         for (actor, label) in [
-            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
             (ActorId::Kernel, "Kernel"),
             (ActorId::KernelDispatcher, "KernelDispatcher"),
             (
-                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
-                "AiSpecSession(unresolved)",
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                "AiPlannerSession(unresolved)",
             ),
         ] {
             let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
@@ -2024,13 +2029,13 @@ mod tests {
 
     #[test]
     fn empty_aispec_card_id_rejected_on_new_variant() {
-        // Mirror of the AiCodex case for AiSpec — when PR5 wires the
-        // spec card as the requester of codex.worker_requested, the empty
+        // Mirror of the AiCodex case for AiPlanner — when PR5 wires the
+        // planner card as the requester of codex.worker_requested, the empty
         // CardId path must still be rejected.
         let cache = CardRoleCache::new();
         let wcc = TrackAreaCache::new();
         let res = enforce_role(
-            &ActorId::AiSpec(CardId::from("")),
+            &ActorId::AiPlanner(CardId::from("")),
             &codex_worker_requested(),
             &EventScope::System,
             &cache,
@@ -2106,9 +2111,9 @@ mod tests {
     fn proposal_submitted_denies_every_non_plugin_actor() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = proposal_submitted("dev.neige.invest");
 
@@ -2116,12 +2121,12 @@ mod tests {
             (ActorId::User, "User"),
             (ActorId::Kernel, "Kernel"),
             (ActorId::KernelDispatcher, "KernelDispatcher"),
-            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (
-                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
-                "AiSpecSession",
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                "AiPlannerSession",
             ),
         ] {
             let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
@@ -2140,9 +2145,9 @@ mod tests {
     fn proposal_resolved_adjudications_are_user_only() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
 
         for decision in [
@@ -2169,12 +2174,12 @@ mod tests {
                 (ActorId::Plugin("dev.neige.other".into()), "Plugin(other)"),
                 (ActorId::Kernel, "Kernel"),
                 (ActorId::KernelDispatcher, "KernelDispatcher"),
-                (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+                (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
                 (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
                 (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
                 (
-                    ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
-                    "AiSpecSession",
+                    ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                    "AiPlannerSession",
                 ),
             ] {
                 let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
@@ -2195,9 +2200,9 @@ mod tests {
     fn proposal_withdrawn_is_submitter_plugin_only() {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
-        let spec = CardId::from("spec-1");
+        let planner = CardId::from("planner-1");
         let worker = CardId::from("worker-1");
-        cache.insert(spec.clone(), CardRole::Spec, TrackId::from("w"));
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = proposal_resolved("dev.neige.invest", ProposalDecision::Withdrawn);
 
@@ -2219,12 +2224,12 @@ mod tests {
             (ActorId::Plugin("dev.neige.other".into()), "Plugin(other)"),
             (ActorId::Kernel, "Kernel"),
             (ActorId::KernelDispatcher, "KernelDispatcher"),
-            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
             (
-                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
-                "AiSpecSession",
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                "AiPlannerSession",
             ),
         ] {
             let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)

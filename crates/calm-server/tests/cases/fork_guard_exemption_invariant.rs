@@ -55,7 +55,7 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
 }
 
 /// INV-1110-005 (partial, S5): `TemplateDescriptor` is an id handle. Do not
-/// grow a public descriptor body (plan_template / gates / spec_instructions /
+/// grow a public descriptor body (plan_template / gates / planner_instructions /
 /// card_kinds / leftover input_schema) or add sibling public template types.
 #[test]
 fn template_descriptor_surface_is_id_only() {

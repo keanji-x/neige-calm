@@ -39,9 +39,9 @@ import {
   reportUrlTransform,
 } from './report-blocks';
 import { useTrackFsViewer } from '../track-fs-viewers';
-import { SpecConversation } from './SpecConversation';
-import { useSpecChatHistory } from './useSpecChatHistory';
-import { useSpecCurrentRun } from './useSpecCurrentRun';
+import { PlannerConversation } from './PlannerConversation';
+import { usePlannerChatHistory } from './usePlannerChatHistory';
+import { usePlannerCurrentRun } from './usePlannerCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { deriveOutline, type ReportOutlineItem } from './report-outline';
 
@@ -98,7 +98,7 @@ export async function performTaskAction(
   } else {
     const payload = block.payload as { declared_by?: string };
     const tighten = action === 'delete' && payload.declared_by === 'spec'
-      ? deps.confirm('Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.')
+      ? deps.confirm('Should future Planner tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.')
       : false;
     await deps.deleteBlock(trackId, block.id, block.rev);
     if (tighten) await deps.patchTrack({ automation_policy: 'declare-and-wait' });
@@ -120,9 +120,9 @@ function selectReportCards(cards: TrackCardSlot[]): ReportCardSlot[] {
   return reports.slice().sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
 }
 
-function selectSpecCard(cards: TrackCardSlot[]): string | null {
+function selectPlannerCard(cards: TrackCardSlot[]): string | null {
   const slot = cards.find(
-    (s): s is CardSlot => s.kind === 'card' && s.card.type === 'spec',
+    (s): s is CardSlot => s.kind === 'card' && s.card.type === 'planner',
   );
   return slot?.card.id ?? null;
 }
@@ -186,7 +186,7 @@ function ReportByline({ report }: { report?: TrackReportCardData }) {
         <span className="report-byline-avatar" aria-hidden="true">
           S
         </span>
-        <span>Spec Agent</span>
+        <span>Planner Agent</span>
       </span>
       <span className="report-byline-sep" aria-hidden="true" />
       <span>{formatUpdatedAt(report?.updatedAt)}</span>
@@ -205,13 +205,13 @@ function DuplicateReportBanner({ count }: { count: number }) {
 function ReportEmptyState() {
   return (
     <div className="report-empty" role="status">
-      Report not ready. The spec agent has not produced a report yet.
+      Report not ready. The planner agent has not produced a report yet.
     </div>
   );
 }
 
 function ReportActivityPanel({
-  specCardId,
+  plannerCardId,
   entries,
   initialLoading,
   hasEarlier,
@@ -220,8 +220,8 @@ function ReportActivityPanel({
   onSelect,
   onOpen,
 }: {
-  specCardId: string | null;
-  entries: ReturnType<typeof useSpecChatHistory>['entries'];
+  plannerCardId: string | null;
+  entries: ReturnType<typeof usePlannerChatHistory>['entries'];
   initialLoading: boolean;
   hasEarlier: boolean;
   working: boolean;
@@ -246,7 +246,7 @@ function ReportActivityPanel({
       <div
         className={
           'report-activity-panel' +
-          (!initialLoading && userEntries.length === 0 && specCardId != null
+          (!initialLoading && userEntries.length === 0 && plannerCardId != null
             ? ' report-activity-panel--compact'
             : '')
         }
@@ -268,7 +268,7 @@ function ReportActivityPanel({
               >
                 <span className="tx">{entry.text}</span>
                 {working && index === 0 && (
-                  <span className="st busy" aria-label="Spec Agent is working">
+                  <span className="st busy" aria-label="Planner Agent is working">
                     ···
                   </span>
                 )}
@@ -282,7 +282,7 @@ function ReportActivityPanel({
               </div>
             )}
           </div>
-        ) : specCardId != null ? (
+        ) : plannerCardId != null ? (
           <button
             type="button"
             className="report-activity-chat"
@@ -297,7 +297,7 @@ function ReportActivityPanel({
           </button>
         ) : (
           <div className="report-activity-empty">
-            This track has no Spec Agent.
+            This track has no Planner Agent.
           </div>
         )}
       </div>
@@ -780,9 +780,9 @@ export function TrackReportPage({ track, cards }: TrackReportPageProps) {
   const hasReportCard = reportSlots.length > 0;
   const reportCard = reportSlots[0]?.card;
   const reportQ = useTrackReportQuery(hasReportCard ? track.id : null);
-  const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
-  const run = useSpecCurrentRun(specCardId ?? undefined);
-  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
+  const plannerCardId = useMemo(() => selectPlannerCard(cards), [cards]);
+  const run = usePlannerCurrentRun(plannerCardId ?? undefined);
+  const chatHistory = usePlannerChatHistory(plannerCardId ?? undefined);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
   const [lastTrackId, setLastTrackId] = useState<string>(track.id);
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
@@ -898,7 +898,7 @@ export function TrackReportPage({ track, cards }: TrackReportPageProps) {
 
   useEffect(() => {
     setConversationTargetEntryId(null);
-  }, [specCardId]);
+  }, [plannerCardId]);
 
   return (
     <div
@@ -1022,7 +1022,7 @@ export function TrackReportPage({ track, cards }: TrackReportPageProps) {
           aria-label="Report document"
         >
           <ReportActivityPanel
-            specCardId={specCardId}
+            plannerCardId={plannerCardId}
             entries={chatHistory.entries}
             initialLoading={chatHistory.initialLoading}
             hasEarlier={chatHistory.hasEarlier}
@@ -1070,8 +1070,8 @@ export function TrackReportPage({ track, cards }: TrackReportPageProps) {
           className="report-conversation-drawer-panel"
           aria-hidden={!conversationOpen}
         >
-          <SpecConversation
-            specCardId={specCardId}
+          <PlannerConversation
+            plannerCardId={plannerCardId}
             drawerOpen={conversationOpen}
             run={run}
             chatHistory={chatHistory}

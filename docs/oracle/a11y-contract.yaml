@@ -397,9 +397,9 @@
   kind: capability
   family: view-mode
   statement: >
-    Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
+    Report 视图在 planner agent 尚未产出 report 时必须渲染 report 空态，而不是空白
   why: >
-    §2.2 明示 "or the report empty state while the spec agent has not produced one"
+    §2.2 明示 "or the report empty state while the planner agent has not produced one"
   source: web/src/pages/TrackReportPage.tsx:929-950
   authoritative_test: NONE
   owner_slice: features/report/page
@@ -1693,7 +1693,7 @@
     (`http://localhost:4041/calm/`)，无需 replay 二进制；`a11y` 启动
     `cargo run --bin replay --features fixtures --serve` 并预载 event-trace fixture
   why: >
-    Slice 5：任何需要 trace ring buffer 的 spec 都必须挂 `a11y` project
+    Slice 5：任何需要 trace ring buffer 的 planner 都必须挂 `a11y` project
   source: web/playwright.config.ts:9-32,91-127; web/e2e/_setup/replay-server.setup.ts:1-21,65-168
   authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
   owner_slice: none/e2e/infra

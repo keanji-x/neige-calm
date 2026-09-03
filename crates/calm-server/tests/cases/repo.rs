@@ -7,7 +7,7 @@
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, overlay_delete_by_entity_tx, session_prepare_deferred_spec_tx,
+    SqlxRepo, overlay_delete_by_entity_tx, session_prepare_deferred_planner_tx,
     session_start_runtime_tx,
 };
 use calm_server::error::CalmError;
@@ -89,7 +89,7 @@ async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
         &mut tx,
         runtime_init(
             card.id.to_string(),
-            WorkerSessionKind::SharedSpec,
+            WorkerSessionKind::SharedPlanner,
             Some(AgentProvider::Codex),
         ),
     )
@@ -1830,7 +1830,7 @@ async fn terminal_set_exit_round_trip_all_branches() {
 }
 
 #[tokio::test]
-async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
+async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
     use calm_server::card_role_cache::CardRoleCache;
     use calm_server::model::{CardRole, NewCard};
 
@@ -1857,12 +1857,12 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
                 "appserver_sock": "unix:///tmp/shared.sock",
             }),
         },
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &cache,
     )
     .await
-    .expect("create mapped shared spec card");
+    .expect("create mapped shared planner card");
     let pending = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         pending_card_id.clone(),
@@ -1875,12 +1875,12 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
                 "appserver_sock": "unix:///tmp/shared.sock",
             }),
         },
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &cache,
     )
     .await
-    .expect("create pending shared spec card");
+    .expect("create pending shared planner card");
     let phantom = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),
@@ -1893,13 +1893,13 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
                 "appserver_sock": "unix:///tmp/shared.sock",
             }),
         },
-        CardRole::Spec,
+        CardRole::Planner,
         false,
         &cache,
     )
     .await
-    .expect("create deferred placeholder shared spec card");
-    // INV-CHAT-015 has two independent production fences: c.role = 'spec'
+    .expect("create deferred placeholder shared planner card");
+    // INV-CHAT-015 has two independent production fences: c.role = 'planner'
     // and ws.contract = 'planner'. This counterexample pins the role fence;
     // the contract fence is pinned separately by INV-CHAT-009's counterexample.
     let chat = calm_server::db::sqlite::card_create_with_id_tx(
@@ -1935,7 +1935,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         WorkerSessionInit {
             id: calm_server::model::new_id(),
             card_id: mapped.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: Some(mapped_term.id.to_string()),
@@ -1973,7 +1973,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         WorkerSessionInit {
             id: calm_server::model::new_id(),
             card_id: pending.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
             terminal_run_id: Some(term.id.to_string()),
@@ -1988,12 +1988,12 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     .await
     .unwrap();
     let phantom_session_id = calm_server::model::new_id();
-    session_prepare_deferred_spec_tx(
+    session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {
             id: phantom_session_id.clone(),
             card_id: phantom.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -2018,7 +2018,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     assert_eq!(phantom_mirror.as_deref(), Some(phantom_session_id.as_str()));
 
     assert_eq!(
-        repo.shared_spec_cards_for_initial_prompt_takeover()
+        repo.shared_planner_cards_for_initial_prompt_takeover()
             .await
             .expect("shared pending takeover query"),
         vec![(
@@ -2035,7 +2035,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         .await
         .unwrap();
     assert!(
-        repo.shared_spec_cards_for_initial_prompt_takeover()
+        repo.shared_planner_cards_for_initial_prompt_takeover()
             .await
             .expect("shared pending takeover query after terminal exit")
             .is_empty(),

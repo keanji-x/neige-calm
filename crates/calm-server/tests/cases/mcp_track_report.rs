@@ -8,9 +8,9 @@
 //!
 //! Coverage:
 //!
-//!   1. `report_read` (spec) returns the initial seeded body + summary
+//!   1. `report_read` (planner) returns the initial seeded body + summary
 //!      + schemaVersion + updated_at.
-//!   2. `report_write` (spec) replaces the body wholesale, bumps
+//!   2. `report_write` (planner) replaces the body wholesale, bumps
 //!      `updated_at`, and emits one `card.updated` event.
 //!   3. `report_write` keeps the existing summary when omitted; honors
 //!      a non-null override when provided.
@@ -22,9 +22,9 @@
 //!   8. `report_edit` short-circuits when `old_string == new_string`
 //!      (no write, no event, returns current `updated_at`).
 //!   9. Worker calling any of the three is refused at the soft role
-//!      gate (-32602 "tool requires role=Spec got=Worker").
-//!  10. Spec card on a different track cannot reach this track's report
-//!      — the (spec_card_id → track_id → report_card) lookup confines
+//!      gate (-32602 "tool requires role=Planner got=Worker").
+//!  10. Planner card on a different track cannot reach this track's report
+//!      — the (planner_card_id → track_id → report_card) lookup confines
 //!      writes to the caller's own track.
 
 #![cfg(unix)]
@@ -55,7 +55,7 @@ use calm_types::worker::{
 };
 use serde_json::{Value, json};
 
-const SPEC_SESSION_ID: &str = "spec-session";
+const PLANNER_SESSION_ID: &str = "planner-session";
 /// #1189 — the assistant's session is deliberately NOT the track root, and
 /// it is bound to its own `CardRole::Assistant` card. Both facts are what
 /// the S2 recorder criterion actually reads.
@@ -68,9 +68,9 @@ pub(crate) const ASSISTANT_SESSION_ID: &str = "assistant-session";
 pub(crate) const ASSISTANT_B_SESSION_ID: &str = "assistant-b-session";
 pub(crate) const WORKER_SESSION_ID: &str = "worker-session";
 
-/// In-memory fixture: one area → one track → one spec card + one
+/// In-memory fixture: one area → one track → one planner card + one
 /// track-report card + one worker card. Mirrors the post-`create_track`
-/// shape (spec + track-report kernel-owned) plus a worker for the
+/// shape (planner + track-report kernel-owned) plus a worker for the
 /// cross-role tests.
 pub(crate) struct Boot {
     pub(crate) ctx: Arc<AppContext>,
@@ -78,7 +78,7 @@ pub(crate) struct Boot {
     pub(crate) repo: Arc<dyn Repo>,
     pub(crate) area_id: AreaId,
     pub(crate) track_id: TrackId,
-    pub(crate) spec_card_id: CardId,
+    pub(crate) planner_card_id: CardId,
     pub(crate) report_card_id: CardId,
     pub(crate) worker_card_id: CardId,
     pub(crate) assistant_card_id: CardId,
@@ -156,7 +156,7 @@ async fn seed_track_root_session(
 /// `session_mirror.rs:266-270` repoints `tracks.root_session_id` at *any*
 /// session whose `contract == Planner` and whose state is an active
 /// authority. A Planner-contract session on the assistant card would
-/// therefore steal the track root from the spec card the moment it went live
+/// therefore steal the track root from the planner card the moment it went live
 /// — a shape that never occurs in production and that would make these tests
 /// a false reference for S3. Matches `frozen_gate_vectors_transport.rs`,
 /// which seeds its assistant sessions the same way.
@@ -250,7 +250,7 @@ pub(crate) async fn boot() -> Boot {
         )
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
@@ -285,7 +285,7 @@ pub(crate) async fn boot() -> Boot {
         .await
         .unwrap();
     // #1189 — the two assistant conversation cards. Payload is the one
-    // production mints (`spec_harness_start_adapter.rs:620`, via
+    // production mints (`planner_harness_start_adapter.rs:620`, via
     // `minted_card_shape(HarnessProfile::Assistant)`): a v1 codex payload
     // plus the `harness_profile` marker. It is not decoration — a card
     // without that marker is invisible to the track conversation list
@@ -312,7 +312,7 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec).await;
+    set_persisted_card_role(repo.as_ref(), planner_card.id.as_str(), CardRole::Planner).await;
     set_persisted_card_role(
         repo.as_ref(),
         assistant_card.id.as_str(),
@@ -326,7 +326,13 @@ pub(crate) async fn boot() -> Boot {
     )
     .await;
     set_persisted_card_role(repo.as_ref(), worker_card.id.as_str(), CardRole::Worker).await;
-    seed_track_root_session(repo.as_ref(), &track.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_track_root_session(
+        repo.as_ref(),
+        &track.id,
+        &planner_card.id,
+        PLANNER_SESSION_ID,
+    )
+    .await;
     seed_non_root_session(
         repo.as_ref(),
         &track.id,
@@ -345,7 +351,7 @@ pub(crate) async fn boot() -> Boot {
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     card_role_cache.insert(
         assistant_card.id.clone(),
         CardRole::Assistant,
@@ -389,7 +395,7 @@ pub(crate) async fn boot() -> Boot {
         repo,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         report_card_id: report_card.id,
         worker_card_id: worker_card.id,
         assistant_card_id: assistant_card.id,
@@ -421,15 +427,15 @@ async fn current_doc_rev(boot: &Boot) -> u64 {
     .doc_rev
 }
 
-pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+pub(crate) fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: SPEC_SESSION_ID.to_string(),
+        session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 
@@ -454,7 +460,7 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
 ///
 /// **What this is not**: it is not minted by the production route. A real
 /// second conversation is born inside the harness-start operation
-/// (`spec_harness_start_adapter`), which also marks the card kernel-owned
+/// (`planner_harness_start_adapter`), which also marks the card kernel-owned
 /// (`deletable = false`) and issues per-card / per-session MCP tokens that
 /// the transport then binds to the identity it hands a tool. Here the rows
 /// are inserted directly and the [`ToolCallIdentity`] is constructed by the
@@ -527,9 +533,9 @@ async fn recv_env(
 #[tokio::test]
 async fn read_returns_initial_seeded_body() {
     let boot = boot().await;
-    let out = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+    let out = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
-        .expect("spec can read the report");
+        .expect("planner can read the report");
     assert_eq!(
         out.get("body").and_then(Value::as_str),
         Some(TrackReportPayload::initial().body.as_str())
@@ -550,7 +556,7 @@ async fn read_refuses_worker() {
         .await
         .expect_err("worker must be denied");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("Spec"), "msg = {err:?}");
+    assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -558,12 +564,12 @@ async fn read_refuses_worker() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer() {
+async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_planner_writer() {
     let boot = boot().await;
     let missing = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"body": "# A\n", "message": "missing revision"}),
     )
     .await
@@ -573,7 +579,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer(
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"body": "# First\n", "message": "first writer", "if_doc_rev": 0}),
     )
     .await
@@ -581,7 +587,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer(
     let conflict = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"body": "# Stale\n", "message": "second writer", "if_doc_rev": 0}),
     )
     .await
@@ -590,7 +596,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer(
     assert!(conflict.message.contains("current doc_rev is 1"));
     assert!(conflict.message.contains("expected if_doc_rev 0"));
     assert!(conflict.message.contains("re-read"));
-    let read = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+    let read = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .unwrap();
     assert_eq!(read["body"], "# First\n", "stale writer must not win");
@@ -612,7 +618,7 @@ async fn write_replaces_body_and_emits_card_updated() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# Goal\n\nrefactored everything\n",
             "summary": "done refactoring",
@@ -621,7 +627,7 @@ async fn write_replaces_body_and_emits_card_updated() {
         }),
     )
     .await
-    .expect("spec writes successfully");
+    .expect("planner writes successfully");
     let new_updated_at = out
         .get("updated_at")
         .and_then(Value::as_i64)
@@ -671,15 +677,15 @@ async fn write_replaces_body_and_emits_card_updated() {
             assert_eq!(w, &track_id, "track_id matches the report card's track");
             assert_eq!(c, &report_id, "card_id matches the report card");
             // Issue #247 PR3 — the MCP `report.write` / `report.edit`
-            // wrapper now passes `EditAuthor::Spec` explicitly (was
+            // wrapper now passes `EditAuthor::Planner` explicitly (was
             // hard-coded in PR2). #1318 §1 — REST reaches the same
             // private writer (`track_report::write::persist`) but through
             // a different door: `write::rest_user_replace`, which fixes
             // `EditAuthor::User` in its own body rather than taking it
             // from the handler. See `tests/rest_track_report.rs` for the
-            // User-author regression. Spec attribution stays the
-            // contract for every spec-MCP write.
-            assert_eq!(*author, EditAuthor::Spec, "MCP path tags Spec");
+            // User-author regression. Planner attribution stays the
+            // contract for every planner-MCP write.
+            assert_eq!(*author, EditAuthor::Planner, "MCP path tags Planner");
             assert_eq!(agent_message.as_deref(), Some("rewrite report"));
             // edit_id must be a non-empty UUID-shaped string. Don't pin
             // the exact value — it's a fresh UUID per call.
@@ -738,7 +744,7 @@ async fn write_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "missing message\n" }),
     )
     .await
@@ -752,7 +758,7 @@ async fn write_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "empty message\n", "message": "   ", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
@@ -772,7 +778,7 @@ async fn write_without_lifecycle_keeps_track_state_and_records_agent_message() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "no lifecycle body\n",
             "message": "write without lifecycle",
@@ -820,7 +826,7 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "auto-promote body\n",
             "message": "write from draft",
@@ -843,7 +849,7 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
             assert_eq!(id, boot.track_id);
             assert_eq!(from, TrackLifecycle::Draft);
             assert_eq!(to, TrackLifecycle::Planning);
-            assert_eq!(agent_message.as_deref(), Some("[auto] first spec write"));
+            assert_eq!(agent_message.as_deref(), Some("[auto] first planner write"));
         }
         other => panic!("expected auto TrackLifecycleChanged first, got {other:?}"),
     }
@@ -856,7 +862,7 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
             assert_eq!(payload.lifecycle, TrackLifecycle::Planning);
             assert_eq!(
                 payload.agent_message.as_deref(),
-                Some("[auto] first spec write")
+                Some("[auto] first planner write")
             );
         }
         other => panic!("expected auto TrackUpdated second, got {other:?}"),
@@ -896,7 +902,7 @@ async fn write_lifecycle_legal_emits_track_updated_and_report_events() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "dispatching body\n",
             "message": "report moves dispatching",
@@ -979,7 +985,7 @@ async fn write_lifecycle_illegal_rolls_back_report_and_events() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "should rollback\n",
             "message": "illegal report lifecycle",
@@ -1023,7 +1029,7 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "before XYZ after\n",
             "summary": "before-summary",
@@ -1046,7 +1052,7 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
     call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
@@ -1082,7 +1088,7 @@ async fn edit_emits_track_report_edited_alongside_card_updated() {
         } => {
             assert_eq!(w, &track_id);
             assert_eq!(c, &report_id);
-            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(*author, EditAuthor::Planner);
             assert_eq!(agent_message.as_deref(), Some("edit report"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
             // Summary unchanged by report.edit — both before and after
@@ -1106,7 +1112,7 @@ async fn write_with_unchanged_content_still_emits_track_report_edited() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "stable body\n",
             "summary": "stable summary",
@@ -1140,7 +1146,7 @@ async fn write_with_unchanged_content_still_emits_track_report_edited() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "stable body\n",
             "summary": "stable summary",
@@ -1209,7 +1215,7 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "scoped body\n",
             "summary": "scoped summary",
@@ -1246,7 +1252,7 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
         }
         other => panic!("expected Card-scoped row, got {other:?}"),
     }
-    // Payload round-trips with the spec author + the seed body before /
+    // Payload round-trips with the planner author + the seed body before /
     // new body after.
     match ev {
         Event::TrackReportEdited {
@@ -1257,7 +1263,7 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
             summary_after,
             ..
         } => {
-            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(*author, EditAuthor::Planner);
             assert_eq!(body_before, &TrackReportPayload::initial().body);
             assert_eq!(body_after, "scoped body\n");
             assert_eq!(summary_after, "scoped summary");
@@ -1297,7 +1303,7 @@ async fn write_preserves_summary_when_omitted() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "a",
             "summary": "preserved",
@@ -1311,7 +1317,7 @@ async fn write_preserves_summary_when_omitted() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "b", "message": "preserve summary", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
@@ -1348,7 +1354,7 @@ async fn write_rejects_missing_body() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "summary": "no body", "message": "missing body", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
@@ -1368,7 +1374,7 @@ async fn edit_unique_substring_replacement_happy_path() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# Goal\n\nuntouched marker XYZ here\n",
             "message": "seed edit body",
@@ -1381,7 +1387,7 @@ async fn edit_unique_substring_replacement_happy_path() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
@@ -1410,7 +1416,7 @@ async fn edit_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "old_string": "Goal", "new_string": "Plan" }),
     )
     .await
@@ -1424,7 +1430,7 @@ async fn edit_requires_non_empty_message() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "Goal",
             "new_string": "Plan",
@@ -1447,7 +1453,7 @@ async fn edit_without_lifecycle_keeps_track_state_and_records_agent_message() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "before XYZ after\n",
             "message": "seed edit no lifecycle",
@@ -1461,7 +1467,7 @@ async fn edit_without_lifecycle_keeps_track_state_and_records_agent_message() {
     call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
@@ -1504,7 +1510,7 @@ async fn edit_lifecycle_legal_emits_track_updated_and_report_events() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "before XYZ after\n",
             "message": "seed edit lifecycle",
@@ -1518,7 +1524,7 @@ async fn edit_lifecycle_legal_emits_track_updated_and_report_events() {
     call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
@@ -1586,7 +1592,7 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "before XYZ after\n",
             "message": "seed illegal edit",
@@ -1612,7 +1618,7 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
@@ -1652,7 +1658,7 @@ async fn edit_rejects_old_string_not_found() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "nowhere-in-body",
             "new_string": "x",
@@ -1672,7 +1678,7 @@ async fn edit_rejects_duplicate_without_replace_all() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "TODO foo\nTODO bar\n",
             "message": "seed duplicates",
@@ -1684,7 +1690,7 @@ async fn edit_rejects_duplicate_without_replace_all() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "TODO",
             "new_string": "DONE",
@@ -1705,7 +1711,7 @@ async fn edit_replace_all_on_duplicates() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "TODO foo\nTODO bar\nTODO baz\n",
             "message": "seed replace all",
@@ -1717,7 +1723,7 @@ async fn edit_replace_all_on_duplicates() {
     call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "TODO",
             "new_string": "DONE",
@@ -1758,7 +1764,7 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "stable\n",
             "summary": "stable-summary",
@@ -1787,7 +1793,7 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "old_string": "stable",
             "new_string": "stable",
@@ -1833,7 +1839,7 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         } => {
             assert_eq!(w, &track_id, "track_id matches");
             assert_eq!(c, &report_id, "card_id matches");
-            assert_eq!(*author, EditAuthor::Spec);
+            assert_eq!(*author, EditAuthor::Planner);
             assert_eq!(agent_message.as_deref(), Some("equal edit"));
             assert_eq!(edit_id.len(), 36, "edit_id is a UUID v4 string");
             // The defining assertion: equal-strings replacement is
@@ -1884,16 +1890,16 @@ async fn edit_refuses_worker() {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-track isolation: a spec card on track A cannot reach track B's report.
+// Cross-track isolation: a planner card on track A cannot reach track B's report.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 #[allow(deprecated)]
-async fn spec_from_different_track_cannot_reach_this_track_report() {
+async fn planner_from_different_track_cannot_reach_this_track_report() {
     let boot = boot().await;
-    // Mint a second track + a second spec card, and use that spec
+    // Mint a second track + a second planner card, and use that planner
     // identity to call `report.write`. The tool resolves the report
-    // through (spec_card_id → spec_card.track_id → track's report card),
+    // through (planner_card_id → planner_card.track_id → track's report card),
     // so the write lands on track 2's report — *not* track 1's. We
     // confirm track 1's body is untouched.
 
@@ -1921,7 +1927,7 @@ async fn spec_from_different_track_cannot_reach_this_track_report() {
         })
         .await
         .unwrap();
-    let spec2 = boot
+    let planner2 = boot
         .repo
         .card_create(NewCard {
             track_id: track2.id.clone(),
@@ -1943,27 +1949,33 @@ async fn spec_from_different_track_cannot_reach_this_track_report() {
         })
         .await
         .unwrap();
-    set_persisted_card_role(boot.repo.as_ref(), spec2.id.as_str(), CardRole::Spec).await;
-    seed_track_root_session(boot.repo.as_ref(), &track2.id, &spec2.id, "spec2-session").await;
+    set_persisted_card_role(boot.repo.as_ref(), planner2.id.as_str(), CardRole::Planner).await;
+    seed_track_root_session(
+        boot.repo.as_ref(),
+        &track2.id,
+        &planner2.id,
+        "planner2-session",
+    )
+    .await;
     boot.ctx
         .write
         .role_cache()
-        .insert(spec2.id.clone(), CardRole::Spec, track2.id.clone());
+        .insert(planner2.id.clone(), CardRole::Planner, track2.id.clone());
 
-    // Call from spec2's identity.
-    let spec2_identity = ToolCallIdentity {
-        card_id: spec2.id.as_str().to_string(),
-        role: CardRole::Spec,
+    // Call from planner2's identity.
+    let planner2_identity = ToolCallIdentity {
+        card_id: planner2.id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "spec2-session".to_string(),
+        session_id: "planner2-session".to_string(),
         track_id: Some(track2.id.as_str().to_string()),
         area_id: area2.id.as_str().to_string(),
-        thread_id: "spec2-thread".to_string(),
+        thread_id: "planner2-thread".to_string(),
     };
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec2_identity,
+        planner2_identity,
         json!({
             "body": "track 2 only\n",
             "summary": "track 2",
@@ -1972,7 +1984,7 @@ async fn spec_from_different_track_cannot_reach_this_track_report() {
         }),
     )
     .await
-    .expect("spec2 writes its own track's report");
+    .expect("planner2 writes its own track's report");
 
     // Track 1's report is untouched.
     let card1 = boot

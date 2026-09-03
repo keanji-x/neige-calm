@@ -335,7 +335,7 @@ fn read_until_terminator(fd: i32, deadline: Instant) -> Vec<u8> {
 
 /// Find the OSC 11 reply in a byte stream and extract the RGB. The
 /// daemon emits `\x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\`; we tolerate BEL
-/// (`\x07`) terminator too (xterm spec allows either).
+/// (`\x07`) terminator too (xterm planner allows either).
 ///
 /// Returns `Some((r, g, b))` if a complete OSC 11 reply with rgb:
 /// payload is present.

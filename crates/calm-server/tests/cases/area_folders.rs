@@ -564,7 +564,7 @@ async fn cross_area_overlap_409_descendant() {
     // within a single area; this case pins that the conflict check
     // is correctly area-agnostic — i.e. area B cannot claim a path
     // that overlaps with a claim already held by area A. Was
-    // previously covered only by an e2e spec; folded down to a Rust
+    // previously covered only by an e2e planner; folded down to a Rust
     // integration test to keep the conflict-invariant coverage in
     // one place (see also the dropped `create-folder refuses
     // ancestor/descendant overlap` block in

@@ -42,7 +42,7 @@ pub enum TrackWorkspacePlan {
     ///
     /// Same derivation as [`Self::ManagedUnder`], opposite freeze decision, and
     /// the difference is the whole point of S4: a child track is machine-created
-    /// inside a running spec, so the first thing that happens to it is a
+    /// inside a running planner, so the first thing that happens to it is a
     /// harness bootstrap at this exact path. Design §"更换与冻结" requires the
     /// freeze *before* any non-re-anchorable cwd consumer exists, and child
     /// creation is named there explicitly.
@@ -389,8 +389,8 @@ pub async fn track_update_tx(
             .execute(&mut **tx)
             .await?;
     }
-    if let Some(ceiling) = p.spec_task_ceiling {
-        sqlx::query("UPDATE tracks SET spec_task_ceiling = ?1 WHERE id = ?2")
+    if let Some(ceiling) = p.planner_task_ceiling {
+        sqlx::query("UPDATE tracks SET planner_task_ceiling = ?1 WHERE id = ?2")
             .bind(ceiling)
             .bind(w.id.as_str())
             .execute(&mut **tx)

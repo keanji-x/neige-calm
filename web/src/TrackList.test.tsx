@@ -72,7 +72,7 @@ vi.mock('./XtermView', async () => {
 
 // xterm.js + the codex / terminal card components pull in heavy modules
 // (XtermView) at lazy-import time. TrackList renders TrackCards directly,
-// and the spec-card fixture below mounts the codex terminal surface, so
+// and the planner-card fixture below mounts the codex terminal surface, so
 // we stub XtermView at the module boundary.
 
 import * as api from './api/calm';

@@ -347,8 +347,8 @@ fn build_claude_worker_command_line(
     track_id: &str,
     prompt: &str,
 ) -> String {
-    let worker_system_prompt = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Worker.prompt_template(),
+    let worker_system_prompt = crate::planner_card::render_system_prompt(
+        crate::planner_card::SeededCardRole::Worker.prompt_template(),
         track_id,
     );
     let mut command_line = format!(

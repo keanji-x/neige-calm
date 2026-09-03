@@ -399,13 +399,15 @@ async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dy
     }
 }
 
-fn forge_spec_needs_json(spec: Option<&ForgeEventSpec>) -> bool {
-    spec.map(|spec| {
-        spec.fields
-            .values()
-            .any(|source| matches!(source, FieldSource::JsonField { .. }))
-    })
-    .unwrap_or(false)
+fn forge_planner_needs_json(planner: Option<&ForgeEventSpec>) -> bool {
+    planner
+        .map(|planner| {
+            planner
+                .fields
+                .values()
+                .any(|source| matches!(source, FieldSource::JsonField { .. }))
+        })
+        .unwrap_or(false)
 }
 
 fn required_output_fields(event_kind: &str) -> &'static [(&'static str, bool)] {
@@ -486,10 +488,10 @@ fn field_source_type_name(source: &FieldSource) -> &'static str {
 }
 
 fn parse_json_stdout_if_needed(
-    spec: Option<&ForgeEventSpec>,
+    planner: Option<&ForgeEventSpec>,
     stdout: &str,
 ) -> Result<Option<Value>> {
-    if !forge_spec_needs_json(spec) {
+    if !forge_planner_needs_json(planner) {
         return Ok(None);
     }
     serde_json::from_str::<Value>(stdout)
@@ -526,7 +528,7 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
         payload
             .event_spec
             .as_ref()
-            .map(|spec| spec.event_kind.as_str()),
+            .map(|planner| planner.event_kind.as_str()),
         payload.subject.as_ref(),
     ) {
         (Some("forge.pr.merged"), None) => {
@@ -542,52 +544,52 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
         }
         (_, None) => {}
     }
-    if let Some(spec) = payload.event_spec.as_ref() {
-        if spec.event_kind.trim().is_empty() {
+    if let Some(planner) = payload.event_spec.as_ref() {
+        if planner.event_kind.trim().is_empty() {
             return Err(CalmError::BadRequest(
                 "forge-action event_spec.event_kind must not be empty".into(),
             ));
         }
-        if !SUPPORTED_FORGE_EVENT_KINDS.contains(&spec.event_kind.as_str()) {
+        if !SUPPORTED_FORGE_EVENT_KINDS.contains(&planner.event_kind.as_str()) {
             return Err(CalmError::BadRequest(format!(
                 "forge-action event_kind `{}` is not a supported forge event kind",
-                spec.event_kind
+                planner.event_kind
             )));
         }
-        for reserved in kernel_injected_fields(&spec.event_kind) {
-            if payload.context.contains_key(*reserved) || spec.fields.contains_key(*reserved) {
+        for reserved in kernel_injected_fields(&planner.event_kind) {
+            if payload.context.contains_key(*reserved) || planner.fields.contains_key(*reserved) {
                 return Err(CalmError::BadRequest(format!(
                     "forge event context/output may not set reserved key `{reserved}`"
                 )));
             }
         }
-        for (field, field_type) in new_kind_required_fields(&spec.event_kind) {
-            if kernel_injected_fields(&spec.event_kind).contains(field) {
+        for (field, field_type) in new_kind_required_fields(&planner.event_kind) {
+            if kernel_injected_fields(&planner.event_kind).contains(field) {
                 continue;
             }
-            if let Some(source) = spec.fields.get(*field) {
+            if let Some(source) = planner.fields.get(*field) {
                 if !matches!(source, FieldSource::JsonField { .. }) {
                     return Err(CalmError::BadRequest(format!(
                         "forge-action `{}` field `{field}` must be extracted via a JSON field source, not exit_code",
-                        spec.event_kind
+                        planner.event_kind
                     )));
                 }
             } else if let Some(value) = payload.context.get(*field) {
                 if !field_type.matches_context_value(value) {
                     return Err(CalmError::BadRequest(format!(
                         "forge-action `{}` context field `{field}` must be a {}",
-                        spec.event_kind,
+                        planner.event_kind,
                         field_type.json_type_name()
                     )));
                 }
             } else {
                 return Err(CalmError::BadRequest(format!(
                     "forge-action event_spec/context for `{}` must provide field `{field}`",
-                    spec.event_kind
+                    planner.event_kind
                 )));
             }
         }
-        for (field, source) in &spec.fields {
+        for (field, source) in &planner.fields {
             if let FieldSource::JsonField { path } = source
                 && !path.is_empty()
                 && !path.starts_with('/')
@@ -597,17 +599,17 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
                 )));
             }
         }
-        for (field, is_string) in required_output_fields(&spec.event_kind) {
-            let Some(source) = spec.fields.get(*field) else {
+        for (field, is_string) in required_output_fields(&planner.event_kind) {
+            let Some(source) = planner.fields.get(*field) else {
                 return Err(CalmError::BadRequest(format!(
                     "forge-action event_spec for `{}` must populate field `{}`",
-                    spec.event_kind, field
+                    planner.event_kind, field
                 )));
             };
             if *is_string && !matches!(source, FieldSource::JsonField { .. }) {
                 return Err(CalmError::BadRequest(format!(
                     "forge-action `{}` field `{}` must be a JSON string source, not {}",
-                    spec.event_kind,
+                    planner.event_kind,
                     field,
                     field_source_type_name(source)
                 )));
@@ -654,7 +656,9 @@ fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
                 "forge-action probe.output_probe_argv must not be empty".into(),
             ));
         }
-        if forge_spec_needs_json(payload.event_spec.as_ref()) && probe.output_probe_argv.is_none() {
+        if forge_planner_needs_json(payload.event_spec.as_ref())
+            && probe.output_probe_argv.is_none()
+        {
             return Err(CalmError::BadRequest(
                 "forge-action probe.output_probe_argv must be present when event_spec uses JsonField"
                     .into(),
@@ -674,7 +678,7 @@ fn build_forge_event(
             reason: format!("forge action exited with code {exit_code}"),
         });
     }
-    let Some(spec) = frozen.event_spec.as_ref() else {
+    let Some(planner) = frozen.event_spec.as_ref() else {
         return Ok((
             None,
             json!({
@@ -684,13 +688,13 @@ fn build_forge_event(
             }),
         ));
     };
-    let json_stdout = parse_json_stdout_if_needed(Some(spec), stdout).map_err(|e| {
+    let json_stdout = parse_json_stdout_if_needed(Some(planner), stdout).map_err(|e| {
         ForgeEventBuildError::ExtractionFailed {
             reason: e.to_string(),
         }
     })?;
     let mut payload = frozen.context.clone();
-    for (key, value) in spec
+    for (key, value) in planner
         .extract_payload(exit_code, json_stdout.as_ref())
         .map_err(|e| ForgeEventBuildError::ExtractionFailed {
             reason: format!("gate-infra: forge event extraction failed: {e}"),
@@ -698,14 +702,14 @@ fn build_forge_event(
     {
         payload.insert(key, value);
     }
-    for field in kernel_injected_fields(&spec.event_kind) {
+    for field in kernel_injected_fields(&planner.event_kind) {
         if payload.contains_key(*field) {
             return Err(ForgeEventBuildError::ExtractionFailed {
                 reason: format!("forge event context/output may not set reserved key `{field}`"),
             });
         }
     }
-    for field in kernel_injected_fields(&spec.event_kind) {
+    for field in kernel_injected_fields(&planner.event_kind) {
         match *field {
             "track_id" => {
                 payload.insert(
@@ -719,7 +723,7 @@ fn build_forge_event(
                     })?,
                 );
             }
-            "subject" if spec.event_kind == "forge.pr.merged" => {
+            "subject" if planner.event_kind == "forge.pr.merged" => {
                 if let Some(subject) = frozen.subject.as_ref() {
                     payload.insert(
                         "subject".into(),
@@ -745,7 +749,7 @@ fn build_forge_event(
                     })?,
                 );
             }
-            "artifact_path" if is_artifact_bearing_forge_event_kind(&spec.event_kind) => {
+            "artifact_path" if is_artifact_bearing_forge_event_kind(&planner.event_kind) => {
                 payload.insert(
                     "artifact_path".into(),
                     Value::String(frozen.result_path.display().to_string()),
@@ -756,16 +760,19 @@ fn build_forge_event(
     }
     let payload_value = Value::Object(payload);
     let event =
-        Event::from_kind_and_payload(&spec.event_kind, payload_value.clone()).map_err(|e| {
+        Event::from_kind_and_payload(&planner.event_kind, payload_value.clone()).map_err(|e| {
             ForgeEventBuildError::ExtractionFailed {
                 reason: format!("gate-infra: forge event deserialize failed: {e}"),
             }
         })?;
     let mut result = Map::new();
     result.insert("exit_code".into(), json!(exit_code));
-    result.insert("event_kind".into(), Value::String(spec.event_kind.clone()));
+    result.insert(
+        "event_kind".into(),
+        Value::String(planner.event_kind.clone()),
+    );
     result.insert("event".into(), payload_value);
-    if spec.event_kind == "forge.issue.read" {
+    if planner.event_kind == "forge.issue.read" {
         result.insert("stdout".into(), Value::String(stdout.to_owned()));
     }
     Ok((Some(event), Value::Object(result)))
@@ -807,7 +814,7 @@ fn is_artifact_bearing_forge_event(frozen: &FrozenForge) -> bool {
     frozen
         .event_spec
         .as_ref()
-        .is_some_and(|spec| is_artifact_bearing_forge_event_kind(&spec.event_kind))
+        .is_some_and(|planner| is_artifact_bearing_forge_event_kind(&planner.event_kind))
 }
 
 async fn persist_forge_artifact_if_needed(
@@ -1083,7 +1090,7 @@ async fn complete_from_probe(
     };
     match verdict_from_exit_code(exit_code) {
         ProbeVerdict::Landed => {
-            let stdout = if forge_spec_needs_json(frozen.event_spec.as_ref()) {
+            let stdout = if forge_planner_needs_json(frozen.event_spec.as_ref()) {
                 let Some(output_probe_argv) = probe.output_probe_argv.as_ref() else {
                     return Ok(ParkedRecovery::Fail {
                         reason:

@@ -1,5 +1,5 @@
 {
-  "description": "ratify.requested carries the track routing id and the spec-authored reason for parking on human ratification",
+  "description": "ratify.requested carries the track routing id and the planner-authored reason for parking on human ratification",
   "wire": {
     "ev": "ratify.requested",
     "data": {

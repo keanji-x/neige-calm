@@ -123,7 +123,7 @@ describe('rename', () => {
    * semantics is an explicit prop rather than the primitive's default.
    *
    * The track header passes `emptyCommit="clear"` because a track has a second
-   * namer (the spec agent's `calm.track.rename`, which only fires on an empty
+   * namer (the planner agent's `calm.track.rename`, which only fires on an empty
    * title). An area has none: nothing but its owner will ever name it, so an
    * empty commit stays a cancel and no request leaves.
    *

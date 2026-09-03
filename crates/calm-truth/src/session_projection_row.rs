@@ -112,7 +112,9 @@ fn runtime_kind_from_session_identity(
     match (provider, contract) {
         (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(WorkerSessionKind::Terminal),
         (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(WorkerSessionKind::CodexCard),
-        (WorkerProviderKind::Codex, WorkerContract::Planner) => Ok(WorkerSessionKind::SharedSpec),
+        (WorkerProviderKind::Codex, WorkerContract::Planner) => {
+            Ok(WorkerSessionKind::SharedPlanner)
+        }
         (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(WorkerSessionKind::ClaudeCard),
         _ => Err(WorkerSessionProjectionRepoError::Message {
             message: format!(
@@ -245,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn card_runtime_from_session_maps_shared_spec() {
+    fn card_runtime_from_session_maps_shared_planner() {
         let ws = worker_session(
             WorkerProviderKind::Codex,
             WorkerContract::Planner,
@@ -255,7 +257,7 @@ mod tests {
         assert_eq!(
             card_runtime_from_session(&ws, "card-1".into()).unwrap(),
             expected_runtime(
-                WorkerSessionKind::SharedSpec,
+                WorkerSessionKind::SharedPlanner,
                 Some(AgentProvider::Codex),
                 WorkerSessionState::Idle
             )

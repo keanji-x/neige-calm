@@ -418,8 +418,8 @@ impl PendingThreadStartRegistry {
                     if old_status != WorkerSessionState::Running {
                         session_set_status_tx(tx, &runtime.id, WorkerSessionState::Running).await?;
                     }
-                    // SharedSpec runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
-                    if runtime.kind == WorkerSessionKind::SharedSpec {
+                    // SharedPlanner runtimes switch to thread-keyed identity; CodexCard runtimes keep terminal_run_id as their completion handle.
+                    if runtime.kind == WorkerSessionKind::SharedPlanner {
                         session_clear_terminal_run_id_tx(tx, &runtime.id).await?;
                     }
                     let card = card_for_event;

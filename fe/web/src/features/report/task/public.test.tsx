@@ -34,7 +34,7 @@ describe('ReportTaskBlock', () => {
     expect(fields()).toEqual([
       'Done when', 'No direct call sites left.',
       'Checks', 'cargo fmt --check',
-      'Declared by', 'Spec agent',
+      'Declared by', 'Planner agent',
     ]);
   });
 
@@ -56,7 +56,7 @@ describe('ReportTaskBlock', () => {
     }} />);
     expect(screen.getByText('walk-fallback')).toBeTruthy();
     expect(screen.getByText('Withdrawn')).toBeTruthy();
-    expect(fields()).toEqual(['Declared by', 'Spec agent', 'Withdrawn by', 'You']);
+    expect(fields()).toEqual(['Declared by', 'Planner agent', 'Withdrawn by', 'You']);
   });
 
   /*

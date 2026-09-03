@@ -406,10 +406,10 @@ pub struct WorkerSession {
     /// Owning card. `Some` for every live/reachable session. Migration 0054
     /// backfilled it from `cards.session_id` for rows created before the
     /// column existed.
-    /// `None` ONLY for a pre-existing leaked terminal deferred-spec placeholder
+    /// `None` ONLY for a pre-existing leaked terminal deferred-planner placeholder
     /// whose card had already been deleted before the backfill. #679 PR9b-0.
     pub card_id: Option<CardId>,
-    /// Spec `HarnessSnapshot` moves here as-is (opaque to the kernel).
+    /// Planner `HarnessSnapshot` moves here as-is (opaque to the kernel).
     pub handle_state_json: Option<Value>,
     // --- liveness (execution-period observation, persisted; T2) ---
     pub liveness: LivenessTag,

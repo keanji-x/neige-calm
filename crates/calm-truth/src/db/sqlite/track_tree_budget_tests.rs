@@ -16,7 +16,7 @@ use serde_json::json;
 
 use super::track_tree::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TrackTreeTerm, TreeShare, deterministic_share,
-    track_tree_spec_inventory, track_tree_term,
+    track_tree_planner_inventory, track_tree_term,
 };
 use super::{
     SqlxRepo, evaluate_schedulability, project_tasks_tx, track_create_tx, track_update_tx,
@@ -90,7 +90,7 @@ async fn stamp_created_at(repo: &SqlxRepo, track: &str, created_at: i64) {
 }
 
 async fn set_ceiling(repo: &SqlxRepo, track: &str, ceiling: i64) {
-    sqlx::query("UPDATE tracks SET spec_task_ceiling=?1 WHERE id=?2")
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=?1 WHERE id=?2")
         .bind(ceiling)
         .bind(track)
         .execute(repo.pool())
@@ -154,9 +154,9 @@ async fn project(repo: &SqlxRepo, track: &str, keys: &[&str]) {
     tx.commit().await.unwrap();
 }
 
-async fn live_spec_count(repo: &SqlxRepo, root: &str) -> i64 {
+async fn live_planner_count(repo: &SqlxRepo, root: &str) -> i64 {
     let mut conn = repo.pool().acquire().await.unwrap();
-    track_tree_spec_inventory(&mut conn, root).await.unwrap()
+    track_tree_planner_inventory(&mut conn, root).await.unwrap()
 }
 
 async fn mark_all_tasks_as_running(repo: &SqlxRepo, track: &str) {
@@ -574,7 +574,7 @@ async fn over_share_declarations_are_diagnosed_against_the_root_track() {
         !verdicts[1]
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .any(|diagnostic| diagnostic.code == "planner_task_ceiling")
     );
 }
 
@@ -626,7 +626,7 @@ async fn a_tighter_track_ceiling_still_reports_the_ceiling_diagnostic() {
         verdicts[1]
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .any(|diagnostic| diagnostic.code == "planner_task_ceiling")
     );
 }
 
@@ -675,7 +675,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             .filter(|diagnostic| {
                 matches!(
                     diagnostic.code.as_str(),
-                    "spec_task_ceiling" | "tree_budget_exhausted"
+                    "planner_task_ceiling" | "tree_budget_exhausted"
                 )
             })
             .collect();
@@ -770,7 +770,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
                                                 .and_then(serde_json::Value::as_i64),
                                             diagnostic
                                                 .message_args
-                                                .get("minimum_spec_task_ceiling")
+                                                .get("minimum_planner_task_ceiling")
                                                 .and_then(serde_json::Value::as_i64),
                                         ),
                                     )
@@ -783,7 +783,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
                         );
                         for (action, (minimum_tree_budget, minimum_ceiling)) in &actions {
                             match action.as_str() {
-                                "raise_spec_task_ceiling" => {
+                                "raise_planner_task_ceiling" => {
                                     let minimum = minimum_ceiling.expect(
                                         "ceiling action must carry an occupancy-safe minimum",
                                     );
@@ -919,7 +919,7 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
         .filter(|diagnostic| {
             matches!(
                 diagnostic.code.as_str(),
-                "spec_task_ceiling" | "tree_budget_exhausted"
+                "planner_task_ceiling" | "tree_budget_exhausted"
             )
         })
         .collect::<Vec<_>>();
@@ -952,7 +952,7 @@ async fn a_frozen_track_with_nonzero_ceiling_occupancy_names_both_bounds() {
         .execute(repo.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET tree_task_budget=2,spec_task_ceiling=1 WHERE id=?1")
+    sqlx::query("UPDATE tracks SET tree_task_budget=2,planner_task_ceiling=1 WHERE id=?1")
         .bind(&root)
         .execute(repo.pool())
         .await
@@ -966,13 +966,16 @@ async fn a_frozen_track_with_nonzero_ceiling_occupancy_names_both_bounds() {
     let diagnostics = &verdicts[0].diagnostics;
     let ceiling = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+        .find(|diagnostic| diagnostic.code == "planner_task_ceiling")
         .expect("ceiling diagnostic");
-    assert_eq!(ceiling.action.as_deref(), Some("raise_spec_task_ceiling"));
+    assert_eq!(
+        ceiling.action.as_deref(),
+        Some("raise_planner_task_ceiling")
+    );
     assert_eq!(
         ceiling
             .message_args
-            .get("minimum_spec_task_ceiling")
+            .get("minimum_planner_task_ceiling")
             .and_then(serde_json::Value::as_i64),
         Some(4)
     );
@@ -1179,7 +1182,7 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
         &mut tx,
         &lonely,
         TrackPatch {
-            spec_task_ceiling: Some(None),
+            planner_task_ceiling: Some(None),
             tree_task_budget: Some(Some(1)),
             ..Default::default()
         },
@@ -1251,7 +1254,9 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     };
     let live_count = || async {
         let mut conn = repo.pool().acquire().await.unwrap();
-        track_tree_spec_inventory(&mut conn, &root).await.unwrap()
+        track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap()
     };
 
     let before = in_flight_bytes().await;
@@ -1320,7 +1325,7 @@ async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() 
     let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
     project(&repo, &root, &key_refs).await;
 
-    assert_eq!(live_spec_count(&repo, &root).await, 32);
+    assert_eq!(live_planner_count(&repo, &root).await, 32);
     let new_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND key LIKE 'new-%'")
             .bind(&root)
@@ -1350,7 +1355,7 @@ async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission()
 
     project(&repo, &root, &["new-a", "new-b", "new-c", "new-d"]).await;
 
-    assert_eq!(live_spec_count(&repo, &root).await, 6);
+    assert_eq!(live_planner_count(&repo, &root).await, 6);
     let new_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND key LIKE 'new-%'")
             .bind(&root)
@@ -1481,7 +1486,7 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     let ceiling = frozen_at_zero[0]
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+        .find(|diagnostic| diagnostic.code == "planner_task_ceiling")
         .expect("the frozen tree and zero local ceiling both bind");
     assert_eq!(
         ceiling
@@ -1572,7 +1577,9 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
         "one over-share member must freeze every member"
     );
     assert_eq!(
-        track_tree_spec_inventory(&mut conn, &root).await.unwrap(),
+        track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap(),
         8
     );
     drop(conn);
@@ -1595,7 +1602,9 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
         "capacity returns once every member fits its share"
     );
     assert_eq!(
-        track_tree_spec_inventory(&mut conn, &root).await.unwrap(),
+        track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap(),
         8
     );
 }
@@ -1761,7 +1770,7 @@ async fn a_downward_two_cycle_terminates_quickly() {
         .fetch_all(&mut *conn)
         .await
         .unwrap();
-    let inventory = super::track_tree::track_tree_spec_inventory(&mut conn, &a)
+    let inventory = super::track_tree::track_tree_planner_inventory(&mut conn, &a)
         .await
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(1));

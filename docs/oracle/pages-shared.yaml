@@ -5,19 +5,19 @@
 #     1. Settings 手写 schema-form markup  ↔  SchemaForm 组件
 #     2. .calm-select base-select 结构      ↔  NewTaskForm area 下拉 / Area.tsx Workflow 下拉
 #     3. .new-task-form-* 类被 Area.tsx 借用 ↔  NewTaskForm 内部用法
-#     4. react-markdown 管线 4 处（其中 SpecConversation 缺 urlTransform/ReportLink，行为已发散）
+#     4. react-markdown 管线 4 处（其中 PlannerConversation 缺 urlTransform/ReportLink，行为已发散）
 #     5. TOC 抽取两套（report-outline.ts mdast ↔ file-viewer-markdown-toc.tsx 手写正则）
 #     6. area 调色板 6 色（NewTaskForm ↔ Sidebar，取色策略刻意不同）
 #     7. readHostThemeRgb()（NewTaskForm ↔ useTodayTerminal）
 #     8. 可编辑标题（Area EditableTitle ↔ Track 行内重命名；#288 抑制器只在 Area 侧）
 #     9. pin 按钮（Sidebar 内部 TrackRow ↔ shared/components/TrackRow）
 #    10. "Delete track?" 确认文案（Area.tsx ↔ Sidebar.tsx）
-#   死代码（标注「不迁移」）: TrackContext、useSpecCurrentRun.latestTool、isCompletedMessageItem 的未用参数
+#   死代码（标注「不迁移」）: TrackContext、usePlannerCurrentRun.latestTool、isCompletedMessageItem 的未用参数
 #
 # 覆盖文件:
 #   pages/: TrackReportPage, report-blocks/{index,candles,table,app,task}, report-outline,
-#           report-link-ids, SpecConversation, specChatItems, useSpecChatHistory,
-#           useSpecCurrentRun, Today, Area, Track, Settings, _shared
+#           report-link-ids, PlannerConversation, plannerChatItems, usePlannerChatHistory,
+#           usePlannerCurrentRun, Today, Area, Track, Settings, _shared
 #   shared/components/: Sidebar, NewTaskForm, DirectoryPicker, SchemaForm, AddPanel, TrackRow,
 #           TrackCard, TrackGlyph, TrackLifecycleBadge, CardStatusDot, CardExitBadge, ProgressBar,
 #           Crumbs, ConnectionIndicator, TitleBar, TrackContext, helpers, issueUrl, 图标组件
@@ -35,7 +35,7 @@
   family: report-shell
   statement: >
     report 页必须是单一 grid 容器的三栏布局(rail | center | drawer),折叠态用
-    grid-template-columns 归零而不是卸载节点;抽屉关闭时第三栏宽度为 0 但 SpecConversation 仍挂载。
+    grid-template-columns 归零而不是卸载节点;抽屉关闭时第三栏宽度为 0 但 PlannerConversation 仍挂载。
   why: >
     calm.css 注释与 TrackReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
@@ -176,8 +176,8 @@
   kind: capability
   family: report-shell
   statement: >
-    活动面板有三个互斥空/载入态:初次加载中("Loading conversation activity…")、有 spec 卡但无 user 轮次
-    (一个"打开会话"图标按钮)、以及无 spec 卡("This track has no Spec Agent.")。
+    活动面板有三个互斥空/载入态:初次加载中("Loading conversation activity…")、有 planner 卡但无 user 轮次
+    (一个"打开会话"图标按钮)、以及无 planner 卡("This track has no Planner Agent.")。
   why: >
     "distinguishes both activity empty states" 与 "does not claim the conversation is empty before
     initial history loads" —— 加载中误报空态是曾经的 bug。
@@ -197,7 +197,7 @@
     抽屉打开时活动面板必须同时 `aria-hidden` 且其按钮 `tabIndex={-1}` —— 仅靠 CSS 隐藏不够。
   why: >
     面板用 `.hide` class 做位移淡出而非 display:none,节点仍在 DOM 与 AT 树里;不设 tabIndex 会留下
-    不可见的 tab 停靠点。SpecConversation 开抽屉时把焦点接管到 textarea(见 INV-SPECCONVO-004)。
+    不可见的 tab 停靠点。PlannerConversation 开抽屉时把焦点接管到 textarea(见 INV-SPECCONVO-004)。
   source: web/src/pages/TrackReportPage.tsx:240-245,266,291
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:346
   owner_slice: features/report/shell
@@ -228,7 +228,7 @@
   kind: invariant
   family: report-shell
   statement: >
-    切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
+    切换 planner 卡(plannerCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
   source: web/src/pages/TrackReportPage.tsx:899-901
@@ -301,7 +301,7 @@
   why: >
     可滚动区域不可聚焦则键盘用户无法翻页;两处都带 eslint-disable 注释显式声明这是有意为之
     ("scrollable report document must be keyboard-focusable")。
-  source: web/src/pages/TrackReportPage.tsx:913-918 + web/src/pages/SpecConversation.tsx:568-574
+  source: web/src/pages/TrackReportPage.tsx:913-918 + web/src/pages/PlannerConversation.tsx:568-574
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:318
   owner_slice: features/report/shell
   intentional_omission: false
@@ -347,7 +347,7 @@
   kind: capability
   family: report-shell
   statement: >
-    报告页头必须有署名行(固定 "Spec Agent" 头像 + 相对时间 updatedAt),aria-label="Report metadata"。
+    报告页头必须有署名行(固定 "Planner Agent" 头像 + 相对时间 updatedAt),aria-label="Report metadata"。
   why: >
     报告是 agent 的产出物,署名把"谁写的/多久前"固定在文档顶部;测试锁定相对时间格式化。
   source: web/src/pages/TrackReportPage.tsx:176-189,993-994
@@ -803,7 +803,7 @@
     task 卡渲染目标、完成条件、排队/执行状态与诊断；等待人工放行时提供按钮。墓碑形态
     显示「不做」记录及 declared_by + tombstoned_by 双署名审计线索，并把撤回记录与恢复
     自动化作为两个独立按钮。双署名只在同一个 track 内成立：fork 复制块时两个署名一起
-    归一化为 "spec"（985-doc-as-plan.md §7.2 / #1111），从模板 fork 出来的墓碑一律
+    归一化为 "planner"（985-doc-as-plan.md §7.2 / #1111），从模板 fork 出来的墓碑一律
     显示成 AI 留下的。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
@@ -1030,20 +1030,20 @@
   migration: pending
 
 # ============================================================
-# §5 SpecConversation —— 会话抽屉
+# §5 PlannerConversation —— 会话抽屉
 # ============================================================
 
 - id: INV-SPECCONVO-001
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    会话抽屉持久挂载:关闭不卸载 SpecConversation,草稿(draft)必须跨关闭/重开存活。
+    会话抽屉持久挂载:关闭不卸载 PlannerConversation,草稿(draft)必须跨关闭/重开存活。
   why: >
     "keeps the draft when the persistently mounted drawer closes and reopens" —— 用户打字到一半去看报告
     再回来,草稿没了是最刺痛的丢失。
-  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/TrackReportPage.tsx:1058-1073
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:579 + web/src/pages/TrackReportPage.test.tsx:2182
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:336 + web/src/pages/TrackReportPage.tsx:1058-1073
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:579 + web/src/pages/TrackReportPage.test.tsx:2182
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1052,16 +1052,16 @@
 
 - id: INV-SPECCONVO-002
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    状态芯片与 Reset 按钮只在抽屉打开且存在 spec 卡时渲染;整个输入栏(composer)在无 spec 卡时不渲染,
-    正文改为 "Spec Agent is unavailable for this track."
+    状态芯片与 Reset 按钮只在抽屉打开且存在 planner 卡时渲染;整个输入栏(composer)在无 planner 卡时不渲染,
+    正文改为 "Planner Agent is unavailable for this track."
   why: >
     "shows the status chip and Reset only while the drawer is open" + "renders an unavailable empty state
-    and no composer without a spec card" —— 关闭的抽屉里留活控件会被 tab 到。
-  source: web/src/pages/SpecConversation.tsx:515-554,576-579,620
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:522,733
-  owner_slice: features/spec/conversation
+    and no composer without a planner card" —— 关闭的抽屉里留活控件会被 tab 到。
+  source: web/src/pages/PlannerConversation.tsx:515-554,576-579,620
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:522,733
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1070,15 +1070,15 @@
 
 - id: INV-SPECCONVO-003
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     状态芯片必须优先显示 harness phase,只有 phase 为 null 时才回退到 overlay 的 rawState。
   why: >
-    源码注释(#668 fix):"no status overlay is ever published for spec cards, so the overlay-derived
+    源码注释(#668 fix):"no status overlay is ever published for planner cards, so the overlay-derived
     rawState … is only the fallback." 反过来会让芯片永远停在 'Starting'。
-  source: web/src/pages/SpecConversation.tsx:516-526
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:540,553
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:516-526
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:540,553
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1087,16 +1087,16 @@
 
 - id: INV-SPECCONVO-004
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    抽屉打开(且有 spec 卡)时必须在 ~30ms 延时后滚到底并把焦点移到 textarea;这次焦点转移同时承担把焦点
+    抽屉打开(且有 planner 卡)时必须在 ~30ms 延时后滚到底并把焦点移到 textarea;这次焦点转移同时承担把焦点
     从即将变成 aria-hidden 的活动面板按钮上挪走的职责。
   why: >
     源码注释:"Also moves focus off an activity-row button once its panel becomes aria-hidden;
     activity-panel selection relies on this handoff." 焦点留在 aria-hidden 子树里是 a11y 硬错误。
-  source: web/src/pages/SpecConversation.tsx:358-368
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:562
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:358-368
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:562
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1105,16 +1105,16 @@
 
 - id: INV-SPECCONVO-005
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     "粘底"由 stickToBottomRef 决定,阈值为距底 ≤ 40px;用户往上滚即解除粘底,点"Load earlier"与按目标条目
     定位时必须显式解除,发送成功后必须重新粘上。
   why: >
     源码注释(#654):"even if the reader had scrolled up, a successful send should land them on their new
     message (and the reply that follows)"。新消息把正在读历史的用户拽到底部是反面 bug。
-  source: web/src/pages/SpecConversation.tsx:349-356,370-398,418-425,586-590
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1566
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:349-356,370-398,418-425,586-590
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1566
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1123,15 +1123,15 @@
 
 - id: CAP-SPECCONVO-006
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     定位到 targetEntryId 时按 `[data-chat-entry-id]` 查找并 scrollIntoView({block:'center'});找不到则
     退回滚到底;无论哪条路径都必须调用 onTargetConsumed 清除目标。
   why: >
     目标可能已被分页挤出窗口;不消费目标会在下次 rerender 反复重滚(测试 "does not repeat target scrolling")。
-  source: web/src/pages/SpecConversation.tsx:370-386,602-606
+  source: web/src/pages/PlannerConversation.tsx:370-386,602-606
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:389
-  owner_slice: features/spec/conversation
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1140,16 +1140,16 @@
 
 - id: CAP-SPECCONVO-007
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     输入框是自动增高的单行 textarea,上限 160px;Enter 发送、Shift+Enter 换行、空草稿的 Enter 不发送、
     提交前 trim,发送成功后清空草稿。
   why: >
     一组专门测试逐条锁定(submits with Enter and clears the draft / keeps Shift+Enter as a newline /
     does not submit empty textarea / submits trimmed input)。
-  source: web/src/pages/SpecConversation.tsx:400-429,640-663
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:591,631,742,754
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:400-429,640-663
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:591,631,742,754
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1158,15 +1158,15 @@
 
 - id: INV-SPECCONVO-008
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     输入法组字期间(nativeEvent.isComposing 或 keyCode===229)的 Enter 必须被完全忽略,不发送也不换行;
     Esc 停止同样跳过组字态。
   why: >
     中日韩输入法用 Enter 确认候选词,不拦会把半截拼音发出去。两处都显式判 keyCode 229 作为老浏览器兜底。
-  source: web/src/pages/SpecConversation.tsx:465-480,644-653
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:766,1206
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:465-480,644-653
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:766,1206
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1175,16 +1175,16 @@
 
 - id: INV-SPECCONVO-009
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     Esc 停止当前 turn 的监听器挂在 document 上,但必须满足全部条件才处理:抽屉打开、run.working 为真、
     reset 对话框未开、事件未被 defaultPrevented、非组字态、且 e.target 在抽屉 DOM 子树内;处理时才 preventDefault。
   why: >
     源码注释(#668)逐条列出:报告正文/rail/菜单/document.body 上的 Esc 不该停 turn;已被"关闭器"消费的 Esc
     (defaultPrevented)不能再触发;reset 对话框的 Esc-取消优先;进行中的 interrupt 让 Esc 变惰性。
-  source: web/src/pages/SpecConversation.tsx:458-480
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1152,1163,1172,1190,1206
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:458-480
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1152,1163,1172,1190,1206
+  owner_slice: features/planner/conversation
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1193,16 +1193,16 @@
 
 - id: INV-SPECCONVO-010
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     停止用的可见性/禁用是两个不同判据:stopVisible = working || stopping(interrupt 在途时按钮仍可见但惰性),
     stopDisabled = stopPending || stopping。
   why: >
     源码注释:"While an interrupt is in flight the stop affordances stay visible but inert — pressing Stop
     twice can't dispatch a second interrupt." 直接隐藏会让按钮闪烁并让用户以为没生效。
-  source: web/src/pages/SpecConversation.tsx:452-456
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1082,1105
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:452-456
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1082,1105
+  owner_slice: features/planner/conversation
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1211,15 +1211,15 @@
 
 - id: INV-SPECCONVO-011
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     turn 运行中,发送键位置必须换成停止方块(■)—— 即使草稿非空 ■ 也优先;此时 Enter 仍然照常把草稿排队发送。
   why: >
     源码注释(#668):"even with a non-empty draft, ■ wins (Enter still queues the draft)." 这是刻意的
     "按钮语义让位、键盘语义不变"。
-  source: web/src/pages/SpecConversation.tsx:664-693
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1124
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:664-693
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1124
+  owner_slice: features/planner/conversation
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1228,15 +1228,15 @@
 
 - id: INV-SPECCONVO-012
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     成功停止后必须追加一条本地系统行 "Turn stopped";但服务端返回 stopped=false(空闲无操作)时不得追加。
   why: >
     源码注释:"Interrupted turns never emit `item/completed`, so without this FE-local row the stop would be
     visually silent (#668). Skipped on the graceful idle no-op — nothing was actually stopped."
-  source: web/src/pages/SpecConversation.tsx:431-444
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1225,1238
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:431-444
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1225,1238
+  owner_slice: features/planner/conversation
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1245,15 +1245,15 @@
 
 - id: INV-SPECCONVO-013
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    submit / stop / reset 三个异步动作解析后,都必须先比对 specCardId 是否仍是当时那张卡,不一致就直接返回,
+    submit / stop / reset 三个异步动作解析后,都必须先比对 plannerCardId 是否仍是当时那张卡,不一致就直接返回,
     不做任何状态写入。
   why: >
     组件在卡之间复用;"does not clear a new card draft when a previous card submit completes" 就是这个竞态。
-  source: web/src/pages/SpecConversation.tsx:346-347,411-416,434-436,483-489
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:710
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:346-347,411-416,434-436,483-489
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:710
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1262,15 +1262,15 @@
 
 - id: CAP-SPECCONVO-014
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    Reset 走 ConfirmDialog(destructive,文案说明"杀掉当前 spec 守护进程、报告保留、会话记录丢弃");
+    Reset 走 ConfirmDialog(destructive,文案说明"杀掉当前 planner 守护进程、报告保留、会话记录丢弃");
     reset 失败的错误必须渲染在对话框内部,且只在真正尝试过之后显示(resetAttempted)。
   why: >
     "confirms reset session through ConfirmDialog";resetAttempted 防止上一次的陈旧错误在对话框刚打开时就出现。
-  source: web/src/pages/SpecConversation.tsx:482-493,699-727
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:779
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:482-493,699-727
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:779
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1279,16 +1279,16 @@
 
 - id: CAP-SPECCONVO-015
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    服务端 409 `spec_harness_dormant` 时必须渲染 role=alert 的休眠提示,并给 Reset 按钮打上
+    服务端 409 `planner_harness_dormant` 时必须渲染 role=alert 的休眠提示,并给 Reset 按钮打上
     `data-dormant` 高亮,错误段落同样带 data-dormant。
   why: >
-    "renders the dormant alert and highlights Reset on spec_harness_dormant" —— 休眠时唯一的出路是 Reset,
+    "renders the dormant alert and highlights Reset on planner_harness_dormant" —— 休眠时唯一的出路是 Reset,
     必须把用户指过去(#649 i2)。
-  source: web/src/pages/SpecConversation.tsx:540-552,623-633
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:664
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:540-552,623-633
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:664
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1297,16 +1297,16 @@
 
 - id: CAP-SPECCONVO-016
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     reset 在途时必须封锁 submit(onSubmit 早退 + textarea/发送键 disabled);submit 在途时输入行加
     `--pending` 修饰并禁用输入框。
   why: >
     "blocks submit while reset is pending" / "marks and disables the input while submit is pending" ——
     reset 会换掉整个会话,途中发出的消息会丢进旧 session。
-  source: web/src/pages/SpecConversation.tsx:408-410,634-639,657,685
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:641,688
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:408-410,634-639,657,685
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:641,688
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1315,14 +1315,14 @@
 
 - id: CAP-SPECCONVO-017
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     打字指示器(三点 + "Esc to stop" 提示)只在 run.working 为真时渲染在转录末尾。
   why: >
     "shows the typing indicator only while a turn is live on the wire" —— 它同时是 Esc 快捷键的唯一可见提示。
-  source: web/src/pages/SpecConversation.tsx:48-61,615
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:998
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:48-61,615
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:998
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1331,7 +1331,7 @@
 
 - id: CAP-SPECCONVO-018
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     转录必须能渲染九种条目形态:user(可折叠 clamp + Show more/less)、agent(markdown)、system、
     run(命令 + 状态芯片 + exit code + 时长 + 折叠输出)、tool(server·tool 署名 + error/status 芯片 +
@@ -1339,9 +1339,9 @@
     compact("context compacted" 分隔线)、unknown(显示原始 itemType 的分隔线)。
   why: >
     每一种都有专门测试;unknown 分隔线是"遗留 item 类型"的兜底 —— 没有它老转录会整段消失。
-  source: web/src/pages/SpecConversation.tsx:85-325
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:796,818,863,913,946,955,964
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:85-325
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:796,818,863,913,946,955,964
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1350,16 +1350,16 @@
 
 - id: INV-SPECCONVO-019
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     run/tool/edit 三类条目的 "warn" 判据是 `status !== '' && status !== 'completed'`,与 exitCode≠0 / isError
     分开;declined 之类的状态必须在没有 exit code / 没有 error 的情况下也能显示为警告。
   why: >
     "threads declined command execution status without an exit code" / "…declined MCP tool status without
     an error" —— 被拒绝的命令没有退出码,只看退出码会把它显示成正常完成。
-  source: web/src/pages/SpecConversation.tsx:116-118,162-163,225
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:846,899 + web/src/pages/specChatItems.test.ts:224,280
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:116-118,162-163,225
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:846,899 + web/src/pages/plannerChatItems.test.ts:224,280
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1368,14 +1368,14 @@
 
 - id: INV-SPECCONVO-020
   kind: invariant
-  family: spec-conversation
+  family: planner-conversation
   statement: >
     每条转录行的 React key 必须是 `${queued|item}:${id}`,因为本地回声/系统行用负数 id。
   why: >
     回声 id 由 echoIdRef 递减生成(负数),与服务端正数 id 不会撞;前缀区分同一 id 的排队态与落地态。
-  source: web/src/pages/SpecConversation.tsx:602-606 + web/src/pages/useSpecChatHistory.ts:392,418
+  source: web/src/pages/PlannerConversation.tsx:602-606 + web/src/pages/usePlannerChatHistory.ts:392,418
   authoritative_test: NONE
-  owner_slice: features/spec/conversation
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1384,15 +1384,15 @@
 
 - id: CAP-SPECCONVO-021
   kind: capability
-  family: spec-conversation
+  family: planner-conversation
   statement: >
-    空转录状态("No messages yet — ask the Spec Agent below.")的判据必须是 entries 为空 且 非 working
+    空转录状态("No messages yet — ask the Planner Agent below.")的判据必须是 entries 为空 且 非 working
     且 没有更早分页;有更早历史时不显示空态。
   why: >
     "does not show the empty state while earlier history is available" + "shows an empty history state"。
-  source: web/src/pages/SpecConversation.tsx:507-508,596-600
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1376,1394
-  owner_slice: features/spec/conversation
+  source: web/src/pages/PlannerConversation.tsx:507-508,596-600
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1376,1394
+  owner_slice: features/planner/conversation
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1400,19 +1400,19 @@
   migration: pending
 
 # ============================================================
-# §6 useSpecChatHistory —— 分页 / 回声 / 系统行锚定
+# §6 usePlannerChatHistory —— 分页 / 回声 / 系统行锚定
 # ============================================================
 
 - id: INV-CHATHIST-001
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     每次请求都带一个 requestSeq;解析后必须同时校验 cardId 未变 且 seq 仍是最新,否则整个结果丢弃。
   why: >
     切卡与并发的 initial/tail/earlier 三条取数路径会交错完成;缺任一校验都会把 A 卡的历史塞进 B 卡。
-  source: web/src/pages/useSpecChatHistory.ts:197-232,251-256,314-319
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:710
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:197-232,251-256,314-319
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:710
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1421,16 +1421,16 @@
 
 - id: INV-CHATHIST-002
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     tail 抓取必须在返回整页(rows.length === PAGE_LIMIT === 300)时继续抓下一页,直到不满一页为止;
     抓取期间到达的新事件用 tailRefetchQueued 标记,外层 do-while 再跑一轮而不是并发第二次抓取。
   why: >
     "continues fetching the tail after a full asc page of command items" —— 一次工具密集的 turn 能一口气
     产生 >300 行,只抓一页会永久丢尾;并发抓取会重复插入。
-  source: web/src/pages/useSpecChatHistory.ts:284-346
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1352
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:284-346
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1352
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1439,16 +1439,16 @@
 
 - id: INV-CHATHIST-003
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     tail 抓取失败必须吞掉异常、保留当前可见窗口、清掉排队标记,由下一个 harness.item.added 事件自然重试 ——
     不得 rethrow。
   why: >
     源码注释:"The listener fires this as `void fetchTail()`, so rethrowing would be an unhandled rejection."
     测试 "survives a tail-fetch failure and retries on the next event"。
-  source: web/src/pages/useSpecChatHistory.ts:336-345
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1613
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:336-345
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1613
+  owner_slice: features/planner/chat-history
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1457,15 +1457,15 @@
 
 - id: INV-CHATHIST-004
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     首屏历史请求失败时必须 clearHistory 并把 initialLoadedCardId 置为该卡 —— 即离开"初次加载中"状态。
   why: >
     "leaves initial loading when the first history request fails" —— 否则失败会永久卡在加载态,连空态和
     输入框都出不来。
-  source: web/src/pages/useSpecChatHistory.ts:215-223,478
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1384
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:215-223,478
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1384
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1474,15 +1474,15 @@
 
 - id: CAP-CHATHIST-005
   kind: capability
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     收到 `harness.transcript.cleared` 事件(同卡)时必须递增 seq、清空全部本地状态(含回声与系统行)、
     重置 initialLoadedCardId 并重新拉取首页。
   why: >
     转录被服务端清空后继续显示旧行是幻觉;回声/系统行是纯前端产物,也必须一起清。
-  source: web/src/pages/useSpecChatHistory.ts:355-363,182-195
+  source: web/src/pages/usePlannerChatHistory.ts:355-363,182-195
   authoritative_test: NONE
-  owner_slice: features/spec/chat-history
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1491,16 +1491,16 @@
 
 - id: INV-CHATHIST-006
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     本地回声(addEcho)与真实 user 行的匹配规则是:trim 后完全相等,或真实文本以 `${echo}\n` 开头;
     每条真实 user 行最多消费一条回声(matchedUserIndexes 去重)。
   why: >
     批量 turn 会在用户文本后追加系统观察行(所以要前缀+换行匹配),但"只共享前缀"的另一条消息不该吃掉回声
     ("keeps a queued echo when a real user row only shares its prefix");一对一消费防止两条相同消息被吃成一条。
-  source: web/src/pages/useSpecChatHistory.ts:89-151
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1449,1486
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:89-151
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1449,1486
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1509,16 +1509,16 @@
 
 - id: INV-CHATHIST-007
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     addEcho 前必须先看最近 5 条(ECHO_RECONCILE_LOOKBACK)是否已有匹配的真实 user 行,有则不加回声。
   why: >
     "does not add an echo when the real user entry already landed" —— 服务端比 submit 的 resolve 还快时
     会出现重复气泡。同时 "adds an echo when a landed real user entry only shares its prefix" 要求这个检查
     用的是同一套严格匹配规则。
-  source: web/src/pages/useSpecChatHistory.ts:379-403
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1514,1533
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:379-403
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1514,1533
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1527,16 +1527,16 @@
 
 - id: INV-CHATHIST-008
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     本地系统行必须锚定在"创建时最新的服务端条目 id"之后;若首页历史尚未返回,锚点记为 'pending',
     并在首页落地时解析为该页最新条目(转录真空时才是 null)。
   why: >
     源码注释(#668 review P2/P3):不锚定的话后到的行会插到系统行上面;'pending' 是因为"entriesRef 为空"
     在加载完成前无法与"转录真的空"区分,直接当 null 会把 "Turn stopped" 顶到整段对话最前面。
-  source: web/src/pages/useSpecChatHistory.ts:37-53,163-177,405-428
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1256,1324
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:37-53,163-177,405-428
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1256,1324
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1545,15 +1545,15 @@
 
 - id: INV-CHATHIST-009
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     多条系统行的最终顺序由各自锚点决定,而不是创建时间;锚点 id 已被分页挤出窗口时回退到"最后一条 id ≤ 锚点
     的条目之后",范围外则落到列表最前(slot 0)。回声气泡始终排在列表末尾。
   why: >
     "orders multiple notes by their anchors, not creation recency";锚点回退规则在源码注释里逐条写明。
-  source: web/src/pages/useSpecChatHistory.ts:430-474
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1288
-  owner_slice: features/spec/chat-history
+  source: web/src/pages/usePlannerChatHistory.ts:430-474
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1288
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1562,15 +1562,15 @@
 
 - id: CAP-CHATHIST-010
   kind: capability
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     "Load earlier" 按钮只在 hasEarlier(上一页恰好满 300 行)时出现;加载中禁用并显示 "Loading...";
     返回空页时把 hasEarlier 置 false;失败保留当前窗口且可重试。
   why: >
     以"恰好满页"推断还有更早历史是唯一不需要额外计数接口的判据;失败不清窗口是为了可重试。
-  source: web/src/pages/useSpecChatHistory.ts:234-282 + web/src/pages/SpecConversation.tsx:582-594
+  source: web/src/pages/usePlannerChatHistory.ts:234-282 + web/src/pages/PlannerConversation.tsx:582-594
   authoritative_test: NONE
-  owner_slice: features/spec/chat-history
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1579,14 +1579,14 @@
 
 - id: INV-CHATHIST-011
   kind: invariant
-  family: spec-chat-history
+  family: planner-chat-history
   statement: >
     追加/前置条目一律按 id 去重(appendUnique / prependUnique),且没有变化时必须返回原数组引用。
   why: >
     tail 与 loadEarlier 的窗口会重叠;返回原引用避免无谓 rerender 触发"粘底滚动"。
-  source: web/src/pages/useSpecChatHistory.ts:69-87
+  source: web/src/pages/usePlannerChatHistory.ts:69-87
   authoritative_test: NONE
-  owner_slice: features/spec/chat-history
+  owner_slice: features/planner/chat-history
   intentional_omission: false
   runtime_layer: features
   verification_owner: e2e
@@ -1594,20 +1594,20 @@
   migration: pending
 
 # ============================================================
-# §7 useSpecCurrentRun —— phase 闸门
+# §7 usePlannerCurrentRun —— phase 闸门
 # ============================================================
 
 - id: INV-SPECRUN-001
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     "working" 必须来自 harness phase(issuing_turn / turn_running),不得用 `fsm === 'Working'`。
   why: >
-    源码注释(#668 fix):"no status overlay is ever published for spec cards in production, so the
+    源码注释(#668 fix):"no status overlay is ever published for planner cards in production, so the
     overlay-derived fsm never reaches 'Working' … and every stop affordance stayed dead."
-  source: web/src/pages/useSpecCurrentRun.ts:134-143
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:128,142
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:134-143
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:128,142
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1616,16 +1616,16 @@
 
 - id: INV-SPECRUN-002
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
-    挂载/切卡时必须用 `GET /spec/run` 播种 phase,但已到达的事件优先 —— 播种写入必须是
+    挂载/切卡时必须用 `GET /planner/run` 播种 phase,但已到达的事件优先 —— 播种写入必须是
     `setPhase(current => current ?? run.phase)`,且组件卸载后不写。
   why: >
     源码注释:"`harness.phase.changed` only reports transitions, so a page opened mid-turn would otherwise
     sit on null"; "An event that lands first wins — it is strictly newer than the snapshot read."
-  source: web/src/pages/useSpecCurrentRun.ts:152-184
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:164,176
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:152-184
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:164,176
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1634,15 +1634,15 @@
 
 - id: INV-SPECRUN-003
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     播种请求失败必须静默(best-effort),所有闸门保持关闭直到下一次 phase 事件到达。
   why: >
     源码注释:"on failure the gates simply stay closed until the next phase transition arrives."
     fail-open 会让停止按钮对着一个并不在跑的 turn 亮起。
-  source: web/src/pages/useSpecCurrentRun.ts:175-179
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:118
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:175-179
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:118
+  owner_slice: features/planner/current-run
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1651,14 +1651,14 @@
 
 - id: INV-SPECRUN-004
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     phase 事件必须按 card_id 过滤;换卡时先把 phase 置 null 再订阅。
   why: >
     "ignores phase events for other cards" —— 共享事件流会把别的卡的 phase 灌进来。
-  source: web/src/pages/useSpecCurrentRun.ts:152-164
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:156
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:152-164
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:156
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1667,16 +1667,16 @@
 
 - id: INV-SPECRUN-005
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     reset 成功后必须把 phase 清空(关闭全部闸门)、清掉 submitDormant / submitError / stopError;
     reset 自身失败时必须保留原有的 stopError。
   why: >
     源码注释:"A successful reset mints a fresh harness session — the dormant state (and its stale errors)
     no longer applies." 测试 "keeps the stop error when reset itself fails" 锁定反面。
-  source: web/src/pages/useSpecCurrentRun.ts:196-219
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:196,210,227,246
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:196-219
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:196,210,227,246
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1685,15 +1685,15 @@
 
 - id: INV-SPECRUN-006
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     `issuing_interrupt` 在 phaseToFsm 里必须映射到 Working(而不是独立颜色),但 working=false、stopping=true。
   why: >
     源码注释:"an interrupt in flight is still 'the agent is busy' to the reader." 芯片配色与闸门语义
     刻意分离。
-  source: web/src/pages/useSpecCurrentRun.ts:100-122,142-143
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:142
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:100-122,142-143
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:142
+  owner_slice: features/planner/current-run
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1702,15 +1702,15 @@
 
 - id: GATE-SPECRUN-007
   kind: gate
-  family: spec-run
+  family: planner-run
   statement: >
     toFsmState / phaseToFsm 必须对未知 token 回落到 'Starting',绝不抛错;humanizeToken 把 snake_case
     转成 Title Case 供芯片显示。
   why: >
     phase 与 state 都是服务端字符串,新增枚举值会先于前端发布;回落到 Starting 是最保守的"未知即未就绪"。
-  source: web/src/pages/useSpecCurrentRun.ts:73-128
-  authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:118
-  owner_slice: features/spec/current-run
+  source: web/src/pages/usePlannerCurrentRun.ts:73-128
+  authoritative_test: web/src/pages/usePlannerCurrentRun.test.tsx:118
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1719,15 +1719,15 @@
 
 - id: CAP-SPECRUN-008
   kind: capability
-  family: spec-run
+  family: planner-run
   statement: >
     stop() 必须返回服务端的 `stopped` 布尔(true=真的打断了正在跑的 turn,false=harness 本就空闲的优雅 no-op);
-    submit/stop 都要把 409 `spec_harness_dormant` 转成同一句可行动文案并置 submitDormant。
+    submit/stop 都要把 409 `planner_harness_dormant` 转成同一句可行动文案并置 submitDormant。
   why: >
-    stopped 布尔是 SpecConversation 决定要不要加 "Turn stopped" 系统行的唯一依据(见 INV-SPECCONVO-012)。
-  source: web/src/pages/useSpecCurrentRun.ts:56-71,221-276
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:1238
-  owner_slice: features/spec/current-run
+    stopped 布尔是 PlannerConversation 决定要不要加 "Turn stopped" 系统行的唯一依据(见 INV-SPECCONVO-012)。
+  source: web/src/pages/usePlannerCurrentRun.ts:56-71,221-276
+  authoritative_test: web/src/pages/PlannerConversation.test.tsx:1238
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1736,14 +1736,14 @@
 
 - id: INV-SPECRUN-009
   kind: invariant
-  family: spec-run
+  family: planner-run
   statement: >
     切卡时必须把 reset/submit/stop 三组 pending 与 error 状态全部重置。
   why: >
     错误状态是 per-card 的;不清会让新卡一打开就顶着上一张卡的红字。
-  source: web/src/pages/useSpecCurrentRun.ts:186-194
+  source: web/src/pages/usePlannerCurrentRun.ts:186-194
   authoritative_test: NONE
-  owner_slice: features/spec/current-run
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1751,21 +1751,21 @@
   migration: pending
 
 # ============================================================
-# §8 specChatItems —— harness item 解析
+# §8 plannerChatItems —— harness item 解析
 # ============================================================
 
 - id: GATE-CHATITEM-001
   kind: gate
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     只有 `method === 'item/completed'` 的行才产出条目,其余一律返回 null;params JSON 解析失败时必须
     降级为 unknown 条目(而不是丢弃),itemType 取 row.item_type 或 'unknown'。
   why: >
     "returns null for non-completed rows" / "falls back for unknown completed item types" —— 丢弃会让
     转录出现无法解释的空洞;解析失败仍要留一条分隔线。
-  source: web/src/pages/specChatItems.ts:317-355
-  authoritative_test: web/src/pages/specChatItems.test.ts:188,405
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:317-355
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:188,405
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1774,16 +1774,16 @@
 
 - id: INV-CHATITEM-002
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     用户消息解析必须先剥掉以 "## Track state changes since your last turn" 开头、以 "\n\n---\n\n" 结束的
     track diff 前置块,再找 "User says:\n" 标记;标记之后的全部文本(含后续系统观察)都算气泡内容。
   why: >
     源码注释:"Batched turns can append system observations after the user text; v1 intentionally keeps
     everything after the first marker as the bubble." diff 块是内核注入的上下文,不是用户说的话。
-  source: web/src/pages/specChatItems.ts:79-94,150-204
-  authoritative_test: web/src/pages/specChatItems.test.ts:55,79
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:79-94,150-204
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:55,79
+  owner_slice: features/planner/chat-items
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1792,7 +1792,7 @@
 
 - id: INV-CHATITEM-003
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 表中任一前缀开头,必须归为 system 条目并带该
     前缀映射的短标签;否则归为 user 且 clamp=true。前缀条目数不设上限(同一标签可有多条句式前缀:
@@ -1802,9 +1802,9 @@
     这四类是内核代用户注入的系统提示,显示成"你说的话"会误导;剩下的无标记文本(如 track-goal)是长文,
     默认折叠("renders track-goal fallback as a clamped user bubble")。内核对同一类观察可能换句式
     (#1252 给 report_edited 加了 author),所以约束落在标签集合上,而不是前缀条数。
-  source: web/src/pages/specChatItems.ts:83-95,206-228
-  authoritative_test: web/src/pages/specChatItems.test.ts:123
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:83-95,206-228
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:123
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1813,16 +1813,16 @@
 
 - id: INV-CHATITEM-004
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     空内容的 agentMessage 与空的 reasoning(summary 与 detail 都是空白)必须返回 null 被丢弃;
     但 fileChange 即使 changes 为空也保留(渲染 "(file changes)")。
   why: >
     "drops empty completed known message rows" / "drops empty reasoning rows" —— 空气泡是噪声;
     而空的 fileChange 仍是"发生过一次写操作"的事实。
-  source: web/src/pages/specChatItems.ts:168-182,264-277,279-304
-  authoritative_test: web/src/pages/specChatItems.test.ts:162,343,362
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:168-182,264-277,279-304
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:162,343,362
+  owner_slice: features/planner/chat-items
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
@@ -1831,14 +1831,14 @@
 
 - id: INV-CHATITEM-005
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     条目时间戳优先取 params.completedAtMs(有限数字),否则回落到 row.created_at_ms。
   why: >
     created_at_ms 是入库时间,completedAtMs 才是事件真实完成时间;两者在长 turn 里差距明显。
-  source: web/src/pages/specChatItems.ts:106-111
+  source: web/src/pages/plannerChatItems.ts:106-111
   authoritative_test: NONE
-  owner_slice: features/spec/chat-items
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1847,15 +1847,15 @@
 
 - id: INV-CHATITEM-006
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     多段 content 必须先 join 再解析(用户消息、reasoning 的 summary/content 都是如此);
     非字符串段落取其 `.text` 字段,取不到则贡献空串。
   why: >
     "joins multi-part user content before parsing" —— 只取第一段会把被切分的用户输入截断。
-  source: web/src/pages/specChatItems.ts:136-166
-  authoritative_test: web/src/pages/specChatItems.test.ts:425
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:136-166
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:425
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1864,15 +1864,15 @@
 
 - id: INV-CHATITEM-007
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     mcpToolCall 的 result 字段在有 error 时必须显示 error 而不是 result,并置 isError=true;
     非字符串值统一 JSON.stringify(缩进 2),stringify 失败回落 String()。
   why: >
     "parses errored MCP tool calls" —— 出错时 result 通常为空,只看 result 会显示成"成功但无输出"。
-  source: web/src/pages/specChatItems.ts:126-134,247-262
-  authoritative_test: web/src/pages/specChatItems.test.ts:248
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:126-134,247-262
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:248
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -1881,16 +1881,16 @@
 
 - id: INV-CHATITEM-008
   kind: invariant
-  family: spec-chat-items
+  family: planner-chat-items
   statement: >
     fileChange 的动词取自 `change.kind.type`(嵌套对象),路径取 `change.path`;两者缺失时回落空串,
     渲染层再显示 "(path)" / "change"。
   why: >
     "parses multi-file changes" + "renders file changes with status warnings and empty fallbacks" ——
     wire 形状是 `kind: { type }` 而不是扁平字符串,写错会全列显示 "change"。
-  source: web/src/pages/specChatItems.ts:279-304
-  authoritative_test: web/src/pages/specChatItems.test.ts:306
-  owner_slice: features/spec/chat-items
+  source: web/src/pages/plannerChatItems.ts:279-304
+  authoritative_test: web/src/pages/plannerChatItems.test.ts:306
+  owner_slice: features/planner/chat-items
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
@@ -2596,7 +2596,7 @@
   statement: >
     从 report 视图成功新增一张 worker 卡后必须自动切到 grid;新增失败时绝不切换视图。
   why: >
-    源码注释:"TrackReportPage filters spec/track-report out via excludeReportCards" —— 不切就看不见新卡。
+    源码注释:"TrackReportPage filters planner/track-report out via excludeReportCards" —— 不切就看不见新卡。
     "Error paths intentionally do NOT switch — the inline error sits in the current header / modal,
     switching modes would hide it."
   source: web/src/pages/Track.tsx:276-283,156-194
@@ -3064,8 +3064,8 @@
     "Waiting on you" 与每个 area 的 warn 徽标必须用同一个 `trackNeedsUserAttention` 谓词(lifecycle ∪
     kernel-card-FSM 的 OR),包括 pinned 的关注 track。
   why: >
-    源码注释(#254):"Catches both 'Spec Agent said blocked/reviewing/failed' AND 'a worker card hit an
-    AwaitingInput/Errored hook before Spec Agent could drive lifecycle'. The latter is the regression hole
+    源码注释(#254):"Catches both 'Planner Agent said blocked/reviewing/failed' AND 'a worker card hit an
+    AwaitingInput/Errored hook before Planner Agent could drive lifecycle'. The latter is the regression hole
     #248's deletion of the track-level FSM union left open."
   source: web/src/shared/components/Sidebar.tsx:216-223,330-334
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:162,172
@@ -3261,7 +3261,7 @@
   kind: invariant
   family: new-task-form
   statement: >
-    任务描述即 track.title:非空标题会被内核当作 spec daemon 的初始 prompt,空标题则启动 daemon 但不自动提交
+    任务描述即 track.title:非空标题会被内核当作 planner daemon 的初始 prompt,空标题则启动 daemon 但不自动提交
     prompt;刻意不提供独立的 "prompt" 字段。
   why: >
     源码注释:"title-as-prompt keeps the track-row label and the prompt in lock-step when a prompt exists."
@@ -3510,7 +3510,7 @@
   statement: >
     创建 track 时必须带上宿主主题 RGB(读 `<html data-theme>`,缺省 DARK_THEME_RGB)。
   why: >
-    与 useTodayTerminal 同一套 #177 契约:spec daemon 首次绘制要拿到匹配配色。
+    与 useTodayTerminal 同一套 #177 契约:planner daemon 首次绘制要拿到匹配配色。
   source: web/src/shared/components/NewTaskForm.tsx:463-470,1084-1089
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158
   owner_slice: features/track/create
@@ -4325,7 +4325,7 @@
     CardStatusDot / CardExitBadge / 状态圆点一类的纯状态字形必须带 `role="img"` 才能合法使用 aria-label。
   why: >
     两处源码注释都指向同一条 axe 规则 `aria-prohibited-attr`("aria-label is prohibited on a span without
-    a role");CardStatusDot 的注释还记录了这是 PR6 spec 卡上线后被 axe 扫出来的。
+    a role");CardStatusDot 的注释还记录了这是 PR6 planner 卡上线后被 axe 扫出来的。
   source: web/src/shared/components/CardStatusDot.tsx:58-77 + web/src/shared/components/CardExitBadge.tsx:26-38
   authoritative_test: NONE
   owner_slice: ui/atoms
@@ -4562,7 +4562,7 @@
     (a) TrackReportPage 的扁平正文 —— remarkGfm + reportUrlTransform + ReportLink;
     (b) report-blocks prose 块 —— 同上再加 h1/h2 id 注入;
     (c) report task 块的 goal / acceptance —— 同 (a),两次;
-    (d) SpecConversation 的 agent 气泡 —— **只有 remarkGfm,没有 urlTransform、没有 ReportLink**。
+    (d) PlannerConversation 的 agent 气泡 —— **只有 remarkGfm,没有 urlTransform、没有 ReportLink**。
     (d) 与前三者的差异是当前实际行为,合并时必须显式决策而非默认对齐。
   why: >
     前三处共享 neige:// 深链与非法 fragment 降级语义;会话气泡里的 neige 链接目前是普通 <a>(整页跳转)。
@@ -4573,7 +4573,7 @@
     **共享 parse / normalize / sanitize-ast-policy 为单一内核（core/markdown）；
     端侧 renderer 显式配置行为差异（链接组件、heading id 注入、URL transform）**。
     即：收敛内核，不收敛 renderer。
-  source: web/src/pages/TrackReportPage.tsx:378-388 + web/src/pages/report-blocks/index.tsx:113-143 + web/src/pages/report-blocks/task.tsx:23-34 + web/src/pages/SpecConversation.tsx:106-110
+  source: web/src/pages/TrackReportPage.tsx:378-388 + web/src/pages/report-blocks/index.tsx:113-143 + web/src/pages/report-blocks/task.tsx:23-34 + web/src/pages/PlannerConversation.tsx:106-110
   authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:358 + web/src/pages/TrackReportPage.test.tsx:2382
   owner_slice: core/markdown/pipeline
   intentional_omission: false
@@ -4626,7 +4626,7 @@
     【附加重复对】`readHostThemeRgb()`(读 `<html data-theme>`,缺省 DARK_THEME_RGB)在 NewTaskForm 与
     useTodayTerminal 各写一份,行为必须一致。
   why: >
-    两处都是 #177 契约的实现面(spec daemon / 终端 daemon 首次绘制配色);缺省 dark 镜像服务端
+    两处都是 #177 契约的实现面(planner daemon / 终端 daemon 首次绘制配色);缺省 dark 镜像服务端
     `RequestTheme::default_dark()`。**新架构应抽成一个共享 helper。**
   source: web/src/shared/components/NewTaskForm.tsx:1084-1089 + web/src/hooks/useTodayTerminal.ts:199-212
   authoritative_test: NONE
@@ -4719,19 +4719,19 @@
   kind: invariant
   family: dead-code
   statement: >
-    `useSpecCurrentRun` 返回的 `latestTool` 恒为 `{ toolLabel: null, toolStatus: null }` —— 是有类型但
+    `usePlannerCurrentRun` 返回的 `latestTool` 恒为 `{ toolLabel: null, toolStatus: null }` —— 是有类型但
     未接线的占位。**不迁移**,除非新架构真的要接线。
   why: >
     接口注释描述了"最新工具调用"的语义,但实现里是硬编码常量;照搬会让新架构以为有这个数据源。
-  source: web/src/pages/useSpecCurrentRun.ts:16-21,46-47,285
+  source: web/src/pages/usePlannerCurrentRun.ts:16-21,46-47,285
   authoritative_test: NONE
-  owner_slice: features/spec/current-run
+  owner_slice: features/planner/current-run
   intentional_omission: false
   runtime_layer: features
   verification_owner: null
   test_tier: none
   migration: skipped
-  skip_reason: useSpecCurrentRun.latestTool 恒为空占位、从未接线；不移植，除非新架构真的接线
+  skip_reason: usePlannerCurrentRun.latestTool 恒为空占位、从未接线；不移植，除非新架构真的接线
 
 - id: INV-DEAD-003
   kind: invariant
@@ -4740,9 +4740,9 @@
     `isCompletedMessageItem(method, _itemType)` 只判 method,itemType 参数未使用(带下划线前缀)。
   why: >
     签名保留了 itemType 是为将来按类型过滤留口;当前所有 `item/completed` 都会触发 tail 抓取。
-  source: web/src/pages/useSpecChatHistory.ts:55-60
+  source: web/src/pages/usePlannerChatHistory.ts:55-60
   authoritative_test: NONE
-  owner_slice: features/spec/chat-history
+  owner_slice: features/planner/chat-history
   intentional_omission: true
   runtime_layer: features
   verification_owner: null

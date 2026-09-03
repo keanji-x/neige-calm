@@ -21,7 +21,7 @@
 //! binary. It does NOT guard the prompt swap. The PROMPT mandate (the codex
 //! worker uses `calm.task.complete`, not the `neige task-completed` CLI) is
 //! locked deterministically elsewhere: the const test
-//! `spec_card.rs::worker_codex_prompt_reports_completion_via_mcp_tools_not_cli`
+//! `planner_card.rs::worker_codex_prompt_reports_completion_via_mcp_tools_not_cli`
 //! pins the rendered prompt text, and the `codex_worker_shared_daemon.rs`
 //! `thread/start` contract test pins what the worker spawn actually wires.
 //!
@@ -334,7 +334,7 @@ async fn worker_completes_with_channel3_stripped() {
     // concrete idempotency key K the worker is told to echo.
     let idempotency_key = "wm-strip-c3";
     let worker_instructions =
-        calm_server::spec_card::render_worker_prompt_for_e2e(&track_id, WORKER_CODEX);
+        calm_server::planner_card::render_worker_prompt_for_e2e(&track_id, WORKER_CODEX);
 
     // Channel 3 STRIPPED: config is None — NO shell_environment_policy at
     // all, so NEIGE_MCP_SOCKET / NEIGE_MCP_TOKEN never reach the worker's

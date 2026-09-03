@@ -20,7 +20,7 @@ use calm_server::mcp_server::{McpServer, ToolRegistry, auth, build_default_regis
 use calm_server::model::{CardRole, NewArea, NewCard, NewPlugin, NewTrack, now_ms};
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
-use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
+use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
     TxOutput,
@@ -51,16 +51,16 @@ use super::git_helpers::{
     clone_for_track, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
     seed_rust_micro_crate,
 };
-use super::spec_turn::spec_identity;
+use super::planner_turn::planner_identity;
 
 pub const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 pub const FORGE_BIN: &str = env!("CARGO_BIN_EXE_git-forge");
 pub const PLUGIN_ID: &str = "dev.neige.git-forge";
 pub const COMMIT_TOOL: &str = "plugin.dev.neige.git-forge_git.commit";
 pub const TASK_KEY: &str = "forge-e2e";
-pub const SPEC_SESSION_ID: &str = "codex-forge-e2e-spec-session";
+pub const PLANNER_SESSION_ID: &str = "codex-forge-e2e-planner-session";
 
-pub struct FixtureSpec {
+pub struct FixturePlanner {
     pub goal: Option<String>,
     pub template_id: Option<String>,
     pub plan_source: PlanSource,
@@ -90,7 +90,7 @@ pub enum RepoSeed {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanSource {
     Injected,
-    RealSpecTurn,
+    RealPlannerTurn,
 }
 
 pub struct Fixture {
@@ -104,7 +104,7 @@ pub struct Fixture {
     pub track_area_cache: TrackAreaCache,
     pub area_id: AreaId,
     pub track_id: TrackId,
-    pub spec_card_id: CardId,
+    pub planner_card_id: CardId,
     pub report_card_id: CardId,
     pub codex: Arc<CodexClient>,
     pub daemon: Arc<DaemonClient>,
@@ -178,7 +178,7 @@ pub async fn worker_operation_for_task(repo: &SqlxRepo, task_id: &str) -> Option
 
 pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, String> {
     boot_forge_e2e_fixture(
-        FixtureSpec {
+        FixturePlanner {
             goal: Some(forge_goal()),
             template_id: None,
             plan_source: PlanSource::Injected,
@@ -192,7 +192,7 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
 }
 
 pub async fn boot_forge_e2e_fixture(
-    spec: FixtureSpec,
+    planner: FixturePlanner,
     codex_bin: PathBuf,
 ) -> Result<Fixture, String> {
     let forge_env = setup_forge_env();
@@ -217,12 +217,12 @@ pub async fn boot_forge_e2e_fixture(
     let track_cwd = tmp.path().join("track-cwd");
     let origin_repo = tmp.path().join("origin.git");
 
-    match spec.repo_seed {
+    match planner.repo_seed {
         RepoSeed::ReadmeOnly => init_bare_origin(&origin_repo, &tmp.path().join("seed")),
         RepoSeed::RustMicroCrate => seed_rust_micro_crate(&origin_repo, &tmp.path().join("seed")),
     }
     clone_for_track(&origin_repo, &track_cwd);
-    if let Some(issue) = &spec.issue_body {
+    if let Some(issue) = &planner.issue_body {
         // The gh shim keys state by the `--repo` selector string. The capstone
         // goal pins the CLONE gitdir selector (forge_pr_goal precedent — the
         // shim rev-parses worker branches there without any push), but seed
@@ -271,14 +271,14 @@ pub async fn boot_forge_e2e_fixture(
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: track_cwd.display().to_string(),
-            template_id: spec.template_id.clone(),
+            template_id: planner.template_id.clone(),
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .expect("create track");
-    if !spec.require_task_gates {
+    if !planner.require_task_gates {
         sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
             .bind(track.id.as_str())
             .execute(sqlx_repo.pool())
@@ -293,23 +293,23 @@ pub async fn boot_forge_e2e_fixture(
         .seed_card_role_cache(&cache)
         .await
         .expect("seed card-role cache");
-    // The injected (#835) path leaves the spec card a kind:"spec"/null-payload
-    // placeholder (it never boots a real harness). The RealSpecTurn path drives
-    // the real `spec-harness-start` op, whose AppServerInteract phase requires
-    // the production-faithful spec card shape: a kind:"codex" card whose payload
-    // is the `spec_harness_card_payload` JSON object (routes/tracks.rs:657) — the
+    // The injected (#835) path leaves the planner card a kind:"planner"/null-payload
+    // placeholder (it never boots a real harness). The RealPlannerTurn path drives
+    // the real `planner-harness-start` op, whose AppServerInteract phase requires
+    // the production-faithful planner card shape: a kind:"codex" card whose payload
+    // is the `planner_harness_card_payload` JSON object (routes/tracks.rs:657) — the
     // adapter mutates that object in place (codex_thread_id, appserver_sock, …).
-    let (spec_kind, spec_payload) = match spec.plan_source {
-        PlanSource::Injected => ("spec".to_string(), Value::Null),
-        PlanSource::RealSpecTurn => {
+    let (planner_kind, planner_payload) = match planner.plan_source {
+        PlanSource::Injected => ("planner".to_string(), Value::Null),
+        PlanSource::RealPlannerTurn => {
             let mut payload = serde_json::Map::new();
             payload.insert(
                 "schemaVersion".into(),
                 json!(calm_server::validation::CODEX_PAYLOAD_SCHEMA_VERSION),
             );
             payload.insert("codex_source".into(), json!("shared"));
-            payload.insert("spec_harness".into(), json!(true));
-            if let Some(goal) = spec
+            payload.insert("planner_harness".into(), json!(true));
+            if let Some(goal) = planner
                 .goal
                 .as_deref()
                 .map(str::trim)
@@ -320,36 +320,40 @@ pub async fn boot_forge_e2e_fixture(
             ("codex".to_string(), Value::Object(payload))
         }
     };
-    let spec_card = repo_dyn
+    let planner_card = repo_dyn
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: spec_kind,
+            kind: planner_kind,
             sort: None,
-            payload: spec_payload,
+            payload: planner_payload,
         })
         .await
-        .expect("create spec card");
-    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
+        .expect("create planner card");
+    cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
     // `card_create` persists `cards.role = 'worker'` unconditionally
     // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
-    // independent of kind. Production mints the spec card with
-    // `card_create_with_id_tx(.., CardRole::Spec, ..)`; the test must mirror
+    // independent of kind. Production mints the planner card with
+    // `card_create_with_id_tx(.., CardRole::Planner, ..)`; the test must mirror
     // that or the report task-block writer fails the role gate with
     // `got=Worker`.
     //
-    // #1189 §3.6 dropped the `RealSpecTurn`-only condition this used to
+    // #1189 §3.6 dropped the `RealPlannerTurn`-only condition this used to
     // carry: the recorder gate now resolves session → card → {role, track}
     // through a live `cards` read on EVERY report write, injected paths
     // included, so a persisted role that contradicts the fixture's own
     // story denies writes the test never meant to deny.
-    super::mcp::set_persisted_card_role(repo_dyn.as_ref(), spec_card.id.as_str(), CardRole::Spec)
-        .await;
+    super::mcp::set_persisted_card_role(
+        repo_dyn.as_ref(),
+        planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
     // Production `routes::tracks::create_track` atomically mints the track-report
-    // card alongside the spec card for EVERY track (tracks.rs) — no production
+    // card alongside the planner card for EVERY track (tracks.rs) — no production
     // track ever lacks one. This fixture bypasses that route (direct
     // `repo.track_create` above), so it mints the report card here to match;
-    // otherwise the spec agent's `calm.report.write` trips the
+    // otherwise the planner agent's `calm.report.write` trips the
     // `track has no track-report card (invariant violation)` guard.
     let report_card = repo_dyn
         .card_create(NewCard {
@@ -367,8 +371,8 @@ pub async fn boot_forge_e2e_fixture(
         CardRole::ReportCard,
         track.id.clone(),
     );
-    if matches!(spec.plan_source, PlanSource::Injected) {
-        seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
+    if matches!(planner.plan_source, PlanSource::Injected) {
+        seed_planner_session(&sqlx_repo, track.id.as_str(), planner_card.id.as_str()).await;
     }
 
     let plugin_host = boot_plugin_host(
@@ -471,7 +475,7 @@ pub async fn boot_forge_e2e_fixture(
                     track_area_cache.clone(),
                     std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
                 )) as Arc<dyn ProviderAdapter>,
-                Arc::new(SpecHarnessStartAdapter::new(
+                Arc::new(PlannerHarnessStartAdapter::new(
                     repo_dyn.clone(),
                     shared.clone(),
                     harness.clone(),
@@ -524,7 +528,7 @@ pub async fn boot_forge_e2e_fixture(
         track_area_cache,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         report_card_id: report_card.id,
         codex,
         daemon,
@@ -568,10 +572,10 @@ pub fn spawn_dispatcher(fx: &Fixture) -> Dispatcher {
 /// #840 capstone: like [`spawn_dispatcher`], but wired to the FIXTURE's
 /// `HarnessRegistry`. `spawn_dispatcher` builds a fresh internal registry,
 /// which is fine for worker-only tests but silently severs the dispatcher's
-/// spec wake-ups (`harness_observation_from_event` delivery): the spec harness
-/// booted through `fx.runtime`'s `SpecHarnessStartAdapter` registers in
+/// planner wake-ups (`harness_observation_from_event` delivery): the planner harness
+/// booted through `fx.runtime`'s `PlannerHarnessStartAdapter` registers in
 /// `fx.harness`, and the dispatcher must look it up in the SAME registry for
-/// live pushes to reach the real spec session.
+/// live pushes to reach the real planner session.
 pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
     Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         fx.repo_dyn.clone(),
@@ -603,7 +607,7 @@ pub async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
         .expect("task block writer registered");
     handler(
         fx.ctx.clone(),
-        spec_identity(fx),
+        planner_identity(fx),
         json!({
             "kind": "task",
             "if_doc_rev": report.doc_rev,
@@ -863,8 +867,8 @@ pub fn e2e_budget() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(180))
 }
 
-pub fn spec_planning_budget() -> Duration {
-    std::env::var("NEIGE_SPEC_PLANNING_BUDGET")
+pub fn planner_planning_budget() -> Duration {
+    std::env::var("NEIGE_PLANNER_PLANNING_BUDGET")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
@@ -872,7 +876,7 @@ pub fn spec_planning_budget() -> Duration {
 }
 
 /// #840 capstone overall deadline (P7 + checker pin c): a realistic single
-/// run is ~20–40min of real spec turns + substantial worker runs; 3600s
+/// run is ~20–40min of real planner turns + substantial worker runs; 3600s
 /// leaves one stochastic fix-loop of headroom.
 pub fn capstone_budget() -> Duration {
     std::env::var("NEIGE_CAPSTONE_BUDGET")
@@ -1064,18 +1068,18 @@ pub async fn shutdown_shared_codex(shared: &Arc<SharedCodexAppServer>) {
     }
 }
 
-pub async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
-    let mut tx = repo.pool().begin().await.expect("begin spec session tx");
+pub async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
+    let mut tx = repo.pool().begin().await.expect("begin planner session tx");
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: SPEC_SESSION_ID.to_string(),
-            card_id: spec_card_id.to_string(),
+            id: PLANNER_SESSION_ID.to_string(),
+            card_id: planner_card_id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
-            thread_id: Some("spec-thread".to_string()),
+            thread_id: Some("planner-thread".to_string()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
@@ -1084,14 +1088,14 @@ pub async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &s
         },
     )
     .await
-    .expect("seed spec session");
+    .expect("seed planner session");
     sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
-        .bind(SPEC_SESSION_ID)
+        .bind(PLANNER_SESSION_ID)
         .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as track root");
-    tx.commit().await.expect("commit spec session tx");
+        .expect("mark planner session as track root");
+    tx.commit().await.expect("commit planner session tx");
 }
 
 pub async fn boot_plugin_host(

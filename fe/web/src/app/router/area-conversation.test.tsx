@@ -79,7 +79,7 @@ function setup(reply?: Reply) {
       if (request.path === '/api/tracks/w1') return ok({ track: TRACK, cards: [], overlays: [] });
       if (request.path === CONVERSATIONS) return ok([]);
       if (request.path.includes('/harness/items')) return ok([]);
-      if (request.path.endsWith('/spec/run')) return ok({ card_id: 'chat-1', runtime_id: 'r', phase: 'idle' });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: 'chat-1', runtime_id: 'r', phase: 'idle' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -256,7 +256,7 @@ describe('area conversations', () => {
   });
 
   /* The POST already delivered the message: the server started the thread and
-     sent it in the same call. A follow-up `/spec/input` would say it twice. */
+     sent it in the same call. A follow-up `/planner/input` would say it twice. */
   it('does not deliver the first message a second time after it succeeds', async () => {
     let rows: Row[] = [];
     const { requests } = setup((request) => {
@@ -268,7 +268,7 @@ describe('area conversations', () => {
     await openDraft();
     await write('first words');
     await screen.findByRole('complementary', { name: 'Chat' });
-    expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(0);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(0);
   });
 
   /*
@@ -752,7 +752,7 @@ function harnessTurns(cardId: string) {
 
     /*
      * The previous test leans on a real `Math.random`, which hides the thing
-     * the fallback has to survive: nothing in the spec makes `Math.random`
+     * the fallback has to survive: nothing in the planner makes `Math.random`
      * return distinct values, and an implementation that returns a constant is
      * conforming. With one, sixteen random bytes are sixteen *fixed* bytes and
      * every retry re-sends the key that was just refused — the card id is
@@ -1037,19 +1037,19 @@ function harnessTurns(cardId: string) {
      * code, which is why this test — and not the one above — is what pins it.
      */
     it('does not interrupt a running turn with the Escape that closes the menu', async () => {
-      const { field, requests } = await openRowWithMenu((request) => request.path.endsWith('/spec/run')
+      const { field, requests } = await openRowWithMenu((request) => request.path.endsWith('/planner/run')
         ? ok({ card_id: 'chat-1', runtime_id: 'r', phase: 'turn_running' })
         : undefined);
       await screen.findByRole('button', { name: 'Stop' });
       fireEvent.keyDown(field, { key: 'Escape' });
       expect(commandMenu()).toBeNull();
-      expect(requests.filter((request) => request.path.endsWith('/spec/interrupt'))).toHaveLength(0);
+      expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(0);
       expect(document.querySelector('[data-nc-drawer][data-nc-escape-layer]')).not.toBeNull();
       /* And the next Escape, with the menu gone, does interrupt — otherwise
          this test would also pass on a build that broke the interrupt. */
       fireEvent.keyDown(field, { key: 'Escape' });
       await waitFor(() => expect(
-        requests.filter((request) => request.path.endsWith('/spec/interrupt')),
+        requests.filter((request) => request.path.endsWith('/planner/interrupt')),
       ).toHaveLength(1));
     });
 

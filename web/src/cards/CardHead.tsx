@@ -137,7 +137,7 @@ export function CardHead({
   const cardTitle = card && 'title' in card ? card.title : undefined;
   const defaultTitle = title ?? (card ? entry?.title(card) : undefined);
   const titleNode = cardTitle || defaultTitle;
-  const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'track-report';
+  const canRename = !!card?.id && card.type !== 'planner' && card.type !== 'track-report';
   const [editingTitle, setEditingTitle] = useState(false);
   const beginRename = () => {
     if (!canRename) return;

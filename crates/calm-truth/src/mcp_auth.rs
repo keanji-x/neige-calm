@@ -1,11 +1,11 @@
 //! Per-card MCP token mint + verify.
 //!
-//! PR7a (#136) — when a Spec/Worker codex card is minted, the kernel
+//! PR7a (#136) — when a Planner/Worker codex card is minted, the kernel
 //! generates a fresh 32-byte hex token and stores `SHA-256(token)` in
 //! `card_mcp_tokens.hashed_token`. The raw token is handed to the
 //! codex daemon via the `NEIGE_MCP_TOKEN` env var. For worker cards
-//! see `operation::codex_adapter::build_codex_env`; for the spec card
-//! AI shell, `SpecHarnessStartAdapter::app_server_interact` does
+//! see `operation::codex_adapter::build_codex_env`; for the planner card
+//! AI shell, `PlannerHarnessStartAdapter::app_server_interact` does
 //! per-thread injection (#555 Phase B). From there, a tiny
 //! `neige-mcp-stdio-shim` binary inherits the env, connects to the
 //! kernel's UDS, and embeds the raw token in `initialize.params._meta`

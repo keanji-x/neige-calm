@@ -53,7 +53,7 @@ impl CardIdentity {
     /// `write_with_event` call this connection drives. MCP writes are
     /// keyed by worker session, not card id. Mapping:
     ///
-    /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
+    /// * `CardRole::Planner`       → [`ActorId::AiPlannerSession`]
     /// * `CardRole::Worker`     → provider-specific AI session actor
     /// * `CardRole::Assistant`  → provider-specific AI session actor too
     ///   (#1189 §3.4a: the provider arm inherits every existing negative
@@ -68,7 +68,7 @@ impl CardIdentity {
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
-            CardRole::Spec => ActorId::AiSpecSession(session_id),
+            CardRole::Planner => ActorId::AiPlannerSession(session_id),
             CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
                 provider_session_actor(&self.provider, session_id)
             }
@@ -117,7 +117,7 @@ impl ToolCallIdentity {
     /// Convert to the `ActorId` the role gate will see for this MCP tool
     /// call. MCP writes are keyed by worker session, not card id. Mapping:
     ///
-    /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
+    /// * `CardRole::Planner`       → [`ActorId::AiPlannerSession`]
     /// * `CardRole::Worker`     → provider-specific AI session actor
     /// * `CardRole::Assistant`  → provider-specific AI session actor (#1189).
     /// * `CardRole::ReportCard` → provider-specific total-function fallback;
@@ -125,7 +125,7 @@ impl ToolCallIdentity {
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
-            CardRole::Spec => ActorId::AiSpecSession(session_id),
+            CardRole::Planner => ActorId::AiPlannerSession(session_id),
             CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
                 provider_session_actor(&self.provider, session_id)
             }
@@ -149,18 +149,18 @@ fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId)
     }
 }
 
-/// PR7b (#136) — soft role gate for spec-only MCP tools.
+/// PR7b (#136) — soft role gate for planner-only MCP tools.
 ///
 /// The *real* boundary is [`crate::role_gate::enforce_role`], which runs
 /// inside every eventized write and refuses any cross-role attempt with
 /// a transactional rollback. This helper is purely UX: it short-circuits
-/// at the MCP-tool entry so a worker card calling a spec-only tool such
-/// as `calm.task.verdict` gets a deterministic `-32602 spec-only tool`
+/// at the MCP-tool entry so a worker card calling a planner-only tool such
+/// as `calm.task.verdict` gets a deterministic `-32602 planner-only tool`
 /// error code instead of the more opaque `-32403 forbidden` that the
 /// in-tx gate would otherwise produce after speculatively reading rows.
 ///
-/// Use at the top of every spec-only handler. `calm.track.state` is
-/// callable by both Spec and Worker (a worker may need to peek track
+/// Use at the top of every planner-only handler. `calm.track.state` is
+/// callable by both Planner and Worker (a worker may need to peek track
 /// metadata before reporting), so it uses [`require_role_any`] instead.
 pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
     if identity.role != required {
@@ -251,7 +251,7 @@ pub struct ToolDescriptor {
     pub name: String,
     pub description: String,
     /// Pre-built JSON schema for the tool's `arguments` object. We
-    /// store a `Value` (rather than a struct) because the MCP spec
+    /// store a `Value` (rather than a struct) because the MCP planner
     /// accepts the schema verbatim — no need to round-trip through a
     /// typed schema crate for three small handlers.
     pub input_schema: Value,
@@ -264,7 +264,7 @@ pub struct ToolDescriptor {
     pub annotations: Option<Value>,
     /// Which roles see this tool in `tools/list`. Wire-level `tools/call`
     /// still routes by name regardless - this only controls discovery.
-    /// Default to spec-only for write tools; explicit `&[]` for tools that
+    /// Default to planner-only for write tools; explicit `&[]` for tools that
     /// must not appear in any role's tools/list (e.g. read tools served
     /// only via `neige` CLI, worker self-reports invoked only by `neige`).
     /// See issue #588.
@@ -437,8 +437,8 @@ mod tests {
     #[test]
     fn card_identity_to_actor_id_uses_session_actor_for_each_role() {
         assert_eq!(
-            card_identity_with_role(CardRole::Spec).to_actor_id(),
-            ActorId::AiSpecSession(WorkerSessionId::from("session-1"))
+            card_identity_with_role(CardRole::Planner).to_actor_id(),
+            ActorId::AiPlannerSession(WorkerSessionId::from("session-1"))
         );
         assert_eq!(
             card_identity_with_role(CardRole::Worker).to_actor_id(),
@@ -463,8 +463,8 @@ mod tests {
     #[test]
     fn tool_call_identity_to_actor_id_uses_session_actor_for_each_role() {
         assert_eq!(
-            identity_with_role(CardRole::Spec).to_actor_id(),
-            ActorId::AiSpecSession(WorkerSessionId::from("session-1"))
+            identity_with_role(CardRole::Planner).to_actor_id(),
+            ActorId::AiPlannerSession(WorkerSessionId::from("session-1"))
         );
         assert_eq!(
             identity_with_role(CardRole::Worker).to_actor_id(),
@@ -487,16 +487,16 @@ mod tests {
 
     #[test]
     fn require_role_any_accepts_any_allowed_role_and_rejects_others() {
-        let allowed = [CardRole::Spec, CardRole::ReportCard];
+        let allowed = [CardRole::Planner, CardRole::ReportCard];
 
-        assert!(require_role_any(&identity_with_role(CardRole::Spec), &allowed).is_ok());
+        assert!(require_role_any(&identity_with_role(CardRole::Planner), &allowed).is_ok());
         assert!(require_role_any(&identity_with_role(CardRole::ReportCard), &allowed).is_ok());
 
         let err = require_role_any(&identity_with_role(CardRole::Worker), &allowed)
             .expect_err("worker must be denied");
         assert_eq!(err.code, RpcError::INVALID_PARAMS);
         assert!(
-            err.message.contains("Spec") && err.message.contains("ReportCard"),
+            err.message.contains("Planner") && err.message.contains("ReportCard"),
             "error should mention allowed roles: {err:?}"
         );
         assert!(
@@ -542,7 +542,7 @@ mod tests {
     async fn deprecated_alias_forwards_to_real_handler() {
         let mut registry = ToolRegistry::new();
         registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
             fake_handler("real"),
         );
         register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
@@ -552,7 +552,7 @@ mod tests {
             .expect("alias handler registered");
         let out = handler(
             fake_context().await,
-            identity_with_role(CardRole::Spec),
+            identity_with_role(CardRole::Planner),
             json!({ "anything": true }),
         )
         .await
@@ -565,13 +565,13 @@ mod tests {
     fn deprecated_alias_is_hidden_from_tools_list() {
         let mut registry = ToolRegistry::new();
         registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
             fake_handler("real"),
         );
         register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
 
         let names = registry
-            .descriptors_for_role(CardRole::Spec)
+            .descriptors_for_role(CardRole::Planner)
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect::<Vec<_>>();
@@ -584,15 +584,15 @@ mod tests {
     fn descriptors_visible_to_any_role_returns_union_without_hidden_tools() {
         let mut registry = ToolRegistry::new();
         registry.register(
-            fake_descriptor("calm.spec.only", &[CardRole::Spec]),
-            fake_handler("spec"),
+            fake_descriptor("calm.spec.only", &[CardRole::Planner]),
+            fake_handler("planner"),
         );
         registry.register(
             fake_descriptor("calm.worker.only", &[CardRole::Worker]),
             fake_handler("worker"),
         );
         registry.register(
-            fake_descriptor("calm.shared", &[CardRole::Spec, CardRole::Worker]),
+            fake_descriptor("calm.shared", &[CardRole::Planner, CardRole::Worker]),
             fake_handler("shared"),
         );
         registry.register(
@@ -602,7 +602,7 @@ mod tests {
         registry.register(fake_descriptor("calm.hidden", &[]), fake_handler("hidden"));
 
         let mut names = registry
-            .descriptors_visible_to_any_role(&[CardRole::Spec, CardRole::Worker])
+            .descriptors_visible_to_any_role(&[CardRole::Planner, CardRole::Worker])
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect::<Vec<_>>();
@@ -618,7 +618,7 @@ mod tests {
     async fn deprecated_alias_does_not_overwrite_real_name() {
         let mut registry = ToolRegistry::new();
         registry.register(
-            fake_descriptor("calm.foo.bar", &[CardRole::Spec]),
+            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
             fake_handler("real"),
         );
         register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
@@ -628,7 +628,7 @@ mod tests {
             .expect("real handler still registered");
         let out = handler(
             fake_context().await,
-            identity_with_role(CardRole::Spec),
+            identity_with_role(CardRole::Planner),
             json!({}),
         )
         .await
@@ -652,7 +652,7 @@ mod tests {
         for name in hidden {
             assert!(registry.lookup(name).is_some(), "{name} handler registered");
             for role in [
-                CardRole::Spec,
+                CardRole::Planner,
                 CardRole::Worker,
                 CardRole::ReportCard,
                 CardRole::Assistant,

@@ -5,7 +5,7 @@
 //! on the kernel-side repo state — overlays exist, the new card is there, the
 //! kv pair round-trips, and the rejected card was actually rejected.
 //!
-//! Slice C's binding spec accepted either this style or direct unit tests
+//! Slice C's binding planner accepted either this style or direct unit tests
 //! against `callbacks::dispatch`. The unit-test alternative already lives in
 //! `src/plugin_host/callbacks.rs` (covering every method with both allow and
 //! deny paths). This file adds the integration spine on top so the

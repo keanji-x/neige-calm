@@ -8,14 +8,14 @@
 //!      future regression that breaks the FSM or the aggregator surfaces
 //!      here instead of in a hand-tested UI bug report.
 //!
-//!   2. **Spec card** — historically failed at the role gate. The
-//!      `role_gate.rs` `Some(CardRole::Spec)` arm of the `AiCodex` actor
+//!   2. **Planner card** — historically failed at the role gate. The
+//!      `role_gate.rs` `Some(CardRole::Planner)` arm of the `AiCodex` actor
 //!      match unconditionally rejected every write, including the codex
 //!      bridge's lifecycle hook POST. The fix carves out `Event::CodexHook`
-//!      from an `AiCodex(spec_card)` actor as a pure lifecycle
+//!      from an `AiCodex(planner_card)` actor as a pure lifecycle
 //!      observation (the bridge runs as a subprocess of codex regardless
 //!      of card role and can't easily know the role at fire time); other
-//!      events from `AiCodex(spec_card)` are still refused, and
+//!      events from `AiCodex(planner_card)` are still refused, and
 //!      `TrackUpdated` is still gated separately at the top of the
 //!      function. This test pins the regression: without the carveout,
 //!      the FSM never observes `permission_request`, and the track
@@ -61,7 +61,7 @@ const OVERLAY_POLL: Duration = Duration::from_millis(50);
 /// The caller decides the card's role via `role`. We override the cache
 /// entry after the standard `card_create` (which seeds `Worker`) so we
 /// don't have to fan out to the `card_create_with_id_tx` machinery that
-/// the production spec-card mint uses. The role gate only reads the
+/// the production planner-card mint uses. The role gate only reads the
 /// cache, so a cache override is sufficient to reproduce the gate
 /// decision the production path would make.
 async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) {
@@ -101,8 +101,8 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
 
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    // Override: `card_create` seeds `Worker`; for the Spec-card case we
-    // need the cache to report `Spec`, mirroring what the real
+    // Override: `card_create` seeds `Worker`; for the Planner-card case we
+    // need the cache to report `Planner`, mirroring what the real
     // `card_with_codex_create_tx` would have written.
     cache.insert(card.id.clone(), role, track.id.clone());
 
@@ -256,8 +256,8 @@ async fn worker_card_permission_request_flips_track_needs_input() {
 }
 
 #[tokio::test]
-async fn spec_card_permission_request_flips_track_needs_input() {
-    let (app, repo, card_id, track_id) = setup(CardRole::Spec).await;
+async fn planner_card_permission_request_flips_track_needs_input() {
+    let (app, repo, card_id, track_id) = setup(CardRole::Planner).await;
 
     // The POST itself returns 204 today: `routes::codex::ingest_hook`
     // uses `log_pure_event`, which on a role-gate violation rolls the

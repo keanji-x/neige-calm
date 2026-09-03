@@ -36,7 +36,7 @@ green even if a later repaint lost the marker:
      fixture calls `copy()` at startup, so it needs no input, and
      `tui-host-demo.spec.ts:143` asserts it too — it is the next width-dependent
      assertion in line to flake. It is checked twice, at its two real
-     thresholds: anywhere in the grid from 22 columns (what the spec polls; the
+     thresholds: anywhere in the grid from 22 columns (what the planner polls; the
      status row carries it), and in the FOOTER row from 42 columns (the row this
      fix rearranged). Below those the WHOLE marker legitimately cannot fit, so
      what is asserted there is the clipped `" COPIED=..."` prefix the status row

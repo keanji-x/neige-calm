@@ -11,9 +11,9 @@
 //! overlay directly.
 //!
 //! Track-level lifecycle is owned by the [`TrackLifecycle`](crate::model::TrackLifecycle)
-//! enum stamped on the `tracks` row (driven by the Spec Agent) — this projector
+//! enum stamped on the `tracks` row (driven by the Planner Agent) — this projector
 //! deliberately does NOT write that column. The two responsibilities stay split
-//! cleanly: Spec Agent owns the track's lifecycle stage, the FSM owns per-card
+//! cleanly: Planner Agent owns the track's lifecycle stage, the FSM owns per-card
 //! status, and the two get OR'd at the UI layer for the sidebar "Waiting on
 //! you" grouping (see issue #254).
 //!
@@ -498,7 +498,7 @@ impl Inner {
     /// recompute the track-scoped `any_card_needs_input` aggregate. Both
     /// writes emit `Event::OverlaySet` so the WS bridge invalidates the
     /// right queries. The track-level `TrackLifecycle` column is owned by
-    /// the Spec Agent — this projector still does not touch it.
+    /// the Planner Agent — this projector still does not touch it.
     async fn commit(&self, card_id: &CardId, state: State) {
         // Look up the owning track so the audit row carries the full
         // ancestor chain.
@@ -567,7 +567,7 @@ impl Inner {
         // 2. Track-scoped `any_card_needs_input` aggregate. Issue #254 —
         //    OR'd at the UI layer with `TrackLifecycle` for the sidebar
         //    "Waiting on you" grouping. Does NOT touch the lifecycle
-        //    column, so Spec Agent stays the single source of truth for
+        //    column, so Planner Agent stays the single source of truth for
         //    track-level state.
         self.recompute_track_needs_input(&card.track_id).await;
     }
@@ -917,7 +917,7 @@ mod tests {
     }
 
     // Overlay-poll ceiling for the FSM tests. 25ms * 600 = ~15s, matching the
-    // repo's other wait-for helpers (e.g. spec_harness_track_vcs). The old 80
+    // repo's other wait-for helpers (e.g. planner_harness_track_vcs). The old 80
     // (2s) ceiling was below the real settle floor for DOWNGRADE assertions —
     // a downgrade is held `DOWNGRADE_QUIET_MS` (750ms) on a detached timer
     // before its commit even starts, so under CI scheduler starvation the 2s

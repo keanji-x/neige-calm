@@ -97,7 +97,7 @@ pub use overlay::{
     track_has_template_overlay_tx,
 };
 pub use session_mirror::{
-    session_delete_tx, session_prepare_deferred_spec_tx, session_start_runtime_tx,
+    session_delete_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
     session_supersede_active_tx, session_supersede_and_start_tx,
 };
 pub use session_projection::{
@@ -136,9 +136,9 @@ pub use track::{
 };
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,
-    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_SPEC_INVENTORY_SQL, TrackTreeTerm,
+    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_PLANNER_INVENTORY_SQL, TrackTreeTerm,
     TrackTreeTermOutcome, TreeShare, can_add_tree_member, deterministic_share, track_tree_budget,
-    track_tree_member_count, track_tree_spec_inventory, track_tree_spec_inventory_by_member,
+    track_tree_member_count, track_tree_planner_inventory, track_tree_planner_inventory_by_member,
     track_tree_term,
 };
 pub use track_workspace::{

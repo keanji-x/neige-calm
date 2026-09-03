@@ -52,7 +52,7 @@ struct Boot {
     /// #1147 S3 — the registry `delete_track`'s teardown acts on.
     ///
     /// Held for the same reason the re-point suite holds it: the registry is
-    /// populated naturally (creating a track registers a live spec-harness
+    /// populated naturally (creating a track registers a live planner-harness
     /// runtime), so `teardown_track_deletion`'s `harness.get`/`shutdown`/`remove`
     /// loop does run under test — but nothing ever inspected the slot
     /// afterwards, so removing the loop turned nothing red. Installing a
@@ -121,8 +121,8 @@ async fn boot() -> Boot {
     }
 }
 
-/// Install a real `SpecHarness` in the registry under the track's live
-/// spec-harness runtime, and return that runtime id. Twin of the helper in
+/// Install a real `PlannerHarness` in the registry under the track's live
+/// planner-harness runtime, and return that runtime id. Twin of the helper in
 /// `track_workspace_repoint.rs`; see `Boot::harness` for why it exists.
 async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     let runtime_id: String = sqlx::query_scalar(
@@ -139,8 +139,8 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
         .await
         .unwrap();
     let repo: Arc<dyn Repo> = b.repo.clone();
-    let (harness, _observations) = calm_server::harness::SpecHarness::run_unstarted_for_test(
-        calm_server::harness::SpecHarnessParams {
+    let (harness, _observations) = calm_server::harness::PlannerHarness::run_unstarted_for_test(
+        calm_server::harness::PlannerHarnessParams {
             runtime_id: runtime_id.clone(),
             track_id: track_id.to_string().into(),
             card_id: card_id.into(),
@@ -942,13 +942,13 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
 }
 
-/// `DELETE /api/tracks/{id}` must take the track's live spec harness out of the
+/// `DELETE /api/tracks/{id}` must take the track's live planner harness out of the
 /// registry before it moves the directory.
 ///
 /// Same shape, same latent gap as the re-point path, and the gap is an absent
 /// **assertion** rather than absent execution — a probe showed the loop runs in
 /// tests that install nothing, because creating a track registers a live
-/// spec-harness runtime by itself. Nothing checked the slot afterwards, so
+/// planner-harness runtime by itself. Nothing checked the slot afterwards, so
 /// deleting `teardown_track_deletion`'s `harness.get` → `shutdown` → `remove`
 /// turned nothing red. A surviving harness is a live run loop whose process cwd
 /// follows the inode — it keeps writing into the directory after it has been

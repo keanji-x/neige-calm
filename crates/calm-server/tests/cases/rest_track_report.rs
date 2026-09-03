@@ -17,7 +17,7 @@
 //!   * **Author cannot be forged** — request body with an extra
 //!     `author` field is rejected (`deny_unknown_fields` returns 4xx)
 //!     so a client can never persuade the server to attribute a User
-//!     edit as Spec.
+//!     edit as Planner.
 //!   * **No session** — request without cookie → 401, no events
 //!     emitted.
 //!   * **Cross-track isolation** — user posts to a track that doesn't
@@ -28,7 +28,7 @@
 //!   * **Worker / non-user actor** — authenticated session but
 //!     `X-Calm-Actor: ai:codex` → 403, no events emitted. Only
 //!     `ActorId::User` may persist via REST.
-//!   * **MCP path still tags Spec** — re-asserts via the existing
+//!   * **MCP path still tags Planner** — re-asserts via the existing
 //!     `mcp_track_report` regression suite (already pinned in PR2 and
 //!     re-confirmed by the build).
 
@@ -313,7 +313,7 @@ async fn human_block_rest_task_lifecycle_and_revision_domains() {
 }
 
 #[tokio::test]
-async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
+async fn stale_human_write_conflicts_after_planner_write_instead_of_winning() {
     let boot = boot().await;
     let track = boot
         .repo
@@ -334,11 +334,11 @@ async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
         &boot.state.events,
         boot.state.write(),
         ActorId::Kernel,
-        EditAuthor::Spec,
+        EditAuthor::Planner,
         track,
         report,
         TrackReportPayload::initial(),
-        TrackReportPayload::new("spec", "# Spec won\n"),
+        TrackReportPayload::new("planner", "# Planner won\n"),
         0,
         None,
         None,
@@ -376,7 +376,7 @@ async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
             .payload,
     )
     .unwrap();
-    assert_eq!(payload.body, "# Spec won\n");
+    assert_eq!(payload.body, "# Planner won\n");
     assert_eq!(payload.doc_rev, 1);
 }
 
@@ -634,7 +634,7 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
             assert_eq!(
                 *author,
                 EditAuthor::User,
-                "REST endpoint MUST tag User — Spec attribution would be the PR3 spoof bug",
+                "REST endpoint MUST tag User — Planner attribution would be the PR3 spoof bug",
             );
             // Pre-write was the seeded initial payload; post-write is
             // exactly what the request body carried.
@@ -668,7 +668,7 @@ async fn extra_author_field_in_body_is_rejected() {
     // accept an `author` field. `deny_unknown_fields` on the request
     // body bounces any payload that tries to carry one, so a malicious
     // (or accidentally over-eager) client cannot persuade the server
-    // to attribute a User edit as Spec.
+    // to attribute a User edit as Planner.
     let boot = boot().await;
     let events = boot.state.events.clone();
     let track_id = boot.track_id.clone();
@@ -679,10 +679,10 @@ async fn extra_author_field_in_body_is_rejected() {
     // path; `expect_no_events` after confirms.
     let body = serde_json::to_vec(&json!({
         "summary": "spoof attempt",
-        "body": "# Goal\n\npretending to be spec\n",
+        "body": "# Goal\n\npretending to be planner\n",
         "ifDocRev": 0,
         // The hostile field — must be rejected.
-        "author": "spec",
+        "author": "planner",
     }))
     .unwrap();
     let resp = app
@@ -791,7 +791,7 @@ async fn nonexistent_track_returns_404_and_emits_nothing() {
 async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing() {
     // The X-Calm-Actor middleware accepts `ai:<id>` as a declared
     // identity. The REST endpoint refuses *any* non-User actor with
-    // 403 so a hypothetical future worker / spec-card session-bearing
+    // 403 so a hypothetical future worker / planner-card session-bearing
     // surface cannot bypass the User-only contract by relabeling the
     // header. The session itself is valid in every iteration here —
     // the rejection is strictly on the actor pinning.
@@ -1109,8 +1109,8 @@ async fn generic_patch_allows_track_report_title_and_sort_without_payload() {
 // ---------------------------------------------------------------------------
 // Root-cause lock for the codex-e2e report-card fixture gap.
 //
-// `real_spec_gives_up_at_review_cap_from_descriptor` and
-// `real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor`
+// `real_planner_gives_up_at_review_cap_from_descriptor` and
+// `real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descriptor`
 // failed at `calm.report.write` with `-32603 "track <id> has no track-report
 // card (invariant violation)"`. Root cause: the codex-e2e fixture bypassed
 // `routes::tracks::create_track` (the only production track-create entrypoint,
@@ -1125,7 +1125,7 @@ async fn generic_patch_allows_track_report_title_and_sort_without_payload() {
 // resolves.
 // ---------------------------------------------------------------------------
 
-async fn seed_spec_track_without_report_card(repo: &SqlxRepo) -> TrackId {
+async fn seed_planner_track_without_report_card(repo: &SqlxRepo) -> TrackId {
     let area = repo
         .area_create(NewArea {
             name: "report-invariant".into(),
@@ -1148,7 +1148,7 @@ async fn seed_spec_track_without_report_card(repo: &SqlxRepo) -> TrackId {
         })
         .await
         .unwrap();
-    // Spec card only (kind "codex"), exactly the shape the codex-e2e fixture
+    // Planner card only (kind "codex"), exactly the shape the codex-e2e fixture
     // minted with report-card minting disabled. No track-report card.
     repo.card_create(NewCard {
         track_id: track.id.clone(),
@@ -1165,7 +1165,7 @@ async fn seed_spec_track_without_report_card(repo: &SqlxRepo) -> TrackId {
 #[tokio::test]
 async fn resolve_report_for_track_errs_when_report_card_missing() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let track_id = seed_spec_track_without_report_card(&repo).await;
+    let track_id = seed_planner_track_without_report_card(&repo).await;
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
 
     let err =
@@ -1185,7 +1185,7 @@ async fn resolve_report_for_track_errs_when_report_card_missing() {
 #[tokio::test]
 async fn resolve_report_for_track_ok_when_report_card_present() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let track_id = seed_spec_track_without_report_card(&repo).await;
+    let track_id = seed_planner_track_without_report_card(&repo).await;
     // Mint the track-report card exactly as `routes::tracks::create_track` (and
     // the fixed fixture) does: kind "track-report", sort -1.0, initial payload.
     repo.card_create(NewCard {

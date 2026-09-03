@@ -26,7 +26,7 @@ export async function createTrack(
   // #1147 S3 — no `cwd`. Omitting it is the *managed workspace* branch:
   // the kernel derives `<workspace-root>/<area>/<track>` and creates the
   // git repository itself, so the seed works in every environment (docker
-  // stack or native server) without the spec having to own a directory.
+  // stack or native server) without the planner having to own a directory.
   // It is also exactly what the new FE's default create sends (see
   // `track-create.spec.ts`, which pins "no cwd on the wire"), so the seed
   // stays representative. Sending an explicit `cwd` is the *attached*

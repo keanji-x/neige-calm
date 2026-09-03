@@ -41,7 +41,7 @@ pub async fn tasks_by_track_tx(
     Ok(rows)
 }
 
-/// Revise a still-`pending` plan row. Only the spec-revisable payload
+/// Revise a still-`pending` plan row. Only the planner-revisable payload
 /// columns move (design §4.1 rule 5: goal/context/acceptance/cwd/deps/
 /// priority/gate); identity, status, and the gate bookkeeping columns
 /// are untouched. Guarded `WHERE status = 'pending'`: a row that left
@@ -321,7 +321,7 @@ pub async fn task_stamp_missing_running_deadline_tx(
 /// (`build_worker_payload` stamps it; serde shape
 /// `{"actor":{"kind":"KernelDispatcher"}}`). A legacy
 /// `calm.task.dispatch` operation carries the requesting envelope's
-/// actor (the spec card, `{"kind":"AiSpec",...}`) and could otherwise
+/// actor (the planner card, `{"kind":"AiPlanner",...}`) and could otherwise
 /// collide on the same idempotency key — that foreign op's worker card
 /// must NOT be able to flip the plan task during the unstamped
 /// `dispatched` window (the scheduler classifies the payload-hash
@@ -590,7 +590,7 @@ const STATUS_DETAIL_REASON_MAX: usize = 480;
 /// / `gate-*`) must compare against this, never against the whole
 /// string: before #1147 the spawn-failure reason stopped in the
 /// operation's `phase_detail_json` and the row read a bare
-/// `spawn-failed`, so neither the spec nor the FE could say WHY.
+/// `spawn-failed`, so neither the planner nor the FE could say WHY.
 pub fn status_detail_class(detail: &str) -> &str {
     detail.split_once(": ").map_or(detail, |(class, _)| class)
 }

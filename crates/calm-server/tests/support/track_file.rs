@@ -29,7 +29,7 @@ pub struct Boot {
     pub repo: Arc<dyn Repo>,
     pub area_id: AreaId,
     pub track_id: TrackId,
-    pub spec_card_id: CardId,
+    pub planner_card_id: CardId,
     pub worker_card_id: CardId,
     pub other_track_card_id: CardId,
 }
@@ -63,13 +63,13 @@ pub async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: Some(0.0),
-            payload: json!({ "role": "spec" }),
+            payload: json!({ "role": "planner" }),
         })
         .await
         .unwrap();
@@ -126,21 +126,22 @@ pub async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let other_spec_card = repo
+    let other_planner_card = repo
         .card_create(NewCard {
             track_id: track2.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: Some(-1.0),
-            payload: json!({ "role": "spec" }),
+            payload: json!({ "role": "planner" }),
         })
         .await
         .unwrap();
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
-    super::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec).await;
+    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
+    super::mcp::set_persisted_card_role(repo.as_ref(), planner_card.id.as_str(), CardRole::Planner)
+        .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
     card_role_cache.insert(
         report_card.id.clone(),
@@ -152,9 +153,13 @@ pub async fn boot() -> Boot {
         CardRole::Worker,
         track2.id.clone(),
     );
-    super::mcp::set_persisted_card_role(repo.as_ref(), other_spec_card.id.as_str(), CardRole::Spec)
-        .await;
-    card_role_cache.insert(other_spec_card.id, CardRole::Spec, track2.id.clone());
+    super::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        other_planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
+    card_role_cache.insert(other_planner_card.id, CardRole::Planner, track2.id.clone());
 
     let track_area_cache = TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
@@ -219,7 +224,7 @@ pub async fn boot() -> Boot {
         repo,
         area_id: area.id,
         track_id: track.id,
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
         other_track_card_id: other_track_card.id,
     }
@@ -286,15 +291,15 @@ pub async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
-pub fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+pub fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "spec-session".to_string(),
+        session_id: "planner-session".to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".to_string(),
+        thread_id: "planner-thread".to_string(),
     }
 }
 

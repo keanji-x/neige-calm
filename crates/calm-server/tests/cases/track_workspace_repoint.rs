@@ -69,7 +69,7 @@ struct Boot {
     workspace_root: PathBuf,
     /// #1147 S3 — the registry the route's in-memory fence acts on.
     ///
-    /// Held so tests can install a REAL `SpecHarness` into it. Without one the
+    /// Held so tests can install a REAL `PlannerHarness` into it. Without one the
     /// whole `harness.get` / `shutdown` / `remove` half of the fence is dead
     /// code under test: it was measured that deleting it turned no test red,
     /// which is exactly the shape this slice has been caught by twice.
@@ -140,11 +140,11 @@ async fn boot() -> Boot {
     }
 }
 
-/// Install a real `SpecHarness` in the registry under the track's live
-/// spec-harness runtime, and return that runtime id.
+/// Install a real `PlannerHarness` in the registry under the track's live
+/// planner-harness runtime, and return that runtime id.
 ///
 /// `run_unstarted_for_test` builds the handle without spawning the run loop, so
-/// the test gets a genuine `SpecHarness` — one whose `shutdown()` really runs —
+/// the test gets a genuine `PlannerHarness` — one whose `shutdown()` really runs —
 /// with no background task to race the assertions.
 async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     let runtime_id: String = sqlx::query_scalar(
@@ -161,8 +161,8 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
         .await
         .unwrap();
     let repo: Arc<dyn Repo> = b.repo.clone();
-    let (harness, _observations) = calm_server::harness::SpecHarness::run_unstarted_for_test(
-        calm_server::harness::SpecHarnessParams {
+    let (harness, _observations) = calm_server::harness::PlannerHarness::run_unstarted_for_test(
+        calm_server::harness::PlannerHarnessParams {
             runtime_id: runtime_id.clone(),
             track_id: track_id.to_string().into(),
             card_id: card_id.into(),
@@ -284,10 +284,10 @@ async fn repoint(b: &Boot, track_id: &str) -> (StatusCode, String) {
     repoint_to(b, track_id, &target).await
 }
 
-/// Every `spec-harness-start` payload submitted so far, oldest first.
+/// Every `planner-harness-start` payload submitted so far, oldest first.
 async fn harness_start_payloads(b: &Boot) -> Vec<String> {
     sqlx::query_scalar(
-        "SELECT payload_json FROM operations WHERE kind='spec-harness-start' \
+        "SELECT payload_json FROM operations WHERE kind='planner-harness-start' \
          ORDER BY created_at_ms, id",
     )
     .fetch_all(b.repo.pool())
@@ -530,7 +530,7 @@ async fn a_second_repoint_is_refused_because_the_first_one_froze_it() {
 }
 
 #[tokio::test]
-async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
+async fn the_planner_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let (track, managed_path) = managed_track(&b, &area, "w").await;
@@ -539,9 +539,9 @@ async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let (status, body) = repoint_to(&b, &track, &target).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    // The re-point must submit a `spec-harness-start` carrying the NEW cwd and
+    // The re-point must submit a `planner-harness-start` carrying the NEW cwd and
     // `force_new_thread: true`. A resumed thread keeps the cwd it was minted
-    // with, so `force_new_thread: false` would leave the spec agent working in
+    // with, so `force_new_thread: false` would leave the planner agent working in
     // the trashed directory while every worker uses the new one.
     let payloads = harness_start_payloads(&b).await;
     let last: Value = serde_json::from_str(payloads.last().expect("a harness start")).unwrap();
@@ -574,7 +574,7 @@ async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
 ///
 /// Asserting the end state proves nothing: the restart carries
 /// `force_new_thread: true`, which supersedes the previous runtime on its own
-/// (`session_prepare_deferred_spec_tx`), so an after-the-fact check is green
+/// (`session_prepare_deferred_planner_tx`), so an after-the-fact check is green
 /// even with the fence deleted — measured. The question is a *temporal* one —
 /// "could a push still start a turn at the moment the directory moves?" — so
 /// it is asked in the window, through the same hook the re-check test uses.
@@ -595,7 +595,7 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
     .unwrap();
     assert!(
         !active_before.is_empty(),
-        "premise: a freshly created track has an active spec-harness runtime, \
+        "premise: a freshly created track has an active planner-harness runtime, \
          otherwise this test cannot observe the fence at all"
     );
 
@@ -629,7 +629,7 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
     entered.notified().await;
     // In the window: the fence transaction has committed and nothing has moved
     // yet. Every runtime that was active must already be gone from the set
-    // `dispatcher::harness_runtime_id_for_spec_card` reads.
+    // `dispatcher::harness_runtime_id_for_planner_card` reads.
     let still_active: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
          AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
@@ -1206,7 +1206,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     .unwrap();
     assert!(
         !active_before.is_empty(),
-        "premise: the track has a live spec harness"
+        "premise: the track has a live planner harness"
     );
 
     let (status, body) = repoint_to(&b, &track, &repo).await;
@@ -1232,7 +1232,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     assert!(trash_entries(&b.workspace_root).is_empty());
     assert!(managed_path.join(".git").is_dir());
 
-    // …including the spec harness. The claim rules are checked in the fence
+    // …including the planner harness. The claim rules are checked in the fence
     // transaction *before* the supersede, so a target that was never going to
     // be accepted does not cost the user their running agent. Without that
     // early check the conflict is still caught (the write transaction re-runs
@@ -1248,7 +1248,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     .unwrap();
     assert_eq!(
         active_after, active_before,
-        "a refused target must leave the running spec harness alone"
+        "a refused target must leave the running planner harness alone"
     );
 }
 
@@ -1484,7 +1484,7 @@ async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
     .unwrap();
     assert!(
         !active_before.is_empty(),
-        "premise: the track has a live spec harness"
+        "premise: the track has a live planner harness"
     );
 
     let (status, body) = repoint(&b, &track).await;
@@ -1520,7 +1520,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
     assert_eq!(workspace_row(&b, &track).await.2, None, "premise: unfrozen");
 
     let card: String = sqlx::query_scalar(
-        "SELECT id FROM cards WHERE track_id=?1 AND role='spec' ORDER BY created_at, id LIMIT 1",
+        "SELECT id FROM cards WHERE track_id=?1 AND role='planner' ORDER BY created_at, id LIMIT 1",
     )
     .bind(&track)
     .fetch_one(b.repo.pool())
@@ -1563,7 +1563,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
 }
 
 /// Freeze point 4 is S4's: a child track is frozen the moment it is created,
-/// because a spec bootstraps a harness on it immediately and there is no
+/// because a planner bootstraps a harness on it immediately and there is no
 /// window in which it could safely be re-pointed. Asserted here so a future
 /// change to the child adapter that un-freezes it turns THIS slice red too.
 #[tokio::test]
@@ -1610,7 +1610,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
     );
     let launchpad: Value = serde_json::from_str(&body).unwrap();
     let track = launchpad["track_id"].as_str().unwrap().to_string();
-    let spec_card = launchpad["spec_card_id"].as_str().unwrap().to_string();
+    let planner_card = launchpad["planner_card_id"].as_str().unwrap().to_string();
     assert_eq!(
         workspace_row(&b, &track).await.2,
         None,
@@ -1621,7 +1621,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
     let target = calm_server::test_seams::prepare_workspace_lease_target_for_test(
         &mut tx,
         &track,
-        &spec_card,
+        &planner_card,
         &b.workspace_root,
     )
     .await
@@ -1629,7 +1629,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
     tx.commit().await.unwrap();
     calm_server::test_seams::acquire_workspace_lease_for_test(
         b.repo.pool(),
-        &spec_card,
+        &planner_card,
         &track,
         "test-owner",
         &target,
@@ -1674,7 +1674,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
 ///
 /// It was executed. A panic probe planted in the loop fired in **six** tests
 /// that never call `install_live_harness`: creating a track registers a live
-/// spec-harness runtime on its own, so the registry is populated naturally and
+/// planner-harness runtime on its own, so the registry is populated naturally and
 /// the loop really runs. What was missing is that nothing ever *checked the
 /// slot afterwards*, so deleting `harness.get` + `shutdown()` + `remove` turned
 /// nothing red — measured. `install_live_harness` is not what makes the code
@@ -1706,7 +1706,7 @@ async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
 ///
 /// The route's promise is "a refusal leaves nothing behind except a re-opened
 /// harness". Tearing the harness down and then returning 409 without the
-/// restart would leave the track alive but its spec agent dead, which is worse
+/// restart would leave the track alive but its planner agent dead, which is worse
 /// than the change the caller was denied.
 #[tokio::test]
 async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
@@ -1757,7 +1757,7 @@ async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
     assert!(
         payloads.len() > starts_before,
         "a refusal that tore the harness down must start it again; no new \
-         `spec-harness-start` was submitted"
+         `planner-harness-start` was submitted"
     );
     let last: Value = serde_json::from_str(payloads.last().unwrap()).unwrap();
     assert_eq!(
@@ -1772,16 +1772,16 @@ async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
     );
 }
 
-/// A shutdown that fails must not swallow the track's spec agent.
+/// A shutdown that fails must not swallow the track's planner agent.
 ///
 /// By this point the fence transaction has COMMITTED: every runtime is
 /// superseded. The shape this replaces removed the registry entry first and
 /// then used `?`, so a failing shutdown returned 500 with the runtimes
-/// superseded, the entry gone, and the restart skipped — the spec agent was
+/// superseded, the entry gone, and the restart skipped — the planner agent was
 /// dead with nothing left that would ever start it again.
 ///
 /// The failure is injected (`fail_workspace_repoint_shutdown_for_test`):
-/// `SpecHarness::shutdown` only fails on a persistence error that an
+/// `PlannerHarness::shutdown` only fails on a persistence error that an
 /// integration test cannot provoke without dismantling the very runtime row
 /// the fence needs. Same deterministic-injection posture S5 used for N16.
 #[tokio::test]
@@ -1809,7 +1809,7 @@ async fn a_failed_harness_shutdown_still_completes_the_repoint() {
     let payloads = harness_start_payloads(&b).await;
     assert!(
         payloads.len() > starts_before,
-        "the spec agent must have been restarted; leaving it superseded with no \
+        "the planner agent must have been restarted; leaving it superseded with no \
          restart is the failure mode this test exists for"
     );
 }
@@ -1824,9 +1824,9 @@ async fn a_failed_harness_shutdown_still_completes_the_repoint() {
 ///
 /// `ai:codex` is not an arbitrary choice, and the reason is worth knowing:
 /// `Actor::to_actor_id` maps `"user"` → `User`, `"ai:codex"` → `AiCodex`, and
-/// **everything else — including `ai:spec` — to `User`** by a documented
+/// **everything else — including `ai:planner` — to `User`** by a documented
 /// defensive default. So `ai:codex` is the only header value that reaches a
-/// non-`User` `ActorId` at all, and a test written with `ai:spec` passes
+/// non-`User` `ActorId` at all, and a test written with `ai:planner` passes
 /// vacuously while looking correct (measured: it returned 200 and moved the
 /// workspace). That is not a hole this slice opened or should close here —
 /// `actor.rs`'s module doc is explicit that the header is a *declared*, not
@@ -1844,7 +1844,7 @@ async fn a_non_user_actor_may_not_change_a_workspace() {
     // Called directly rather than over HTTP, and that is the finding rather
     // than a shortcut. Measured: driving this through `PATCH` with
     // `X-Calm-Actor: ai:codex` DOES answer 403 — but with
-    // `"AiCodex/AiClaude/AiSpec actor has empty card id"`, a different and
+    // `"AiCodex/AiClaude/AiPlanner actor has empty card id"`, a different and
     // older guard. `Actor::to_actor_id` maps every header string except
     // `"ai:codex"` to `User`, and `"ai:codex"` carries an empty card id that
     // the outer guard rejects first, so no HTTP request can produce a caller

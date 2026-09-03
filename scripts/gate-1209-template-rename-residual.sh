@@ -38,7 +38,7 @@
 # 1. `workflow` (any case) **adjacent to an identifier character** on one side
 #    or the other — part of a name or a data key.
 # 2. Two literal phrases that clause 1 structurally cannot reach, because their
-#    `workflow` is followed by a space: the spec-harness prompt heading
+#    `workflow` is followed by a space: the planner-harness prompt heading
 #    `Bound Workflow Input` and the `ISSUE_DEVELOPMENT_INTRO` line
 #    `Workflow input:`. Both are agent-visible text that #1268 rewrote. The
 #    heading is also pinned by the whole-document prompt golden; the intro line

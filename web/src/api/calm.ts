@@ -195,10 +195,10 @@ export const deleteTrack = (id: string) =>
 
 /**
  * Issue #247 PR3 — user-driven track-report edit. The kernel persists the
- * `{summary, body}` pair through the same CRDT pipeline the spec agent's
+ * `{summary, body}` pair through the same CRDT pipeline the planner agent's
  * `calm.report.write` MCP tool uses, then echoes back the projected
  * `TrackReportPayload` (with `schemaVersion` reasserted). Session-gated:
- * only `Actor::User` is accepted; worker / plugin / spec sessions are
+ * only `Actor::User` is accepted; worker / plugin / planner sessions are
  * rejected with 403 by construction (`author` is derived server-side,
  * never accepted on the wire — `serde(deny_unknown_fields)` closes the
  * spoofing path).
@@ -262,34 +262,34 @@ export const updateCard = (id: string, b: CardPatchBody) =>
   request<KernelCard>('PATCH', `/api/cards/${encodeURIComponent(id)}`, b);
 export const deleteCard = (id: string) =>
   request<void>('DELETE', `/api/cards/${encodeURIComponent(id)}`);
-export const resetSpecCard = (id: string) =>
+export const resetPlannerCard = (id: string) =>
   request<{ card_id: string; terminal_id: string; new_thread_id: string }>(
     'POST',
-    `/api/cards/${encodeURIComponent(id)}/spec/reset`,
+    `/api/cards/${encodeURIComponent(id)}/planner/reset`,
   );
-export const sendSpecInput = (id: string, text: string) =>
+export const sendPlannerInput = (id: string, text: string) =>
   request<{ card_id: string; runtime_id: string }>(
     'POST',
-    `/api/cards/${encodeURIComponent(id)}/spec/input`,
+    `/api/cards/${encodeURIComponent(id)}/planner/input`,
     { text },
   );
-// #668 — stop the running spec turn. `stopped: false` means the harness was
+// #668 — stop the running planner turn. `stopped: false` means the harness was
 // idle and the stop was a graceful no-op (no interrupt dispatched).
-export const interruptSpecCard = (id: string) =>
+export const interruptPlannerCard = (id: string) =>
   request<{ card_id: string; runtime_id: string; stopped: boolean }>(
     'POST',
-    `/api/cards/${encodeURIComponent(id)}/spec/interrupt`,
+    `/api/cards/${encodeURIComponent(id)}/planner/interrupt`,
   );
-// #668 fix — current harness phase for a spec card, used to seed the phase
+// #668 fix — current harness phase for a planner card, used to seed the phase
 // before the first `harness.phase.changed` event arrives (a page opened
 // mid-turn would otherwise see no live signal). Nulls mean the harness is
 // dormant — for a read that's a normal answer, not an error.
-export const getSpecRun = (id: string) =>
+export const getPlannerRun = (id: string) =>
   request<{
     card_id: string;
     runtime_id: string | null;
     phase: HarnessPhaseTag | null;
-  }>('GET', `/api/cards/${encodeURIComponent(id)}/spec/run`);
+  }>('GET', `/api/cards/${encodeURIComponent(id)}/planner/run`);
 export const listHarnessItems = (
   id: string,
   params: {
@@ -466,7 +466,7 @@ export const putSettings = (b: SettingsPutBody) =>
  *     kernel-namespace tools, never the plugin's own server tools.
  *
  * Throws `CalmApiError` on non-2xx; the AppBridge `oncalltool` wrapper turns
- * those into spec-shaped `CallToolResult { isError: true }` payloads.
+ * those into planner-shaped `CallToolResult { isError: true }` payloads.
  */
 export async function toolCallFromIframe(
   pluginId: string,

@@ -1112,7 +1112,7 @@ impl SharedCodexAppServer {
         self.thread_start_mint_inner(card_id, params).await
     }
 
-    /// Worker/spec mint that can only inject per-card MCP shell credentials.
+    /// Worker/planner mint that can only inject per-card MCP shell credentials.
     pub async fn thread_start_mint_mcp_shell(
         self: &Arc<Self>,
         card_id: &str,
@@ -1196,7 +1196,7 @@ impl SharedCodexAppServer {
         self.reap_and_respawn_with_current_settings().await
     }
 
-    /// ARCH INVARIANT (#550 F3): spec-harness reconciliation turn issuance
+    /// ARCH INVARIANT (#550 F3): planner-harness reconciliation turn issuance
     /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
     /// are non-harness boot/operation paths or lower-level tests.
     pub async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<TurnId> {
@@ -1609,7 +1609,7 @@ impl SharedCodexAppServer {
         // exec-shell — is ever created under detected-stale spawn
         // settings: every production mint path crosses the needs_respawn
         // drain boundary before minting (`thread_start_mint_inner` for
-        // card/spec/MCP-shell mints, `ensure_respawn_for_current_settings`
+        // card/planner/MCP-shell mints, `ensure_respawn_for_current_settings`
         // for PTY/TUI creation). Documented residual: `turn_start` on an
         // EXISTING thread does not cross the boundary — existing threads
         // keep the MCP processes/config established under the old env

@@ -6,7 +6,7 @@
 // header — no new color tokens, no new geometry.
 //
 // Why a dedicated component:
-//   * The lifecycle is the kernel's contract surface (the Spec Agent
+//   * The lifecycle is the kernel's contract surface (the Planner Agent
 //     drives it explicitly); a single render site keeps label + color
 //     mapping consistent across the Track header, the sidebar row, and
 //     any future dashboard surface.

@@ -42,8 +42,8 @@ import {
   type OverlayWire, type Track, type TrackDetailWire, type TrackPatchBody, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
-  specRunOperation, areaConversationsOperation, createAreaConversationOperation,
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  plannerRunOperation, areaConversationsOperation, createAreaConversationOperation,
   createTrackConversationOperation, trackConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
@@ -141,7 +141,7 @@ export const queryKeys = Object.freeze({
      no golden would have reported their absence. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
-  specRun: (cardId: string) => ['spec-run', cardId] as const,
+  plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /* The event bridge can only invalidate the `['area-conversations']` prefix —
      no event carries an area id and no cached row can supply one — so this key
      must keep the area id in second position for that prefix to reach it. */
@@ -207,27 +207,27 @@ export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: st
   };
 }
 
-export function specRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.specRun(cardId),
-    queryFn: () => runOperation(transport, specRunOperation(cardId), unauthorized),
+    queryKey: queryKeys.plannerRun(cardId),
+    queryFn: () => runOperation(transport, plannerRunOperation(cardId), unauthorized),
   };
 }
 
-export function useSpecMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
-    client.invalidateQueries({ queryKey: queryKeys.specRun(cardId) }),
+    client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
   ]).then(() => undefined);
   const refreshAfter = async <T,>(result: T): Promise<T> => {
     await refresh();
     return result;
   };
   return {
-    send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text), unauthorized).then(refreshAfter),
-    interrupt: () => runOperation(transport, interruptSpecOperation(cardId), unauthorized).then(refreshAfter),
-    /* No `reset` — see the note where `resetSpecOperation` used to be in
+    send: (text: string) => runOperation(transport, sendPlannerInputOperation(cardId, text), unauthorized).then(refreshAfter),
+    interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
+    /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in
        the browser calls it. */
   };

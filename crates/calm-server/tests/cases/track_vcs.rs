@@ -136,7 +136,7 @@ async fn add_card_with_id_with_event(
                     card_id,
                     new_card,
                     role,
-                    !matches!(role, CardRole::ReportCard | CardRole::Spec),
+                    !matches!(role, CardRole::ReportCard | CardRole::Planner),
                     &roles,
                 )
                 .await?;
@@ -275,7 +275,7 @@ async fn insert_raw_card(
             payload,
         },
         role,
-        !matches!(role, CardRole::ReportCard | CardRole::Spec),
+        !matches!(role, CardRole::ReportCard | CardRole::Planner),
         roles,
     )
     .await
@@ -888,26 +888,26 @@ async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
 }
 
 #[tokio::test]
-async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
+async fn since_last_turn_suppresses_legacy_planner_payload_cutover_noise() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
     let (roles, _areas, write) = write_context();
     add_report_card(&repo, &bus, &roles, &write, &track.id, &area.id).await;
-    let spec = add_card_with_event(
+    let planner = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &track.id,
         &area.id,
-        "spec",
-        CardRole::Spec,
+        "planner",
+        CardRole::Planner,
         json!({"schemaVersion": 1}),
     )
     .await;
-    let legacy_head = seed_legacy_card_lens_manifest(&repo, &track.id, &spec.id).await;
+    let legacy_head = seed_legacy_card_lens_manifest(&repo, &track.id, &planner.id).await;
 
     update_track_title_with_actor(
         &repo,
@@ -925,21 +925,21 @@ async fn since_last_turn_suppresses_legacy_spec_payload_cutover_noise() {
         &track.id,
         Some(&legacy_head),
         None,
-        Some(&spec.id),
+        Some(&planner.id),
     )
     .await
     .expect("since-last-turn block")
     .block
     .expect("cutover diff block");
-    let legacy_payload_noise = format!("cards/{}/payload.json deleted", spec.id.as_str());
-    let payload_noise = format!("cards/{}/.payload.json new", spec.id.as_str());
+    let legacy_payload_noise = format!("cards/{}/payload.json deleted", planner.id.as_str());
+    let payload_noise = format!("cards/{}/.payload.json new", planner.id.as_str());
     assert!(
         !block.contains(&legacy_payload_noise),
-        "legacy payload cutover noise leaked into spec observation: {block}"
+        "legacy payload cutover noise leaked into planner observation: {block}"
     );
     assert!(
         !block.contains(&payload_noise),
-        "payload cutover noise leaked into spec observation: {block}"
+        "payload cutover noise leaked into planner observation: {block}"
     );
     assert!(block.contains("track.json edited"), "block = {block}");
 }
@@ -1056,15 +1056,15 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
     let bus = EventBus::new();
     let (roles, _areas, write) = write_context();
     add_report_card(&repo, &bus, &roles, &write, &track.id, &area.id).await;
-    let spec = add_card_with_event(
+    let planner = add_card_with_event(
         &repo,
         &bus,
         &roles,
         &write,
         &track.id,
         &area.id,
-        "spec",
-        CardRole::Spec,
+        "planner",
+        CardRole::Planner,
         json!({"schemaVersion": 1}),
     )
     .await;
@@ -1075,7 +1075,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
         area: area.id.clone(),
     };
     let track_id = track.id.clone();
-    let spec_actor = ActorId::AiSpec(spec.id.clone());
+    let planner_actor = ActorId::AiPlanner(planner.id.clone());
     let event_ids = repo
         .write_with_actor_events(
             None,
@@ -1084,7 +1084,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
             Box::new(move |tx| {
                 let scope = scope.clone();
                 let track_id = track_id.clone();
-                let spec_actor = spec_actor.clone();
+                let planner_actor = planner_actor.clone();
                 Box::pin(async move {
                     let mut events = Vec::new();
                     if let Some(auto_events) =
@@ -1102,7 +1102,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
                             tx,
                             &track_id,
                             TrackLifecycle::Dispatching,
-                            &spec_actor,
+                            &planner_actor,
                             "dispatch accepted work".into(),
                         )
                         .await?
@@ -1110,11 +1110,11 @@ async fn actor_event_batch_writes_track_vcs_commit_with_lifecycle_and_verdict() 
                         events.extend(
                             lifecycle_events
                                 .into_iter()
-                                .map(|event| (spec_actor.clone(), scope.clone(), event)),
+                                .map(|event| (planner_actor.clone(), scope.clone(), event)),
                         );
                     }
                     events.push((
-                        spec_actor,
+                        planner_actor,
                         scope,
                         Event::TaskCompleted {
                             idempotency_key: "actor-batch-verdict".into(),
@@ -3088,13 +3088,13 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
 }
 
 #[tokio::test]
-async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() {
+async fn planner_runtime_payload_blob_matches_live_view_without_projected_fields() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
     let bus = EventBus::new();
     let (roles, areas, write) = write_context();
-    let spec = add_card_with_event(
+    let planner = add_card_with_event(
         &repo,
         &bus,
         &roles,
@@ -3102,19 +3102,19 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
         &track.id,
         &area.id,
         "codex",
-        CardRole::Spec,
-        json!({"schemaVersion": 1, "spec_harness": true}),
+        CardRole::Planner,
+        json!({"schemaVersion": 1, "planner_harness": true}),
     )
     .await;
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.last_thread_id = Some("spec-thread".into());
+    snapshot.last_thread_id = Some("planner-thread".into());
     let (runtime, terminal_id) = {
         let mut tx = repo.pool().begin().await.expect("begin runtime");
         let terminal = terminal_create_tx(
             &mut tx,
             NewTerminal {
-                card_id: spec.id.clone(),
+                card_id: planner.id.clone(),
                 program: "codex".into(),
                 cwd: "/tmp".into(),
                 env: json!({}),
@@ -3128,12 +3128,12 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
             &mut tx,
             WorkerSessionInit {
                 id: new_id(),
-                card_id: spec.id.to_string(),
-                kind: WorkerSessionKind::SharedSpec,
+                card_id: planner.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Running,
                 terminal_run_id: Some(terminal_id.clone()),
-                thread_id: Some("spec-thread".into()),
+                thread_id: Some("planner-thread".into()),
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
@@ -3150,7 +3150,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
     repo.log_pure_event(
         ActorId::Kernel,
         EventScope::Card {
-            card: spec.id.clone(),
+            card: planner.id.clone(),
             track: track.id.clone(),
             area: area.id.clone(),
         },
@@ -3170,7 +3170,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
     .expect("runtime started event");
 
     let manifest = head_manifest(&repo, &track.id).await;
-    let payload_path = format!("cards/{}/.payload.json", spec.id.as_str());
+    let payload_path = format!("cards/{}/.payload.json", planner.id.as_str());
     let entry = manifest.entries.get(&payload_path).expect("payload entry");
     let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
     let view = TrackFsView::new(&repo, &write);
@@ -3183,7 +3183,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
     assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
     assert!(payload.get("terminal_id").is_none(), "{payload:?}");
 
-    let runtime_path = format!("cards/{}/runtime.json", spec.id.as_str());
+    let runtime_path = format!("cards/{}/runtime.json", planner.id.as_str());
     let entry = manifest.entries.get(&runtime_path).expect("runtime entry");
     let vcs_runtime = blob_text(&repo, &entry.blob_hash).await;
     let live_runtime = view.cat(&track, &runtime_path).await.expect("live runtime");
@@ -3191,7 +3191,7 @@ async fn spec_runtime_payload_blob_matches_live_view_without_projected_fields() 
 
     let runtime: serde_json::Value = serde_json::from_str(&vcs_runtime).unwrap();
     assert_eq!(runtime["terminal_id"], terminal_id);
-    assert_eq!(runtime["thread_id"], "spec-thread");
+    assert_eq!(runtime["thread_id"], "planner-thread");
     assert_eq!(runtime["source"], "shared");
     assert_eq!(runtime["thread_status"], "started");
 }

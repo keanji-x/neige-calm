@@ -173,7 +173,7 @@ pub fn template_task_payloads(key: &str) -> Option<Vec<Value>> {
 }
 
 /// Placeholder so `require_task_gates` does not treat these as scheduled
-/// work. Spec must replace the block with a real `gate` from the target
+/// work. Planner must replace the block with a real `gate` from the target
 /// repo before setting `ready: true`. Never an executed shell command.
 pub const AUTHOR_REAL_GATE: &str = "author a real gate from the target repo toolchain \
 (formatter, linter, tests) before activating; this reason is not a permanent skip";
@@ -210,7 +210,7 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Tra
     body.push_str("\n\n");
     for task in tasks {
         let mut payload = plan_template_task_block_payload(task);
-        // #1300 — declared here as `spec`, which is what an instantiated track
+        // #1300 — declared here as `planner`, which is what an instantiated track
         // ends up with either way. Before #1300 this said `user` and the fork
         // step rewrote it one instruction later; the `user` was not a claim
         // about authorship but a consequence of the seeding write going through
@@ -219,9 +219,9 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Tra
         //
         // Instantiation no longer goes through `persist_report` at all
         // (`routes::tracks::prepare_template_report`), so nothing constrains
-        // this to the author of a write that does not happen. `spec` is the
+        // this to the author of a write that does not happen. `planner` is the
         // honest value: a recipe's tasks are pre-set, not user-declared, and
-        // they stay `ready: false` until the normal Spec/user flow releases
+        // they stay `ready: false` until the normal Planner/user flow releases
         // them.
         payload["ready"] = json!(false);
         payload["declared_by"] = json!("spec");
@@ -399,7 +399,7 @@ fn investigation_tasks() -> Vec<PlanTaskInput> {
     ]
 }
 
-/// Pre-S5 git-forge `spec_instructions`, adapted off the deleted prompt
+/// Pre-S5 git-forge `planner_instructions`, adapted off the deleted prompt
 /// sections (`## Bound Template Input` / `## Bound Template Gates`).
 const ISSUE_DEVELOPMENT_INTRO: &str = "\
 # Plan

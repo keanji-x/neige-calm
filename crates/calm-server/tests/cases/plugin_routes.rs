@@ -7,7 +7,7 @@
 //! payload — it answers `initialize` and idles until SIGTERM, which is all
 //! the supervisor + the routes layer care about.
 //!
-//! What we cover (eight scenarios per Slice D's binding spec):
+//! What we cover (eight scenarios per Slice D's binding planner):
 //!
 //!   1. install + list flow
 //!   2. enable spawns the process

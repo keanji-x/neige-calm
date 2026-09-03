@@ -41,7 +41,7 @@ export const runtimeKindSchema = z.enum([
 
 export const trackFsCardRoleSchema = z.enum([
   'worker',
-  'spec',
+  'planner',
   'reportcard',
   'assistant',
 ]);

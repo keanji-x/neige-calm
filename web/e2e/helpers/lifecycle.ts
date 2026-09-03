@@ -1,12 +1,12 @@
 // Track-lifecycle E2E helpers — issue #269 P1.
 //
-// The spec daemon does NOT run in the replay binary (the kernel boots
+// The planner daemon does NOT run in the replay binary (the kernel boots
 // with `DaemonClient::new_stub()` + `CodexClient::new_stub()`), so the
-// spec-only lifecycle progressions (`planning → dispatching → working →
+// planner-only lifecycle progressions (`planning → dispatching → working →
 // reviewing → done`) can never happen organically in an a11y / replay
 // run. `POST /dev/force-track-lifecycle` on the replay binary stamps a
 // transition as `ActorId::Kernel` (which `track_lifecycle::actor_kind`
-// classifies as `SpecAgent`) and writes through the same
+// classifies as `PlannerAgent`) and writes through the same
 // `write_with_events_typed` path the production `update_track` handler
 // uses — same validator, same paired `TrackLifecycleChanged` +
 // `TrackUpdated` events. The only thing this helper changes is **who**
@@ -40,12 +40,12 @@ export type TrackLifecycle =
   | 'failed';
 
 /**
- * Force the track into `to` as if the spec agent had driven the edge.
+ * Force the track into `to` as if the planner agent had driven the edge.
  * Goes through `/dev/force-track-lifecycle` on the replay binary; throws
  * on non-2xx so a forbidden / illegal edge surfaces in the test that
  * triggered it rather than as a confusing later assertion failure.
  *
- * Use for spec-only edges (`planning → dispatching`, `dispatching →
+ * Use for planner-only edges (`planning → dispatching`, `dispatching →
  * working`, `reviewing → done`, etc.). For user-driven edges (kickoff,
  * cancel, reopen) use `patchTrackLifecycle` so the event log records the
  * write as User-driven, matching the production attribution.
@@ -121,7 +121,7 @@ export async function patchTrackLifecycle(
  * without throwing on 4xx, and accepts an optional `X-Calm-Actor`
  * header. The rejection-paths suite uses this for two flavors of
  * negative test:
- *   * default actor (User) attempting a spec-only edge → 403;
+ *   * default actor (User) attempting a planner-only edge → 403;
  *   * explicit `ai:codex` actor (classified as `Worker` by the
  *     lifecycle validator) attempting any edge → 403.
  * Callers are responsible for asserting the status / parsing the body.

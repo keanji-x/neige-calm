@@ -1,8 +1,8 @@
 //! Per-card async lock map.
 //!
 //! Lifted from the private `PerCardMintLocks` machinery in
-//! `operation::spec_harness_start_adapter` (issue #649 i2) so the
-//! `/spec/input` lazy-recovery path can serialize per-card work without
+//! `operation::planner_harness_start_adapter` (issue #649 i2) so the
+//! `/planner/input` lazy-recovery path can serialize per-card work without
 //! reaching into the adapter's internals. Guards self-clean their map entry
 //! on drop, so an idle card costs nothing.
 //!

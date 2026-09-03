@@ -72,6 +72,16 @@ pub(crate) fn normalize_task_privilege_fields(payload: &mut Map<String, Value>) 
     let tombstone = payload
         .get("tombstone")
         .is_some_and(|value| !value.is_null());
+    // `"spec"` is FROZEN document vocabulary, not the kernel's actor name.
+    // #1316 S3 renamed the actor to Planner everywhere the kernel owns it
+    // (`cards.role`, `events.actor`, `EditAuthor`), but `declared_by` /
+    // `tombstoned_by` are written by agents into stored report blocks and
+    // projected back out of them, so rewriting them would mean rewriting
+    // `cards.payload` and `cards.body_crdt` in lockstep — see migration
+    // 0083's header. `report_blocks::kinds::validate_declared_by` accepts
+    // only `"spec" | "user"`, and `track_report_edit_guard::author_name` maps
+    // `EditAuthor::Planner` onto this same string; changing it here alone
+    // deadlocks the two guards against each other.
     payload.insert("declared_by".into(), Value::String("spec".into()));
     if tombstone {
         payload.insert("tombstoned_by".into(), Value::String("spec".into()));

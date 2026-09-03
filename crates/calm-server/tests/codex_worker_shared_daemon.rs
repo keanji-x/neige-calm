@@ -112,7 +112,7 @@ struct Boot {
     mcp_server: Arc<McpServer>,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     report_card_id: CardId,
     _tmp: TempDir,
 }
@@ -145,11 +145,11 @@ async fn boot(start_shared: bool) -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: Value::Null,
         })
@@ -168,15 +168,19 @@ async fn boot(start_shared: bool) -> Boot {
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
-    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
-        .await;
+    cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
+    support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
         track.id.clone(),
     );
-    seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
+    seed_planner_session(&sqlx_repo, track.id.as_str(), planner_card.id.as_str()).await;
     let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&wcc).await.unwrap();
 
@@ -257,24 +261,24 @@ async fn boot(start_shared: bool) -> Boot {
         mcp_server,
         ctx,
         registry: Arc::new(registry),
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         report_card_id: report_card.id,
         _tmp: tmp,
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
+async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: "spec-session".to_string(),
-            card_id: spec_card_id.to_string(),
+            id: "planner-session".to_string(),
+            card_id: planner_card_id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
-            thread_id: Some("spec-thread".to_string()),
+            thread_id: Some("planner-thread".to_string()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
@@ -284,11 +288,11 @@ async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) 
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
         .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as track root");
+        .expect("mark planner session as track root");
     tx.commit().await.unwrap();
 }
 
@@ -318,15 +322,15 @@ fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>) {
     (spawn_dispatcher(boot), boot.mcp_server.clone())
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "spec-session".to_string(),
+        session_id: "planner-session".to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".into(),
+        thread_id: "planner-thread".into(),
     }
 }
 
@@ -357,7 +361,7 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
         .expect("task block writer registered");
     handler(
         boot.ctx.clone(),
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "kind": "task",
             "if_doc_rev": report.doc_rev,
@@ -1410,7 +1414,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
         })
         .expect("thread/start params must carry developer_instructions");
     assert!(
-        developer_instructions.contains("worker agent under spec card"),
+        developer_instructions.contains("worker agent under planner card"),
         "developer_instructions must be the WorkerCodex prompt: {developer_instructions}"
     );
     assert!(

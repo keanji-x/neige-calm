@@ -33,7 +33,7 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// assistant locked out of it could never form a CAS write at all. The
 /// report **write** channel (`calm.report.write` / `.edit`, which can carry
 /// lifecycle) stays denied — that is the §3.2 dividing line, not "reports
-/// are spec property".
+/// are planner property".
 ///
 /// #1189 S2 (§3.2b) opened the block channel too: `blocks.*` and
 /// `write_markdown` are the only write surface an assistant has, and none
@@ -49,10 +49,10 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "calm.report.write_markdown",
 ];
 
-/// Denied tools whose handler a **Spec** token gets past. Used both as the
+/// Denied tools whose handler a **Planner** token gets past. Used both as the
 /// negative list for the assistant and as the control list below.
-const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
-    // Report write channel — carries lifecycle, hence spec-only (§3.2).
+const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
+    // Report write channel — carries lifecycle, hence planner-only (§3.2).
     "calm.report.write",
     "calm.report.edit",
     // Cross-track / cross-area report discovery reads.
@@ -61,16 +61,16 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     // Track state + verdict.
     "calm.track.state",
     "calm.task.verdict",
-    // #1211 S3 — naming the track is a spec judgement about what the track is;
+    // #1211 S3 — naming the track is a planner judgement about what the track is;
     // an assistant has no plan of its own to name.
     "calm.track.rename",
-    // Track filesystem + history drill-ins (Spec|Worker, never Assistant).
+    // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
     "calm.track.ls",
     "calm.track.cat",
     "calm.track.diff",
     "calm.track.cat_at",
     "calm.track.log",
-    // Dispatch. Retired no-op shim today, still spec-only.
+    // Dispatch. Retired no-op shim today, still planner-only.
     "calm.task.dispatch",
     // Planning, review, admin.
     "calm.plan.upsert",
@@ -88,7 +88,7 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
 ];
 
 /// Denied tools that only a **Worker** token gets past — the completion
-/// pair and its aliases. Split out because the Spec control below would
+/// pair and its aliases. Split out because the Planner control below would
 /// otherwise be asserting something false about them.
 const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
     "calm.task.complete",
@@ -98,7 +98,7 @@ const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
 ];
 
 fn assistant_denied_tools() -> Vec<&'static str> {
-    ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE
+    ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE
         .iter()
         .chain(ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE)
         .copied()
@@ -239,7 +239,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     );
     // G1 — `taskDiagnostics` is dispatched-task runtime state (status,
     // gate result, worker card id, child track id): the very class
-    // `calm.plan.list` stays Spec-only to withhold. Opening `report.read`
+    // `calm.plan.list` stays Planner-only to withhold. Opening `report.read`
     // to the assistant must not smuggle it out the side.
     assert!(
         payload.get("taskDiagnostics").is_none(),
@@ -282,13 +282,13 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
 }
 
 /// G1 control — the trim is a *role* decision, not a field that quietly
-/// stopped being produced. The identical call from a Spec token still
+/// stopped being produced. The identical call from a Planner token still
 /// carries `taskDiagnostics`, and the seeded live task block makes it a
 /// non-empty array, so the assistant assertion above is withholding
 /// something real rather than an always-empty key.
 #[tokio::test]
-async fn spec_token_still_gets_task_diagnostics_from_the_report_read() {
-    let boot = boot_with_role(CardRole::Spec).await;
+async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
+    let boot = boot_with_role(CardRole::Planner).await;
     seed_track_report_card(&boot).await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     handshake(&mut rd, &mut wr, &boot.raw_token).await;
@@ -306,16 +306,18 @@ async fn spec_token_still_gets_task_diagnostics_from_the_report_read() {
     let resp = recv_frame(&mut rd).await;
     assert!(
         resp.get("error").is_none(),
-        "calm.report.read must serve a spec caller: {resp:#?}"
+        "calm.report.read must serve a planner caller: {resp:#?}"
     );
     let payload = tool_result_payload(&resp);
     let diagnostics = payload
         .get("taskDiagnostics")
         .and_then(serde_json::Value::as_array)
-        .unwrap_or_else(|| panic!("spec keeps the full `taskDiagnostics` payload: {payload:#?}"));
+        .unwrap_or_else(|| {
+            panic!("planner keeps the full `taskDiagnostics` payload: {payload:#?}")
+        });
     assert!(
         !diagnostics.is_empty(),
-        "the seeded report declares a live task, so the spec-side diagnostics \
+        "the seeded report declares a live task, so the planner-side diagnostics \
          must be non-empty — otherwise the assistant-side absence assertion \
          is withholding nothing: {payload:#?}"
     );
@@ -397,7 +399,7 @@ async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
             &boot.events,
             &write,
             calm_server::ids::ActorId::Kernel,
-            calm_server::event::EditAuthor::Spec,
+            calm_server::event::EditAuthor::Planner,
             track.clone(),
             card,
             current,
@@ -434,16 +436,21 @@ fn tool_result_payload(resp: &serde_json::Value) -> serde_json::Value {
 
 /// Control for the negative test: the refusals must be a *role* decision,
 /// not "this wire path refuses everything". The identical call sequence
-/// from a Spec token gets past every `require_role` — the calls may still
+/// from a Planner token gets past every `require_role` — the calls may still
 /// fail on arguments, but never with the role message. Without this
 /// control, a broken handshake or a blanket deny would make the negative
 /// test pass vacuously.
 #[tokio::test]
-async fn spec_token_is_never_refused_for_the_role_reason() {
-    assert_role_reason_absent(CardRole::Spec, ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE, 200).await;
+async fn planner_token_is_never_refused_for_the_role_reason() {
+    assert_role_reason_absent(
+        CardRole::Planner,
+        ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE,
+        200,
+    )
+    .await;
 }
 
-/// Same control for the worker-only completion pair, which a Spec token
+/// Same control for the worker-only completion pair, which a Planner token
 /// legitimately *is* refused for the role reason.
 #[tokio::test]
 async fn worker_token_is_never_refused_for_the_role_reason() {

@@ -6,7 +6,7 @@
  *
  * Mirrors the Rust `TrackLifecycle` enum (`crates/calm-server/src/model.rs`)
  * and the ts-rs-emitted union in `api/generated-events.ts`. Keep this
- * vocabulary 1:1 with the kernel; the Spec Agent drives the happy path
+ * vocabulary 1:1 with the kernel; the Planner Agent drives the happy path
  * (`draft → planning → dispatching → working → reviewing → done`) and the
  * UI projects it as a badge on the Track header / row.
  *
@@ -91,7 +91,7 @@ export type TrackCardSlot =
       card: TrackCardData;
       sort?: number;
       /**
-       * Issue #229 PR A — kernel-owned cards (spec today; track-report in
+       * Issue #229 PR A — kernel-owned cards (planner today; track-report in
        * PR B) carry `deletable: false` on the kernel `Card` row. The
        * server's `DELETE /api/cards/:id` rejects with 403 in that case;
        * the UI mirrors the same policy by suppressing the X close
@@ -114,7 +114,7 @@ export interface Track {
    * This is the single source of truth for track-level state — Sidebar's
    * "Waiting on you", Today's running/waiting counters, Area's bucket
    * sort, and the row/header status pill all derive from it via
-   * `shared/lifecycle.ts`. The Spec Agent writes it explicitly; nothing
+   * `shared/lifecycle.ts`. The Planner Agent writes it explicitly; nothing
    * else in the codebase should re-derive it.
    */
   lifecycle: TrackLifecycle;
@@ -129,7 +129,7 @@ export interface Track {
    *
    * Pairs with `lifecycle` at the sidebar "Waiting on you" filter
    * (`trackNeedsUserAttention` in `shared/lifecycle.ts`): the two signals
-   * are orthogonal (Spec Agent owns lifecycle, card_fsm owns this) and
+   * are orthogonal (Planner Agent owns lifecycle, card_fsm owns this) and
    * OR'd together at the UI layer.
    */
   anyCardNeedsInput: boolean;

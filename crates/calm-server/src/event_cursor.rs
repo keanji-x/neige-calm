@@ -6,7 +6,7 @@
 //! (`calm.wait_for_events` + the `/internal/codex/pending_events`
 //! long-poll) was deleted in the #293 push cutover. The sole remaining
 //! consumer is the dispatcher's **push watermark** (`Inner.push_cursor`
-//! in `dispatcher.rs`): keyed by the spec `CardId`, it dedups pushed
+//! in `dispatcher.rs`): keyed by the planner `CardId`, it dedups pushed
 //! observations so a re-delivered broadcast envelope (at-least-once
 //! delivery) doesn't issue a duplicate `turn/start`. A push fires only
 //! when `envelope_id > cursor`, then bumps.

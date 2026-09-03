@@ -35,7 +35,7 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "context_stale_declaration",
     "context_stale_reference",
     "reference_chain_too_large",
-    "spec_task_ceiling",
+    "planner_task_ceiling",
     "tree_budget_exhausted",
     "tree_root_unresolved",
 ];
@@ -57,7 +57,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("context_stale_declaration", "key"),
     ("context_stale_reference", "refs"),
     ("reference_chain_too_large", "refs"),
-    ("spec_task_ceiling", "key"),
+    ("planner_task_ceiling", "key"),
     ("tree_budget_exhausted", "key"),
     ("tree_root_unresolved", "key"),
 ];
@@ -67,7 +67,7 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
 /// release admission; changing only the Rust producer or only the renderer is
 /// therefore a test failure.
 pub const TASK_DIAGNOSTIC_ACTIONS: &[(&str, &str)] = &[
-    ("spec_task_ceiling", "raise_spec_task_ceiling"),
+    ("planner_task_ceiling", "raise_planner_task_ceiling"),
     ("tree_budget_exhausted", "raise_tree_task_budget"),
 ];
 
@@ -132,7 +132,7 @@ pub struct TaskDeclaration {
     pub declared_by: String,
     pub released_by_user: bool,
     /// Claim-frozen execution route. Missing and explicit null normalize to
-    /// `in-track` before projection.
+    /// `in-wave` before projection.
     pub spawn: String,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
@@ -181,7 +181,7 @@ impl Diagnostic {
                     .get("minimum_tree_task_budget")
                     .and_then(Value::as_i64)
                     .is_some(),
-                "spec_task_ceiling" => !message_args
+                "planner_task_ceiling" => !message_args
                     .get("capacity_raise_unavailable")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
@@ -245,7 +245,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             "cross-area reference `{}` is not schedulable",
             arg(args, "reference")
         ),
-        "declare_and_wait" => "this track requires user release before spec tasks are queued".into(),
+        "declare_and_wait" => "this track requires user release before planner tasks are queued".into(),
         "declaration_changed_in_flight" => {
             "task is already executing; declaration changes were not applied".into()
         }
@@ -257,13 +257,13 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
         ),
         "context_stale_reference" => "a referenced block changed after this task started".into(),
         "reference_chain_too_large" => "the task reference chain is too deep or too wide".into(),
-        "spec_task_ceiling" => {
+        "planner_task_ceiling" => {
             let ceiling = args
                 .get("ceiling")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
             let minimum_ceiling = args
-                .get("minimum_spec_task_ceiling")
+                .get("minimum_planner_task_ceiling")
                 .and_then(Value::as_i64)
                 .unwrap_or_else(|| ceiling.saturating_add(1));
             let admission_frozen = args
@@ -280,7 +280,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .unwrap_or(false);
             if admission_frozen && capacity_raise_unavailable {
                 format!(
-                    "the track tree rooted at `{}` is frozen and this track's spec task ceiling has \
+                    "the track tree rooted at `{}` is frozen and this track's planner task ceiling has \
                      no free slot, but the tree budget has no higher legal target in the current \
                      configuration; raising the local ceiling alone cannot admit another task — \
                      wait for in-flight work to finish or reduce the number of tree members",
@@ -288,27 +288,27 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 )
             } else if admission_frozen {
                 format!(
-                    "the track tree rooted at `{}` is frozen and this track's spec task ceiling has \
-                     no free slot — raise this track's spec_task_ceiling to at least \
+                    "the track tree rooted at `{}` is frozen and this track's planner task ceiling has \
+                     no free slot — raise this track's planner_task_ceiling to at least \
                      {minimum_ceiling} and follow the tree-budget recovery action",
                     arg(args, "root_wave_id")
                 )
             } else if bounds_tied && capacity_raise_unavailable {
                 format!(
-                    "spec task ceiling of {ceiling} and this track's tree share are both reached, \
+                    "planner task ceiling of {ceiling} and this track's tree share are both reached, \
                      but the tree budget has no higher legal target in the current configuration; \
                      wait for in-flight work to finish or reduce the number of tree members"
                 )
             } else if bounds_tied {
                 format!(
-                    "spec task ceiling of {ceiling} and this track's tree share are both reached — \
-                     raise this track's spec_task_ceiling to at least {minimum_ceiling} and also \
+                    "planner task ceiling of {ceiling} and this track's tree share are both reached — \
+                     raise this track's planner_task_ceiling to at least {minimum_ceiling} and also \
                      raise tree_task_budget on root track `{}`",
                     arg(args, "root_wave_id")
                 )
             } else {
                 format!(
-                    "spec task ceiling of {ceiling} is reached — raise spec_task_ceiling to at \
+                    "planner task ceiling of {ceiling} is reached — raise planner_task_ceiling to at \
                      least {minimum_ceiling}"
                 )
             }
@@ -343,7 +343,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .unwrap_or(false);
             let Some(minimum_budget) = minimum_budget else {
                 return format!(
-                    "the track tree rooted at `{root}` cannot admit another spec task, and the \
+                    "the track tree rooted at `{root}` cannot admit another planner task, and the \
                      current configuration cannot be released by raising tree_task_budget within \
                      its allowed range — let in-flight work finish or reduce the number of tree \
                      members"
@@ -353,7 +353,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 format!(
                     "the track tree rooted at `{root}` is frozen because at least one member's \
                      immutable in-flight occupancy exceeds its assigned share; no member may \
-                     admit a new spec task — raise tree_task_budget to at least {minimum_budget} \
+                     admit a new planner task — raise tree_task_budget to at least {minimum_budget} \
                      so every member's existing work fits with room for another task, or let the \
                      tree's excess in-flight work finish"
                 )
@@ -361,7 +361,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 format!(
                     "the whole track tree rooted at `{root}` shares a tree_task_budget of {budget}, \
                      split across {tracks} track(s); this track's slice of {share} and its local \
-                     spec_task_ceiling are both reached — raise both the local ceiling and \
+                     planner_task_ceiling are both reached — raise both the local ceiling and \
                      tree_task_budget on the root track (to at least {minimum_budget})"
                 )
             } else if share == 0 {
@@ -374,7 +374,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 format!(
                     "the whole track tree rooted at `{root}` shares a tree_task_budget of {budget}, \
                      split across {tracks} track(s); this track's slice of {share} is used up, so no \
-                     further spec task is queued here — raise tree_task_budget on the root track to \
+                     further planner task is queued here — raise tree_task_budget on the root track to \
                      at least {minimum_budget} or let the tree's excess in-flight work finish"
                 )
             }
@@ -782,6 +782,10 @@ pub fn project_task_declarations(
         let tombstoned_by = declarations
             .iter()
             .find(|declaration| declaration.key == *key && declaration.tombstone)
+            // Frozen document vocabulary, not the kernel's. `tombstoned_by`
+            // lives in stored report blocks, so #1316 S3 left its value at
+            // `"spec"` (migration 0083's header says why); this fallback feeds
+            // a diagnostic that is compared against those blocks.
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
             .unwrap_or("spec");
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
@@ -972,7 +976,7 @@ mod tests {
             ("context_stale_declaration", "key"),
             ("context_stale_reference", "refs"),
             ("reference_chain_too_large", "refs"),
-            ("spec_task_ceiling", "key"),
+            ("planner_task_ceiling", "key"),
             ("tree_budget_exhausted", "key"),
             ("tree_root_unresolved", "key"),
         ];

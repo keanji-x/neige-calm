@@ -105,7 +105,7 @@ astryx Chat 家族分两类：
 ## 3. 切片
 
 - **S1｜回复渲染 Markdown**（本 PR）—— 唯一当期就能付清的一条：库替掉的是真机器（CommonMark parser + 代码高亮），不是一个 `<p>`。
-- **S2｜附件**：依赖内核。今天写口只有 `POST /api/cards/{id}/spec/input { text }`，`crates/` 里没有任何 chat 附件通路。落地形态已定：`ChatComposerDrawer` + `ChatComposerInput.onFiles`（粘贴／拖放）+ `Thumbnail`。
+- **S2｜附件**：依赖内核。今天写口只有 `POST /api/cards/{id}/planner/input { text }`，`crates/` 里没有任何 chat 附件通路。落地形态已定：`ChatComposerDrawer` + `ChatComposerInput.onFiles`（粘贴／拖放）+ `Thumbnail`。
 - **S3｜活动行换 `ChatToolCalls`**：~~依赖内核把工具调用的结束时间与结果明细放上 wire~~——这个前提来自 §2.3 已被更正的第 1 条，是假的：耗时与失败明细一直在 wire 上，#1255 S1 已把它们接进 `ConversationActivity` 并渲染出来（耗时 ≥1s 的后缀 + 失败行的原因）。**阻塞点在上游库**：`ChatToolCalls` 的 error 态没有可见文字也没有 `aria-label`，行级也没有可断言的钩子（§2.3 第 2、3 条）。在库补上这两样之前，这一条不排期；kernel 侧无事可做。
 - **S4｜message actions／编辑已发送消息／AI 弹出选项**：依赖内核 + 产品决策（编辑后重跑还是分叉？transcript 今天只有 `text`，带不了结构化选项集）。库侧也**没有**现成的「编辑态」组件，只有可以填内容的 `metadata` 插槽；换 `ChatMessage`（§2.4）与这一条同时做。
 

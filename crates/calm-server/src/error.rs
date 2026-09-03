@@ -26,7 +26,7 @@ pub struct ErrorBody {
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
     /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
-    /// `spec_harness_dormant`, `today_summary_no_activity`,
+    /// `planner_harness_dormant`, `today_summary_no_activity`,
     /// `db_error`, `io_error`, `serde_error`,
     /// `codex_app_server`, `service_unavailable`, `internal`,
     /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
@@ -61,7 +61,7 @@ pub enum CalmError {
     /// that route mean "already exists / your body disagrees with the key" and
     /// are either ignorable or fixed by correcting the request, while this one
     /// means "this key is dead, mint a new one and resend". Same rationale as
-    /// [`CalmError::PluginConflict`] and [`CalmError::SpecHarnessDormant`].
+    /// [`CalmError::PluginConflict`] and [`CalmError::PlannerHarnessDormant`].
     #[error("idempotency key exhausted: {0}")]
     IdempotencyKeyExhausted(String),
 
@@ -167,19 +167,19 @@ pub enum CalmError {
     #[error("plugin kernel too old: {0}")]
     PluginKernelTooOld(String),
 
-    #[error("spec reset unsupported in shared mode: {0}")]
-    SpecResetUnsupportedInSharedMode(String),
+    #[error("planner reset unsupported in shared mode: {0}")]
+    PlannerResetUnsupportedInSharedMode(String),
 
-    /// 409 — `/spec/input` hit a spec card whose harness session is dormant
+    /// 409 — `/planner/input` hit a planner card whose harness session is dormant
     /// and not lazily recoverable: no active runtime row exists (the
-    /// `spec-harness-start` operation failed at track creation), or the active
+    /// `planner-harness-start` operation failed at track creation), or the active
     /// row is unusable (NULL/empty `thread_id` from a half-failed start, or a
     /// corrupt/unknown snapshot shape). Distinct from the generic
     /// [`CalmError::Conflict`] 409 ("runtime shutting down") so the web client
-    /// can branch on the error code and steer the user to `/spec/reset`
+    /// can branch on the error code and steer the user to `/planner/reset`
     /// instead of retrying. Issue #649 (i2).
-    #[error("spec harness dormant: {0}")]
-    SpecHarnessDormant(String),
+    #[error("planner harness dormant: {0}")]
+    PlannerHarnessDormant(String),
 
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
@@ -202,7 +202,7 @@ pub enum CalmError {
     CodexAppServer(String),
 
     /// 503 — transient backpressure. The server understood the request but
-    /// is temporarily unable to enqueue/process it (e.g., the spec harness
+    /// is temporarily unable to enqueue/process it (e.g., the planner harness
     /// observation queue is saturated). Clients should retry; the body
     /// message indicates what was full and may suggest a back-off. Distinct
     /// from `Internal` because nothing went wrong server-side — this is the
@@ -232,10 +232,10 @@ impl CalmError {
             CalmError::PluginManifestUnloaded(_) => "plugin_manifest_unloaded",
             CalmError::PluginConfigCorrupt(_) => "plugin_config_corrupt",
             CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
-            CalmError::SpecResetUnsupportedInSharedMode(_) => {
-                "spec_reset_unsupported_in_shared_mode"
+            CalmError::PlannerResetUnsupportedInSharedMode(_) => {
+                "planner_reset_unsupported_in_shared_mode"
             }
-            CalmError::SpecHarnessDormant(_) => "spec_harness_dormant",
+            CalmError::PlannerHarnessDormant(_) => "planner_harness_dormant",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -255,14 +255,13 @@ impl CalmError {
             | CalmError::PluginBusy(_)
             | CalmError::PluginManifestUnloaded(_)
             | CalmError::PluginConfigCorrupt(_)
-            | CalmError::SpecHarnessDormant(_)
+            | CalmError::PlannerHarnessDormant(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
-            CalmError::PluginKernelTooOld(_) | CalmError::SpecResetUnsupportedInSharedMode(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            CalmError::PluginKernelTooOld(_)
+            | CalmError::PlannerResetUnsupportedInSharedMode(_) => StatusCode::UNPROCESSABLE_ENTITY,
             CalmError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             CalmError::Db(_)
             | CalmError::Io(_)
@@ -361,7 +360,7 @@ impl From<CalmError> for calm_truth::TruthError {
             CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
             // Route-only variants with no `CoreError`/`TruthError` twin
             // collapse to Internal, exactly as `PluginConflict` and
-            // `SpecHarnessDormant` already do. `IdempotencyKeyExhausted` is
+            // `PlannerHarnessDormant` already do. `IdempotencyKeyExhausted` is
             // raised in a route handler and never crosses back down into the
             // truth layer, so this arm exists to keep the match exhaustive.
             CalmError::IdempotencyKeyExhausted(m)
@@ -372,8 +371,8 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)
             | CalmError::PluginKernelTooOld(m)
-            | CalmError::SpecResetUnsupportedInSharedMode(m)
-            | CalmError::SpecHarnessDormant(m)
+            | CalmError::PlannerResetUnsupportedInSharedMode(m)
+            | CalmError::PlannerHarnessDormant(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexAppServer(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),

@@ -383,7 +383,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    // ---- spec harness item stream (#510 PR-ui C1) -----------------------
+    // ---- planner harness item stream (#510 PR-ui C1) -----------------------
 
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(

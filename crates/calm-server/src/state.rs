@@ -18,9 +18,9 @@ use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
 use crate::operation::forge_action_adapter::ForgeActionAdapter;
-use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptAdapter;
-use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownAdapter;
-use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
+use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptAdapter;
+use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownAdapter;
+use crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use crate::operation::task_verify_adapter::TaskVerifyAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{
@@ -105,26 +105,26 @@ pub struct RouteState {
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
-    /// Issue #649 i2 — per-card serialization for `/spec/input` lazy harness
+    /// Issue #649 i2 — per-card serialization for `/planner/input` lazy harness
     /// recovery. Concurrent Sends racing a registry miss must not both call
     /// `spawn_recovered_harness` (the second spawn shuts the first down
     /// mid-turn). Entries self-clean when the last guard drops.
     ///
     /// Lock order: this is the INNER of the two per-card maps. See
     /// `conversation_first_message_locks` — `conversation_first_message_locks`
-    /// → `spec_recovery_locks` is the only order any path takes today, and a
+    /// → `planner_recovery_locks` is the only order any path takes today, and a
     /// path taking them in the reverse order would close a deadlock cycle
     /// against it.
-    pub(crate) spec_recovery_locks: crate::per_card_lock::PerCardLocks,
+    pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// #1098 §5.6 — per-card claim serializing the "send the conversation's
     /// first message" step of `POST /api/areas/{id}/conversations`. Two
     /// concurrent POSTs under one `Idempotency-Key` share one operation, so
     /// without this both would observe "no user message yet" and send the same
     /// instruction twice.
     ///
-    /// Deliberately a SEPARATE map from `spec_recovery_locks`: the claim is
-    /// held across the call into `send_spec_input`, whose
-    /// `ensure_live_spec_harness` takes `spec_recovery_locks` for the same
+    /// Deliberately a SEPARATE map from `planner_recovery_locks`: the claim is
+    /// held across the call into `send_planner_input`, whose
+    /// `ensure_live_planner_harness` takes `planner_recovery_locks` for the same
     /// card on the registry-miss path. `tokio::sync::Mutex` is not reentrant,
     /// so sharing one map would self-deadlock the request.
     ///
@@ -142,9 +142,9 @@ pub struct RouteState {
     ///    this lock. Multi-instance would need a DB-level claim, not a bigger
     ///    map.
     /// 2. *One permitted lock order:* `conversation_first_message_locks` →
-    ///    `spec_recovery_locks`, and never the reverse. The only nesting in
+    ///    `planner_recovery_locks`, and never the reverse. The only nesting in
     ///    the tree is `create_area_conversation` holding this claim across
-    ///    `send_spec_input` → `ensure_live_spec_harness`. Two distinct facts,
+    ///    `send_planner_input` → `ensure_live_planner_harness`. Two distinct facts,
     ///    kept apart because round 3 caught them conflated:
     ///    * *Sharing ONE map* for both purposes self-deadlocks a single
     ///      request outright: it would re-enter the same `tokio::sync::Mutex`
@@ -155,8 +155,8 @@ pub struct RouteState {
     ///      `create_area_conversation` was the first; `create_track_conversation`
     ///      (#1189) and `routes::today_summary`'s bootstrap recovery (#1253 PR2)
     ///      are the others, and all three hold this claim across
-    ///      `send_spec_input` → `ensure_live_spec_harness`. The Today path also
-    ///      holds it across a `spec-harness-start` operation on its dormant
+    ///      `send_planner_input` → `ensure_live_planner_harness`. The Today path also
+    ///      holds it across a `planner-harness-start` operation on its dormant
     ///      branch, which blocks on a codex RPC; that submits no per-card lock
     ///      of its own (the adapter's mint map is private and is taken and
     ///      released inside the operation), so it closes no cycle.
@@ -166,8 +166,8 @@ pub struct RouteState {
     ///      forward-order holder for the same card, closing the cycle. That
     ///      failure is intermittent and load-dependent, which is precisely
     ///      why the order is stated here instead of being left to chance.
-    ///      Today no reverse-order path exists (boot replay, `/spec/input`
-    ///      and `/spec/reset` take only the recovery lock and never enter
+    ///      Today no reverse-order path exists (boot replay, `/planner/input`
+    ///      and `/planner/reset` take only the recovery lock and never enter
     ///      conversation create); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
 }
@@ -247,7 +247,7 @@ impl BootState {
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
             hook_ingest_cache,
-            spec_recovery_locks: crate::per_card_lock::new_per_card_locks(),
+            planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
         };
         let worker = WorkerState {
@@ -534,8 +534,8 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
-    let spec_harness_start_adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(SpecHarnessStartAdapter::new(
+    let planner_harness_start_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(PlannerHarnessStartAdapter::new(
             input.repo.clone(),
             input.shared_codex_appserver.clone(),
             input.harness.clone(),
@@ -547,10 +547,10 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
                 .as_ref()
                 .map(|server| server.shim_config.socket_path.clone()),
         ));
-    let spec_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(SpecHarnessInterruptAdapter::new(input.harness.clone()));
-    let spec_harness_shutdown_adapter: Arc<dyn ProviderAdapter> = Arc::new(
-        SpecHarnessShutdownAdapter::new(input.harness, input.shared_codex_appserver, input.repo),
+    let planner_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(PlannerHarnessInterruptAdapter::new(input.harness.clone()));
+    let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        PlannerHarnessShutdownAdapter::new(input.harness, input.shared_codex_appserver, input.repo),
     );
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
@@ -569,9 +569,9 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,
-        spec_harness_start_adapter,
-        spec_harness_interrupt_adapter,
-        spec_harness_shutdown_adapter,
+        planner_harness_start_adapter,
+        planner_harness_interrupt_adapter,
+        planner_harness_shutdown_adapter,
         task_verify_adapter,
         forge_action_adapter,
         child_track_adapter,
@@ -701,7 +701,7 @@ impl AppState {
         .await
     }
 
-    /// #953 §5 — arm the deferred (post-heal) spec harness recovery task.
+    /// #953 §5 — arm the deferred (post-heal) planner harness recovery task.
     /// Called from the boot path ONLY when the daemon spawn failed; the task
     /// waits on the supervisor readiness watch and runs a claim-based
     /// recovery pass on the first observed `running: true`. The boot caller
@@ -1148,14 +1148,14 @@ impl AppState {
         // build the tool registry now (emit + track-state + track-report
         // tools) and let `McpServer::spawn` own the listener task. Boot
         // failure surfaces as a hard
-        // anyhow error — no MCP server means spec / worker cards
+        // anyhow error — no MCP server means planner / worker cards
         // can't emit events, which would silently break the track
         // FSM. The operator deserves a clear boot-time failure.
         //
         // PR7a.1 (#136 followup) — moved up before `Dispatcher::spawn`
         // so the dispatcher can take an `Arc<McpServer>` at construction
         // time and use it for worker codex daemon spawn (mirrors the
-        // spec card path in `routes::tracks::create_track`).
+        // planner card path in `routes::tracks::create_track`).
         let mcp_socket_path =
             crate::mcp_server::transport::default_socket_path(&cfg.data_dir_resolved());
         let mcp_shim_bin = resolve_mcp_stdio_shim_bin(cfg);
@@ -1280,7 +1280,7 @@ impl AppState {
                 daemon.clone(),
                 terminal_renderer.clone(),
                 // PR7a.1 — hand the MCP server handle to the dispatcher so
-                // worker codex spawns can join the same MCP wire the spec
+                // worker codex spawns can join the same MCP wire the planner
                 // card uses.
                 Some(mcp_server.clone()),
                 harness.clone(),

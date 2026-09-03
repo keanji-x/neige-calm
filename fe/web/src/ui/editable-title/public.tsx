@@ -44,7 +44,7 @@ export type EditableTitleProps = Readonly<{
    * product cannot recover from.
    *
    * `'clear'` makes the empty commit a real request: write the empty name.
-   * A track has a second namer — the spec agent's `calm.track.rename` succeeds
+   * A track has a second namer — the planner agent's `calm.track.rename` succeeds
    * only while the title is empty (#1211 S3) — so clearing the name is how a
    * reader hands naming back to it, and swallowing that keystroke would leave
    * "I cleared it, pressed Enter, and nothing happened".

@@ -12,7 +12,7 @@
     "description": "G-A — same Worker card, report write: refused by the recorder role whitelist",
     "principal": { "session_id": "$VALIDATOR_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
-    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-validator-report", "summary_before": "", "summary_after": "validator", "body_before": "", "body_after": "validator body", "agent_message": "validator report" } },
+    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "planner", "edit_id": "pd-validator-report", "summary_before": "", "summary_after": "validator", "body_before": "", "body_after": "validator body", "agent_message": "validator report" } },
     "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": true,
     "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }

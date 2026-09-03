@@ -2,14 +2,14 @@
 //!
 //! A shared-daemon codex **worker** thread must carry
 //! `/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET` +
-//! `.../NEIGE_MCP_TOKEN`, matching the SPEC path. Without that config, the
+//! `.../NEIGE_MCP_TOKEN`, matching the PLANNER path. Without that config, the
 //! worker's AI exec-shell never receives the per-card MCP credentials and
 //! `neige` reads fail.
 //!
 //! This test drives the **production WORKER spawn path** end-to-end through
 //! the real dispatcher/operation runtime against a live fake codex
 //! app-server, captures the inbound `thread/start` request, and asserts the
-//! worker `thread/start` carries the same MCP exec-shell env the spec path
+//! worker `thread/start` carries the same MCP exec-shell env the planner path
 //! does. It runs with a LIVE `McpServer` (`mcp_server = Some`) — the
 //! production wiring (`state.rs` `new`: `McpServer::spawn` then `Dispatcher`
 //! with `Some(mcp_server)`), so the worker spawn hits the
@@ -106,7 +106,7 @@ struct Boot {
     shared: Arc<SharedCodexAppServer>,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
-    spec_card_id: CardId,
+    planner_card_id: CardId,
     report_card_id: CardId,
     _tmp: TempDir,
 }
@@ -139,11 +139,11 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    let spec_card = repo
+    let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "spec".into(),
+            kind: "planner".into(),
             sort: None,
             payload: Value::Null,
         })
@@ -162,15 +162,19 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
-    cache.insert(spec_card.id.clone(), CardRole::Spec, track.id.clone());
-    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
-        .await;
+    cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
+    support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        planner_card.id.as_str(),
+        CardRole::Planner,
+    )
+    .await;
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
         track.id.clone(),
     );
-    seed_spec_session(&sqlx_repo, track.id.as_str(), spec_card.id.as_str()).await;
+    seed_planner_session(&sqlx_repo, track.id.as_str(), planner_card.id.as_str()).await;
     let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&wcc).await.unwrap();
 
@@ -233,24 +237,24 @@ async fn boot() -> Boot {
         shared,
         ctx,
         registry: Arc::new(registry),
-        spec_card_id: spec_card.id,
+        planner_card_id: planner_card.id,
         report_card_id: report_card.id,
         _tmp: tmp,
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) {
+async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: "spec-session".to_string(),
-            card_id: spec_card_id.to_string(),
+            id: "planner-session".to_string(),
+            card_id: planner_card_id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
             terminal_run_id: None,
-            thread_id: Some("spec-thread".to_string()),
+            thread_id: Some("planner-thread".to_string()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
@@ -260,11 +264,11 @@ async fn seed_spec_session(repo: &SqlxRepo, track_id: &str, spec_card_id: &str) 
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE tracks SET root_session_id = 'spec-session' WHERE id = ?1")
+    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
         .bind(track_id)
         .execute(&mut *tx)
         .await
-        .expect("mark spec session as track root");
+        .expect("mark planner session as track root");
     tx.commit().await.unwrap();
 }
 
@@ -317,22 +321,22 @@ async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, 
     (dispatcher, server, tmp)
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+fn planner_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
-        card_id: boot.spec_card_id.as_str().to_string(),
-        role: CardRole::Spec,
+        card_id: boot.planner_card_id.as_str().to_string(),
+        role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: "spec-session".to_string(),
+        session_id: "planner-session".to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "spec-thread".into(),
+        thread_id: "planner-thread".into(),
     }
 }
 
-/// Drives the SPEC card to plan a `codex` task, which the dispatcher turns
+/// Drives the PLANNER card to plan a `codex` task, which the dispatcher turns
 /// into a real `codex-worker` operation → `CodexWorkerAdapter` →
 /// `spawn_codex_worker_via_shared_daemon` (the production worker path under
-/// test). This is identical to how the real spec agent schedules workers.
+/// test). This is identical to how the real planner agent schedules workers.
 async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
     let report = boot
         .repo
@@ -347,7 +351,7 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
         .expect("task block writer registered");
     handler(
         boot.ctx.clone(),
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "kind": "task",
             "if_doc_rev": report.doc_rev,
@@ -368,8 +372,8 @@ async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
 }
 
 /// Polls the fake-codex capture file for the WORKER `thread/start` request.
-/// The spec card's own `thread/start` is faked (seeded `spec-session` already
-/// has a thread id, so the spec never re-mints), so the only `thread/start`
+/// The planner card's own `thread/start` is faked (seeded `planner-session` already
+/// has a thread id, so the planner never re-mints), so the only `thread/start`
 /// the live daemon actually receives here is the worker's.
 async fn wait_for_worker_thread_start(path: &Path) -> Value {
     for _ in 0..250 {
@@ -388,7 +392,7 @@ async fn wait_for_worker_thread_start(path: &Path) -> Value {
 
 /// #836: the production shared-daemon worker spawn must carry the MCP
 /// exec-shell env (`NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN`) on its
-/// `thread/start` request — exactly like the SPEC path does — so the
+/// `thread/start` request — exactly like the PLANNER path does — so the
 /// worker's AI exec-shell can run `neige task-completed`.
 ///
 /// RED on unfixed `main`: the worker emits `config: None`, so the captured
@@ -416,7 +420,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
 
-    // Sanity: confirm we captured the WORKER thread/start, not a spec one.
+    // Sanity: confirm we captured the WORKER thread/start, not a planner one.
     // The worker path renders the Worker-role developer instructions, which
     // include the `neige task-completed` reporting contract. (On main this
     // is already true — the env carrier is the broken part.)
@@ -425,13 +429,13 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         .and_then(Value::as_str)
         .expect("worker thread/start must carry developer_instructions");
     assert!(
-        developer_instructions.contains("worker agent under spec card"),
+        developer_instructions.contains("worker agent under planner card"),
         "captured thread/start must be the WORKER spawn (Worker-role prompt): {developer_instructions}"
     );
 
     // The actual #836 assertions: the worker thread/start must carry the
     // MCP exec-shell env in `shell_environment_policy.set`, mirroring the
-    // spec path (`spec_harness_adapters.rs:288/509`).
+    // planner path (`planner_harness_adapters.rs:288/509`).
     let mcp_socket = thread_start
         .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
         .and_then(Value::as_str);

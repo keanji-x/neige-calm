@@ -119,7 +119,7 @@ const TASKS: readonly ReportTaskRow[] = [
   /* Withdrawn: a struck declaration, and `kind === null` — upstream makes the
      kind and the card id null together for exactly these rows. */
   {
-    blockId: 'block-3', key: 'gamma-spec', state: 'withdrawn', declaration: 'Withdrawn',
+    blockId: 'block-3', key: 'gamma-planner', state: 'withdrawn', declaration: 'Withdrawn',
     status: null, statusDetail: null, kind: null, workerCardId: null,
   },
   /* Unreadable: an ordinary, unstruck declaration beside the withdrawn one, so

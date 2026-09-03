@@ -14,15 +14,15 @@
     "expected": { "decision": "deny", "error_contains": "empty card id" }
   },
   {
-    "description": "AiSpec with empty card id is rejected outright, even on a dispatch-request event",
-    "actor": { "kind": "AiSpec", "id": "" },
+    "description": "AiPlanner with empty card id is rejected outright, even on a dispatch-request event",
+    "actor": { "kind": "AiPlanner", "id": "" },
     "event": { "ev": "codex.worker_requested", "data": { "idempotency_key": "vec-i-32", "goal": "g", "context": null, "acceptance_criteria": null, "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "empty card id" }
   },
   {
-    "description": "AiSpec with empty card id is rejected on track.updated — the empty-id guard runs before the track-authority branch",
-    "actor": { "kind": "AiSpec", "id": "" },
+    "description": "AiPlanner with empty card id is rejected on track.updated — the empty-id guard runs before the track-authority branch",
+    "actor": { "kind": "AiPlanner", "id": "" },
     "event": { "ev": "track.updated", "data": { "id": "$HOME_TRACK", "area_id": "$HOME_AREA", "title": "frozen-vector track", "sort": 1.0, "archived_at": null, "pinned_at": null, "lifecycle": "draft", "cwd": "", "terminal_at": null, "created_at": 0, "updated_at": 0 } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "empty card id" }

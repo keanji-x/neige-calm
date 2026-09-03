@@ -24,7 +24,9 @@
 
 use std::time::Duration;
 
-use crate::mcp_track_report::{Boot, boot, call_tool, collect_n, spec_identity, worker_identity};
+use crate::mcp_track_report::{
+    Boot, boot, call_tool, collect_n, planner_identity, worker_identity,
+};
 use calm_server::event::Event;
 use calm_server::mcp_server::tools::track_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::track_report_blocks::{
@@ -86,9 +88,9 @@ fn index_of(read: &Value) -> Vec<(String, u64)> {
 }
 
 async fn read(boot: &Boot, args: Value) -> Value {
-    call_tool(boot, TOOL_REPORT_READ, spec_identity(boot), args)
+    call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), args)
         .await
-        .expect("spec can read the report")
+        .expect("planner can read the report")
 }
 
 async fn overwrite_report_payload_cache(boot: &Boot, payload: Value) {
@@ -113,7 +115,7 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
     call_tool(
         boot,
         TOOL_REPORT_WRITE,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "body": "# A\n\nalpha\n\n# B\n\nbeta\n",
             "summary": "seeded",
@@ -136,7 +138,7 @@ async fn block_write_invalidates_previously_read_whole_document_revision() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind": "prose", "payload": {"markdown": "# Added\n"}, "if_doc_rev": 0}),
     )
     .await
@@ -145,7 +147,7 @@ async fn block_write_invalidates_previously_read_whole_document_revision() {
     let conflict = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"body": "# stale rewrite\n", "if_doc_rev": 0}),
     )
     .await
@@ -163,7 +165,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
     let created = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind": "prose", "markdown": "# Added\n", "if_doc_rev": 0}),
     )
     .await
@@ -174,7 +176,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# accidental overwrite\n",
             "message": "wrong revision domain",
@@ -197,7 +199,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     let create = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"kind": "prose", "markdown": "# Old caller\n"}),
     )
     .await
@@ -211,7 +213,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     let created = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "kind": "prose",
             "markdown": "# Retried caller\n",
@@ -227,7 +229,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     let moved = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id": index[0].0, "to_index": 0}),
     )
     .await
@@ -240,7 +242,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     let moved = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({"id": index[0].0, "to_index": 0, "if_doc_rev": current["docRev"]}),
     )
     .await
@@ -258,7 +260,7 @@ async fn kinds_returns_all_five_schemas() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_KINDS,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({}),
     )
     .await
@@ -503,7 +505,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "prose", "markdown": "# 新块\n\ncontent\n", "if_doc_rev": 0 }),
     )
     .await
@@ -560,7 +562,7 @@ async fn upsert_new_block_at_position_inserts() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "prose", "markdown": "# 首块\n\nfirst\n", "position": 0, "if_doc_rev": 1 }),
     )
     .await
@@ -579,7 +581,7 @@ async fn upsert_new_block_at_position_inserts() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "prose", "markdown": "x\n", "position": 99, "if_doc_rev": 2 }),
     )
     .await
@@ -604,7 +606,7 @@ async fn upsert_replace_with_if_rev_bumps_rev() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "prose", "markdown": "# 概要\n\nrewritten\n", "if_rev": rev }),
     )
     .await
@@ -643,7 +645,7 @@ async fn upsert_replace_without_if_rev_is_invalid_params() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": index[0].0, "kind": "prose", "markdown": "x\n" }),
     )
     .await
@@ -660,7 +662,7 @@ async fn upsert_replace_rejects_if_doc_rev_instead_of_ignoring_it() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "id": id,
             "kind": "prose",
@@ -688,7 +690,7 @@ async fn upsert_rev_conflict_returns_32001_and_writes_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "prose", "markdown": "# stomp\n", "if_rev": rev + 41 }),
     )
     .await
@@ -721,7 +723,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "metrics", "payload": {} }),
     )
     .await
@@ -732,7 +734,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "chart.candles" }),
     )
     .await
@@ -742,7 +744,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "table", "markdown": "# nope\n", "payload": { "columns": [], "rows": [] } }),
     )
     .await
@@ -756,7 +758,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "chart.candles", "payload": { "symbol": "0700.HK", "candles": [[1, 2, 3, 4, 5]], "range": "1y" } }),
     )
     .await
@@ -777,7 +779,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
         let err = call_tool(
             &boot,
             TOOL_REPORT_BLOCKS_UPSERT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "kind": "app", "payload": { "src": src } }),
         )
         .await
@@ -790,7 +792,7 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "kind": "chart.candles", "payload": { "symbol": "X", "candles": candles } }),
     )
     .await
@@ -813,7 +815,7 @@ async fn upsert_prose_rejects_embedded_neige_fences() {
         let err = call_tool(
             &boot,
             TOOL_REPORT_BLOCKS_UPSERT,
-            spec_identity(&boot),
+            planner_identity(&boot),
             json!({ "kind": "prose", "markdown": markdown }),
         )
         .await
@@ -835,7 +837,7 @@ async fn upsert_refuses_worker() {
     .await
     .expect_err("worker must be denied");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("Spec"), "msg = {err:?}");
+    assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -849,7 +851,7 @@ async fn move_reorders_without_touching_rev() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
@@ -877,7 +879,7 @@ async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 8 }),
     )
     .await
@@ -895,7 +897,7 @@ async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": "b_nope", "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
@@ -904,7 +906,7 @@ async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[0].0, "to_index": 5, "if_doc_rev": 1 }),
     )
     .await
@@ -925,7 +927,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[0].0 }),
     )
     .await
@@ -938,7 +940,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[0].0, "if_rev": ids[0].1 + 1 }),
     )
     .await
@@ -951,7 +953,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[0].0, "if_rev": ids[0].1 }),
     )
     .await
@@ -973,7 +975,7 @@ async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict(
     let missing = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# Missing rev\n" }),
     )
     .await
@@ -983,7 +985,7 @@ async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict(
     let first = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# First\n", "if_doc_rev": 0 }),
     )
     .await
@@ -993,7 +995,7 @@ async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict(
     let stale = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# Stale\n", "if_doc_rev": 0 }),
     )
     .await
@@ -1020,7 +1022,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
@@ -1070,7 +1072,7 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# A\nsame\n# A\nsame\n",
             "message": "seed duplicate blocks",
@@ -1090,7 +1092,7 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
@@ -1110,7 +1112,7 @@ async fn write_markdown_without_markers_falls_back_to_lcs() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": "# X\n\nbrand new\n\n# A\n\nalpha touched\n\n# B\n\nbeta\n",
             "summary": "restructured",
@@ -1149,7 +1151,7 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "prose", "markdown": "# A\n\nalpha\n\n", "if_rev": rev }),
     )
     .await
@@ -1179,7 +1181,7 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "prose", "markdown": "# A\n\nalpha edited\n\n", "if_rev": rev }),
     )
     .await
@@ -1203,7 +1205,7 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
@@ -1235,7 +1237,7 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "prose", "markdown": "# B\n\nbeta v2\n", "if_rev": rev }),
     )
     .await
@@ -1255,7 +1257,7 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
@@ -1321,7 +1323,7 @@ async fn upsert_chart(boot: &Boot, payload: Value) -> (String, u64) {
     let out = call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({ "kind": "chart.candles", "payload": payload, "if_doc_rev": if_doc_rev }),
     )
     .await
@@ -1379,7 +1381,7 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
     let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "kind": "chart.candles", "payload": v2, "if_rev": rev }),
     )
     .await
@@ -1419,7 +1421,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1432,7 +1434,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_EDIT,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1461,7 +1463,7 @@ async fn write_preserving_the_fence_verbatim_passes_and_holds_id_rev() {
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({
             "body": format!("# 概要\n\nrewritten prose\n{fence}# 新节\n\ntail\n"),
             "message": "legal whole-document rewrite",
@@ -1498,7 +1500,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n", "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1513,7 +1515,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": format!("{}{edited}", seed_body()), "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1558,9 +1560,9 @@ async fn write_markdown_refuses_worker() {
 // with it the projected `tasks` row) silently.
 // ---------------------------------------------------------------------------
 
-/// A schedulable spec task declaration: the full shape the projection
+/// A schedulable planner task declaration: the full shape the projection
 /// materializes into a `tasks` row.
-fn spec_task_payload(key: &str, goal: &str) -> Value {
+fn planner_task_payload(key: &str, goal: &str) -> Value {
     json!({
         "key": key, "kind": "codex", "goal": goal,
         "acceptance": format!("accept {key}"), "context": {"key": key},
@@ -1570,21 +1572,21 @@ fn spec_task_payload(key: &str, goal: &str) -> Value {
     })
 }
 
-/// Spec-declared live task, plus the `tasks` row key set it projects.
-async fn seed_spec_task(boot: &Boot, key: &str) -> (String, u64) {
+/// Planner-declared live task, plus the `tasks` row key set it projects.
+async fn seed_planner_task(boot: &Boot, key: &str) -> (String, u64) {
     let doc_rev = current_payload(boot).await.doc_rev;
     let out = call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(boot),
+        planner_identity(boot),
         json!({
             "kind": "task",
-            "payload": spec_task_payload(key, "build it"),
+            "payload": planner_task_payload(key, "build it"),
             "if_doc_rev": doc_rev
         }),
     )
     .await
-    .expect("spec declares a task block");
+    .expect("planner declares a task block");
     (
         out["id"].as_str().expect("block id").to_string(),
         out["rev"].as_u64().expect("block rev"),
@@ -1601,9 +1603,9 @@ async fn task_keys(boot: &Boot) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn write_markdown_cannot_silently_drop_a_spec_task_block() {
+async fn write_markdown_cannot_silently_drop_a_planner_task_block() {
     let boot = boot().await;
-    seed_spec_task(&boot, "build").await;
+    seed_planner_task(&boot, "build").await;
     let before = current_payload(&boot).await;
     assert!(
         before.body.contains("neige-block task"),
@@ -1615,7 +1617,7 @@ async fn write_markdown_cannot_silently_drop_a_spec_task_block() {
     let err = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": seed_body(), "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1640,17 +1642,17 @@ async fn write_markdown_cannot_silently_drop_a_spec_task_block() {
 #[tokio::test]
 async fn write_markdown_may_still_edit_a_task_fence_in_place() {
     let boot = boot().await;
-    let (id, rev) = seed_spec_task(&boot, "build").await;
+    let (id, rev) = seed_planner_task(&boot, "build").await;
     let before = current_payload(&boot).await;
     let edited = calm_types::report_blocks::render_fence(
         "task",
-        &spec_task_payload("build", "build it better"),
+        &planner_task_payload("build", "build it better"),
     );
 
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": format!("{}{edited}", seed_body()), "if_doc_rev": before.doc_rev }),
     )
     .await
@@ -1664,18 +1666,18 @@ async fn write_markdown_may_still_edit_a_task_fence_in_place() {
 }
 
 #[tokio::test]
-async fn spec_block_level_delete_of_its_own_task_still_succeeds() {
+async fn planner_block_level_delete_of_its_own_task_still_succeeds() {
     let boot = boot().await;
-    let (id, rev) = seed_spec_task(&boot, "build").await;
+    let (id, rev) = seed_planner_task(&boot, "build").await;
 
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "id": id, "if_rev": rev }),
     )
     .await
-    .expect("spec may delete its own task through the block-level endpoint");
+    .expect("planner may delete its own task through the block-level endpoint");
 
     let payload = current_payload(&boot).await;
     assert!(
@@ -1710,14 +1712,14 @@ async fn write_markdown_changing_one_section_leaves_the_contract_byte_identical(
         text.contains("<!-- 报告维护契约"),
         "the marker read hands the contract back to the agent verbatim"
     );
-    // Edit exactly one section's prose, the way a spec agent would.
+    // Edit exactly one section's prose, the way a planner agent would.
     let edited = text.replacen("# 概要\n", "# 概要\n\n当前进展一句话。\n", 1);
     assert_ne!(edited, text, "the fixture must actually change something");
 
     call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
-        spec_identity(&boot),
+        planner_identity(&boot),
         json!({ "body": edited, "if_doc_rev": marked["docRev"] }),
     )
     .await

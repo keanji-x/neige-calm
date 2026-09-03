@@ -1,11 +1,11 @@
 //! Review/ratify workflow tools for issue #760 slice 5b.
 //!
-//! `calm.review.round` records the spec's dual-channel review round as a
+//! `calm.review.round` records the planner's dual-channel review round as a
 //! typed track-scoped event. The event log is the durable store, so the tool
 //! enforces a strict monotonic round number per logical subject before
 //! appending.
 //!
-//! `calm.ratify.request` is the spec-authored half of the human ratify gate:
+//! `calm.ratify.request` is the planner-authored half of the human ratify gate:
 //! it records the request and parks a working track in `blocked` in the same
 //! eventized transaction.
 
@@ -53,7 +53,7 @@ where
 fn review_round_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REVIEW_ROUND.into(),
-        description: "Spec-only: record one dual-channel review round for a \
+        description: "Planner-only: record one dual-channel review round for a \
              logical subject. Requires at least two channel verdicts, `n <= cap`, \
              and when `converged=true` every channel verdict must be `approved`. \
              Round numbers are strict-monotonic per subject starting at 1; an \
@@ -94,16 +94,16 @@ fn review_round_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
 fn ratify_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_RATIFY_REQUEST.into(),
-        description: "Spec-only: request human ratification for the current \
+        description: "Planner-only: request human ratification for the current \
              track. Emits `ratify.requested` and applies `working -> blocked` \
-             in the same atomic write. The spec must perform any preceding \
+             in the same atomic write. The planner must perform any preceding \
              `reviewing -> working` transition separately."
             .into(),
         input_schema: json!({
@@ -114,7 +114,7 @@ fn ratify_request_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -139,7 +139,7 @@ async fn review_round(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let args: ReviewRoundArgs = serde_json::from_value(args)
         .map_err(|e| RpcError::invalid_params(format!("review_round: invalid args: {e}")))?;
     validate_review_round_args(&args)?;
@@ -229,7 +229,7 @@ async fn ratify_request(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
     let args: RatifyRequestArgs = serde_json::from_value(args)
         .map_err(|e| RpcError::invalid_params(format!("ratify_request: invalid args: {e}")))?;
     if args.reason.trim().is_empty() {

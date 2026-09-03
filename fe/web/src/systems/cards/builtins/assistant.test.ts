@@ -29,7 +29,7 @@ describe('assistant card entry', () => {
   it('refuses the plain-chat marker and an unmarked codex card', () => {
     for (const payload of [
       {}, { harness_profile: 'plain_chat' }, { harness_profile: true },
-      { harness_profile: 'Assistant' }, { spec_harness: true },
+      { harness_profile: 'Assistant' }, { planner_harness: true },
     ]) {
       expect(
         ASSISTANT_CARD_ENTRY.fromKernel?.({ id: 'c', kind: 'codex', payload }),
@@ -73,6 +73,6 @@ describe('assistant card entry', () => {
       id: 'c1', kind: 'codex', payload: { harness_profile: 'assistant' },
     })?.type).toBe('assistant');
     expect(registry.resolve({ id: 'c2', kind: 'codex', payload: {} })?.type).toBe('codex');
-    expect(registry.resolve({ id: 'c3', kind: 'codex', payload: { spec_harness: true } })?.type).toBe('spec');
+    expect(registry.resolve({ id: 'c3', kind: 'codex', payload: { planner_harness: true } })?.type).toBe('planner');
   });
 });

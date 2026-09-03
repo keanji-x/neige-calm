@@ -7,14 +7,14 @@
 #   core/     api · domain · schemas · keys · state · markdown · events-protocol
 #   ui/       dialog · menu · focus · roving · directory-browser · atoms · …
 #   systems/  cards · terminal · wheel · fs-viewers · editor · events-transport
-#   features/ track · area · today · report · spec · settings · auth
+#   features/ track · area · today · report · planner · settings · auth
 #   app/      router · providers · theme · shell · events-glue · di
 #   styles/   全局样式层（tokens / layer-rules / focus-visible / motion / 排版）
 #   none/     非运行时层（lint 规则 · CI 闸门 · 构建配置 · e2e 基础设施 · 纯文档政策）
 #
 # 每条条目的 runtime_layer 直接由规范值的 layer 前缀派生 —— 单一事实来源。
 # `shared/` 这个筐已废除，其下 104 条全部重新分配。
-# `spec` 是新增 feature（原提取里 78 条 spec 家族无归处）。
+# `planner` 是新增 feature（原提取里 78 条 planner 家族无归处）。
 
 aliases:
   # ── core/ ────────────────────────────────────────────────
@@ -127,12 +127,12 @@ aliases:
   "report/outline": "features/report/outline"
   "track/report": "features/report/write"
   "track/backlinks": "features/report/backlinks"
-  "spec-chat": "features/spec/chat"
-  "pages/spec-conversation": "features/spec/conversation"
-  "pages/spec-chat-history": "features/spec/chat-history"
-  "pages/spec-chat-items": "features/spec/chat-items"
-  "pages/spec-run": "features/spec/current-run"
-  "cards/spec": "features/spec/card"
+  "planner-chat": "features/planner/chat"
+  "pages/planner-conversation": "features/planner/conversation"
+  "pages/planner-chat-history": "features/planner/chat-history"
+  "pages/planner-chat-items": "features/planner/chat-items"
+  "pages/planner-run": "features/planner/current-run"
+  "cards/planner": "features/planner/card"
   "pages/settings": "features/settings"
   "app/session": "features/auth/session"
   "pages/login": "features/auth/login-page"
@@ -185,7 +185,7 @@ aliases:
 # 别名表无法表达的逐条覆盖（原始值同名但归属不同）
 per_entry:
   INV-DEAD-001: "features/track/page"           # TrackContext 死代码（Track.tsx）
-  INV-DEAD-002: "features/spec/current-run"    # useSpecCurrentRun.latestTool 死字段
+  INV-DEAD-002: "features/planner/current-run"    # usePlannerCurrentRun.latestTool 死字段
   E2E-CAP-KEYBOARD-003: "app/shell/sidebar"    # 是产品能力（侧栏 Tab+Enter），不是 e2e 基建
 
 # 一格填两个值 / 跨 slice：主 owner 进 owner_slice，另一个加注到 why 末尾
@@ -238,6 +238,6 @@ split_owners:
 # 6. "cards/report" (1 条，INV-CARD-226 excludeReportCards) —— 已定案 (#1091 S1)
 #    归属: systems/cards/builtins（runtime_layer=systems），不再是临时。
 #    原临时归属 features/report/exclude-cards 出自 legacy 代码位置 web/src/cards/；
-#    S1 把过滤实现落在 systems/cards/builtins/headless-filter.ts，与 spec /
+#    S1 把过滤实现落在 systems/cards/builtins/headless-filter.ts，与 planner /
 #    track-report 两个 entry 同住，谓词也是 entry 自己的，语义因此归 cards 而非 report。
 #    同批把 INV-CARD-181/182/201 一并收敛到同一 owner_slice。

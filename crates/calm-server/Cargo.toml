@@ -35,11 +35,11 @@ fixtures = [
     "calm-proc-supervisor/test-support",
 ]
 # Issue #236: opt-in end-to-end test that boots a real `codex` binary
-# (the agent's MCP-client side) and verifies the spec card's daemon
+# (the agent's MCP-client side) and verifies the planner card's daemon
 # has `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in its process env.
 # Off by default because `codex` is not in CI; the feature-gated test
 # self-skips when the binary is missing. Run locally with:
-#   cargo test --features codex-e2e --test codex_e2e_spec_card -- --nocapture
+#   cargo test --features codex-e2e --test codex_e2e_planner_card -- --nocapture
 codex-e2e = ["calm-provider/codex-e2e"]
 
 [[bin]]
@@ -50,9 +50,9 @@ path = "src/main.rs"
 name = "git-forge"
 path = "../../plugins/git-forge/main.rs"
 
-# Issue #682 — the replay binary's `POST /dev/force-spec-phase` reaches the
-# fixtures-gated `SpecHarness::force_phase_for_dev` seam via
-# `replay::force_spec_phase`, so the whole (dev/CI-only) binary requires the
+# Issue #682 — the replay binary's `POST /dev/force-planner-phase` reaches the
+# fixtures-gated `PlannerHarness::force_phase_for_dev` seam via
+# `replay::force_planner_phase`, so the whole (dev/CI-only) binary requires the
 # feature. Builds without it fail loudly ("target `replay` ... requires the
 # features: `fixtures`") instead of silently shipping a binary missing the
 # dev hook. Every spawn site passes the flag:
@@ -284,7 +284,7 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 # killed the partial-spawn daemon. `libc` is already a normal dep but
 # integration-test crates need it re-declared as dev-dep to link.
 libc = "0.2"
-# #318 INV-4 (codex P1 follow-up) — `spec_appserver` resume-reconcile
+# #318 INV-4 (codex P1 follow-up) — `planner_appserver` resume-reconcile
 # timer tests drive virtual time via `tokio::time::pause()` /
 # `tokio::time::advance` / `#[tokio::test(start_paused = true)]`, all of
 # which live behind tokio's `test-util` feature. Adding it as a dev-only

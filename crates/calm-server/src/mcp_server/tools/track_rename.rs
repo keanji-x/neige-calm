@@ -1,4 +1,4 @@
-//! Issue #1211 S3 — `calm.track.rename`, the spec agent's naming write.
+//! Issue #1211 S3 — `calm.track.rename`, the planner agent's naming write.
 //!
 //! ## Why this tool exists
 //!
@@ -6,7 +6,7 @@
 //! the statement of what the track should do, and the kernel turned the title
 //! back into the agent's opening goal. S1 deleted that seeding: a create
 //! request may now omit the title, and such a track comes into the world
-//! unnamed with its name something the spec agent works out from the
+//! unnamed with its name something the planner agent works out from the
 //! conversation. This tool is the write port for that.
 //!
 //! Not every track arrives that way, and the difference matters to callers.
@@ -20,7 +20,7 @@
 //!
 //! The tool succeeds only while the track's `title.trim()` is empty. That is
 //! not a stylistic rule — it is what keeps the agent out of the user's way.
-//! A track the user named (or that a parent spec named when it opened a child)
+//! A track the user named (or that a parent planner named when it opened a child)
 //! already has an owner for its name; an agent that could rename at will could
 //! quietly relabel work the user is tracking by that label.
 //!
@@ -50,9 +50,9 @@
 //!
 //! ## Actor
 //!
-//! The write is attributed to the calling spec session
-//! (`identity.to_actor_id()` → `ActorId::AiSpecSession`, which the in-tx gate
-//! resolves to `ActorId::AiSpec(card)` — see
+//! The write is attributed to the calling planner session
+//! (`identity.to_actor_id()` → `ActorId::AiPlannerSession`, which the in-tx gate
+//! resolves to `ActorId::AiPlanner(card)` — see
 //! `calm_truth::decision_gate::enforce_role_resolving_session`). It is
 //! emphatically **not** `ActorId::User`: the audit log has to say the agent
 //! named this track, because "who named it" is exactly the question a user
@@ -97,7 +97,7 @@ where
 fn track_rename_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_RENAME.into(),
-        description: "Spec-only: give this track its name. The title is not the \
+        description: "Planner-only: give this track its name. The title is not the \
              user's instruction, it is a label for the work. If this track's \
              title is still empty, name it here once you have worked out from \
              the conversation what this track is actually about; if it already \
@@ -105,7 +105,7 @@ fn track_rename_descriptor() -> ToolDescriptor {
              noun phrase a human would recognise in a list, not a restatement \
              of the user's first sentence. \
              Name-once: this succeeds only while the track is still unnamed. If \
-             it already has a title (the user named it, or a parent spec named \
+             it already has a title (the user named it, or a parent planner named \
              it), the call returns `{\"ok\": false, \"refused\": \
              \"already_named\", \"title\": <current title>}` and changes \
              nothing — that is not an error, just leave the name alone. \
@@ -131,7 +131,7 @@ fn track_rename_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
@@ -144,7 +144,7 @@ async fn track_rename(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role(&identity, CardRole::Planner)?;
 
     let title = args
         .get("title")
@@ -297,9 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_is_spec_only_and_named() {
+    fn descriptor_is_planner_only_and_named() {
         let d = track_rename_descriptor();
         assert_eq!(d.name, TOOL_TRACK_RENAME);
-        assert_eq!(d.visible_to_roles, &[CardRole::Spec]);
+        assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
     }
 }

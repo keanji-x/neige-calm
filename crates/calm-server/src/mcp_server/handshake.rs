@@ -20,7 +20,7 @@
 //!        may omit `_meta.threadId` and otherwise must resolve it back to
 //!        the bound session.
 //!
-//! Any failure short-circuits to an MCP-spec `initialize` error response
+//! Any failure short-circuits to an MCP-planner `initialize` error response
 //! (`InvalidParams` for malformed `_meta`, `InternalError` for repo
 //! lookup failures, custom `-32401` for "session not found / token mismatch").
 //!

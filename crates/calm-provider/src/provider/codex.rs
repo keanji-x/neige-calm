@@ -273,7 +273,7 @@ mod tests {
     }
 
     // ===================================================================
-    // confirm_durable_death — the #741 §1.1 truth table (the spec).
+    // confirm_durable_death — the #741 §1.1 truth table (the planner).
     // ===================================================================
 
     /// Scriptable [`CodexDaemonProbe`]: returns a fixed `is_running` and a

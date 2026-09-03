@@ -1,14 +1,14 @@
 //! Integration test (#177): `POST /api/tracks` threads `theme: { fg, bg }`
-//! through to the auto-minted spec card's terminal renderer startup
+//! through to the auto-minted planner card's terminal renderer startup
 //! argv as `--terminal-fg=r,g,b --terminal-bg=r,g,b`.
 //!
-//! Pre-#177 the track-create route auto-minted a spec card and spawned
+//! Pre-#177 the track-create route auto-minted a planner card and spawned
 //! its codex daemon via `spawn_terminal_for` (the no-opts shim that
 //! ignored theme). That meant codex's OSC 10/11 startup probe got no
 //! answer from the daemon, so the composer painted against codex's
 //! built-in default and visually clashed with the surrounding card.
 //! PR #193 had already fixed the user-created codex-card path but
-//! missed the spec-card spawn — this test is the regression guard.
+//! missed the planner-card spawn — this test is the regression guard.
 //!
 //! Strategy: use the fixture-backed proc supervisor so the renderer
 //! receives the terminal row's theme during EnsureProc. Fire the
@@ -130,7 +130,7 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, 
 }
 
 /// Happy path: track-create body carries `theme: { fg, bg }` — the
-/// spec card's renderer config must carry the dark-theme RGB the web
+/// planner card's renderer config must carry the dark-theme RGB the web
 /// client stamps for a dark host browser.
 /// Required-field gate (#177 followup): track-create body without
 /// `theme` must be rejected at the deserialize layer. Previously this

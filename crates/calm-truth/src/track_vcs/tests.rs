@@ -232,7 +232,7 @@ async fn review_ratify_only_batch_does_not_advance_head() {
     let committed = commit_events_with_author_in_tx(
         &mut tx,
         &track.id,
-        Some(&ActorId::AiSpec(CardId::from("spec-card"))),
+        Some(&ActorId::AiPlanner(CardId::from("planner-card"))),
         42,
         &events,
         MANIFEST_SCHEMA_VERSION,

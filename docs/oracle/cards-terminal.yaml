@@ -16,7 +16,7 @@
 #     web/src/cards/overlayRegistry.ts        web/src/cards/__tests__/overlayRegistry.test.ts
 #     web/src/cards/excludeReportCards.ts / .test.ts
 #     web/src/cards/plugin-iframe.tsx         web/src/cards/track-file-tree.tsx / .test.tsx
-#     web/src/cards/builtins/{index,schemaVersions,terminal,codex,spec,iframe,
+#     web/src/cards/builtins/{index,schemaVersions,terminal,codex,planner,iframe,
 #                             file-viewer,file-viewer-markdown,file-viewer-markdown-toc,
 #                             track-report}.tsx  + 各自 *.test.tsx
 #     web/src/input/{wheelRouter,useWheelRouter,wheelTargets,useXtermWheelTarget,
@@ -50,7 +50,7 @@
 #     xterm-wheel-adapter ......  8   (CARD-161..168)
 #     card-kind-terminal .......  5   (CARD-169..173)
 #     card-kind-codex ..........  7   (CARD-174..180)
-#     card-kind-spec ...........  3   (CARD-181..183)
+#     card-kind-planner ...........  3   (CARD-181..183)
 #     card-kind-iframe .........  8   (CARD-184..191)
 #     card-kind-file-viewer ....  9   (CARD-192..200)
 #     card-kind-track-report ....  4   (CARD-201..204)
@@ -1448,7 +1448,7 @@
     addPanelEntries() 必须排除 create.mode 为 'catalog' 或 'kernel-minted-only'
     的条目
   why: >
-    catalog 类由 /api/plugins/views 目录驱动发现；kernel-minted-only（spec /
+    catalog 类由 /api/plugins/views 目录驱动发现；kernel-minted-only（planner /
     track-report）用户根本不能手动添加
   source: web/src/cards/registry.ts:336-353
   authoritative_test: web/src/cards/registry.test.tsx:416
@@ -2163,7 +2163,7 @@
   kind: invariant
   family: card-head
   statement: >
-    重命名能力必须在无 card.id、或 card.type 为 'spec' / 'track-report' 时禁用
+    重命名能力必须在无 card.id、或 card.type 为 'planner' / 'track-report' 时禁用
   why: >
     这两类是 kernel 铸造的卡片，标题由服务端拥有
   source: web/src/cards/CardHead.tsx:140-145
@@ -3254,13 +3254,13 @@
   kind: invariant
   family: card-kind-codex
   statement: >
-    CodexEntry.fromKernel 必须在 payload.spec_harness === true 时返回 null，
-    把该卡让给 SpecEntry
+    CodexEntry.fromKernel 必须在 payload.planner_harness === true 时返回 null，
+    把该卡让给 PlannerEntry
   why: >
-    spec 卡的 kernel kind 也是 'codex'，只能靠 payload 判别符区分；不让位会
-    让 spec 卡渲染成普通 codex 卡
+    planner 卡的 kernel kind 也是 'codex'，只能靠 payload 判别符区分；不让位会
+    让 planner 卡渲染成普通 codex 卡
   source: web/src/cards/builtins/codex.tsx:552-556
-  authoritative_test: web/src/cards/builtins/spec.test.tsx:92
+  authoritative_test: web/src/cards/builtins/planner.test.tsx:92
   owner_slice: systems/cards/codex
   intentional_omission: false
   runtime_layer: systems
@@ -3269,20 +3269,20 @@
   migration: pending
 
 # ─────────────────────────────────────────────────────────────────────
-# family: card-kind-spec
+# family: card-kind-planner
 # ─────────────────────────────────────────────────────────────────────
 
 - id: INV-CARD-181
   kind: invariant
-  family: card-kind-spec
+  family: card-kind-planner
   statement: >
-    spec 卡片必须是无头的（Component: () => null）、defaultSize 1x1、
+    planner 卡片必须是无头的（Component: () => null）、defaultSize 1x1、
     create 为 kernel-minted-only
   why: >
-    spec harness 不是用户可见面板，只是让 track 知道有这个 agent 存在；
+    planner harness 不是用户可见面板，只是让 track 知道有这个 agent 存在；
     有 UI 会在网格里占位
-  source: web/src/cards/builtins/spec.tsx:43-51
-  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:42,48
+  source: web/src/cards/builtins/planner.tsx:43-51
+  authoritative_test: fe/web/src/systems/cards/builtins/planner.test.ts:42,48
   owner_slice: systems/cards/builtins
   intentional_omission: true
   runtime_layer: systems
@@ -3292,14 +3292,14 @@
 
 - id: INV-CARD-182
   kind: invariant
-  family: card-kind-spec
+  family: card-kind-planner
   statement: >
-    spec 的识别必须且只能靠 payload.spec_harness === true 这个判别符
-    （isSpecHarnessPayload），不看其它字段
+    planner 的识别必须且只能靠 payload.planner_harness === true 这个判别符
+    （isPlannerHarnessPayload），不看其它字段
   why: >
-    kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 spec 卡漏判
-  source: web/src/cards/builtins/spec.tsx:33-41,55
-  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:11,19,28,37
+    kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 planner 卡漏判
+  source: web/src/cards/builtins/planner.tsx:33-41,55
+  authoritative_test: fe/web/src/systems/cards/builtins/planner.test.ts:11,19,28,37
   owner_slice: systems/cards/builtins
   intentional_omission: false
   runtime_layer: systems
@@ -3309,13 +3309,13 @@
 
 - id: CAP-CARD-183
   kind: capability
-  family: card-kind-spec
+  family: card-kind-planner
   statement: >
-    spec 的 accessibleName 必须在有 goal 时输出 "Spec agent: {goal}"，
-    否则 "Spec agent"
+    planner 的 accessibleName 必须在有 goal 时输出 "Planner agent: {goal}"，
+    否则 "Planner agent"
   why: >
     无头卡片在 TrackList 里仍会占一行，读屏需要有意义的名字
-  source: web/src/cards/builtins/spec.tsx:49-50
+  source: web/src/cards/builtins/planner.tsx:49-50
   authoritative_test: NONE
   owner_slice: systems/cards/builtins
   intentional_omission: false
@@ -3324,11 +3324,11 @@
   test_tier: jsdom
   migration: skipped
   skip_reason: >
-    前提已为假：spec entry 声明 `headless: true`，`partitionTrackCards`
+    前提已为假：planner entry 声明 `headless: true`，`partitionTrackCards`
     （`INV-CARD-226`）据此把它从 CARDS 面板剔除，今天 fe 里这个 accessible name
-     零消费者——生产 entry 取常量 `accessibleName: () => 'Spec harness'`
-    （fe/web/src/systems/cards/builtins/spec.ts:45），既不读 goal 也无处播报。
-    需求的后继者是 conversation 行：用户看到的 spec 名字来自
+     零消费者——生产 entry 取常量 `accessibleName: () => 'Planner harness'`
+    （fe/web/src/systems/cards/builtins/planner.ts:45），既不读 goal 也无处播报。
+    需求的后继者是 conversation 行：用户看到的 planner 名字来自
     `fe/web/src/app/router/public.tsx:181` 的会话命名路径，不是卡片的 accessibleName。
     注意本条只陈述今天的事实：S2 的 grid 尚未写，没有任何机器手段保证它会从
     `partitionTrackCards` 的 visible 分支渲染而不是直接遍历原始 `cards`；
@@ -4091,14 +4091,14 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    内置注册顺序必须是 terminal → codex → spec → claude → track-report →
+    内置注册顺序必须是 terminal → codex → planner → claude → track-report →
     file-viewer → iframe → plugin-iframe
   why: >
-    spec 与 codex 都可能面对 kernel kind 'codex'；虽然靠 payload 判别符区分
+    planner 与 codex 都可能面对 kernel kind 'codex'；虽然靠 payload 判别符区分
     （见 CARD-180），但 adaptKernelCard 的兜底全扫依赖 REGISTRY 插入顺序，
     改顺序会改变兜底路径的命中结果
   source: web/src/cards/builtins/index.ts:31-45
-  authoritative_test: web/src/cards/builtins/spec.test.tsx:92
+  authoritative_test: web/src/cards/builtins/planner.test.tsx:92
   owner_slice: systems/cards/builtins
   intentional_omission: false
   runtime_layer: systems
@@ -4110,11 +4110,11 @@
   kind: invariant
   family: builtins-boot
   statement: >
-    excludeReportCards 必须在过滤 spec / track-report 的同时保留 originalIndex，
+    excludeReportCards 必须在过滤 planner / track-report 的同时保留 originalIndex，
     并对 unknown slot 额外按原始 kernelKind === 'track-report' 防御性过滤
   why: >
     onRemoveCard 按 detail.cards[idx] 寻址，丢了原索引就会删错卡。
-    spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
+    planner 的 kernel kind 是 'codex' + planner_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
   authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:126,149,198 fe/web/src/app/router/track-cards-panel.test.tsx:136,148,157,162,169

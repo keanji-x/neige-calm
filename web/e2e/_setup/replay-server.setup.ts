@@ -12,7 +12,7 @@
 // We poll that banner for readiness rather than sleeping.
 //
 // Lifecycle (driven by Playwright's project-dependency machinery):
-//   1. `replay-setup` runs this `setup` test before any `a11y` spec.
+//   1. `replay-setup` runs this `setup` test before any `a11y` planner.
 //      It spawns cargo, waits for the ready banner, and stashes the PID
 //      in a temp file on disk so `replay-server.teardown.ts` (in a
 //      different worker process) can find it.
@@ -79,7 +79,7 @@ test('setup', async () => {
     '--bin',
     'replay',
     // #682 — the replay [[bin]] declares `required-features = ["fixtures"]`
-    // (its `/dev/force-spec-phase` hook reaches a fixtures-gated harness
+    // (its `/dev/force-planner-phase` hook reaches a fixtures-gated harness
     // seam); cargo refuses to build it without the flag. Keep in sync with
     // the `cargo build --bin replay` step in `.github/workflows/ci.yml`.
     '--features',
@@ -149,11 +149,11 @@ test('setup', async () => {
   );
 
   // #177 — probe for a usable codex CLI on this machine and write the
-  // result to CODEX_BIN_FILE. The theme-toggle-no-remount spec reads
+  // result to CODEX_BIN_FILE. The theme-toggle-no-remount planner reads
   // this marker synchronously at module load and `test.skip`s itself
   // if codex isn't available. We do this AFTER the server is ready
   // so a codex-resolution hiccup doesn't gate the rest of the a11y
-  // suite (only the spec that depends on codex).
+  // suite (only the planner that depends on codex).
   const codexBin = resolveCodexBin();
   mkdirSync(dirname(CODEX_BIN_FILE), { recursive: true });
   writeFileSync(

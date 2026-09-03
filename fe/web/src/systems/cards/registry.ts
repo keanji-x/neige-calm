@@ -106,7 +106,7 @@ export interface CardAddMenuEntry {
  *
  * `catalog` and `kernel-minted-only` entries are excluded whatever they declare:
  * the first is created from somewhere else entirely, and the second is a kind
- * only the kernel may mint (the spec harness, the track report). Offering either
+ * only the kernel may mint (the planner harness, the track report). Offering either
  * would be the menu promising a create that has no endpoint behind it.
  */
 export function cardAddMenuEntries(registry: CardRegistry): readonly CardAddMenuEntry[] {

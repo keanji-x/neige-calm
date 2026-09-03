@@ -71,7 +71,7 @@ fn effective_config_from_schema(
     };
     let user = user_config.as_object();
 
-    for (key, spec) in properties {
+    for (key, planner) in properties {
         if let Some(value) = user.and_then(|u| u.get(key)) {
             // A stored `null` cannot occur — the write path deletes on `null`
             // rather than storing it — but a hand-edited row could hold one,
@@ -81,7 +81,7 @@ fn effective_config_from_schema(
                 continue;
             }
         }
-        if let Some(default) = spec.get("default") {
+        if let Some(default) = planner.get("default") {
             out.insert(key.clone(), default.clone());
         }
     }

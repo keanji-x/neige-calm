@@ -110,7 +110,7 @@ pub fn read_proc_start_time(_pid: i32) -> Option<u64> {
 /// "can't prove identity → skip the kill").
 ///
 /// The value is a 36-char canonical UUID + trailing newline; we strip
-/// the newline and store the canonical form on the spec card payload.
+/// the newline and store the canonical form on the planner card payload.
 /// Equality is byte-for-byte (no UUID parsing required — both writer
 /// and reader are this same fn, and the kernel never changes the
 /// format mid-boot).
@@ -148,7 +148,7 @@ pub fn read_boot_id() -> Option<String> {
 /// every pid in the prior boot is gone, regardless of stamp.
 ///
 /// **Why we need this on top of
-/// [`crate::spec_appserver::socket_owned_by_appserver`].** The socket
+/// [`crate::planner_appserver::socket_owned_by_appserver`].** The socket
 /// probe (`UnixStream::connect` succeeds → trust the pgid) is a good
 /// cheap proxy but suffers a TOCTOU window between the probe and the
 /// subsequent `signal_process_group(pgid, …)`. Between those two
@@ -202,7 +202,7 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
         // would hit our own group. Never legitimate for a spawned child.
         tracing::warn!(
             pgid,
-            "spec push: refusing to signal non-positive process group"
+            "planner push: refusing to signal non-positive process group"
         );
         return false;
     }
@@ -214,7 +214,7 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
     } else {
         let err = std::io::Error::last_os_error();
         // ESRCH (no such process group) is the expected terminal state.
-        tracing::debug!(pgid, signal, error = %err, "spec push: kill(-pgid) returned error (likely already gone)");
+        tracing::debug!(pgid, signal, error = %err, "planner push: kill(-pgid) returned error (likely already gone)");
         false
     }
 }

@@ -26,14 +26,14 @@
 // The field this replaced was the track's `title`, and it was doing two jobs at
 // once: naming the track, and being the one place the user ever said what they
 // wanted. #1211 split them — the kernel now accepts a create with no title at
-// all and the spec agent names the track itself through `calm.track.rename` — so
+// all and the planner agent names the track itself through `calm.track.rename` — so
 // what is left to collect here is the *intent*, and intent is a sentence, not
 // a label.
 //
 // That changes the shape of the surface rather than just its wording. A form
 // asks you to fill in fields; you have to know what each one wants before you
 // can start. A composer asks you to say something, which is the only thing
-// this product ever asks anywhere else — the track page's spec drawer is a
+// this product ever asks anywhere else — the track page's planner drawer is a
 // composer, the area conversation is a composer. Creating a track was the one
 // place with a different grammar, and there was no reason for it.
 //
@@ -48,12 +48,12 @@
 // **Not** into `title`: the draft carries it as `message`, and the caller
 // creates the track with no title at all.
 //
-// Its destination is the new track's spec card, as the first message. That
+// Its destination is the new track's planner card, as the first message. That
 // delivery is **not implemented yet** — two review rounds showed the three-write
 // sequence it needs cannot be made sound from a component (see `NewTrackRoute`),
 // and #1299 moves it into the create request where the kernel can do it
 // atomically. Until then the track is created and the reader says it again in
-// the spec conversation, which the route opens for them on arrival.
+// the planner conversation, which the route opens for them on arrival.
 //
 // The form says so, on screen, above the send button. A field whose contents
 // are quietly dropped is worse than no field; a field that tells you what it
@@ -208,8 +208,8 @@ export type NewTrackDraft = Readonly<{
    * What the user typed — the track's intent, and **not** its title.
    *
    * The caller creates the track with no `title` — the kernel stores the empty
-   * string and the spec agent names it later (#1211). This text's destination
-   * is the new track's spec card as its first message, but **that delivery is
+   * string and the planner agent names it later (#1211). This text's destination
+   * is the new track's planner card as its first message, but **that delivery is
    * not implemented yet** (#1299); today the caller creates the track and the
    * reader says it again in the conversation the track page opens. Always
    * non-empty and already trimmed: the composer will not submit otherwise.

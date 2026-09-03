@@ -175,12 +175,12 @@ impl SessionRepo for SqlxRepo {
         // a just-created track.
         //
         //  * Failed-start (Draft): the track is still `draft` AND its
-        //    *most-recent* `spec-harness-start` operation resolved to
+        //    *most-recent* `planner-harness-start` operation resolved to
         //    `phase='failed'`. The op→track link is the immutable
         //    `payload_json.track_id` (`idempotency_key` is None and
-        //    `target_type/id` is later rewritten to the spec card, so neither
+        //    `target_type/id` is later rewritten to the planner card, so neither
         //    is a reliable key — the payload is stamped once at insert and
-        //    never changes). Start/reset re-submit `spec-harness-start` with a
+        //    never changes). Start/reset re-submit `planner-harness-start` with a
         //    FRESH op id, so a track can carry a STALE `failed` start-op AND a
         //    NEWER retry (`pending`/`running`/`succeeded`) start-op at once;
         //    during the retry's setup window (new op submitted, planner session
@@ -215,23 +215,29 @@ impl SessionRepo for SqlxRepo {
                   AND (w.purpose IS NULL OR w.purpose <> 'area-chat')
                   AND EXISTS (
                       SELECT 1 FROM operations o
-                       WHERE o.kind = 'spec-harness-start'
+                       WHERE o.kind = 'planner-harness-start'
                          AND o.phase = 'failed'
-                         AND json_extract(o.payload_json, '$.track_id') = w.id
+                         -- `$.wave_id` / `$.spec_card_id` are the FROZEN keys of
+                         -- `PlannerHarnessStartOperationPayload`: that payload is
+                         -- hashed into `operations.payload_hash`, so #1316 kept its
+                         -- serialization stable while renaming the Rust fields. A
+                         -- query written against the Rust spelling matches zero
+                         -- rows — silently, at runtime.
+                         AND json_extract(o.payload_json, '$.wave_id') = w.id
                          -- The inner MAX subquery limits candidates to start ops
-                         -- for this track's real spec card. Equality to that MAX
-                         -- therefore implies o is a spec op; repeating the join
+                         -- for this track's real planner card. Equality to that MAX
+                         -- therefore implies o is a planner op; repeating the join
                          -- here would create an unverifiable third-defense illusion.
                          AND o.rowid = (
                              SELECT MAX(o2.rowid) FROM operations o2
-                              WHERE o2.kind = 'spec-harness-start'
-                                AND json_extract(o2.payload_json, '$.track_id') = w.id
+                              WHERE o2.kind = 'planner-harness-start'
+                                AND json_extract(o2.payload_json, '$.wave_id') = w.id
                                 AND json_type(o2.payload_json, '$.spec_card_id') = 'text'
                                 AND EXISTS (
                                     SELECT 1 FROM cards c2
                                      WHERE c2.id = json_extract(o2.payload_json, '$.spec_card_id')
                                        AND c2.track_id = w.id
-                                       AND c2.role = 'spec'
+                                       AND c2.role = 'planner'
                                 )
                          )
                   )

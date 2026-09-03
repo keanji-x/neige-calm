@@ -703,7 +703,7 @@ describe('EventBridge', () => {
         data: {
           track_id: 'track_1',
           card_id: 'card_report',
-          author: 'spec',
+          author: 'planner',
           edit_id: 'edit_1',
           summary_before: 'before',
           summary_after: 'after',
@@ -738,7 +738,7 @@ describe('EventBridge', () => {
         ev: 'harness.transcript.cleared',
         data: {
           runtime_id: 'runtime_2',
-          card_id: 'card_spec',
+          card_id: 'card_planner',
           track_id: 'track_1',
           cleared_item_count: 12,
           cleared_params_bytes: 3400,
@@ -764,7 +764,7 @@ describe('EventBridge', () => {
         ev: 'harness.user_message.enqueued',
         data: {
           runtime_id: 'runtime_2',
-          card_id: 'card_spec',
+          card_id: 'card_planner',
           track_id: 'track_1',
           char_count: 9,
         },

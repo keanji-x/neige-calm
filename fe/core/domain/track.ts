@@ -150,7 +150,7 @@ export type NewTrackBody = Readonly<{
    * and the kernel stores the **empty string** — it has no default name of its
    * own; `UNTITLED_TRACK_LABEL` below is this layer's display fallback for a
    * blank title. What this field decides is only what THIS request stores;
-   * who names the track afterwards is not its business — the spec agent via
+   * who names the track afterwards is not its business — the planner agent via
    * `calm.track.rename` is the usual namer, but the user can name it first.
    * Present values (including `""`) are accepted verbatim.
    */
@@ -355,11 +355,11 @@ export function isWaitingForUser(lifecycle: TrackLifecycle): boolean {
 /**
  * #254 — the UI grouping predicate for every "Waiting on you" surface. ORs the
  * lifecycle bucket with the kernel `card_fsm`-derived overlay so a track whose
- * worker card is sitting on AwaitingInput surfaces even before the Spec Agent
+ * worker card is sitting on AwaitingInput surfaces even before the Planner Agent
  * has driven `working → blocked`.
  *
  * This stays separate from `isWaitingForUser` on purpose: the two signals have
- * different owners (Spec Agent vs kernel) and different storage (column vs
+ * different owners (Planner Agent vs kernel) and different storage (column vs
  * overlay), and places that genuinely want the pure lifecycle bucket — the
  * lifecycle badge, area bucket sort — must keep getting it.
  */

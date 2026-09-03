@@ -489,7 +489,7 @@ pub(crate) async fn converge_dead_root(
     };
     let agent_message = match from {
         TrackLifecycle::Draft => {
-            "[auto] dead root: spec-harness start failed; track never advanced"
+            "[auto] dead root: planner-harness start failed; track never advanced"
         }
         _ => "[auto] dead root: planner session lost mid-plan",
     }

@@ -454,7 +454,7 @@ describe('sending, with the disabled prop the router actually passes', () => {
 /*
  * ── `focusOnMount`, in an engine that renders Astryx for real (#1211 S2) ───
  *
- * The landing a just-created track gets: the drawer opens on the spec
+ * The landing a just-created track gets: the drawer opens on the planner
  * conversation and the caret has to be *in the message field*, because the
  * reader's first sentence is the track's intent.
  *
@@ -480,7 +480,7 @@ describe('sending, with the disabled prop the router actually passes', () => {
  * nothing about the app reaching this component with the flag raised — drop
  * `focusOnMount` in `app/router/public.tsx`, or move the composer out of the
  * drawer's `footer`, and every case here stays green. The wiring half is
- * `app/router/track-untitled.test.tsx` ("opens the spec conversation with the
+ * `app/router/track-untitled.test.tsx` ("opens the planner conversation with the
  * caret in the composer"), which drives the real router and the real create
  * and cannot see the engine question. **Neither tier alone proves the
  * landing**; that is why both exist and why each names the other.
@@ -547,7 +547,7 @@ describe('the caret a just-created track lands with', () => {
   it('keeps the caret in the field when the drawer opens around it', async () => {
     await page.viewport(1400, 900);
     render(
-      <Drawer open title="Spec chat" onClose={() => undefined} footer={<ChatComposer focusOnMount onSend={vi.fn()} />}>
+      <Drawer open title="Planner chat" onClose={() => undefined} footer={<ChatComposer focusOnMount onSend={vi.fn()} />}>
         <p>the transcript</p>
       </Drawer>,
     );

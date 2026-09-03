@@ -265,8 +265,8 @@ impl RepoEventWrite for SqlxRepo {
         }
         // PR3 (#136) — authorization gate, per event. The cache is
         // already write-through for any role insert the closure
-        // performed, so a track-create-with-spec-card batch can mint
-        // the spec card in the closure and immediately have its
+        // performed, so a track-create-with-planner-card batch can mint
+        // the planner card in the closure and immediately have its
         // role visible to the `TrackUpdated` enforce_role call below.
         for (scope, event) in &events {
             if let Err(violation) = crate::decision_gate::enforce_role_resolving_session(

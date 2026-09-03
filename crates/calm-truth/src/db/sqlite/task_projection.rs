@@ -12,7 +12,7 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
 use super::track_tree::{
-    DEFAULT_SPEC_TASK_CEILING, MAX_TREE_TASK_BUDGET, TrackTreeTerm, deterministic_share,
+    DEFAULT_PLANNER_TASK_CEILING, MAX_TREE_TASK_BUDGET, TrackTreeTerm, deterministic_share,
     effective_limit,
 };
 use crate::error::{CalmError, Result};
@@ -473,7 +473,7 @@ struct TrackProjectionState {
 #[derive(sqlx::FromRow)]
 struct TrackProjectionStateRow {
     automation_policy: Option<String>,
-    spec_task_ceiling: Option<i64>,
+    planner_task_ceiling: Option<i64>,
     require_task_gates: i64,
     area_id: String,
     inflight_json: String,
@@ -502,7 +502,7 @@ async fn track_projection_state(
     include_read_state: bool,
 ) -> Result<TrackProjectionState> {
     let sql = if include_read_state {
-        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
+        r#"SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -524,7 +524,7 @@ async fn track_projection_state(
                    FROM tasks t WHERE t.track_id = w.id) AS task_read_state_json
            FROM tracks w WHERE w.id = ?1"#
     } else {
-        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.area_id,
+        r#"SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -541,7 +541,7 @@ async fn track_projection_state(
     let row = row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     Ok(TrackProjectionState {
         policy: row.automation_policy,
-        ceiling: effective_limit(row.spec_task_ceiling, DEFAULT_SPEC_TASK_CEILING),
+        ceiling: effective_limit(row.planner_task_ceiling, DEFAULT_PLANNER_TASK_CEILING),
         require_gates: row.require_task_gates != 0,
         source_area: row.area_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
@@ -687,7 +687,7 @@ async fn evaluate_schedulability_with_tree_term(
         .count() as i64;
     let ceiling_capacity = ceiling.saturating_sub(ceiling_occupied).max(0);
     // Pending rows are projection output and re-enter below as candidates.
-    // In-flight spec rows are fixed occupancy for this write.
+    // In-flight planner rows are fixed occupancy for this write.
     let tree_occupied = ceiling_occupied;
     let tree_capacity = tree_share.as_ref().map_or(i64::MAX, |share| {
         share.share.saturating_sub(tree_occupied).max(0)
@@ -1040,13 +1040,13 @@ async fn evaluate_schedulability_with_tree_term(
             // in-flight occupancy. When an operator lowered the ceiling below
             // occupancy this is `occupied + 1`; otherwise it preserves the
             // ordinary `ceiling + 1` minimum.
-            let minimum_spec_task_ceiling = ceiling.max(ceiling_occupied).saturating_add(1);
+            let minimum_planner_task_ceiling = ceiling.max(ceiling_occupied).saturating_add(1);
             let mut args = diagnostic_args([
                 ("ceiling", serde_json::Value::from(ceiling)),
                 ("occupied", serde_json::Value::from(ceiling_occupied)),
                 (
-                    "minimum_spec_task_ceiling",
-                    serde_json::Value::from(minimum_spec_task_ceiling),
+                    "minimum_planner_task_ceiling",
+                    serde_json::Value::from(minimum_planner_task_ceiling),
                 ),
                 (
                     "admission_order",
@@ -1074,13 +1074,13 @@ async fn evaluate_schedulability_with_tree_term(
                 );
             }
             Diagnostic::coded(
-                "spec_task_ceiling",
+                "planner_task_ceiling",
                 "key",
                 args,
                 admitted_ids.clone(),
                 Some(track_id.into()),
                 raise_available
-                    .then(|| task_diagnostic_action("spec_task_ceiling"))
+                    .then(|| task_diagnostic_action("planner_task_ceiling"))
                     .flatten()
                     .map(str::to_owned),
             )
@@ -1459,7 +1459,7 @@ mod tests {
         // a fixture that bypasses a production invariant is exactly the shape
         // that lets the invariant rot. The projection assertions never read
         // the workspace, so the value is the same `/` routed properly.
-        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
+        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,lifecycle,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,'draft',0,0,1,0)")
             .bind(&track).execute(&repo.pool).await.unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
         crate::db::sqlite::track_workspace::track_workspace_write_tx(
@@ -1677,7 +1677,7 @@ mod tests {
     #[tokio::test]
     async fn zero_ceiling_diagnostic_has_no_false_block_jump_target() {
         let (repo, track) = setup().await;
-        sqlx::query("UPDATE tracks SET spec_task_ceiling=0 WHERE id=?1")
+        sqlx::query("UPDATE tracks SET planner_task_ceiling=0 WHERE id=?1")
             .bind(&track)
             .execute(&repo.pool)
             .await
@@ -1695,7 +1695,7 @@ mod tests {
         let ceiling = verdicts[0]
             .diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .find(|diagnostic| diagnostic.code == "planner_task_ceiling")
             .expect("ceiling diagnostic");
         assert!(ceiling.related_block_ids.is_empty());
         assert_eq!(ceiling.related_track_id.as_deref(), Some(track.as_str()));

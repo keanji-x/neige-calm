@@ -150,7 +150,7 @@ pub trait WorkerSessionProjectionRepo {
     ) -> Result<()>;
 
     /// Returns shared-spec runtimes whose `handle_state_json` carries a harness
-    /// snapshot (`$.mode == 'harness'`) so the spec harness boot path can
+    /// snapshot (`$.mode == 'harness'`) so the planner harness boot path can
     /// rebuild their in-memory task + replay pending observations.
     async fn session_projection_recover_harnesses_on_boot(
         &self,
