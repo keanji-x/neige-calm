@@ -26,8 +26,8 @@ It looks like a duplicate of the track pages' module and is not one: on Today it
 is the **cross-track index** (#1189 S5). It is the only place a track's
 conversations stay reachable once you have navigated away from that track, and
 G6 opens one *from here* — the row navigates to the track and opens its
-assistant drawer in one act. Removing it turned 18 assertions red across
-`app/router/{track,area,spec}-conversation.test.tsx`, all of them behavioural
+assistant drawer in one act. Removing it turned 18 assertions red across the
+three `*-conversation.test.tsx` suites in `app/router/`, all of them behavioural
 (`[G5] lists every conversation of a track on Today after merely visiting it`,
 `[G6] opens an assistant conversation asked for from Today`, and the two that
 pin what must *not* reach Today). Judge the duplication complaint against those
