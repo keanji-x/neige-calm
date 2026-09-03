@@ -115,7 +115,12 @@ pub async fn worker_flow_items_delete_by_card_tx(
 #[async_trait]
 impl RepoOutOfDomain for SqlxRepo {
     async fn wave_recipe_create(&self, p: NewWaveRecipe) -> Result<WaveRecipe> {
-        let mut tx = self.pool.begin().await?;
+        // #930 — a transaction that writes takes the write lock up front.
+        // `pool.begin()` is BEGIN DEFERRED, which acquires it lazily: a
+        // deferred transaction that reads and then writes can lose the
+        // upgrade to a concurrent writer and surface as SQLITE_BUSY, with
+        // nothing safe to retry because the read half already happened.
+        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         let out = super::wave_recipe::wave_recipe_create_tx(&mut tx, &p.title, &p.body).await?;
         tx.commit().await?;
         Ok(out)
@@ -127,7 +132,11 @@ impl RepoOutOfDomain for SqlxRepo {
         p: NewWaveRecipe,
         if_revision: i64,
     ) -> Result<WaveRecipe> {
-        let mut tx = self.pool.begin().await?;
+        // Immediate for the same reason, and here it is load-bearing rather
+        // than precautionary: this transaction reads (the conflict/404
+        // disambiguation and the read-back) around its `UPDATE`, which is
+        // exactly the deferred-upgrade shape #930 forbids.
+        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         let out =
             super::wave_recipe::wave_recipe_update_tx(&mut tx, id, &p.title, &p.body, if_revision)
                 .await?;
@@ -136,27 +145,56 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn wave_recipe_get(&self, id: &str) -> Result<Option<WaveRecipe>> {
-        let mut tx = self.pool.begin().await?;
-        let out = super::wave_recipe::wave_recipe_get_tx(&mut tx, id).await?;
-        tx.commit().await?;
-        Ok(out)
+        // Read-only: query the pool directly rather than opening a
+        // transaction for a single SELECT.
+        let row: Option<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, title, body, revision, created_at, updated_at \
+             FROM wave_recipes WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(id, title, body, revision, created_at, updated_at)| WaveRecipe {
+                id,
+                title,
+                body,
+                revision,
+                created_at,
+                updated_at,
+            },
+        ))
     }
 
     async fn wave_recipe_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         super::wave_recipe::wave_recipe_delete_tx(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn wave_recipe_list(&self) -> Result<Vec<WaveRecipe>> {
-        let mut tx = self.pool.begin().await?;
-        let out = super::wave_recipe::wave_recipe_list_tx(&mut tx).await?;
-        tx.commit().await?;
-        Ok(out)
+        let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, title, body, revision, created_at, updated_at \
+             FROM wave_recipes ORDER BY created_at DESC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, title, body, revision, created_at, updated_at)| WaveRecipe {
+                    id,
+                    title,
+                    body,
+                    revision,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
     }
 
-    // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.
         let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")

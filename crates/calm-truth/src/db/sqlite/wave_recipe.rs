@@ -18,6 +18,16 @@
 //! The privilege-field normalization a recipe body needs lives at the write
 //! boundary in `calm-server` (`routes::wave_recipes`), next to the body
 //! parsing it depends on. This module stores what it is handed.
+//!
+//! # Only the writers are here
+//!
+//! `get` and `list` are plain SELECTs on the pool in
+//! `out_of_domain.rs`, with no transaction: #930 requires a writing
+//! transaction to be `BEGIN IMMEDIATE`, and wrapping a single read in one
+//! would take the write lock to read. The one `_tx` reader that remains
+//! ([`wave_recipe_get_tx`]) exists because [`wave_recipe_update_tx`] needs
+//! to read *inside* its own transaction — to tell a stale revision from a
+//! missing row, and to read the row back.
 
 use sqlx::Sqlite;
 use sqlx::Transaction;
@@ -130,29 +140,4 @@ pub async fn wave_recipe_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -
         return Err(CalmError::NotFound(format!("wave recipe {id}")));
     }
     Ok(())
-}
-
-/// Every recipe, newest first. Recipes are global (not cove-scoped): a
-/// recipe describes *how work is done*, not what a particular project
-/// contains, and reusing one across coves is the point.
-pub async fn wave_recipe_list_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Vec<WaveRecipe>> {
-    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
-        "SELECT id, title, body, revision, created_at, updated_at \
-         FROM wave_recipes ORDER BY created_at DESC, id ASC",
-    )
-    .fetch_all(&mut **tx)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, title, body, revision, created_at, updated_at)| WaveRecipe {
-                id,
-                title,
-                body,
-                revision,
-                created_at,
-                updated_at,
-            },
-        )
-        .collect())
 }
