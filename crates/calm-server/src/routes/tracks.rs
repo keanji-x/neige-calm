@@ -3552,8 +3552,9 @@ pub(crate) async fn update_track_report(
     .into_parts();
     if recorder_shadow.is_some() {
         return Err(CalmError::Internal(format!(
-            "{SITE_REST_REPORT_DOCUMENT}: the declared policy requires a recorder probe, but \
-             track_report::persist_report has no parameter to pass one through"
+            "{SITE_REST_REPORT_DOCUMENT}: the declared policy requires a recorder probe, but the \
+             whole-document report-write wrapper this handler calls in `track_report` takes no \
+             recorder parameter, so there is nothing to forward the probe through"
         )));
     }
     let updated = persist_report(
