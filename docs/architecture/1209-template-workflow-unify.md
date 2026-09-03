@@ -2315,7 +2315,7 @@ artifact**。检查方式：release 前确认两个 PR 的 commit 都在待发�
 | 6 | 用户 area 里伪造同 key overlay 不能劫持 fork | `stolen_user_area_template_key_does_not_hijack_auto_fork` | 同上 `:481` | fork 源仍是 system area 的那一个 | 去掉 `lookup_workflow_template_track` 的 `track.area_id == system.id` 过滤（`tracks.rs:505-507`） |
 | 7 | 显式 `fork_report_from` 优先 | `explicit_fork_report_from_is_not_overwritten` | 同上 `:383` | fork 源是调用方指定的那个 | 把 `if fork_report_from.is_none()` 改成无条件赋值 |
 | 8 | **NEW**：受信运行插件声明的非模板 workflow id ⇒ 400 | **PROPOSED** `plugin_declared_non_template_workflow_id_is_rejected` | 新增到 `tests/cases/track_workflow_templates.rs` | — | 在 `admit_template` 里加回 `.or_else(\|\| resolve_trusted_workflow(..))` 兜底 |
-| 9 | **NEW**：读口列表与写口准入是同一个集合（路由 × 路由） | **PROPOSED** `create_accepts_exactly_the_listed_templates` | 新增，驱动真路由 | — | 任何让写口特别接受一个未列出 id、或特别拒绝一个已列出 id 的改动 |
+| 9 | **NEW**：读口列表与写口准入是同一个集合（路由 × 路由） | `listed_template_keys_create_their_exact_recipes`（合并后） | 新增，驱动真路由 | — | 任何让写口特别接受一个未列出 id、或特别拒绝一个已列出 id 的改动 |
 | 10 | 读不触发播种（INV-1209-SEED v2，§7） | #1230 S1 带了弱版本，**本切片加强** | #1230 侧 `tests/cases/track_workflow_templates.rs` 的那条 read-only case | 今天只断言：未播种态下两个 GET 之后 `kind=="template"` 的 overlay 仍为空 | 见下文「#10 的形状」的 5 条变异清单 |
 | 11 | 读口 `input_schema` 与 create 的接受面一致 | `bound_template_carries_the_plugin_input_schema` + `unbound_templates_carry_no_input_schema` | `tests/cases/track_templates_read.rs:243`、`:333` | 绑定态有 schema / 无绑定态无 schema | 让读口不走 `resolve_trusted_workflow`（例如硬编码 id 白名单） |
 | 12 | **NEW**：空白 `workflow_id` ⇒ 以**准入**理由 400，且零播种副作用（今天 Rust 侧零覆盖，§4.1 删了那道守卫） | **PROPOSED** `blank_workflow_id_is_rejected` | 新增到 `tests/cases/track_workflow_templates.rs` | — | **v3 更正**：有人把守卫「恢复」成一个 **skip**（`if id.trim().is_empty() { /* 当作没选模板 */ }` ⇒ 201、`plugin_scope=null`、不 fork） |

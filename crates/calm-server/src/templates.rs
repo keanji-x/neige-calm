@@ -58,7 +58,7 @@ pub static TEMPLATES: [Template; 3] = [
 ///
 /// This is not the *only* place the roster is read — `list_track_templates`
 /// iterates [`TEMPLATES`] directly for the picker, and so does
-/// `track_template_tracks::creating_from_a_template_instantiates_its_recipe`.
+/// `track_template_tracks::listed_template_keys_create_their_exact_recipes`.
 /// (#1300 S2: the third reader this named, the seeding loop, is deleted; the
 /// point survives it, because "more than one reader" is what makes a single
 /// admission answer worth having.) It is the only place that answers "is this

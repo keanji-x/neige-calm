@@ -12,6 +12,11 @@
 name = "calm-exec"
 version = "0.1.0"
 edition = "2024"
+autotests = false
+
+[[test]]
+name = "integration_suite"
+path = "tests/integration_suite.rs"
 
 [dependencies]
 calm-types = { path = "../calm-types" }

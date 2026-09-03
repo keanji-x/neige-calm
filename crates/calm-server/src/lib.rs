@@ -640,7 +640,7 @@ pub mod report_backlinks;
 /// integration test that transcribes kilobytes of production prose by hand
 /// stops being a test of that prose and becomes a change detector. #1300 S2's
 /// characterization test (`track_template_tracks::
-/// creating_from_a_template_instantiates_its_recipe`) therefore **derives** the
+/// listed_template_keys_create_their_exact_recipes`) therefore **derives** the
 /// report a template must instantiate to from this module.
 ///
 /// What that oracle can and cannot see, stated exactly, because the derivation
@@ -665,7 +665,7 @@ pub mod report_backlinks;
 /// oracle-visible property.
 ///
 /// Part of the second bullet is closed, and part is accepted. `track_template_tracks::
-/// each_template_key_names_its_own_recipe` holds a small hand-written table of
+/// listed_template_keys_create_their_exact_recipes` holds a small hand-written table of
 /// `(key, title, ordered task keys)` — the one table in that file not derived
 /// from production — and checks it against both the picker read and a real
 /// create. That catches a swapped match arm, a retitled roster entry, and a

@@ -1119,9 +1119,9 @@ async fn unknown_template_id_still_400s() {
 ///    even with the pre-#1209 plugin fallback restored, i.e. green precisely
 ///    when the thing it exists to detect is back.
 /// 2. **It is a separate boot.** `boot()` starts no plugins, and
-///    `create_accepts_exactly_the_listed_templates` depends on that (see its
-///    doc comment). Merging the two fixtures would break that test for reasons
-///    that have nothing to do with admission.
+///    `listed_template_keys_create_their_exact_recipes` depends on that.
+///    Merging the two fixtures would break that test for reasons that have
+///    nothing to do with admission.
 async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
@@ -1326,81 +1326,6 @@ async fn plugin_declared_non_template_id_is_rejected() {
     );
 }
 
-/// #1209 test #9 — the picker's list and create's accept set are one set.
-///
-/// **Premise, and it is load-bearing:** `boot()` starts no plugins. With no
-/// running trusted plugin, `resolve_template_binding` is `None` for every id,
-/// so `validate_template_input_binding(None, None)` short-circuits `Ok(())` and
-/// `issue-development` never reaches the required-input arm. That is what makes
-/// `== 201` correct for *every* listed id. If this harness ever grows a plugin
-/// fixture, this case must keep using the no-plugin one; if the premise has to
-/// be relaxed, widen the assertion to an explicit allowance
-/// (`201 || (400 && "requires `template_input`")`) — do **not** weaken it to
-/// "the body does not say `known track template`". That weaker form is green for
-/// a re-worded special case such as
-/// `if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`,
-/// which is exactly the disguise this test exists to strip off.
-///
-/// The forward direction is universally quantified over the listed ids. The
-/// reverse ("create accepts nothing the list omits") is sampled here and
-/// carried structurally by there being a single fallible roster lookup
-/// (`template_by_key`), plus test #8 for the one concrete shape that
-/// historically reintroduced a second path. It is not a set-equality gate and
-/// is not claimed to be one.
-#[tokio::test]
-async fn create_accepts_exactly_the_listed_templates() {
-    let boot = boot().await;
-    let (status, listed) = get(boot.app.clone(), "/api/track-templates").await;
-    assert_eq!(status, StatusCode::OK, "body={listed}");
-    let ids: Vec<String> = listed
-        .as_array()
-        .expect("array body")
-        .iter()
-        .map(|entry| entry["id"].as_str().expect("id string").to_string())
-        .collect();
-    // An empty list would make the loop below vacuously true.
-    assert!(!ids.is_empty(), "the picker listed nothing: {listed}");
-
-    for id in &ids {
-        let (status, body) = post(
-            boot.app.clone(),
-            "/api/tracks",
-            create_body(
-                &boot.area_id,
-                &format!("listed-{id}"),
-                json!({ "template_id": id }),
-            ),
-        )
-        .await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "listed template `{id}` was not creatable: {body}"
-        );
-    }
-
-    for absent in ["definitely-not-a-template", "issue-development-x"] {
-        let (status, body) = post(
-            boot.app.clone(),
-            "/api/tracks",
-            create_body(
-                &boot.area_id,
-                &format!("absent-{absent}"),
-                json!({ "template_id": absent }),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "`{absent}`: body={body}");
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("known track template"),
-            "`{absent}`: body={body}"
-        );
-    }
-}
-
 /// #1209 test #12 — a whitespace-only `template_id` is rejected **by
 /// admission**.
 ///
@@ -1578,7 +1503,7 @@ fn task_keys(template: &Value) -> Vec<&str> {
 /// `small-change`, and nothing else" satisfied it. It now asserts the exact set
 /// of ids the roster declares, in the roster's order, and that no fourth entry
 /// rode along. *Which* recipe each id names is
-/// `each_template_key_names_its_own_recipe`'s job, not this one's — this case
+/// `listed_template_keys_create_their_exact_recipes`' job, not this one's — this case
 /// owns "the listing is the roster and the read is read-only".
 ///
 /// #1300 — this absorbed `listing_track_templates_does_not_materialize_seed_state`,
@@ -1836,90 +1761,23 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     (recipe.summary, body, tasks)
 }
 
-/// Creating a track from each template produces exactly that template's recipe,
-/// normalized once.
+/// One roster pass carries the former three matrix tests: every listed key is
+/// creatable, each create contains the exact normalized production recipe,
+/// and a small hand-written oracle identifies which recipe each key names.
+/// `boot()` deliberately starts no plugins, so plugin input validation cannot
+/// turn a listed template into an unrelated 400.
 ///
-/// ## What is deliberately NOT asserted, and why
+/// The exact-payload comparison deliberately excludes generated block ids,
+/// revisions and CRDT bytes. They are per-track bookkeeping; the observable
+/// contract is the summary, flat body and ordered task payloads.
 ///
-/// **`blocks[].id` and `blocks[].rev`.** Both are per-track bookkeeping, and
-/// neither is a cross-implementation contract. `rev` in particular differs by
-/// construction between the two implementations this test spans: the seeding
-/// path writes the recipe *over* the default report skeleton, so the blocks the
-/// aligner matches come out at `rev: 2`, while a track initialized straight from
-/// the recipe starts every block at `rev: 1`. A fresh track whose blocks all
-/// start at 1 is self-consistent, and the readers of `rev` — the block-level
-/// CAS anchors used by the MCP and REST block writers — are all within one
-/// track. Asserting equality here would make this test red at the moment of the
-/// switch for a difference nobody can observe, and the repair would be to
-/// weaken it, with the reason nowhere on record.
-///
-/// **The CRDT bytes**, for the same reason one layer down.
-///
-/// ## What this cannot see
-///
-/// The fork implementation also rewrites `neige://wave/...` links, normalizes
-/// tombstones, and strips `released_by_user`. None of the three built-in
-/// recipes contains any of that vocabulary, so those branches take no input
-/// here and this test says nothing about them. That is a fact about today's
-/// three recipes, not about templates: a recipe that grew a tombstone would
-/// need its own case.
-#[tokio::test]
-async fn creating_from_a_template_instantiates_its_recipe() {
-    let boot = boot().await;
-    for template in &calm_server::templates::TEMPLATES {
-        let key = template.key;
-        let (status, body) = post(
-            boot.app.clone(),
-            "/api/tracks",
-            create_body(&boot.area_id, key, json!({ "template_id": key })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
-        let track_id = body["id"].as_str().expect("track id");
-
-        let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
-        assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
-        let payload = report_card_payload(&detail);
-
-        let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
-        assert_eq!(payload.summary, summary, "{key}: report summary");
-
-        // Ordered task payloads FIRST, then the flat body. The body compare
-        // subsumes this one — every difference a fence can carry shows up in
-        // it — but it reports as a single multi-kilobyte string diff, and
-        // these recipes are kilobytes of prose contract. Asserting the parsed
-        // payloads first means the common failure (a field of one task) names
-        // that task and that field. Measured, not assumed: dropping the
-        // `declared_by` normalization printed the whole document twice until
-        // this order was fixed.
-        let actual_tasks: Vec<Value> = task_blocks(&payload).into_iter().cloned().collect();
-        assert_eq!(actual_tasks, expected_tasks, "{key}: task block payloads");
-
-        // The body still has to be compared: the payload list above says
-        // nothing about the contract prefix, the intro, the order the fences
-        // appear in, or the whitespace between them.
-        assert_eq!(payload.body, expected_body, "{key}: report body");
-
-        // Whole-payload equality above already covers these; they are spelled
-        // out because they are the three the removal could plausibly get wrong,
-        // and a named assertion says which one broke.
-        for task in &actual_tasks {
-            assert_eq!(task["declared_by"], "spec", "{key}: {task}");
-            assert_eq!(task["ready"], false, "{key}: {task}");
-            assert!(
-                task.get("released_by_user").is_none(),
-                "{key}: an instantiated task must carry no user release; {task}"
-            );
-        }
-    }
-}
-
 /// The hand-written half: **which** recipe each key names.
 ///
 /// ## Why a derived oracle needs this, stated as what each side can and cannot
 /// see
 ///
-/// `creating_from_a_template_instantiates_its_recipe` derives its expectation
+/// The exact-recipe half of `listed_template_keys_create_their_exact_recipes`
+/// derives its expectation
 /// from `templates::template_report`, which is the production `key → recipe`
 /// match itself. That is the right call for *content* — it is what stops the
 /// case being a change detector over kilobytes of prose — but it means the two
@@ -1972,7 +1830,7 @@ async fn creating_from_a_template_instantiates_its_recipe() {
 /// real defect (the picker advertises one plan, create produces another), so
 /// both are asserted against the same hand-written row.
 #[tokio::test]
-async fn each_template_key_names_its_own_recipe() {
+async fn listed_template_keys_create_their_exact_recipes() {
     // key, roster title, ordered task keys. Hand-written on purpose — this is
     // the one table in this file that must NOT be derived from production.
     let anchors: [(&str, &str, &[&str]); 3] = [
@@ -2011,6 +1869,11 @@ async fn each_template_key_names_its_own_recipe() {
     let boot = boot().await;
     let (status, listing) = get(boot.app.clone(), "/api/track-templates").await;
     assert_eq!(status, StatusCode::OK, "listing={listing}");
+    assert_eq!(
+        listing.as_array().expect("template listing array").len(),
+        anchors.len(),
+        "the picker and the hand-written roster must describe the same set"
+    );
 
     for (key, title, expected_task_keys) in anchors {
         // Road 1 — the picker read.
@@ -2034,7 +1897,9 @@ async fn each_template_key_names_its_own_recipe() {
         let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
         assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
         let payload = report_card_payload(&detail);
-        let created_keys: Vec<&str> = task_blocks(&payload)
+        let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
+        let actual_tasks: Vec<Value> = task_blocks(&payload).into_iter().cloned().collect();
+        let created_keys: Vec<&str> = actual_tasks
             .iter()
             .map(|task| task["key"].as_str().expect("task key"))
             .collect();
@@ -2046,6 +1911,41 @@ async fn each_template_key_names_its_own_recipe() {
         assert_eq!(
             payload.summary, title,
             "{key}: the instantiated report's summary is another template's"
+        );
+        assert_eq!(payload.summary, summary, "{key}: report summary");
+        assert_eq!(actual_tasks, expected_tasks, "{key}: task block payloads");
+        assert_eq!(payload.body, expected_body, "{key}: report body");
+        for task in &actual_tasks {
+            assert_eq!(task["declared_by"], "spec", "{key}: {task}");
+            assert_eq!(task["ready"], false, "{key}: {task}");
+            assert!(
+                task.get("released_by_user").is_none(),
+                "{key}: an instantiated task must carry no user release; {task}"
+            );
+        }
+    }
+
+    // Reverse-direction sample: IDs absent from the picker are also rejected
+    // by create. Keeping it in this matrix avoids booting and instantiating the
+    // full roster a second time just to compare the two surfaces.
+    for absent in ["definitely-not-a-template", "issue-development-x"] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            create_body(
+                &boot.area_id,
+                &format!("absent-{absent}"),
+                json!({ "template_id": absent }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "`{absent}`: body={body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("known track template"),
+            "`{absent}`: body={body}"
         );
     }
 }

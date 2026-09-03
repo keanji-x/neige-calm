@@ -79,13 +79,7 @@ async fn strip_report_cache_and_crdt(
 #[tokio::test]
 async fn outline_lists_same_area_sibling_but_not_other_area() {
     let boot = boot().await;
-    let sibling = add_track(
-        &boot,
-        boot.area_id.as_str(),
-        "Sibling",
-        "# Sibling\n".into(),
-    )
-    .await;
+    let sibling = add_track(&boot, boot.area_id.as_str(), "Sibling", String::new()).await;
     let other_area = boot
         .repo
         .area_create(NewArea {
@@ -106,11 +100,14 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         .await
         .unwrap();
     let tracks = value["tracks"].as_array().unwrap();
-    assert!(
-        tracks
-            .iter()
-            .any(|track| track["id"] == sibling.id.as_str())
-    );
+    let sibling = tracks
+        .iter()
+        .find(|track| track["id"] == sibling.id.as_str())
+        .expect("an empty same-area report is still listed");
+    let blocks = sibling["blocks"].as_array().expect("outline blocks");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["heading"], "");
+    assert_eq!(blocks[0]["kind"], "prose");
     assert!(
         !tracks
             .iter()
@@ -141,26 +138,6 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
         .unwrap();
     assert_eq!(track["blocks"][0]["heading"], "Legacy heading");
     assert!(track["blocks"][0]["id"].as_str().unwrap().starts_with("b_"));
-}
-
-#[tokio::test]
-async fn outline_track_cap_is_reported_and_exact() {
-    let boot = boot().await;
-    for index in 0..50 {
-        add_track(
-            &boot,
-            boot.area_id.as_str(),
-            &format!("Sibling {index}"),
-            String::new(),
-        )
-        .await;
-    }
-
-    let value = call_tool(&boot, TOOL_AREA_OUTLINE, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    assert_eq!(value["tracks"].as_array().unwrap().len(), 50);
-    assert_eq!(value["truncated"]["tracks"], 1);
 }
 
 /// The real skeleton every track is born with — the kernel's own bytes, not a
@@ -225,8 +202,9 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
      * paths would need a fixture built to blow the caps, it would be about the
      * degradation logic rather than about the contract, and it is not this one.
      *
-     * The existing track-cap test seeds 50 *empty* bodies, which is why the size
-     * question needed a fixture of its own (#1185 §4.4 E).
+     * Empty-report inclusion is pinned by the cheap one-track case above. This
+     * fixture owns the expensive 50-track cap assertion as well as realistic
+     * payload headroom, so the suite does not seed the same ceiling twice.
      */
     let boot = boot().await;
     let mut seeded = Vec::new();

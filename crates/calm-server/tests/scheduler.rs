@@ -85,6 +85,7 @@ use calm_types::report_blocks::render_fence;
 use calm_types::track_report::{ReportBlock, TrackReportPayload};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sqlx::{QueryBuilder, Sqlite};
 
 /// #1147 S4 — a REAL managed workspace root for the child-track adapter.
 ///
@@ -4307,39 +4308,55 @@ async fn seed_fresh_context_copies(
         1,
         "budget fixture needs one tuple per fresh row"
     );
+    let rows: Vec<(String, String)> = (0..count)
+        .map(|index| {
+            let key = format!("fresh-budget-{index:04}");
+            let task_id = format!("{}:{key}", boot.track_id);
+            (task_id, key)
+        })
+        .collect();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
-    for index in 0..count {
-        let key = format!("fresh-budget-{index:04}");
-        let task_id = format!("{}:{key}", boot.track_id);
-        sqlx::query(
-            "INSERT INTO tasks \
-             (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
-              declared_by,claim_context_json,context_closure_truncated,\
-              decl_ready,decl_released_by_user,context_verify_failures,spawn,\
-              created_at_ms,updated_at_ms) \
-             VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
-                     'planner',?4,0,0,0,0,'in-wave',1,1)",
-        )
-        .bind(&task_id)
-        .bind(boot.track_id.as_str())
-        .bind(key)
-        .bind(&frozen)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        if index_destination {
-            sqlx::query(
-                "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) VALUES (?1,?2,?3)",
-            )
-            .bind(task_id)
-            .bind(refs[0].track_id.as_str())
-            .bind(&refs[0].block_id)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        }
+    let mut tasks = QueryBuilder::<Sqlite>::new(
+        "INSERT INTO tasks \
+         (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+          declared_by,claim_context_json,context_closure_truncated,\
+          decl_ready,decl_released_by_user,context_verify_failures,spawn,\
+          created_at_ms,updated_at_ms) ",
+    );
+    tasks.push_values(&rows, |mut row, (task_id, key)| {
+        row.push_bind(task_id)
+            .push_bind(boot.track_id.as_str())
+            .push_bind(key)
+            .push("'terminal'")
+            .push("'true'")
+            .push("'null'")
+            .push("'[]'")
+            .push("0")
+            .push("'dispatched'")
+            .push("'planner'")
+            .push_bind(&frozen)
+            .push("0")
+            .push("0")
+            .push("0")
+            .push("0")
+            .push("'in-wave'")
+            .push("1")
+            .push("1");
+    });
+    tasks.build().execute(&mut *tx).await.unwrap();
+
+    if index_destination {
+        let mut index = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) ",
+        );
+        index.push_values(&rows, |mut row, (task_id, _)| {
+            row.push_bind(task_id)
+                .push_bind(refs[0].track_id.as_str())
+                .push_bind(&refs[0].block_id);
+        });
+        index.build().execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
 }

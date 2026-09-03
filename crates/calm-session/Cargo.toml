@@ -2,9 +2,14 @@
 name = "calm-session"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 
 [lib]
 path = "src/lib.rs"
+
+[[test]]
+name = "integration_suite"
+path = "tests/integration_suite.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

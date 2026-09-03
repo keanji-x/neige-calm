@@ -62,7 +62,15 @@ PATH="$stub_bin:$PATH" \
   RUST_NEXTEST_CAPTURE="$self_hosted_capture" \
   scripts/run-ci-rust-nextest.sh self-hosted >/dev/null
 assert_argv "$self_hosted_capture" nextest run --workspace --locked --features \
-  calm-server/codex-e2e --profile ci --test-threads 4
+  calm-server/codex-e2e --profile ci --test-threads 8
+
+partition_capture="$temp_root/partition.args"
+PATH="$stub_bin:$PATH" \
+  NEIGE_CODEX_BIN=/must-not-reach-nextest \
+  RUST_NEXTEST_CAPTURE="$partition_capture" \
+  scripts/run-ci-rust-nextest.sh github-hosted --partition hash:2/3 >/dev/null
+assert_argv "$partition_capture" nextest run --workspace --locked --features \
+  calm-server/codex-e2e --profile ci --partition hash:2/3
 
 invalid_output=""
 invalid_rc=0
@@ -72,20 +80,28 @@ if [ "$invalid_rc" -ne 2 ] || [ "$invalid_output" != "--test-threads requires a 
   exit 1
 fi
 
+invalid_output=""
+invalid_rc=0
+invalid_output="$(scripts/run-rust-nextest.sh --partition count:5/4 2>&1)" || invalid_rc=$?
+if [ "$invalid_rc" -ne 2 ] || [ "$invalid_output" != "--partition requires N <= M" ]; then
+  echo "Rust nextest wrapper accepted a partition index above its total" >&2
+  exit 1
+fi
+
 dispatch_output=""
 dispatch_rc=0
 dispatch_output="$(PATH="$stub_bin:$PATH" \
   NEIGE_CODEX_BIN=/must-not-reach-nextest \
   RUST_NEXTEST_CAPTURE="$temp_root/trailing.args" \
   scripts/run-ci-rust-nextest.sh github-hosted extra 2>&1)" || dispatch_rc=$?
-dispatch_usage='usage: scripts/run-ci-rust-nextest.sh {github-hosted|self-hosted}'
+dispatch_usage='usage: scripts/run-ci-rust-nextest.sh {github-hosted|self-hosted} [--partition KIND:N/M]'
 if [ "$dispatch_rc" -ne 2 ] || [ "$dispatch_output" != "$dispatch_usage" ]; then
   echo "CI Rust nextest dispatch accepted trailing arguments" >&2
   exit 1
 fi
 
 ci_file=.github/workflows/ci.yml
-ci_call='        run: scripts/run-ci-rust-nextest.sh "${{ runner.environment }}"'
+ci_call='          scripts/run-ci-rust-nextest.sh \'
 grep_rc=0
 ci_call_count="$(grep -Fxc "$ci_call" "$ci_file")" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
@@ -94,6 +110,10 @@ if [ "$grep_rc" -gt 1 ]; then
 fi
 if [ "$ci_call_count" -ne 1 ]; then
   echo "CI must invoke the shared Rust nextest dispatch exactly once" >&2
+  exit 1
+fi
+if grep -Fq 'migration replay gate (#679 PR0-D)' "$ci_file"; then
+  echo "CI must not rerun migration replay outside the full nextest suite" >&2
   exit 1
 fi
 
