@@ -159,6 +159,15 @@ Tier 2 使用真实 Codex 凭据，并可能产生模型用量：
 ./e2e/run.sh --tier 2
 ```
 
+该直接入口只能在专用主机运行；Tier 2 stack E2E 没有共享主机安全入口。共享生产主机
+可以运行另一套隔离的 `codex_forge_e2e`：
+
+```bash
+make e2e-codex-isolated
+```
+
+该目标不能替代 Tier 2 stack 覆盖。
+
 ## 仓库结构
 
 ```text

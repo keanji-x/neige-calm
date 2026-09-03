@@ -77,4 +77,6 @@ if [[ "${1:-}" == "--quick" ]]; then
 fi
 
 step "6/6 nextest (WITH features, mirrors the rust job)"
-cargo nextest run --workspace --locked --features calm-server/codex-e2e --no-fail-fast
+# Local runs share this production host with live services. The shared wrapper
+# pins the CI profile and disables real Codex; this local cap prevents flakes.
+scripts/run-rust-nextest.sh --test-threads 8

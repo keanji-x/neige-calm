@@ -74,7 +74,7 @@ Run the smallest relevant checks while iterating, then the appropriate project
 gates before requesting review:
 
 ```bash
-# Rust: fast feedback, then the full CI-equivalent local gate when appropriate
+# Rust: fast feedback, then the broad local gate when appropriate
 scripts/local-rust-gates.sh --quick
 scripts/local-rust-gates.sh
 
