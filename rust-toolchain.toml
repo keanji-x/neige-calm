@@ -1,0 +1,18 @@
+# Pinned Rust toolchain (#1289) — the single source of truth for BOTH local
+# gates and CI. rustup honors this file as a directory override, so every
+# `cargo`/`rustc` invocation anywhere in this workspace uses exactly this
+# version regardless of what `rustup default` is set to; ci.yml therefore
+# names no toolchain at all (it just runs `rustup toolchain install`).
+#
+# Before #1289, CI floated on `dtolnay/rust-toolchain@stable` while local
+# gates used whatever the last `rustup update` installed — PR #1277 was green
+# locally on 1.95.0 and red on CI's 1.98.0 (clippy::useless-borrows-in-formatting
+# widened its coverage in 1.97.0). Pinning both sides makes that class of
+# miss structurally impossible.
+#
+# To upgrade: bump `channel` here in a standalone PR so the new lint set gets
+# its own CI run and its own revert.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
