@@ -81,7 +81,11 @@ describe('route registration', () => {
     );
 
     expect(await screen.findByRole('complementary')).toBeTruthy();
-    expect(screen.getByLabelText('Today terminal')).toBeTruthy();
+    /* The index route really rendered *Today* and not just some page with a
+       panel. The anchor used to be the terminal placeholder's `aria-label`,
+       which no longer exists; the status counts are the replacement — they are
+       in `TodayHeader` and on no other route. */
+    expect(screen.getByText('waiting')).toBeTruthy();
   });
 
   function registeredPaths(): (string | undefined)[] {

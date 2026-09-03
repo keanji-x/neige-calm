@@ -130,14 +130,22 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .terminalSlot {
-    display: grid;
-    flex: 1 1 auto;
-    place-items: center;
-    min-block-size: var(--slot-h);
-    padding-block: var(--space-4);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-md);
+  /* The day's report, and the one place on this page that is a document rather
+     than a list of rows. Type one step up from the surrounding ambience and a
+     reading measure so long lines do not run the full column at 1440. */
+  .document {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-inline-size: 0;
+    max-inline-size: var(--measure-prose);
+    /* `--text-lg` is the prose rank, and `--measure-prose` is measured for it
+       (tokens.css) — the two only mean anything as a pair. `ReportDocument`
+       already reads at this rank, so this sets the region around it: the empty
+       line and the trigger stop being 11px label text under a 18px document. */
+    font-size: var(--text-lg);
+    line-height: var(--leading-loose);
+    color: var(--text-1);
   }
 
   /* The status bar's overflow control. Text-weight, aligned with the rows it
@@ -167,14 +175,10 @@
     align-items: center;
   }
 
-  .slotNote,
-  .inlineEmpty {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-  }
-
+  /* The calendar agenda's empty line, and only that one now: a row-shaped slot
+     in a list of rows, so it keeps the row's height and the dashed frame that
+     says "a row would go here". The document's empty line used to share this
+     rule and no longer does — see `.documentEmpty`. */
   .inlineEmpty {
     display: flex;
     align-items: center;
@@ -182,6 +186,20 @@
     padding-inline: var(--space-4);
     border: 1px dashed var(--hairline);
     border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* The document's own empty line: body text, no frame. It is a sentence in the
+     document's place, not a widget reporting that it has nothing — so it takes
+     the document's size and only steps the colour back. */
+  .documentEmpty {
+    font-size: inherit;
+    font-weight: var(--weight-normal);
+    line-height: inherit;
+    color: var(--text-3);
   }
 
   .emptyPage {

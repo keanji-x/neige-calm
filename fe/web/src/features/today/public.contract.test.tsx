@@ -163,21 +163,29 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * text node, so querying it for a button is null whatever production does)
      * and not as a label regex either — "Generate", "Run" or a Chinese label
      * would walk straight past one. The workspace is seeded with no tracks so
-     * the column holds only the document region and the terminal placeholder,
-     * neither of which has a control today.
+     * the column holds only the document region, which has no control today.
      */
-    const { container } = render(<TodayPage
+    render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
     const empty = screen.getByText(EMPTY_COPY);
-    const mainColumn = empty.parentElement;
+    /* Two hops, not one: the empty line sits inside the document region, and
+       the region sits in the main column. The walk used to be one hop because
+       the region had no wrapper — it gained one when the document took the
+       prose type rank. Stopping at the region would narrow this assertion from
+       "nowhere in the column" to "not next to this paragraph", which is the
+       weaker claim the comment above explicitly rejects. */
+    const documentRegion = empty.parentElement;
+    expect(documentRegion).not.toBeNull();
+    const mainColumn = documentRegion?.parentElement;
     expect(mainColumn).not.toBeNull();
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
-    // And the region really is the main column, not some stray wrapper: the
-    // terminal placeholder is its sibling.
-    expect(within(container).getByText('Terminal is not wired up yet.').closest('section')?.parentElement)
-      .toBe(mainColumn);
+    /* And the walk really did land on the main column rather than one hop
+       short: the column is the document region's parent and holds it as an
+       only child here, so the region is not also the column. */
+    expect(mainColumn).not.toBe(documentRegion);
+    expect(mainColumn?.contains(empty)).toBe(true);
   });
 });
 

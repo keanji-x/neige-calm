@@ -13,8 +13,9 @@
 // The status bar is `N waiting · N running` in the header plus the compact
 // waiting rows; it is O(1) in height, so it cannot grow and push the document
 // off the first screen. "The document is the protagonist" is expressed by area
-// and visual weight, not by type size (§8.1). Running and Recent moved into the
-// panel: they are ambience, and the reading column belongs to the document.
+// and visual weight, and by the document region reading at the prose rank while
+// the rest of the page stays interface-sized. Running moved into the panel: it
+// is ambience, and the reading column belongs to the document.
 
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -153,6 +154,13 @@ export type TodayPageProps = Readonly<{
    * `features/**` may not import a sibling domain, and the conversation list is
    * `features/chat`. The same slot appears on all three routes — that identical
    * second module is the point of the skeleton.
+   *
+   * It reads as a duplicate of the track pages and is not one: on Today this is
+   * the **cross-track index** (#1189 S5). It is the only place a track's
+   * conversations stay reachable after you navigate away from that track, and
+   * G6 opens one from here — the row navigates to the track *and* opens its
+   * assistant drawer. `app/router/track-conversation.test.tsx` owns that
+   * contract; dropping the module turns 18 of its assertions red.
    */
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
@@ -171,9 +179,6 @@ const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
  */
 const UNKNOWN_AREA = 'Unknown area';
 
-/** It answers "what happened while I was away", not "browse the archive". */
-const RECENT_LIMIT = 12;
-
 /**
  * How many waiting rows the status bar draws before it stops growing.
  *
@@ -186,9 +191,11 @@ const RECENT_LIMIT = 12;
  *
  * The overflow is not dropped. It sits behind one inert-until-clicked control,
  * so the *loaded* page is bounded while every waiting track stays reachable:
- * these rows are not repeated in the panel (RUNNING and RECENT both exclude
- * anything already counted as waiting), so hiding them outright would make
- * them unreachable from this page.
+ * these rows are not repeated in the panel's RUNNING module (it excludes
+ * anything already counted as waiting), so hiding them outright would make them
+ * unreachable from this page. The calendar's agenda does list them, but only
+ * for the selected day and without the attention framing, so it is not a
+ * substitute for the bar.
  */
 const WAITING_ROW_LIMIT = 5;
 
@@ -261,15 +268,6 @@ export function TodayPage({
   const shownTracks = visibleTracks(tracks);
   const waiting = shownTracks.filter(needsUserAttention);
   const running = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsUserAttention(track));
-  // RECENT shares the same track list — no second request — and excludes anything
-  // already shown above: one track appearing twice on a page distorts both the
-  // counts and the scan.
-  const shown = new Set([...waiting, ...running].map((track) => track.id));
-  const recent = shownTracks
-    .filter((track) => !shown.has(track.id))
-    .toSorted((left, right) => right.updatedAt - left.updatedAt)
-    .slice(0, RECENT_LIMIT);
-
 
   /*
    * A brand-new workspace: one hero line, and *still the document*.
@@ -310,9 +308,12 @@ export function TodayPage({
         now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after. Every row follows its content while
-            the unwired terminal keeps its route anchor without reserving a
-            full terminal-height track. */}
+        {/* Decision first, ambience after. Every row follows its content.
+
+            A dashed "Today terminal" placeholder used to close this column and
+            the README carried a whole unbuilt contract for it (INV-TODAYTERM-*).
+            Neither shipped; both are retired rather than left as a promise the
+            page keeps making. Owner call, 2026-09-03. */}
         <div className={styles.mainColumn}>
           {/* The status bar. An empty section renders nothing at all — no
               label, no dashed box. The absence is the message. */}
@@ -327,10 +328,6 @@ export function TodayPage({
             pending={summaryPending}
             notice={summaryNotice}
           />
-
-          <section className={styles.terminalSlot} aria-label="Today terminal">
-            <p className={styles.slotNote}>Terminal is not wired up yet.</p>
-          </section>
         </div>
 
         {/*
@@ -338,6 +335,11 @@ export function TodayPage({
           route-specific module comes first because it is why you are on this
           route; the conversation list is second and identical everywhere, so
           it can be found without reading it.
+
+          The conversation module was proposed for removal on 2026-09-03 as a
+          duplicate of the track pages' and kept: on Today it is the
+          cross-track index, and it is where G6 opens an assistant conversation
+          from. See `TodayPageProps.conversationList`.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open: the drawer is a card on this exact track, and a
@@ -361,12 +363,20 @@ export function TodayPage({
                 nowMs={now.getTime()}
               />
             </PanelModule>
-            {/* Ambience, moved out of the reading column (#1253 D7). Both
-                modules follow §6.1's rule that a section with zero rows is not
-                rendered, which is what `Section` already does in the main
-                column — an empty RUNNING module would read as a gap. */}
+            {/* Ambience, moved out of the reading column (#1253 D7). Follows
+                §6.1's rule that a section with zero rows is not rendered, which
+                is what `Section` already does in the main column — an empty
+                RUNNING module would read as a gap.
+
+                RECENT used to sit here and no longer does. The calendar's
+                agenda above it is `activeTracksOn(selected)` — every track
+                whose lifetime overlaps the selected day, uncapped — so on the
+                default selection (today) RECENT was a sorted subset of the
+                list directly above it, and every non-waiting, non-running
+                track alive today was drawn twice in one card. The de-dup that
+                was here only excluded waiting/running; it never looked at the
+                agenda. */}
             <PanelRows title="Running" tracks={running} render={renderTrackRow} />
-            <PanelRows title="Recent" tracks={recent} render={renderTrackRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
@@ -459,13 +469,26 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
       notice={notice}
     />
   );
+  /*
+   * The wrapper is what makes the day's report read as the protagonist.
+   *
+   * §8.1 says weight and area, not type size — and this is the one surface
+   * where the report IS the page rather than a card on it, so it carries a
+   * reading measure and body type one step up from the ambience around it.
+   * Owner call, 2026-09-03.
+   */
   if (!written) {
-    return <>
-      <p className={styles.inlineEmpty}>{NO_PROGRESS_YET}</p>
-      {trigger}
-    </>;
+    // Body text, not a dashed box. The box drew a container around a sentence
+    // whose whole content is that there is no container yet — it framed an
+    // absence and made the empty day look like a broken widget.
+    return (
+      <div className={styles.document}>
+        <p className={styles.documentEmpty}>{NO_PROGRESS_YET}</p>
+        {trigger}
+      </div>
+    );
   }
-  return <>{document}{trigger}</>;
+  return <div className={styles.document}>{document}{trigger}</div>;
 }
 
 /**
@@ -510,11 +533,11 @@ function SummaryTrigger({ label, onWrite, pending, notice }: {
 /**
  * A track list as a panel module, rendered only when it has rows.
  *
- * `variant: 'compact'` — the same rows these two lists have always been, moved
- * from the main column into the panel and nothing else. The `panel` variant is
- * the *agenda's*, and it is what `app/router` keys the row's delete affordance
- * off; handing it to Running and Recent would put a second Delete button on
- * every track that is also on today's agenda, in the same card.
+ * `variant: 'compact'` — the same rows this list has always been, moved from
+ * the main column into the panel and nothing else. The `panel` variant is the
+ * *agenda's*, and it is what `app/router` keys the row's delete affordance off;
+ * handing it to Running would put a second Delete button on every track that is
+ * also on today's agenda, in the same card.
  */
 function PanelRows({ title, tracks, render }: {
   title: string;
