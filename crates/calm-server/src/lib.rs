@@ -635,12 +635,39 @@ pub mod report_backlinks;
 /// The template roster and its report recipes.
 ///
 /// `pub` for the same reason `routes::waves::spec_harness_card_payload` is: an
-/// integration test that transcribes a production constant by hand stops being
-/// a test of that constant. #1300 S2's characterization test **derives** the
-/// report a template must instantiate to from this module, so editing a
-/// template's prose moves both sides together and only an implementation drift
-/// can turn it red. A hand-written copy of the expected task list would be a
-/// change detector instead.
+/// integration test that transcribes kilobytes of production prose by hand
+/// stops being a test of that prose and becomes a change detector. #1300 S2's
+/// characterization test (`wave_template_waves::
+/// creating_from_a_template_instantiates_its_recipe`) therefore **derives** the
+/// report a template must instantiate to from this module.
+///
+/// What that oracle can and cannot see, stated exactly, because the derivation
+/// is what limits it:
+///
+///   * **Can see** — any divergence between the recipe and what a created wave
+///     actually ends up holding: a dropped field, a lost fence, a missing
+///     contract prefix, a normalization applied to the wrong thing, the
+///     instantiation path reading somewhere other than these constants.
+///   * **Cannot see** — anything that moves *both* sides at once, because both
+///     sides go through this module's own `key → recipe` match and its shared
+///     `split_body` / `parse_fence` / `render_fence`. Concretely: swapping two
+///     arms of [`templates::template_report`], rewriting a recipe's content,
+///     retitling a [`templates::TEMPLATES`] entry, or a fence renderer that
+///     drops the same field on both roads.
+///
+/// Part of that second bullet is closed, and part is accepted. `wave_template_waves::
+/// each_template_key_names_its_own_recipe` holds a small hand-written table of
+/// `(key, title, ordered task keys)` — the one table in that file not derived
+/// from production — and checks it against both the picker read and a real
+/// create. That catches a swapped match arm, a retitled roster entry, a
+/// reordered or renamed task, and a roster that grew or shrank.
+///
+/// It does **not** catch the rest of the bullet: rewriting a recipe's prose, or
+/// a fence renderer dropping the same field on both roads, still moves both
+/// sides together and stays green. Closing those would mean transcribing the
+/// recipes by hand, which is the change detector this whole arrangement exists
+/// to avoid — so the table stays at identities only, and that gap is a decision
+/// rather than an oversight.
 pub mod templates;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;

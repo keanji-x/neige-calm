@@ -675,15 +675,24 @@ pub(crate) async fn create_wave(
     //    Every 4xx this handler can decide *before opening the transaction*
     //    (cwd shape, attached-workspace validation, cove 404, unknown
     //    template, the `template_input` binding matrix) lands before any DB
-    //    write. The ones decided later do not: the in-transaction 400s for an
-    //    explicit `fork_report_from` (source missing / cross-cove), the
-    //    folder-claim 409 and in-transaction 500s all happen after template
-    //    seeding, and seeding commits separately so it does not roll back.
-    //    Nor does a post-commit failure: `materialize_workspace` runs after
-    //    the transaction commits and returns non-2xx with the wave already
-    //    persisted (pinned by `materialize_failure_fails_the_create`).
-    //    "non-201 ⇒ no side effect" is therefore not a property of this
-    //    handler and never was.
+    //    write.
+    //
+    //    #1300 rewrote the rest of this paragraph, which described a world
+    //    with a separately-committing template seed in it. There is no such
+    //    commit any more: template initialization is structural work inside
+    //    the create transaction (`WaveInit::Template` →
+    //    `prepare_template_report`, in the closure `create_wave_structure`
+    //    runs). So the folder-claim 409, the in-transaction 400s for an
+    //    explicit `fork_report_from` (source missing / cross-cove) and the
+    //    in-transaction 500s now all roll the *whole* create back, template
+    //    report included — there is nothing left behind for them to leave.
+    //
+    //    One failure still is not covered by that rollback, and it is the
+    //    reason "non-201 ⇒ no side effect" is not a property of this handler:
+    //    `materialize_workspace` runs *after* the transaction commits (the
+    //    managed path is derived from the wave id) and returns non-2xx with
+    //    the wave already persisted. Pinned by
+    //    `materialize_failure_fails_the_create`.
 
     // #1209 — one lookup. The template is the concept; a plugin binding is an
     // attribute of it, not a second way in. Roster membership is the whole
@@ -850,13 +859,16 @@ pub(crate) async fn create_wave(
 /// plugin binding that comes with it.
 ///
 /// The word *admission* is the point: this answers **admission**, not "what
-/// does the template look like right now". The authority for the latter is the
-/// seeded template report, not this struct — which is why there is no `title`
-/// here.
+/// does the template look like". The authority for the latter is
+/// `templates::template_report`, a Rust constant — which is why there is no
+/// `title` and no report here. (#1300: before S2 the authority was a seeded
+/// system-cove template wave found by a database lookup, and this sentence
+/// named it. Both the wave and the lookup are gone.)
 pub(crate) struct TemplateAdmission {
-    /// The roster's own `&'static` key, not the caller's string. Downstream
-    /// seeding and lookup use this, so a future case-folding or aliasing
-    /// admission rule cannot leak an unnormalized key into the DB.
+    /// The roster's own `&'static` key, not the caller's string. It is what
+    /// `WaveInit::Template` carries into the create transaction, so a future
+    /// case-folding or aliasing admission rule cannot leak an unnormalized key
+    /// into the recipe lookup or onto the wave row.
     pub key: &'static str,
     /// The owning plugin, when a running trusted one claims this id. `None` is
     /// an ordinary template, not a rejection.
@@ -3108,14 +3120,23 @@ pub(crate) async fn delete_wave(
     // retire these rows do not come through this handler.
     //
     // **Scope is the whole system cove, not just the launchpad — deliberately.**
-    // The system cove also holds the template waves
-    // `ensure_templates` seeds, so those become undeletable through
-    // the API too. Accepted, ruled on 2026-09-01: they are kernel-seeded and
-    // rebuilt at boot, deleting one has never been a meaningful user action,
-    // and the alternative — carving out `purpose = launchpad` — puts an
-    // exception into "the system cove is kernel-owned". An invariant with an
-    // exception is the shape this design line keeps getting hurt by; a wide,
-    // boring rule is worth more than the deletability of three seeded rows.
+    // The rule is written over the cove, not over `purpose = launchpad`,
+    // because carving out a purpose puts an exception into "the system cove is
+    // kernel-owned", and an invariant with an exception is the shape this
+    // design line keeps getting hurt by. What the wide rule costs is that the
+    // launchpad wave — which *is* user-visible, on Today — cannot be deleted
+    // through this handler either. That is the accepted price, not an
+    // oversight: `POST /api/today/launchpad/ensure` recreates it on demand
+    // (`routes::today::ensure_today_launchpad`), so the delete would not stay
+    // done.
+    //
+    // #1300 — this paragraph used to justify itself by the *other* residents
+    // of the system cove, the three hidden template waves `ensure_templates`
+    // seeded. Those are gone: a template is a Rust constant
+    // (`crate::templates`) and creating from one mints no hidden wave. The
+    // ruling did not depend on them — it is about where the boundary is drawn,
+    // not about how many rows sit behind it — so it stands unchanged with the
+    // launchpad wave as today's only kernel-seeded resident.
     let owning_cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
     if owning_cove
         .as_ref()

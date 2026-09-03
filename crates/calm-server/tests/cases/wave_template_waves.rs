@@ -1,9 +1,19 @@
-//! #1110 S6 — seed template waves; auto-fork on create.
+//! What `template_id` does on `POST /api/waves`.
 //!
-//! Matching `template_id` lazily seeds three system-cove template waves
-//! (overlay `template_key`) and forks that report when `fork_report_from`
-//! is omitted. Lists still hide templates; detail returns them. Explicit
-//! `fork_report_from` is not overwritten.
+//! A matching `template_id` initializes the new wave's report from a **Rust
+//! constant recipe** (`calm_server::templates`) inside the create transaction:
+//! no hidden wave is minted, no overlay is written, and nothing is read from
+//! the database to find the content. An explicit `fork_report_from` still wins
+//! over `template_id`, and an unknown `template_id` is a 400 decided before any
+//! write.
+//!
+//! #1110 S6 wrote this file against the opposite implementation — three seeded
+//! system-cove template waves, discovered through a `template_key` overlay and
+//! forked on create, hidden from lists but returned by detail. #1300 S2 deleted
+//! all of it (that seeding was the last production writer signing a report as
+//! `EditAuthor::User`). Cases that asserted the seeding are inverted rather
+//! than dropped, so the removal itself stays asserted; each one says so in its
+//! own doc comment.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -396,6 +406,24 @@ async fn creating_from_a_template_mints_no_hidden_wave() {
 /// about the new path, and neither is implied by the other — a shared mutable
 /// snapshot would satisfy the content check, and two independently *wrong*
 /// documents would satisfy the independence check.
+///
+/// ## Why the write leg exists
+///
+/// Reading both documents once and finding them equal is not independence; it
+/// is the *identical* half stated twice. The escape construction: make a report
+/// write fan out to every wave carrying the same `template_id` (one extra
+/// `UPDATE ... WHERE template_id = ...` after `card_update_with_crdt_tx` in
+/// `wave_report::persist_report`). The two documents are then genuinely one
+/// document behind two ids, and a create-time-only comparison stays green. So
+/// this case edits one wave and re-reads the other; independence is only
+/// asserted about a state the two could actually disagree in.
+///
+/// **Only `summary` is edited, deliberately.** `guard_non_prose_stomp` refuses
+/// a prose-channel write that alters a non-prose block, and the recipe body is
+/// almost entirely `task` fences — rewriting it here would fail on the guard
+/// rather than on independence, and the repair would be to weaken the case.
+/// The summary travels the same `persist_report` write and the same card
+/// payload, so it discriminates the same fan-out.
 #[tokio::test]
 async fn two_waves_from_one_template_are_independent_and_identical() {
     let boot = boot().await;
@@ -417,6 +445,58 @@ async fn two_waves_from_one_template_are_independent_and_identical() {
     assert_ne!(first_id, second_id, "two creates must be two waves");
     assert_eq!(first.summary, second.summary);
     assert_eq!(first.body, second.body);
+
+    // ---- independence: edit one, re-read the other ----
+    const EDITED: &str = "first wave's own summary";
+    assert_ne!(
+        first.summary, EDITED,
+        "the edit must change something, or the re-read below asserts nothing"
+    );
+    let (source_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &first_id)
+            .await
+            .expect("first wave's report");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        source_wave,
+        report_card,
+        current,
+        // Same body, new summary — see the doc comment on `guard_non_prose_stomp`.
+        WaveReportPayload::new(EDITED, first.body.clone()),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("edit the first wave's report");
+
+    let (status, first_detail) = get(boot.app.clone(), &format!("/api/waves/{first_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={first_detail}");
+    assert_eq!(
+        report_card_payload(&first_detail).summary,
+        EDITED,
+        "the edit did not land, so the re-read below proves nothing"
+    );
+
+    let (status, second_detail) = get(boot.app.clone(), &format!("/api/waves/{second_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={second_detail}");
+    let second_after = report_card_payload(&second_detail);
+    assert_eq!(
+        second_after.summary, second.summary,
+        "editing one template-created wave changed the other's summary: the two \
+         waves share a document"
+    );
+    assert_eq!(
+        second_after.body, second.body,
+        "editing one template-created wave changed the other's body: the two \
+         waves share a document"
+    );
 }
 
 #[tokio::test]
@@ -1205,12 +1285,20 @@ fn task_keys(template: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// A read of the picker returns the constants and writes nothing.
+/// A read of the picker returns the whole constant roster and writes nothing.
 ///
-/// The snapshot comparison is the whole test: returning the right constants
-/// proves nothing on its own, because the deleted seeding path would also have
-/// returned the right values. What must hold is that the read left the database
-/// as it found it.
+/// The snapshot comparison is the load-bearing half: returning the right
+/// constants proves nothing on its own, because the deleted seeding path would
+/// also have returned the right values. What must hold is that the read left
+/// the database as it found it.
+///
+/// The roster half used to be one title and one task key of `small-change`,
+/// which the name over-sold: a response hard-coded to "the correct
+/// `small-change`, and nothing else" satisfied it. It now asserts the exact set
+/// of ids the roster declares, in the roster's order, and that no fourth entry
+/// rode along. *Which* recipe each id names is
+/// `each_template_key_names_its_own_recipe`'s job, not this one's — this case
+/// owns "the listing is the roster and the read is read-only".
 ///
 /// #1300 — this absorbed `listing_wave_templates_does_not_materialize_seed_state`,
 /// which asserted the same "a GET writes nothing" property across an unseeded
@@ -1230,16 +1318,32 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
         let before = db_snapshot(&boot.repo).await;
         let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
         assert_eq!(status, StatusCode::OK, "{leg}: body={body}");
+        let listed_ids: Vec<&str> = body
+            .as_array()
+            .expect("array body")
+            .iter()
+            .map(|entry| entry["id"].as_str().expect("template id"))
+            .collect();
+        let roster_ids: Vec<&str> = calm_server::templates::TEMPLATES
+            .iter()
+            .map(|template| template.key)
+            .collect();
         assert_eq!(
-            listed_template(&body, SMALL_CHANGE)["title"],
-            "Small change",
-            "{leg}"
+            listed_ids, roster_ids,
+            "{leg}: the listing is the roster, in the roster's order"
         );
-        assert_eq!(
-            task_keys(listed_template(&body, SMALL_CHANGE))[0],
-            "inspect",
-            "{leg}"
-        );
+        // Every entry is a usable picker row. A roster id that came back with
+        // no title or no tasks is drift the id set alone cannot see.
+        for entry in body.as_array().expect("array body") {
+            assert!(
+                entry["title"].as_str().is_some_and(|t| !t.is_empty()),
+                "{leg}: {entry} has no title"
+            );
+            assert!(
+                !task_keys(entry).is_empty(),
+                "{leg}: {entry} advertises no tasks"
+            );
+        }
         assert_eq!(
             db_snapshot(&boot.repo).await,
             before,
@@ -1526,5 +1630,125 @@ async fn creating_from_a_template_instantiates_its_recipe() {
                 "{key}: an instantiated task must carry no user release; {task}"
             );
         }
+    }
+}
+
+/// The hand-written half: **which** recipe each key names.
+///
+/// ## Why a derived oracle needs this, stated as what each side can and cannot
+/// see
+///
+/// `creating_from_a_template_instantiates_its_recipe` derives its expectation
+/// from `templates::template_report`, which is the production `key → recipe`
+/// match itself. That is the right call for *content* — it is what stops the
+/// case being a change detector over kilobytes of prose — but it means the two
+/// sides of that comparison share the mapping, so a class of drift moves both
+/// and stays green:
+///
+///   * swapping two arms of the `template_report` match (`SMALL_CHANGE` returns
+///     `investigation_report()`);
+///   * a recipe rewritten wholesale into a different workflow;
+///   * a `TEMPLATES` entry whose `title` no longer describes its `key`.
+///
+/// This case is the anchor for exactly that class and nothing else. It pins,
+/// per key, only the two facts that identify *which* recipe answered:
+///
+///   * the roster title, and
+///   * the ordered task keys.
+///
+/// ## What is deliberately NOT pinned here
+///
+/// Goals, acceptance criteria, `context`, `depends_on`, `no_gate_reason`, the
+/// intro prose, the contract prefix — none of it. Every one of those is
+/// content, all of it is already compared byte-for-byte by the derived oracle,
+/// and copying any of it here would rebuild the change detector this file's
+/// design note rejects: reword one goal and a maintainer would have two places
+/// to paste it into, which is how "red here means update the expectation" gets
+/// taught. Task keys and titles are the cheapest values that are *identities*
+/// rather than prose — a template's task keys are also what the picker and the
+/// plan projection address blocks by, so they do not churn on an edit.
+///
+/// ## Both roads, because the mapping is read twice
+///
+/// `GET /api/wave-templates` reads the mapping to render the picker, and
+/// `POST /api/waves` reads it to instantiate. A swap in only one of them is a
+/// real defect (the picker advertises one plan, create produces another), so
+/// both are asserted against the same hand-written row.
+#[tokio::test]
+async fn each_template_key_names_its_own_recipe() {
+    // key, roster title, ordered task keys. Hand-written on purpose — this is
+    // the one table in this file that must NOT be derived from production.
+    let anchors: [(&str, &str, &[&str]); 3] = [
+        (
+            ISSUE_DEVELOPMENT,
+            "Issue development",
+            &[
+                "inspect-issue",
+                "review-design-a",
+                "review-design-b",
+                "implement-change",
+                "open-pr",
+                "review-pr-a",
+                "review-pr-b",
+                "merge",
+            ],
+        ),
+        (
+            SMALL_CHANGE,
+            "Small change",
+            &["inspect", "implement", "verify"],
+        ),
+        (
+            INVESTIGATION,
+            "Investigation",
+            &["gather-facts", "write-findings"],
+        ),
+    ];
+    assert_eq!(
+        anchors.len(),
+        calm_server::templates::TEMPLATES.len(),
+        "the roster grew or shrank; this table is the one place that must be \
+         edited by hand when it does"
+    );
+
+    let boot = boot().await;
+    let (status, listing) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "listing={listing}");
+
+    for (key, title, expected_task_keys) in anchors {
+        // Road 1 — the picker read.
+        let listed = listed_template(&listing, key);
+        assert_eq!(listed["title"], title, "{key}: picker title");
+        assert_eq!(
+            task_keys(listed),
+            expected_task_keys.to_vec(),
+            "{key}: picker tasks"
+        );
+
+        // Road 2 — the create write.
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let wave_id = body["id"].as_str().expect("wave id");
+        let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+        assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
+        let payload = report_card_payload(&detail);
+        let created_keys: Vec<&str> = task_blocks(&payload)
+            .iter()
+            .map(|task| task["key"].as_str().expect("task key"))
+            .collect();
+        assert_eq!(
+            created_keys,
+            expected_task_keys.to_vec(),
+            "{key}: the wave create instantiated a different recipe than `{key}` names"
+        );
+        assert_eq!(
+            payload.summary, title,
+            "{key}: the instantiated report's summary is another template's"
+        );
     }
 }

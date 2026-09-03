@@ -1,9 +1,19 @@
-//! #1110 S6 — kernel-seeded template reports.
+//! Template recipes — the report a `template_id` create starts from.
 //!
-//! Three system-cove template waves hold the former git-forge plan as
-//! report `task` blocks. `POST /api/waves` with a matching `template_id`
-//! forks that report. Overlay payload `{schemaVersion:1, template_key}`
-//! is the stable lookup.
+//! Three recipes hold the former git-forge plan as report `task` blocks, as
+//! **Rust constants**: [`TEMPLATES`] is the roster and [`template_report`] maps
+//! a key to the report it instantiates to. `POST /api/waves` with a matching
+//! `template_id` builds that report inside its own create transaction
+//! (`routes::waves::prepare_template_report`), reading nothing from the
+//! database.
+//!
+//! #1300 S2 — through #1110 S6 this module described the same three plans as
+//! *seeded system-cove template waves*, discovered through an overlay payload
+//! `{schemaVersion: 1, template_key}` and forked on create. All three of those
+//! nouns are gone: no hidden wave, no `template_key` writer, no fork. The
+//! reason is #1300's own: seeding wrote those reports through `persist_report`
+//! as `EditAuthor::User`, i.e. the kernel signing an edit as the user, which
+//! was the last production path doing so.
 
 use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::wave_report::WaveReportPayload;
@@ -47,10 +57,13 @@ pub static TEMPLATES: [Template; 3] = [
 /// exactly that duplication and is gone with this slice.
 ///
 /// This is not the *only* place the roster is read — `list_wave_templates`
-/// iterates `TEMPLATES` directly, and so does the seeding loop. It is
-/// the only place that answers "is this arbitrary caller-supplied string one of
-/// them", which is the question `:779`'s deleted special case used to answer
-/// twice.
+/// iterates [`TEMPLATES`] directly for the picker, and so does
+/// `wave_template_waves::creating_from_a_template_instantiates_its_recipe`.
+/// (#1300 S2: the third reader this named, the seeding loop, is deleted; the
+/// point survives it, because "more than one reader" is what makes a single
+/// admission answer worth having.) It is the only place that answers "is this
+/// arbitrary caller-supplied string one of them", which is the question
+/// `:779`'s deleted special case used to answer twice.
 pub fn template_by_key(key: &str) -> Option<&'static Template> {
     TEMPLATES.iter().find(|template| template.key == key)
 }

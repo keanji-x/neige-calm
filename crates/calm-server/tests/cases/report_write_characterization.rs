@@ -982,8 +982,21 @@ async fn rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft() {
 /// red, and pointing only the block leg
 /// (`routes::wave_report_blocks::commit`) at one turns this test and
 /// `rest_block_write_is_user_attributed_and_leaves_a_draft_in_draft` red.
-/// That matters because the document leg reaches `persist_report`, whose
-/// `None` shadow argument is shared with the template seed/restamp writers.
+/// That matters because the two legs reach the write boundary by different
+/// doors: the document leg goes through `persist_report`, the wrapper that
+/// hard-codes `recorder_shadow: None`, while the block leg calls
+/// `persist_report_with_shadow` and chooses the argument itself. A single test
+/// covering "one of them" would leave whichever door it did not use unpinned.
+///
+/// #1300 S2 — this sentence used to say the wrapper's `None` was "shared with
+/// the template seed/restamp writers". It is not shared with anything in
+/// production any more: `seed_template_wave` and
+/// `restamp_template_report_if_placeholder` are deleted, leaving
+/// `routes::waves::update_wave_report` as `persist_report`'s only production
+/// caller (the `persist_report_call_sites` census is where that is pinned).
+/// The reason to cover the leg independently survives the sharing, because it
+/// was never about who else passed the argument — it is about this leg not
+/// choosing it.
 ///
 /// This is a statement about *whether* the gate is consulted, not about an
 /// exact invocation count; see the module header's registered gaps.

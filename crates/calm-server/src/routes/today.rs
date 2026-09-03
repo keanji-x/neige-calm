@@ -693,8 +693,13 @@ pub(crate) async fn ensure_today_launchpad(
         }
         Err(e) => return Err(e),
     };
-    // #1147 S2 (design D3) — the launchpad is the fifth wave-create entry
-    // point and it does **not** go through `create_wave_structure` (raw
+    // #1147 S2 (design D3) — the launchpad is one of the four wave-create
+    // entry points (`POST /api/waves`, cove chat, launchpad, child wave;
+    // template seeding was a fifth until #1300 S2 deleted it). The enumeration
+    // is spelled out once, in `tests/cases/wave_workspace_materialize.rs`,
+    // because an ordinal repeated across files is what drifted: this comment
+    // and `child_wave_adapter.rs` both used to call themselves "the fifth".
+    // It does **not** go through `create_wave_structure` (raw
     // `INSERT INTO waves`), so it carries its own materialize call. Skipping it
     // would leave every codex task on the Today panel dying with
     // `spawn-failed` (`git rev-parse --show-toplevel` on a non-repository),
