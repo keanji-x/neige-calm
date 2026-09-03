@@ -104,13 +104,11 @@ fn effective_config_from_schema(
 /// Takes the **effective** map, not the stored one: a key satisfied by its
 /// manifest `default` is not missing, and only the merged view knows that.
 /// Returns the offending keys in schema-declared order so the `last_error` a
-/// consumer composes is stable across bring-ups; **§2.4 wording contract** —
-/// the `last_error` for this failure is built from this list and no other
-/// enumeration, e.g.
-/// `format!("missing required configuration: {}", missing.join(", "))`.
+/// consumer composes is stable across bring-ups.
 ///
 /// Empty vec for a plugin with no `config_schema`, and for a schema with no
-/// `required`: nothing is demanded, so nothing is missing.
+/// `required`: nothing is demanded, so nothing is missing. Render the refusal
+/// with [`missing_required_reason`] rather than by formatting the list again.
 pub fn missing_required(manifest: &Manifest, effective: &Map<String, Value>) -> Vec<String> {
     let Some(schema) = manifest.config_schema.as_ref() else {
         return Vec::new();
@@ -124,6 +122,30 @@ pub fn missing_required(manifest: &Manifest, effective: &Map<String, Value>) -> 
         .filter(|key| !effective.contains_key(*key))
         .map(String::from)
         .collect()
+}
+
+/// The §2.4 `last_error` for [`missing_required`]'s output — **the** wording,
+/// as a function rather than as a sentence in a doc comment.
+///
+/// #1284 S3a review P1-2. `missing_required`'s doc has always said the refusal
+/// is built "from this list and no other enumeration", and both consumers
+/// honoured it — and still produced two different sentences, because a wording
+/// contract stated in prose is one each consumer re-types. S2's `app` path
+/// appended the operator's next step; S3a's `cli-query` path shipped the bare
+/// list. §2.5's plugin detail view renders `last_error` verbatim for both
+/// kinds, so the same failure told an operator two different things depending
+/// on which kind of plugin hit it.
+///
+/// The instruction is part of the message on purpose: `Unavailable` is
+/// terminal for both kinds (no supervisor, no retry), so "what do I do now" has
+/// exactly one answer — fill the keys in and start it again — and it is not
+/// available anywhere else in the UI.
+pub fn missing_required_reason(missing: &[String]) -> String {
+    format!(
+        "missing required configuration: {}. Set it under Settings › Plugins, \
+         then start the plugin again.",
+        missing.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -306,6 +328,21 @@ mod tests {
         .unwrap();
         let no_schema = Manifest::parse(&text).unwrap();
         assert!(missing_required(&no_schema, &Map::new()).is_empty());
+    }
+
+    /// S3a review P1-2 — the wording contract, pinned once so the two spawn
+    /// paths cannot say two different things. The instruction half is asserted
+    /// explicitly: without it the message tells an operator what is wrong and
+    /// not what to do about it, which is the S3a/S2 divergence this function
+    /// exists to close.
+    #[test]
+    fn the_missing_required_reason_names_the_keys_and_the_next_step() {
+        let reason = missing_required_reason(&["token".to_string(), "secondary".to_string()]);
+        assert_eq!(
+            reason,
+            "missing required configuration: token, secondary. Set it under \
+             Settings › Plugins, then start the plugin again."
+        );
     }
 
     /// `user_config` is a `Value`, and a row that somehow holds a non-object

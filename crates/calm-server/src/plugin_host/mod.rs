@@ -1297,6 +1297,122 @@ impl PluginHost {
         Ok(config::effective_config(manifest, &user_config))
     }
 
+    /// #1284 §2.3 + §2.4 — **the** spawn-time configuration gate, for every
+    /// kind: read the effective configuration, refuse the spawn if it cannot be
+    /// read or if a `required` key is not in force, and hand the admission
+    /// reservation back to the caller when it passes.
+    ///
+    /// **This function exists because it was written twice** (S3a review P1).
+    /// S2 landed the `app` half — this read, this `required` verdict, this
+    /// `Unavailable` publication — and S3a, developed in parallel, hand-wrote
+    /// the same four steps inside `spawn_cli_query`. Merged, the two disagreed
+    /// on all three points a copy can disagree on:
+    ///
+    /// * **the error type**: `MissingRequiredConfig`/`ConfigUnreadable` on one
+    ///   path, `ConnectorUnavailable` on the other, for one failure class;
+    /// * **the wording**: one told the operator where to go and what to do
+    ///   next, the other shipped a bare list — and §2.5's detail view renders
+    ///   `last_error` verbatim for both kinds (now [`config::missing_required_reason`]);
+    /// * **the DB-failure disposition**: `publish_unavailable_under` on one
+    ///   path, a bare `?` on the other — which is [`AdmissionGuard`] dropped
+    ///   un-disarmed, so no live entry, no state event, and
+    ///   [`Self::status`] answering `None` for a plugin the operator just
+    ///   enabled. That is precisely the hole S2's own review (P2-1) closed on
+    ///   the `app` path, reopened one kind over.
+    ///
+    /// S3b (`mcp-http` url slots) will be the third consumer, and is to call
+    /// this rather than grow a third copy. As of today `spawn_mcp_http` does
+    /// **not** call it: the only two call sites are the `app` and `cli-query`
+    /// spawn paths.
+    ///
+    /// **One carrier, two call orders — and the observable difference is real.**
+    /// This function is shared, but the callers did not converge on WHERE they
+    /// call it, and this slice deliberately did not move either one (that is a
+    /// behaviour change and wants its own review):
+    ///
+    /// * the `app` path calls it **before** minting the process token and
+    ///   before `emit_state(Spawning)`, so a plugin missing required
+    ///   configuration emits `Unavailable` and nothing else;
+    /// * the `cli-query` path calls it **after** `emit_state(Spawning)`, so the
+    ///   same failure emits `Spawning` then `Unavailable` — two events.
+    ///
+    /// The terminal state, the error and the `last_error` wording are identical
+    /// either way; what differs is the event prefix a §2.5 consumer sees.
+    ///
+    /// **The guard is taken by value and returned on success.** Both failure
+    /// arms have to consume it — publishing the terminal live entry is what
+    /// disarms the reservation — so a `&AdmissionGuard` signature would put the
+    /// publication back at the call sites, i.e. back to the shape that drifted.
+    async fn config_for_spawn_or_unavailable(
+        self: &Arc<Self>,
+        lifecycle: &LifecycleGuard,
+        manifest: &Manifest,
+        guard: AdmissionGuard,
+    ) -> Result<(serde_json::Map<String, serde_json::Value>, AdmissionGuard), HostError> {
+        let id = lifecycle.id();
+        let effective = match self.effective_config_for_spawn(id, manifest).await {
+            Ok(effective) => effective,
+            Err(detail) => {
+                // S2 review P2-1. This branch used to be a `?` on the `app`
+                // path and still was one on the `cli-query` path when the two
+                // slices merged: the `?` drops `guard` un-disarmed, inserts no
+                // live entry and emits no state event, so `PluginHost::status`
+                // answers `None` and the plugin renders as though it had never
+                // been enabled — with the DB error visible nowhere. Every
+                // connector-side failure of the same shape publishes
+                // `Unavailable`; so does this one, for every kind.
+                let reason = format!("could not read stored configuration: {detail}");
+                let _ = self
+                    .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
+                    .await;
+                return Err(HostError::ConfigUnreadable {
+                    plugin_id: id.to_string(),
+                    reason,
+                });
+            }
+        };
+
+        let missing = config::missing_required(manifest, &effective);
+        if !missing.is_empty() {
+            // §2.2's v6 adjudication landing on its consumption side: the write
+            // path stopped enforcing `required` (a partial Save is a legitimate
+            // intermediate state), so the plugin not coming up is what
+            // "required" now means. The list is `missing_required`'s and the
+            // sentence is `missing_required_reason`'s — this is two calls, not
+            // a restatement of either.
+            let reason = config::missing_required_reason(&missing);
+            // **`Unavailable`, not `Crashed`, and the choice is not cosmetic.**
+            //
+            // (a) `Crashed` is the only other candidate and it cannot carry the
+            //     `last_error` §2.4 demands: `emit_crashed_under` publishes a
+            //     state *event* and nothing else, so `PluginHost::status` — the
+            //     one thing `GET /api/plugins/{id}` reads — answers `None` and
+            //     the plugin renders as if it had never been enabled. That is
+            //     precisely the failure mode `mark_unavailable_under`'s live
+            //     entry exists to prevent, and it is why the app spawn path's
+            //     other pre-process refusal (the template conflict) is not the
+            //     precedent to copy here.
+            // (b) The semantics match: nothing crashed — no child was ever
+            //     spawned — and no supervisor is installed, so there is no
+            //     respawn and no backoff to describe. Recovery is an operator
+            //     action (fix the config, re-enable), which is exactly the
+            //     contract `Unavailable` documents.
+            //
+            // The cost is that `Unavailable` was until now a connector-only
+            // status; its doc comment is widened to match, rather than the
+            // status being quietly reused against its own definition.
+            let _ = self
+                .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
+                .await;
+            return Err(HostError::MissingRequiredConfig {
+                plugin_id: id.to_string(),
+                reason,
+            });
+        }
+
+        Ok((effective, guard))
+    }
+
     /// Mint + persist a fresh process token for `id`, returning the raw value
     /// the caller can put into the spawn env. The hash lands in
     /// `plugin_tokens`; the raw value is **not** kept anywhere persistent —
@@ -1974,66 +2090,9 @@ impl PluginHost {
         // branch above is: a refusal here must leave nothing behind. A missing
         // required key is decided while the only state in play is this
         // function's stack.
-        let effective = match self.effective_config_for_spawn(id, manifest).await {
-            Ok(effective) => effective,
-            Err(detail) => {
-                // S2 review P2-1. This branch used to be a `?`, which fell
-                // into exactly the hole argued against in (a) below: the `?`
-                // drops `guard` un-disarmed, inserts no live entry and emits no
-                // state event, so `PluginHost::status` answers `None` and the
-                // plugin renders as though it had never been enabled — with
-                // the DB error visible nowhere. Every connector-side failure of
-                // the same shape publishes `Unavailable`; so does this one.
-                let reason = format!("could not read stored configuration: {detail}");
-                let _ = self
-                    .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
-                    .await;
-                return Err(HostError::ConfigUnreadable {
-                    plugin_id: id.to_string(),
-                    reason,
-                });
-            }
-        };
-        let missing = config::missing_required(manifest, &effective);
-        if !missing.is_empty() {
-            // §2.2's v6 adjudication landing on its consumption side: the write
-            // path stopped enforcing `required` (a partial Save is a legitimate
-            // intermediate state), so the plugin not coming up is what
-            // "required" now means. The wording contract is `missing_required`'s
-            // own doc — this list and no other enumeration.
-            let reason = format!(
-                "missing required configuration: {}. Set it under Settings › Plugins, \
-                 then start the plugin again.",
-                missing.join(", ")
-            );
-            // **`Unavailable`, not `Crashed`, and the choice is not cosmetic.**
-            //
-            // (a) `Crashed` is the only other candidate and it cannot carry the
-            //     `last_error` §2.4 demands: `emit_crashed_under` publishes a
-            //     state *event* and nothing else, so `PluginHost::status` — the
-            //     one thing `GET /api/plugins/{id}` reads — answers `None` and
-            //     the plugin renders as if it had never been enabled. That is
-            //     precisely the failure mode `mark_unavailable_under`'s live
-            //     entry exists to prevent, and it is why the app spawn path's
-            //     other pre-process refusal (the template conflict) is not the
-            //     precedent to copy here.
-            // (b) The semantics match: nothing crashed — no child was ever
-            //     spawned — and no supervisor is installed, so there is no
-            //     respawn and no backoff to describe. Recovery is an operator
-            //     action (fix the config, re-enable), which is exactly the
-            //     contract `Unavailable` documents.
-            //
-            // The cost is that `Unavailable` was until now a connector-only
-            // status; its doc comment is widened to match, rather than the
-            // status being quietly reused against its own definition.
-            let _ = self
-                .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
-                .await;
-            return Err(HostError::MissingRequiredConfig {
-                plugin_id: id.to_string(),
-                reason,
-            });
-        }
+        let (effective, guard) = self
+            .config_for_spawn_or_unavailable(lifecycle, manifest, guard)
+            .await?;
 
         // Slice H: mint a fresh process token + persist its hash. The raw value
         // returned here is the same value we pass via env and the same value
@@ -2408,14 +2467,33 @@ impl PluginHost {
         self.emit_state_under(lifecycle, &PluginRuntimeStatus::Spawning)
             .await;
 
+        // #1284 §2.3(b) — the configuration this connector will run with, read
+        // once, here, at the only moment it can take effect (§2.4: the child
+        // environment and the argv config slots are built at bring-up and
+        // cached, so there is nothing to update later).
+        //
+        // **The same gate the `app` path uses**, not a cli-query-shaped copy of
+        // it (S3a review P1): the read, the `required` verdict, the wording and
+        // the `Unavailable` publication all live in
+        // [`Self::config_for_spawn_or_unavailable`]. This path used to hand-roll
+        // all four, which is how it ended up with a bare `?` on the DB-failure
+        // branch — the un-disarmed guard S2 had already paid to remove — and
+        // with a `last_error` that told the operator less than the `app` one.
+        let (effective, guard) = self
+            .config_for_spawn_or_unavailable(lifecycle, manifest, guard)
+            .await?;
+
         // ONE outer wall-clock bound over the WHOLE bring-up. `AppState::new`
         // awaits this path inline, and a `--version` that never returns (a
         // binary that reads stdin, a wedged network mount) is a boot stall
         // otherwise. `cli_query.timeout_ms` is deliberately NOT consulted: it is
         // the `tools/call` budget and may be minutes long.
         let budget = connector_bringup_budget(manifest);
-        let outcome =
-            tokio::time::timeout(budget, cli_query::bring_up(id, block, install_path)).await;
+        let outcome = tokio::time::timeout(
+            budget,
+            cli_query::bring_up(id, block, install_path, &effective),
+        )
+        .await;
 
         let runtime = match outcome {
             Err(_elapsed) => {
