@@ -5,18 +5,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-usage='usage: scripts/run-ci-rust-nextest.sh {github-hosted|self-hosted}'
-if [ "$#" -ne 1 ]; then
+usage='usage: scripts/run-ci-rust-nextest.sh {github-hosted|self-hosted} [--partition KIND:N/M]'
+if [ "$#" -ne 1 ] && { [ "$#" -ne 3 ] || [ "${2:-}" != --partition ]; }; then
   echo "$usage" >&2
   exit 2
 fi
 
-case "$1" in
+runner="$1"
+shift
+case "$runner" in
   github-hosted)
-    exec scripts/run-rust-nextest.sh
+    exec scripts/run-rust-nextest.sh "$@"
     ;;
   self-hosted)
-    exec scripts/run-rust-nextest.sh --test-threads 4
+    exec scripts/run-rust-nextest.sh --test-threads 8 "$@"
     ;;
   *)
     echo "$usage" >&2

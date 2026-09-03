@@ -2,6 +2,7 @@
 name = "calm-codex-bridge"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 
 # Tiny static-deploy binary: codex spawns it for every hook event,
 # bridge reads JSON from stdin and POSTs to calm-server. Default exit
@@ -10,6 +11,10 @@ edition = "2024"
 [[bin]]
 name = "neige-codex-bridge"
 path = "src/main.rs"
+
+[[test]]
+name = "integration_suite"
+path = "tests/integration_suite.rs"
 
 [dependencies]
 # Synchronous, blocking HTTP. The bridge is short-lived (one POST per

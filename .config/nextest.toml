@@ -36,3 +36,25 @@ slow-timeout = { period = "120s" }   # warn-only; stdio_shim's longest test is ~
 [profile.ci.junit]
 # Per-test timing on disk (target/nextest/ci/junit.xml), Slice C's timing input.
 path = "junit.xml"
+
+[test-groups]
+# Real PTY/process tests observe kernel scheduling, fd and acknowledgement
+# behavior. Run only one of them at once, and reserve half of the self-hosted
+# eight-thread budget so ordinary SQLite-heavy tests cannot starve it. On the
+# four-core hosted shards this intentionally makes each supervisor test
+# exclusive; the package is small and reliability matters more than those few
+# seconds.
+proc-supervisor = { max-threads = 1 }
+
+[[profile.ci.overrides]]
+filter = 'package(calm-proc-supervisor) | test(/^(in_process_renderer_e2e|reconcile_supervisor_on_boot)::/)'
+test-group = 'proc-supervisor'
+threads-required = 4
+
+[[profile.ci.overrides]]
+# This O(N²) file-backed SQLite replay went from 44s to 250s when it shared a
+# four-core hosted runner with three other database-heavy tests. Reserve the
+# runner while it executes: coverage remains exhaustive, and the remaining
+# partition resumes normal four-way parallelism as soon as it finishes.
+filter = 'test(/^migration_replay_harness::synthetic_fixture_replays_from_every_version$/)'
+threads-required = 4

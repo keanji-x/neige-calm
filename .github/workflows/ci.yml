@@ -471,10 +471,20 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
-  rust:
-    name: rust (test)
+  rust-shards:
+    name: rust test shard ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && '4' || '1' }}
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hosted PR runs have four effective test workers. Four count-balanced
+        # partitions keep a cold compile plus one quarter of the suite near the
+        # five-minute target; timing data showed two hash partitions at
+        # 496s/717s of cumulative test work.
+        # Trusted main pushes stay single-job because concurrent jobs must not
+        # share the persistent self-hosted target directory.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1,2,3,4]' || '[1]') }}
     # This repository is public: fork PRs stay on isolated GitHub-hosted
     # runners. Only trusted pushes to the canonical repository use the local
     # machine. The repository check also keeps pushes in forks on hosted CI.
@@ -558,40 +568,18 @@ jobs:
         #   has 0 doctests — every doc fence carries a non-rust language tag
         #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
         #   are ever introduced, add a `cargo test --doc` step alongside.
-        run: scripts/run-ci-rust-nextest.sh "${{ runner.environment }}"
-
-      # #679 PR0-D — migration-replay gate, made explicit so a failure is
-      # attributable at a glance. Re-runs the snapshot replay harness: every
-      # per-version stage→seed→replay stop must converge on the fresh-DB
-      # schema. This step MUST be invoked at workspace level, exactly like the
-      # main nextest step above, so it stays fully Fresh (no recompile) —
-      # nextest's build phase is the same `cargo test --no-run` fingerprint,
-      # so the artifacts are shared verbatim. Two ingredients, both
-      # load-bearing:
-      #   1. Features aligned with the main test step: codex-e2e is an empty
-      #      feature (calm-provider's side is `[]`; it only gates `#![cfg]` in
-      #      tests/*.rs), so passing it here is purely build-fingerprint
-      #      alignment — without it, the feature flip re-compiled the
-      #      calm-provider→calm-server chain (~63s) on every run.
-      #   2. `--workspace` (NOT `-p calm-server`): any -p narrowing shrinks
-      #      cargo's feature-unification domain from the workspace to a single
-      #      package, so features that other workspace members enable on shared
-      #      deps (sqlx, rustls, …) disappear, flipping dependency fingerprints
-      #      and re-compiling ~53s of rustls→sqlx→calm-truth→calm-server. Do
-      #      not "simplify" this back to -p. The `-E` filterset (binary
-      #      migration_suite ∩ the migration_replay_harness:: module) selects
-      #      only the replay harness.
-      # Deliberately NOT --profile ci: the ci profile writes its junit report
-      # to a fixed path (target/nextest/ci/junit.xml), so this small re-run
-      # would overwrite the full-suite timing report uploaded below. The
-      # default profile emits no junit; its default-filter only excludes
-      # export_bindings_* tests, which don't live in this binary.
-      # The external-snapshot half self-skips while NEIGE_SNAPSHOT_DB is unset
-      # in CI; point it at a sanitized prod snapshot to extend the gate to
-      # real data.
-      - name: migration replay gate (#679 PR0-D)
+        # - The migration replay harness is part of this full suite. Hash
+        #   partitioning assigns it to exactly one shard; a second filtered
+        #   invocation would duplicate 34–68s of work without adding coverage.
         run: |
-          cargo nextest run --workspace --locked --features calm-server/codex-e2e -E 'binary(migration_suite) & test(/^migration_replay_harness::/)'
+          set -euo pipefail
+          partition_args=()
+          partition_total="${{ github.event_name == 'pull_request' && '4' || '1' }}"
+          if [ "$partition_total" -gt 1 ]; then
+            partition_args+=(--partition "count:${{ matrix.shard }}/$partition_total")
+          fi
+          scripts/run-ci-rust-nextest.sh \
+            "${{ runner.environment }}" "${partition_args[@]}"
 
       # #903 — per-test timing (junit.xml, written by the ci nextest profile),
       # the input for the Slice C timing analysis.
@@ -599,10 +587,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nextest-junit
+          name: nextest-junit-${{ matrix.shard }}-of-${{ github.event_name == 'pull_request' && '4' || '1' }}
           path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+  # Preserve the required status-check name while the worker job is a matrix.
+  # This job performs no checkout and is the single branch-protection verdict.
+  rust:
+    name: rust (test)
+    needs: [changes, rust-shards]
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: require every Rust test shard to pass
+        env:
+          SHARD_RESULT: ${{ needs.rust-shards.result }}
+        run: |
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "::error::Rust test shards finished with: $SHARD_RESULT"
+            exit 1
+          fi
 
   # #903 — the `web (build + test + a11y)` job split into a parallel pair
   # (this `web-unit` + `a11y` below) to kill the serial bottleneck: vitest
