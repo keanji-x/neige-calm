@@ -46,6 +46,16 @@
 //! | 5 | `effective_config_for_spawn` treats a missing row as an error (`Ok(None) => Object(default)` → `Ok(None) => return Err(…)`) | `a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults` — **1 of 101 red** | `a row-less plugin must be judged as configuring nothing, not as unreadable: could not read stored configuration: mutation: no stored row`. This row is the one the previous revision **under-reported**: `boot` seeded a `plugins` row for every case, so the `Ok(None)` arm was unreached and this mutation left the whole table green. `boot_without_stored_row` is what closes it |
 //! | 6 | the repo-error exit skips the live entry (`publish_unavailable_under(…)` → plain `drop(guard)`, error unchanged) | `an_unreadable_config_store_refuses_the_spawn_and_says_so` — **1 of 101 red** | `the failure must be observable, not a plugin that looks unenabled` — `status()` is `None`. This is the S2 review's P2-1 in one line: the mutation *is* the code as it stood, a bare `?` on this branch, and it goes red on exactly the assertion row 3 uses to reject `Crashed`. The 503 and the message text survive the mutation untouched, which is why the wire error alone was never a sufficient assertion either |
 //!
+//! **Where rows 2–6 now live (S3a review P1).** The `required` verdict, the
+//! `Unavailable` publication and the repo-error exit were `spawn_admitted`'s
+//! own lines when this table was written; the S3a rework moved them into
+//! `PluginHost::config_for_spawn_or_unavailable`, which the `cli-query` path
+//! now calls as well. The mutations are the same edits at a different address,
+//! and each one is now visible from BOTH suites — re-run over the union set,
+//! with the cross-kind reds recorded, in `connector_host.rs`'s table (rows 5,
+//! 8, 9, 10). Nothing in this file's counts changed; they are simply no longer
+//! the whole red set for those rows.
+//!
 //! Not mutation-testable, stated instead: removing `#[derive(Default)]` from
 //! `InitializeMeta` (S2 review P3) is a compile-time guard. Its witness is
 //! that `InitializeMeta { expected_echo: Some(t), ..Default::default() }` — a

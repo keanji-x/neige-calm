@@ -13,9 +13,10 @@ use super::super::child_process::{
     SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
 };
 use super::super::connector;
-use super::super::manifest::CliQueryBlock;
-use super::{CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET};
+use super::super::manifest::{ArgvSlot, CliQueryBlock, argv_slot};
+use super::{CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET, config_scalar};
 use crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS;
+use serde_json::{Map, Value};
 
 /// Is `key` a forge credential passthrough key — i.e. one this connector may
 /// never receive from the service environment (design §4 acceptance #4)?
@@ -43,11 +44,21 @@ fn is_forge_credential_key(key: &str) -> bool {
 /// `Err` is an operator-facing reason string; the caller renders it as
 /// `Unavailable{reason}` (503). Nothing here logs or returns a secret VALUE.
 ///
+/// `effective` is the plugin's effective configuration (`defaults ⊕
+/// user_config`, via `plugin_host::config::effective_config` — this module does
+/// not compose it, it consumes it). It is read here and cached in the runtime,
+/// which is the §2.4 contract in code: the child environment and the argv
+/// configuration slots are built ONCE per bring-up, so a configuration change
+/// reaches a `cli-query` connector only through a restart. There is deliberately
+/// no hot-reload path — an inconsistently half-updated environment is worse than
+/// a stale consistent one.
+///
 /// The caller bounds this whole future with [`CLI_QUERY_BRINGUP_BUDGET`].
 pub async fn bring_up(
     plugin_id: &str,
     block: &CliQueryBlock,
     install_path: &Path,
+    effective: &Map<String, Value>,
 ) -> Result<CliQueryRuntime, String> {
     // `std::env::vars()` PANICS on a non-UTF-8 variable. One latin-1 entry in
     // the service environment would turn every `cli-query` enable into a panic
@@ -83,12 +94,20 @@ pub async fn bring_up(
         .unwrap_or_default();
     let secrets_path = install_path.join(connector::SECRETS_FILENAME);
 
+    // Flatten the effective configuration once, and fail the bring-up rather
+    // than the call if a value cannot be carried: both consumers below (the
+    // child environment and the argv slots) need the same string for the same
+    // key, so producing it twice would be two chances to disagree.
+    let config = flatten_config(effective)?;
+    refuse_unfillable_argv_config_slots(block, &config)?;
+
     let env = build_child_env(
         block,
         &secrets,
         &service_env,
         &path_value,
         &secrets_path.display().to_string(),
+        &config,
     )?;
 
     // The probe runs with the BASE environment only — no `env_allow`, no
@@ -118,9 +137,80 @@ pub async fn bring_up(
         fingerprint,
         env,
         tools,
+        config,
         timeout: Duration::from_millis(block.timeout_ms()),
         max_output_bytes: block.max_output_bytes(),
     })
+}
+
+/// Refuse the bring-up when a declared `{{config.<key>}}` argv slot has no
+/// value in force (#1284 S3a review P2-3).
+///
+/// **Why this is NOT the same decision `config_env` makes.** For an env key,
+/// "no value" is a representable state: the key is simply absent from the child
+/// environment, the child sees what it would have seen before the manifest
+/// named it, and `config_schema.required` is where an author says a key is
+/// mandatory. For an argv slot there is no such state — an argv element must
+/// render to exactly one string, and the alternatives are all worse than a
+/// refusal: an empty element is a real (empty) argument, and dropping the
+/// element silently rewrites the command line. So the only thing left is the
+/// per-call `invalid_params` that `render_argv` already returns, and by then
+/// the connector is published `Running`.
+///
+/// Which makes an unfillable slot exactly the anti-pattern `probe_fingerprint`
+/// already refuses one field over: "resolve, enable, publish as `Running`, and
+/// then fail every single call". A manifest that declares `{{config.endpoint}}`
+/// with neither a `default` nor an entry in `config_schema.required` is
+/// otherwise a connector that comes up green and answers every `tools/call`
+/// with `invalid_params` — a state the operator can only diagnose by making a
+/// call. `Err` here, so they learn at enable time, with the same
+/// `unavailable` + `last_error` every other bring-up refusal uses.
+///
+/// This does not duplicate `Manifest::validate`, which checks that the slot
+/// names a **declared** `config_schema` property (a static, author-time fact).
+/// Whether that property has a VALUE is an operator-time fact and only the
+/// effective configuration knows it.
+fn refuse_unfillable_argv_config_slots(
+    block: &CliQueryBlock,
+    config: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    for tool in &block.tools {
+        for raw in &tool.args {
+            let Some(ArgvSlot::Config(key)) = argv_slot(raw) else {
+                continue;
+            };
+            if !config.contains_key(key) {
+                return Err(format!(
+                    "tool `{}`: the argv template `{raw}` has no value to render — \
+                     `{key}` is declared by this manifest's `config_schema` but is \
+                     supplied by neither a `default` nor the operator's \
+                     configuration. An argv element must be exactly one string, so \
+                     this connector would come up and then fail every `{}` call. \
+                     Set `{key}` (or give it a `default`, or list it in \
+                     `config_schema.required`) and start the plugin again",
+                    tool.name, tool.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The effective configuration, flattened to the strings a child can carry.
+///
+/// A key whose value is absent-as-`null` simply does not appear, which is the
+/// same "no value" the merge itself already means; anything the subset cannot
+/// declare is a refusal (see [`config_scalar`]).
+pub(super) fn flatten_config(
+    effective: &Map<String, Value>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in effective {
+        if let Some(s) = config_scalar(key, value)? {
+            out.insert(key.clone(), s);
+        }
+    }
+    Ok(out)
 }
 
 /// The PATH the child gets: `search_path_extra` **first**, then the service
@@ -253,8 +343,35 @@ fn is_executable_file(path: &Path) -> bool {
 ///    corresponding secret is a **bring-up failure**: silently omitting it would
 ///    hand the child a half-authenticated environment and turn a configuration
 ///    mistake into a per-call auth error nobody can trace;
-/// 4. `PATH` re-asserted last, so neither `env_allow` nor `secret_env` can
-///    revert the per-connector search path this connector was pinned against.
+/// 4. `config_env` keys, valued from the plugin's effective configuration
+///    (#1284 §2.3(b)). An entry names both the env key and the `config_schema`
+///    property it draws from — the manifest owns the KEY, the operator owns
+///    only the VALUE, so no configuration write can introduce an environment
+///    variable the author did not declare. A declared key with no value in
+///    force is simply **not forwarded**, like an absent `env_allow` key and
+///    unlike a missing `secret_env` one: the manifest already had its chance to
+///    make the key mandatory by listing it in `config_schema.required`, and
+///    `missing_required` refuses the bring-up before this function runs.
+///    Position relative to `env_allow` and `secret_env` is not load-bearing —
+///    `validate` refuses a manifest whose three env sources name the same
+///    target — but keeping the order documented is cheaper than re-deriving
+///    that each time;
+/// 5. `PATH` re-asserted last, so none of the three sources can revert the
+///    per-connector search path this connector was pinned against.
+///
+/// **"Order carries no semantics" is true only between the three manifest
+/// sources** (S3a review P3). It is false in the two directions that bracket
+/// them, and both are deliberate:
+///
+/// * against step 5 — `PATH` is re-asserted AFTER all three, so a manifest that
+///   names `PATH` in `env_allow`/`secret_env`/`config_env` cannot move the
+///   child off the search path the command was pinned against. That is the
+///   whole point of putting it last;
+/// * against step 1 — `HOME` and `LANG` come from [`base_child_env`] and any of
+///   the three sources may overwrite them. `secret_env` can do this today, so
+///   `config_env` is not a new face on it, and there is nothing to fix: an
+///   operator who configures `HOME` for a connector means it. But it is not the
+///   "no semantics" case either, so it is written down rather than implied.
 ///
 /// No forge credential reaches this map, and step 2 is **fail-closed** about
 /// it: a key in [`FORGE_CREDENTIAL_ENV_KEYS`] is dropped even though the
@@ -268,6 +385,7 @@ pub(super) fn build_child_env(
     service_env: &BTreeMap<String, String>,
     path_value: &str,
     secrets_path: &str,
+    config: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut env = base_child_env(service_env, path_value);
     for key in &block.env_allow {
@@ -298,6 +416,12 @@ pub(super) fn build_child_env(
             format!("cli_query.secret_env names `{key}`, which is absent from {secrets_path}")
         })?;
         env.insert(key.clone(), value.clone());
+    }
+    // #1284 §2.3(b) — configuration VALUES into manifest-declared KEYS.
+    for key in &block.config_env {
+        if let Some(value) = config.get(key) {
+            env.insert(key.clone(), value.clone());
+        }
     }
     env.insert("PATH".to_string(), path_value.to_string());
     Ok(env)

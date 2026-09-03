@@ -474,6 +474,12 @@ fn write_app_plugin(plugins_dir: &Path, id: &str) -> PathBuf {
 
 struct Boot {
     repo: Arc<dyn Repo>,
+    /// The same store as [`Self::repo`], typed, so a test can reach past the
+    /// `Repo` trait and break it on purpose — see
+    /// `a_cli_connector_whose_config_store_is_unreadable_lands_unavailable`.
+    /// `sqlite::memory:` maps to a NAMED shared-cache database, so DDL issued
+    /// through this pool is visible to every connection the host uses.
+    sqlx: Arc<SqlxRepo>,
     plugins_dir: PathBuf,
     plugins_data_dir: PathBuf,
     events: EventBus,
@@ -486,13 +492,15 @@ async fn boot() -> Boot {
     let plugins_data_dir = tmp.path().join("plugins-data");
     std::fs::create_dir_all(&plugins_dir).unwrap();
     std::fs::create_dir_all(&plugins_data_dir).unwrap();
-    let repo: Arc<dyn Repo> = Arc::new(
+    let sqlx = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
             .expect("in-memory sqlite"),
     );
+    let repo: Arc<dyn Repo> = sqlx.clone();
     Boot {
         repo,
+        sqlx,
         plugins_dir,
         plugins_data_dir,
         events: EventBus::new(),
@@ -3296,4 +3304,375 @@ async fn seed_row(b: &Boot, id: &str) {
         })
         .await
         .expect("seed plugin row");
+}
+
+// ===========================================================================
+// #1284 S3a — configuration actually reaches a `cli-query` connector.
+//
+// The carrier is a real connector: a script the test writes, installed and
+// enabled through the real routes, configured through the real
+// `PATCH /api/plugins/{id}/config`, and called through the real
+// `tools_call`. The script echoes its argv and its environment, so what is
+// asserted is what the CHILD received — not what the kernel intended.
+//
+// Mutation witness table. Every row below was applied to THIS tree, run,
+// observed, and restored (the tree was committed first; restore is
+// `git checkout -- <file>` against that commit, never against uncommitted
+// work). The red column is the OBSERVED set, not the intended one, and where a
+// row is NOT orthogonal that is written down rather than smoothed over.
+//
+// **Selection set.** Every count below is from one and the same set —
+// `test(connector_host) or test(cli_query) or test(manifest) or
+// test(plugin_host::config) or test(plugin_config_delivery) or
+// test(plugin_routes) or test(plugin_lifecycle_lock) or test(plugin_host_smoke)`,
+// **301 tests, all green unmutated**, `--no-fail-fast`.
+//
+// The set is WIDER than the one the pre-rework revision of this table used
+// (S3a's own four predicates, 211 tests over the merged tree). It has to be:
+// the rework merged S2's `app` config gate and S3a's `cli-query` one into a
+// single carrier (`PluginHost::config_for_spawn_or_unavailable`), so a mutation
+// on that carrier is now visible from BOTH slices' suites, and a count taken
+// over only one of them would under-report by construction — see rows 5, 6 and
+// 8, each of which goes red in `plugin_config_delivery` as well. The union with
+// S2's own 101-test set is what makes the two tables' rows comparable.
+//
+// **300 → 301, and no red column moved.** The S3a review's P1 fix split
+// `cli_query::tests::path_cannot_be_overridden_by_allow_or_secrets` into
+// `..._by_env_allow` and `..._by_secret_env` (the combined fixture declared
+// `PATH` in both sources, which §2.3(b)'s duplicate-target rule now refuses —
+// it only stayed green because that fixture never calls `validate`). That is
+// one test becoming two, and the denominator is the re-run count: `301 tests
+// run: 301 passed`. The rows below were NOT re-run for it, and do not need to
+// be: the pre-split test appears in no row's red column, both halves assert
+// only that the pinned PATH survives, and no mutation in this table touches
+// PATH construction — so the split adds a green test to every row and moves no
+// red set. Any row whose mutation DOES reach `build_child_env`'s PATH pinning
+// must be re-run rather than reasoned about this way.
+//
+// | # | mutation | red test | red assertion |
+// |---|---|---|---|
+// | 1 | `render_argv`'s `ArgvSlot::Config` arm resolves against `arguments` under the BARE key instead of against `config` | five of 301: `plugin_host::cli_query::tests::{a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot, an_agent_argument_cannot_displace_a_configuration_slot, an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call}`, `connector_host::{cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it, a_manifest_default_reaches_the_child_without_any_operator_write}` | the sharpest one is row 6's test: ``a configuration slot with no configured value must be refused, never back-filled from the agent's arguments: ["quote", "--url", "https://attacker.example"]``. Not orthogonal by construction — one arm feeds every configuration slot in the slice, and the two bring-up tests reach it through their positive-control legs. **Still the weaker of the two namespace rows** for the §4.4 claim: it shows the config arm no longer reading configuration; row 1b shows what an attacker gains. **4 → 5 is a swap, not an addition**: the pre-rework table's `a_configuration_slot_with_no_value_is_refused_by_name` no longer goes red (it asserts only the key name and the "restart" wording, both of which survive this mutation), and TWO tests entered — `a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot` (new in this slice, row 6) and `an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call` (row 7's test, which reaches this arm through its positive-control leg) |
+// | 1b | restore **F18's runtime half**: the `Config` slot resolves from `arguments` under its raw, prefixed name (`config.endpoint`). Parse-time classification is left INTACT on purpose — this row is about the runtime harm, and the true pre-slice shape additionally required the tool to declare `config.endpoint` in `input_schema` to pass the old validator, which this fixture does not do (row 3 is the parse-time half's own witness) | the same five of 301 | `an_agent_argument_cannot_displace_a_configuration_slot`: `left: ["quote", "700.HK", "--url", "https://attacker.example"] / right: [.., "https://operator.example"]`; and end to end, `cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it`: `left: "arg:quote\narg:700.HK\narg:--url\narg:https://attacker.example\nenv:LB_ACCOUNT=acct-42\n"`. **This is the §4.4 witness**: under the pre-slice runtime one `tools/call` reaches the child with the agent's endpoint in the operator's slot |
+// | 2 | delete the `config_env` injection loop from `build_child_env` | three of 301: `plugin_host::cli_query::tests::{config_env_carries_the_operators_value_into_a_manifest_declared_key, a_configuration_key_the_manifest_did_not_declare_reaches_the_child_under_no_name}` and `connector_host::cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it` | `left: None / right: Some("acct-42")` (twice), and end to end `left: "…\nenv:LB_ACCOUNT=<unset>\n" / right: "…\nenv:LB_ACCOUNT=acct-42\n"`. Not orthogonal: the two unit tests are the positive and negative halves of one loop, and the integration test asserts the same key through the real routes |
+// | 3 | drop the `config.`-prefix refusal on `input_schema` properties from `CliQueryTool::validate` | exactly one of 301: `plugin_host::manifest::connector_kind_tests::an_input_schema_property_may_not_claim_the_config_namespace` | "a tool must not declare an input property in the config namespace" — `Manifest::parse` returns `Ok` for a tool declaring `input_schema.properties["config.endpoint"]`. Orthogonal: every runtime row stays green, which is the point — the parse-time half is what makes the collision unrepresentable, and it needs a witness the runtime cannot supply |
+// | 4 | drop the `env_allow` / `secret_env` / `config_env` duplicate-target refusal | exactly one of 301: `plugin_host::manifest::connector_kind_tests::the_three_env_sources_may_not_name_the_same_target_key` | "config_env ∩ secret_env must be refused" — a manifest naming `LB_TOKEN` in both parses `Ok` |
+// | 5 | drop the consumption-time `missing_required` refusal from the SHARED gate (`config_for_spawn_or_unavailable`) | three of 301: `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable`, `plugin_config_delivery::{a_plugin_missing_a_required_key_does_not_come_up, a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults}` | "a connector missing required configuration must not come up: ()" and "a plugin missing a required key must not start: ()" — `spawn` returns `Ok(())` for both kinds. **This row is what the dedup bought, made visible**: pre-rework the same mutation had to be applied twice, in two files, to produce these three reds; it is now one edit, and a fix or a regression on either path is a fix or a regression on both |
+// | 6 | **the "no fallback" core claim** (S3a review P2-2): the `Config` arm falls back to `arguments` on a miss — `config.get(key).or_else(\|\| arguments.get(key))`, the implementation `render_argv`'s own doc says is refused | exactly one of 301: `plugin_host::cli_query::tests::a_bare_argument_may_not_back_fill_an_unconfigured_configuration_slot` | ``a configuration slot with no configured value must be refused, never back-filled from the agent's arguments: ["quote", "--url", "https://attacker.example"]`` — the agent's value in the operator's argv element. **This row is why the test exists.** Before it, this mutation left all 301 green: every existing negative fed `config.endpoint` (prefixed, which the fallback never reads) or an `arguments` object with no bare key at all, so the fallback was unreachable from the suite. The claim was true of the code and unfalsifiable by the tests |
+// | 7 | delete the argv-slot existence check at bring-up (`refuse_unfillable_argv_config_slots`, S3a review P2-3) | exactly one of 301: `plugin_host::cli_query::tests::an_argv_configuration_slot_with_no_value_fails_bring_up_not_every_call` | "an unfillable argv slot must not come up as Running" — `bring_up` returns `Ok` for a manifest declaring `{{config.endpoint}}` with no `default` and no `required` entry, i.e. the connector publishes `Running` and answers every `tools/call` with `invalid_params`. Orthogonal to row 2, which is the deliberate env-side asymmetry: `a_config_env_key_with_no_value_in_force_is_absent_rather_than_a_failure` stays green |
+// | 8 | the shared gate's DB-failure exit stops publishing (`publish_unavailable_under(…)` → plain `drop(guard)`, error unchanged) | two of 301: `connector_host::a_cli_connector_whose_config_store_is_unreadable_lands_unavailable`, `plugin_config_delivery::an_unreadable_config_store_refuses_the_spawn_and_says_so` | "the failure must be observable, not a connector that looks unenabled" / "… not a plugin that looks unenabled" — `status()` is `None` for both kinds. **The mutation reproduces the guard half of the code as `spawn_cli_query` shipped it** — a bare `?` on `plugin_get_by_id`, i.e. the guard dropped un-disarmed with nothing published. It is not the shipped shape in full: the shipped `?` also returned `BadState` (500), while this mutation leaves `ConfigUnreadable` (503) in place, so that half is not reproduced here (row 9 is the error-type half's own witness). What the row proves is the publication half, which is S3a review P2-1: S2 had already closed this hole on the `app` path and the parallel slice reopened it one kind over. The 503 and the message text survive the mutation untouched, which is why the wire error alone was never a sufficient assertion |
+// | 9 | the shared gate's missing-required exit returns `ConnectorUnavailable` instead of `MissingRequiredConfig` — i.e. the two paths' error types diverge again (S3a review P1-1) | exactly one of 301: `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable` | ``got ConnectorUnavailable { plugin_id: "cli-configured", reason: "missing required configuration: LB_ACCOUNT. …" }``. Note what does NOT go red: the wire answer is 503 either way (`spawn_error_to_calm` maps both), so no route test can see this — which is exactly how one failure class came to have two types and nothing complained |
+// | 10 | `missing_required_reason` drops the operator instruction and returns the bare list — the S3a wording, restored (S3a review P1-2) | two of 301: `plugin_host::config::tests::the_missing_required_reason_names_the_keys_and_the_next_step`, `connector_host::a_cli_connector_missing_required_configuration_lands_unavailable` | `left: "missing required configuration: LB_ACCOUNT" / right: "missing required configuration: LB_ACCOUNT. Set it under Settings › Plugins, then start the plugin again."`. `plugin_config_delivery::a_plugin_missing_a_required_key_does_not_come_up` stays **green** under this mutation, and that is the finding: it asserts `contains`, so it could never have caught the two paths saying different things. The exact-equality assertion in this file is what pins the shared sentence |
+// | 11 | `config_scalar` stops refusing an interior NUL (S3a review P3) | exactly one of 301: `plugin_host::cli_query::tests::a_nul_in_a_configured_value_is_refused_by_key_not_at_exec_time` | ``a NUL cannot reach argv or env: {"endpoint": "https://a.example\0evil"}`` — `flatten_config` returns `Ok`, and the failure moves to `Command`'s `CString` conversion, where the error names the program instead of the configuration key |
+// ===========================================================================
+
+const CLI_CONFIG_ID: &str = "cli-configured";
+
+/// Install a `cli-query` connector that consumes configuration two ways: an
+/// argv slot (`{{config.endpoint}}`) and an env key (`config_env`).
+///
+/// `required` decides the manifest version: §2.1's conditional bump means a
+/// schema that can lose something on rollback must declare 3, and one that
+/// cannot stays at 2.
+fn write_configured_cli_connector(plugins_dir: &Path, command: &str, required: bool) -> PathBuf {
+    let dir = plugins_dir.join(CLI_CONFIG_ID);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config_schema = json!({
+        "type": "object",
+        "properties": {
+            "endpoint": { "type": "string", "default": "https://default.example" },
+            "LB_ACCOUNT": { "type": "string" }
+        },
+        "additionalProperties": false
+    });
+    if required {
+        config_schema["required"] = json!(["LB_ACCOUNT"]);
+    }
+    std::fs::write(
+        dir.join("manifest.json"),
+        json!({
+            "manifest_version": if required { 3 } else { 2 },
+            "kind": "cli-query",
+            "id": CLI_CONFIG_ID,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Configured",
+            "config_schema": config_schema,
+            "cli_query": {
+                "command": command,
+                "timeout_ms": 5_000,
+                "config_env": ["LB_ACCOUNT"],
+                "tools": [{
+                    "name": CLI_TOOL,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": { "symbol": { "type": "string" } },
+                        "required": ["symbol"],
+                        "additionalProperties": false
+                    },
+                    "args": ["quote", "{{symbol}}", "--url", "{{config.endpoint}}"]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    dir
+}
+
+async fn patch_json(state: &AppState, path: &str, body: Value) -> (StatusCode, Value) {
+    let resp = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// §4.4 end to end, on a real connector.
+///
+/// **The pair is the point.** One `tools/call` supplies an argument named
+/// exactly `config.endpoint`; the child must receive the OPERATOR's endpoint
+/// (positive) and must not receive the agent's anywhere in its argv
+/// (negative). Either half alone is satisfiable by an implementation that
+/// merges the two sources and happens to order them the tested way.
+#[tokio::test]
+async fn cli_query_configuration_fills_argv_and_env_and_an_agent_cannot_displace_it() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    // Echo every argv element and the one configured env key, so the
+    // assertions are about what the CHILD got.
+    let script = write_script(
+        bin.path(),
+        "argv-env.sh",
+        "#!/bin/sh\nfor a in \"$@\"; do echo \"arg:$a\"; done\necho \"env:LB_ACCOUNT=${LB_ACCOUNT-<unset>}\"\n",
+    );
+    let dir = write_configured_cli_connector(&b.plugins_dir, &script.display().to_string(), false);
+
+    let host = b.host();
+    let state = b.state(Arc::clone(&host));
+    let (status, body) = post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "install failed: {body}");
+
+    // The operator writes configuration through the real write path.
+    let (status, body) = patch_json(
+        &state,
+        &format!("/api/plugins/{CLI_CONFIG_ID}/config"),
+        json!({ "endpoint": "https://operator.example", "LB_ACCOUNT": "acct-42" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "config write failed: {body}");
+
+    let (status, body) = post_json(
+        &state,
+        &format!("/api/plugins/{CLI_CONFIG_ID}/enable"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "enable failed: {body}");
+
+    let client = state
+        .plugin
+        .connector_client(CLI_CONFIG_ID)
+        .await
+        .expect("running connector must expose a client");
+    let ConnectorClient::Cli(cli) = &client else {
+        panic!("expected a Cli client, got {client:?}");
+    };
+
+    let res = cli
+        .tools_call(
+            CLI_TOOL,
+            // The attack: an argument named exactly like the config slot.
+            json!({ "symbol": "700.HK", "config.endpoint": "https://attacker.example" }),
+        )
+        .await
+        .expect("tools/call");
+    assert_eq!(res.is_error, Some(false));
+    let text = res.content[0].text.clone().unwrap();
+    assert_eq!(
+        text,
+        "arg:quote\narg:700.HK\narg:--url\narg:https://operator.example\n\
+         env:LB_ACCOUNT=acct-42\n",
+        "the config slot must carry the operator's value, the config_env key must \
+         reach the child, and the agent's `config.endpoint` argument must land nowhere"
+    );
+    assert!(
+        !text.contains("attacker"),
+        "an agent-supplied `config.*` argument reached the child: {text}"
+    );
+}
+
+/// §2.2.4 through the whole chain: a manifest `default` is what the child
+/// runs with when the operator has set nothing — and it is delivered by the
+/// kernel at bring-up, not written into the DB. Without this the slice would
+/// be satisfiable only for keys someone remembered to Save.
+#[tokio::test]
+async fn a_manifest_default_reaches_the_child_without_any_operator_write() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(
+        bin.path(),
+        "argv.sh",
+        "#!/bin/sh\nfor a in \"$@\"; do echo \"arg:$a\"; done\n",
+    );
+    write_configured_cli_connector(&b.plugins_dir, &script.display().to_string(), false);
+    let host = b.host();
+    seed_row(&b, CLI_CONFIG_ID).await;
+    host.spawn(CLI_CONFIG_ID).await.expect("connector spawns");
+
+    let client = host.connector_client(CLI_CONFIG_ID).await.expect("client");
+    let ConnectorClient::Cli(cli) = &client else {
+        panic!("expected a Cli client, got {client:?}");
+    };
+    let res = cli
+        .tools_call(CLI_TOOL, json!({ "symbol": "X" }))
+        .await
+        .expect("tools/call");
+    let text = res.content[0].text.clone().unwrap();
+    assert_eq!(
+        text, "arg:quote\narg:X\narg:--url\narg:https://default.example\n",
+        "the manifest default must be in force with no operator write"
+    );
+
+    // …and the DB still records that the operator chose nothing (§2.2.4).
+    let row = b
+        .repo
+        .plugin_get_by_id(CLI_CONFIG_ID)
+        .await
+        .unwrap()
+        .expect("row");
+    assert_eq!(row.user_config, json!({}), "defaults must not be persisted");
+}
+
+/// §2.2 v6 + §2.4: `required` is enforced at CONSUMPTION, and a connector that
+/// is missing it does not come up — it lands in the `unavailable` +
+/// `last_error` terminal state, naming the keys.
+#[tokio::test]
+async fn a_cli_connector_missing_required_configuration_lands_unavailable() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "ok.sh", "#!/bin/sh\necho ok\n");
+    write_configured_cli_connector(&b.plugins_dir, &script.display().to_string(), true);
+    let host = b.host();
+    seed_row(&b, CLI_CONFIG_ID).await;
+
+    let err = host
+        .spawn(CLI_CONFIG_ID)
+        .await
+        .expect_err("a connector missing required configuration must not come up");
+    // S3a review P1-1: the SAME variant the `app` path raises for the same
+    // failure class, because it is now the same code raising it. It used to be
+    // `ConnectorUnavailable` here and `MissingRequiredConfig` there — one
+    // failure with two types, which is what a second copy of a decision buys.
+    assert!(
+        matches!(err, HostError::MissingRequiredConfig { .. }),
+        "got {err:?}"
+    );
+    let status = host.status(CLI_CONFIG_ID).await.expect("status");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("expected Unavailable, got {:?}", status.status);
+    };
+    // S3a review P1-2: the WORDING is shared too, verbatim — §2.5 renders
+    // `last_error` the same way for both kinds, so the operator must not be
+    // told two different things depending on which kind failed.
+    assert_eq!(
+        reason,
+        "missing required configuration: LB_ACCOUNT. Set it under Settings › \
+         Plugins, then start the plugin again.",
+        "the reason must be `config::missing_required_reason`'s, verbatim"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
+
+    // The same connector comes up once the operator supplies the key — so the
+    // refusal above is about the configuration, not about the fixture.
+    b.repo
+        .plugin_update_user_config(CLI_CONFIG_ID, json!({ "LB_ACCOUNT": "acct-42" }))
+        .await
+        .expect("configure");
+    let host = b.host();
+    host.spawn(CLI_CONFIG_ID)
+        .await
+        .expect("a fully configured connector comes up");
+    assert!(host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
+}
+
+/// S3a review P2-1 — the `cli-query` half of the hole S2 closed on the `app`
+/// path, which S3a had reopened by hand-rolling its own config read.
+///
+/// The break is real (`DROP TABLE plugins` through the pool the host holds) and
+/// it lands cleanly, because this read is the first time the `cli-query` spawn
+/// path touches the DB at all: the kind branch, `spawn_admission_check` and the
+/// registry lookup all run before it and consult no store.
+///
+/// Three claims, the same three
+/// `plugin_config_delivery::an_unreadable_config_store_refuses_the_spawn_and_says_so`
+/// makes for `app`, because it is now literally the same code path:
+///   1. the spawn is refused rather than proceeding on `{}` — which would hand
+///      the connector manifest defaults over an operator's real, unread values,
+///      and could make a `required` key look satisfied;
+///   2. the refusal is **observable** through `status()`. This is the assertion
+///      the old shape failed: `plugin_get_by_id(...).map_err(BadState)?` dropped
+///      the `AdmissionGuard` un-disarmed, so no live entry was inserted and no
+///      state event was emitted, and the connector read back as if it had never
+///      been enabled;
+///   3. `last_error` says the store could not be read — not that configuration
+///      is missing, which would send the operator to fix something that may be
+///      perfectly fine.
+#[tokio::test]
+async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "ok.sh", "#!/bin/sh\necho ok\n");
+    write_configured_cli_connector(&b.plugins_dir, &script.display().to_string(), false);
+    let host = b.host();
+    seed_row(&b, CLI_CONFIG_ID).await;
+
+    sqlx::query("DROP TABLE plugins")
+        .execute(b.sqlx.pool())
+        .await
+        .expect("drop the plugins table out from under the host");
+
+    let err = host
+        .spawn(CLI_CONFIG_ID)
+        .await
+        .expect_err("a spawn that cannot read stored configuration must not proceed");
+    assert!(
+        matches!(err, HostError::ConfigUnreadable { .. }),
+        "the same variant the `app` path raises for the same failure: got {err:?}"
+    );
+    assert!(
+        err.to_string()
+            .contains("could not read stored configuration"),
+        "the refusal must name the cause: {err}"
+    );
+
+    let status = host
+        .status(CLI_CONFIG_ID)
+        .await
+        .expect("the failure must be observable, not a connector that looks unenabled");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("expected Unavailable, got {:?}", status.status);
+    };
+    assert!(
+        reason.contains("could not read stored configuration"),
+        "`last_error` must say the store failed, not that configuration is \
+         missing: {reason}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CLI_CONFIG_ID));
 }
