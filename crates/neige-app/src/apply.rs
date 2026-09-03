@@ -152,6 +152,21 @@ impl From<anyhow::Error> for ApplyError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagedVerdictAction {
+    Apply,
+    Noop,
+    RejectBreaking,
+}
+
+fn staged_verdict_action(verdict: &Verdict, allow_breaking: bool) -> StagedVerdictAction {
+    match verdict {
+        Verdict::Noop => StagedVerdictAction::Noop,
+        Verdict::Breaking { .. } if !allow_breaking => StagedVerdictAction::RejectBreaking,
+        Verdict::Preserving { .. } | Verdict::Breaking { .. } => StagedVerdictAction::Apply,
+    }
+}
+
 pub(crate) async fn apply_upgrade(
     cfg: &AppConfig,
     supervisor: &Supervisor,
@@ -171,7 +186,11 @@ pub(crate) async fn apply_upgrade(
         .map(|state| state.release_id.clone());
 
     let package_dir = resolve_source_package_blocking(cfg, &source, !req.dry_run).await?;
-    let source_manifest = read_v2_manifest_blocking(&package_dir).await?;
+    let source_manifest = if req.dry_run {
+        verify_dry_run_package_blocking(&package_dir).await?
+    } else {
+        read_v2_manifest_blocking(&package_dir).await?
+    };
     let verdict = preflight::run_preflight_v2(installed_before.as_ref(), &source_manifest);
     let summary = VerdictSummary::from(&verdict);
     if req.dry_run {
@@ -239,8 +258,51 @@ pub(crate) async fn apply_upgrade(
         .clone()
         .ok_or_else(|| ApplyError::bad_request("POST /upgrade/apply requires a v2 manifest"))?;
 
+    match staged_verdict_action(&verdict, req.allow_breaking) {
+        StagedVerdictAction::Noop => {
+            discard_stage_dir_blocking(&stage.stage_dir).await?;
+            let response = response_from_parts(
+                manifest.release_id.clone(),
+                VerdictSummary::from(&verdict),
+                UpgradeResult::Committed,
+                started,
+                None,
+                source_summary,
+                installed_before_id,
+                installed_before
+                    .as_ref()
+                    .map(|state| state.release_id.clone())
+                    .unwrap_or_else(|| manifest.release_id.clone()),
+                false,
+                Vec::new(),
+                None,
+            );
+            append_release_history_best_effort(cfg, &response.release_history_entry).await;
+            return Ok(response);
+        }
+        StagedVerdictAction::RejectBreaking => {
+            discard_stage_dir_blocking(&stage.stage_dir).await?;
+            let response = response_from_parts(
+                manifest.release_id.clone(),
+                VerdictSummary::from(&verdict),
+                UpgradeResult::Rejected,
+                started,
+                Some("breaking upgrade requires allowBreaking=true".into()),
+                source_summary,
+                installed_before_id.clone(),
+                installed_before_id.unwrap_or_default(),
+                false,
+                Vec::new(),
+                None,
+            );
+            append_release_history_best_effort(cfg, &response.release_history_entry).await;
+            return Ok(response);
+        }
+        StagedVerdictAction::Apply => {}
+    }
+
     match &verdict {
-        Verdict::Noop => unreachable!("noop is returned before staging"),
+        Verdict::Noop => unreachable!("staged noop returned above"),
         Verdict::Preserving {
             requires_db_backup, ..
         } => {
@@ -1015,6 +1077,22 @@ async fn read_v2_manifest_blocking(stage_dir: &Path) -> Result<ReleaseManifestV2
         .map_err(|err| ApplyError::internal(format!("read manifest task panicked: {err}")))?
 }
 
+/// A local-package dry-run promises zero writes, not a manifest-only check.
+/// Run the same byte-level verification staging uses before computing the
+/// verdict, but deliberately do not create the release staging directory.
+async fn verify_dry_run_package_blocking(
+    package_dir: &Path,
+) -> Result<ReleaseManifestV2, ApplyError> {
+    let package_dir = package_dir.to_path_buf();
+    let result =
+        tokio::task::spawn_blocking(move || upgrade::verify_v2_package_integrity(&package_dir))
+            .await
+            .map_err(|err| {
+                ApplyError::internal(format!("package verification task panicked: {err}"))
+            })?;
+    result.map_err(|err| ApplyError::bad_request(format!("invalid local release package: {err:#}")))
+}
+
 fn read_v2_manifest(stage_dir: &Path) -> Result<ReleaseManifestV2, ApplyError> {
     match upgrade::read_versioned_manifest(stage_dir)? {
         VersionedReleaseManifest::V2(manifest) => Ok(manifest),
@@ -1043,6 +1121,16 @@ async fn stage_upgrade_blocking(
     tokio::task::spawn_blocking(move || upgrade::stage_upgrade(&cfg, &package_dir, mode))
         .await
         .context("stage upgrade task panicked")?
+}
+
+async fn discard_stage_dir_blocking(stage_dir: &Path) -> Result<(), ApplyError> {
+    let stage_dir = stage_dir.to_path_buf();
+    let display = stage_dir.display().to_string();
+    tokio::task::spawn_blocking(move || fs::remove_dir_all(&stage_dir))
+        .await
+        .map_err(|err| ApplyError::internal(format!("discard stage task panicked: {err}")))?
+        .with_context(|| format!("discard staged release {display}"))?;
+    Ok(())
 }
 
 async fn resolve_source_package_blocking(
@@ -1417,6 +1505,9 @@ async fn write_last_upgrade_id_blocking(cfg: &AppConfig, release_id: &str) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::{Compatibility, DbMigrationPolicy, FileManifest, FileUnit, ReleaseUnit};
+    use crate::package::hash_and_measure_file;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -1444,6 +1535,178 @@ mod tests {
             calm_listen: Some("127.0.0.1:0".into()),
             persist_identity_to: None,
         }
+    }
+
+    fn local_dry_run_package(tmp: &Path) -> PathBuf {
+        let package_dir = tmp.join("package");
+        let payload_path = package_dir.join("bin").join("calm-server");
+        fs::create_dir_all(payload_path.parent().expect("payload parent"))
+            .expect("create package bin");
+        fs::write(&payload_path, "verified payload").expect("write package payload");
+        let (sha256, bytes) = hash_and_measure_file(&payload_path).expect("hash payload");
+        let manifest = ReleaseManifestV2 {
+            schema_version: 2,
+            release_id: "rel-dry-run".into(),
+            product_major: 1,
+            compatibility: Compatibility {
+                terminal_frame_version: 4,
+                terminal_protocol_version: 4,
+                api_version: "3".into(),
+                sync_event_version: 15,
+                mcp_protocol_version: "2024-11-05".into(),
+                plugin_mcp_protocol_version: "2025-11-25".into(),
+                web_compat_version: 20,
+                min_web_compat_version: 20,
+                supervisor_control_version: 1,
+            },
+            units: [(
+                UnitName::CalmServer,
+                ReleaseUnit {
+                    version: "0.1.0".into(),
+                    binary_sha256: Some(sha256.clone()),
+                    tree_sha256: None,
+                    restart_policy: RestartPolicy::RestartViaAdminApi,
+                    db_migration_policy: Some(DbMigrationPolicy::ForwardOnly),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            files: vec![FileManifest {
+                path: "bin/calm-server".into(),
+                sha256,
+                bytes,
+                unit: FileUnit::CalmServer,
+            }],
+        };
+        fs::write(
+            package_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+        package_dir
+    }
+
+    fn local_dry_run_request(package_dir: &Path) -> UpgradeRequest {
+        serde_json::from_value(serde_json::json!({
+            "source": { "url": package_dir },
+            "dryRun": true
+        }))
+        .expect("dry-run request")
+    }
+
+    fn dry_run_fixture(tmp: &Path) -> (AppConfig, Arc<Supervisor>, Arc<Supervisor>) {
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.child.data_dir = Some(tmp.join("data"));
+        let supervisor = Supervisor::new(supervisor_config(Vec::new(), Vec::new()));
+        let proc_supervisor = Supervisor::new(supervisor_config(Vec::new(), Vec::new()));
+        (cfg, supervisor, proc_supervisor)
+    }
+
+    fn assert_dry_run_left_no_state(cfg: &AppConfig) {
+        assert!(!cfg.release.root.exists(), "dry-run created release state");
+        assert!(
+            !cfg.calm_data_dir_resolved().exists(),
+            "dry-run created installed/history state"
+        );
+    }
+
+    #[test]
+    fn staged_verdict_rechecks_breaking_opt_in_and_handles_noop() {
+        let breaking = Verdict::Breaking {
+            reason: BreakingReason::ProductMajorChanged,
+            units_changed: vec![UnitName::CalmServer],
+        };
+        assert_eq!(
+            staged_verdict_action(&breaking, false),
+            StagedVerdictAction::RejectBreaking
+        );
+        assert_eq!(
+            staged_verdict_action(&breaking, true),
+            StagedVerdictAction::Apply
+        );
+        assert_eq!(
+            staged_verdict_action(&Verdict::Noop, false),
+            StagedVerdictAction::Noop
+        );
+        assert_eq!(
+            staged_verdict_action(
+                &Verdict::Preserving {
+                    units_changed: Vec::new(),
+                    deferred: Vec::new(),
+                    refresh_frontend: false,
+                    requires_db_backup: false,
+                },
+                false,
+            ),
+            StagedVerdictAction::Apply
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_stage_removes_only_the_staged_snapshot() {
+        let tmp = test_temp_dir("discard-stage");
+        let stage = tmp.join("releases").join("staged").join("rel-raced");
+        fs::create_dir_all(&stage).expect("create stage");
+        fs::write(stage.join("manifest.json"), "staged").expect("write staged file");
+
+        discard_stage_dir_blocking(&stage)
+            .await
+            .expect("discard staged snapshot");
+
+        assert!(!stage.exists());
+        assert!(
+            tmp.exists(),
+            "discard removed more than the staged snapshot"
+        );
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[tokio::test]
+    async fn local_package_dry_run_verifies_bytes_without_writing_state() {
+        let tmp = test_temp_dir("dry-run-valid-package");
+        let package_dir = local_dry_run_package(&tmp);
+        let (cfg, supervisor, proc_supervisor) = dry_run_fixture(&tmp);
+
+        let response = apply_upgrade(
+            &cfg,
+            &supervisor,
+            &proc_supervisor,
+            local_dry_run_request(&package_dir),
+        )
+        .await
+        .expect("valid dry-run");
+
+        assert_eq!(response.result, UpgradeResult::DryRun);
+        assert_dry_run_left_no_state(&cfg);
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[tokio::test]
+    async fn local_package_dry_run_rejects_tampering_without_writing_state() {
+        let tmp = test_temp_dir("dry-run-tampered-package");
+        let package_dir = local_dry_run_package(&tmp);
+        fs::write(package_dir.join("bin").join("calm-server"), "tampered").expect("tamper payload");
+        let (cfg, supervisor, proc_supervisor) = dry_run_fixture(&tmp);
+
+        let error = apply_upgrade(
+            &cfg,
+            &supervisor,
+            &proc_supervisor,
+            local_dry_run_request(&package_dir),
+        )
+        .await
+        .expect_err("tampered dry-run must fail");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.code, "invalid_upgrade_request");
+        assert!(
+            error.message.contains("sha256 mismatch"),
+            "{}",
+            error.message
+        );
+        assert_dry_run_left_no_state(&cfg);
+        let _ = fs::remove_dir_all(tmp);
     }
 
     /// #956 failing-first — the healthcheck deadline must cover the child's

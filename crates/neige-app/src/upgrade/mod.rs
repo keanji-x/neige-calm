@@ -97,11 +97,65 @@ pub(crate) fn infer_package_mode(package_dir: &Path) -> anyhow::Result<Preflight
 pub(crate) fn read_versioned_manifest(
     package_dir: &Path,
 ) -> anyhow::Result<VersionedReleaseManifest> {
+    read_versioned_manifest_with_bytes(package_dir).map(|(manifest, _)| manifest)
+}
+
+fn read_versioned_manifest_with_bytes(
+    package_dir: &Path,
+) -> anyhow::Result<(VersionedReleaseManifest, Vec<u8>)> {
     let manifest_path = package_dir.join("manifest.json");
     let bytes = fs::read(&manifest_path)
         .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
-    parse_versioned_manifest(&bytes)
-        .with_context(|| format!("parse package manifest {}", manifest_path.display()))
+    let manifest = parse_versioned_manifest(&bytes)
+        .with_context(|| format!("parse package manifest {}", manifest_path.display()))?;
+    Ok((manifest, bytes))
+}
+
+/// Verify every byte-level package invariant without creating a staged copy.
+///
+/// This is the read-only half of staging. Keep the shared helper as
+/// the sole composition point so dry-run and staging cannot drift on release
+/// id validation, manifested hashes, symlink rejection, or extra files.
+pub(crate) fn verify_v2_package_integrity(
+    package_dir: &Path,
+) -> anyhow::Result<crate::manifest::ReleaseManifestV2> {
+    let (manifest, _) = read_versioned_manifest_with_bytes(package_dir)?;
+    let v2 = match &manifest {
+        VersionedReleaseManifest::V2(v2) => v2.clone(),
+        VersionedReleaseManifest::V1(_) => {
+            return Err(anyhow!(
+                "POST /upgrade/apply requires a manifest v2 package"
+            ));
+        }
+    };
+    verify_manifested_payload(package_dir, &manifest)?;
+    Ok(v2)
+}
+
+struct VerifiedPackagePayload {
+    manifest: VersionedReleaseManifest,
+    manifest_bytes: Vec<u8>,
+    paths: HashSet<String>,
+}
+
+fn verify_package_payload(package_dir: &Path) -> anyhow::Result<VerifiedPackagePayload> {
+    let (manifest, manifest_bytes) = read_versioned_manifest_with_bytes(package_dir)?;
+    let paths = verify_manifested_payload(package_dir, &manifest)?;
+    Ok(VerifiedPackagePayload {
+        manifest,
+        manifest_bytes,
+        paths,
+    })
+}
+
+fn verify_manifested_payload(
+    package_dir: &Path,
+    manifest: &VersionedReleaseManifest,
+) -> anyhow::Result<HashSet<String>> {
+    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
+    let verified_files = verify_package_hashes(package_dir, manifest)?;
+    reject_unmanifested_payload(package_dir, &verified_files)?;
+    Ok(verified_files)
 }
 
 pub(crate) fn stage_upgrade(
@@ -109,12 +163,10 @@ pub(crate) fn stage_upgrade(
     package_dir: &Path,
     mode: PreflightMode,
 ) -> anyhow::Result<UpgradeStageResult> {
-    let manifest = read_versioned_manifest(package_dir)?;
-    validate_release_id(manifest.release_id()).map_err(|err| anyhow!("{err}"))?;
-    let verified_files = verify_package_hashes(package_dir, &manifest)?;
-    reject_unmanifested_payload(package_dir, &verified_files)?;
+    let verified = verify_package_payload(package_dir)?;
+    let manifest = &verified.manifest;
 
-    let preflight = match &manifest {
+    let preflight = match manifest {
         VersionedReleaseManifest::V1(manifest) => {
             let current = current_version_for_mode(cfg, mode)?;
             preflight::run_preflight(mode, &current, manifest)
@@ -144,7 +196,13 @@ pub(crate) fn stage_upgrade(
         ));
     }
     ensure_empty_target(&stage_dir)?;
-    copy_verified_files(package_dir, &stage_dir, &verified_files)?;
+    copy_verified_files(
+        package_dir,
+        &stage_dir,
+        manifest,
+        &verified.manifest_bytes,
+        &verified.paths,
+    )?;
 
     Ok(UpgradeStageResult {
         staged: true,
@@ -767,11 +825,7 @@ fn reject_unmanifested_payload_inner(
         if metadata.is_dir() {
             reject_unmanifested_payload_inner(root, &path, manifest_paths)?;
         } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .expect("walked path must be under root")
-                .to_string_lossy()
-                .replace('\\', "/");
+            let relative = manifest_relative_path(root, &path)?;
             if relative == "manifest.json" {
                 continue;
             }
@@ -783,19 +837,33 @@ fn reject_unmanifested_payload_inner(
     Ok(())
 }
 
+fn manifest_relative_path(root: &Path, path: &Path) -> anyhow::Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .expect("walked path must be under root");
+    let relative = relative
+        .to_str()
+        .ok_or_else(|| anyhow!("package contains non-UTF-8 path {}", relative.display()))?;
+    #[cfg(windows)]
+    {
+        Ok(relative.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(relative.to_owned())
+    }
+}
+
 fn copy_verified_files(
     src: &Path,
     dst: &Path,
+    manifest: &VersionedReleaseManifest,
+    manifest_bytes: &[u8],
     manifest_paths: &HashSet<String>,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("create {}", dst.display()))?;
-    fs::copy(src.join("manifest.json"), dst.join("manifest.json")).with_context(|| {
-        format!(
-            "copy {} to {}",
-            src.join("manifest.json").display(),
-            dst.join("manifest.json").display()
-        )
-    })?;
+    fs::write(dst.join("manifest.json"), manifest_bytes)
+        .with_context(|| format!("write {}", dst.join("manifest.json").display()))?;
     for relative in manifest_paths {
         let src_path = src.join(relative);
         let dst_path = dst.join(relative);
@@ -805,6 +873,10 @@ fn copy_verified_files(
         fs::copy(&src_path, &dst_path)
             .with_context(|| format!("copy {} to {}", src_path.display(), dst_path.display()))?;
     }
+    let staged_paths = verify_package_hashes(dst, manifest)
+        .with_context(|| format!("verify staged package {}", dst.display()))?;
+    reject_unmanifested_payload(dst, &staged_paths)
+        .with_context(|| format!("verify staged package {}", dst.display()))?;
     Ok(())
 }
 

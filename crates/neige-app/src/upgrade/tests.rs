@@ -22,6 +22,76 @@ fn upgrade_stage_verifies_hash_and_copies_package() {
 }
 
 #[test]
+fn staged_copy_rejects_source_payload_changed_after_verification() {
+    let tmp = test_temp_dir("upgrade-copy-source-race");
+    let package_dir = make_v2_package(
+        &tmp,
+        "rel-source-race",
+        UnitName::CalmServer,
+        ReleaseUnit {
+            version: "0.2.0".into(),
+            binary_sha256: None,
+            tree_sha256: None,
+            restart_policy: RestartPolicy::RestartViaAdminApi,
+            db_migration_policy: Some(DbMigrationPolicy::None),
+        },
+    );
+    let verified = verify_package_payload(&package_dir).expect("verify package");
+    fs::write(
+        package_dir.join("bin").join("payload"),
+        "changed after verify",
+    )
+    .expect("replace source payload");
+    let stage_dir = tmp.join("staged-copy");
+
+    let err = copy_verified_files(
+        &package_dir,
+        &stage_dir,
+        &verified.manifest,
+        &verified.manifest_bytes,
+        &verified.paths,
+    )
+    .expect_err("staged bytes must still match the verified manifest");
+
+    assert!(format!("{err:#}").contains("sha256 mismatch"), "{err:#}");
+}
+
+#[test]
+fn staged_copy_uses_verified_manifest_snapshot() {
+    let tmp = test_temp_dir("upgrade-copy-manifest-race");
+    let package_dir = make_v2_package(
+        &tmp,
+        "rel-manifest-race",
+        UnitName::CalmServer,
+        ReleaseUnit {
+            version: "0.2.0".into(),
+            binary_sha256: None,
+            tree_sha256: None,
+            restart_policy: RestartPolicy::RestartViaAdminApi,
+            db_migration_policy: Some(DbMigrationPolicy::None),
+        },
+    );
+    let verified = verify_package_payload(&package_dir).expect("verify package");
+    fs::write(package_dir.join("manifest.json"), "replaced after verify")
+        .expect("replace source manifest");
+    let stage_dir = tmp.join("staged-copy");
+
+    copy_verified_files(
+        &package_dir,
+        &stage_dir,
+        &verified.manifest,
+        &verified.manifest_bytes,
+        &verified.paths,
+    )
+    .expect("copy verified snapshot");
+
+    assert_eq!(
+        fs::read(stage_dir.join("manifest.json")).expect("read staged manifest"),
+        verified.manifest_bytes
+    );
+}
+
+#[test]
 fn stage_web_only_reports_no_restart_required() {
     let tmp = test_temp_dir("upgrade-stage-web");
     let package_dir = make_web_package(&tmp);
@@ -727,6 +797,69 @@ fn upgrade_stage_rejects_unmanifested_extra_file() {
     let err =
         stage_upgrade(&cfg, &package_dir, PreflightMode::Bundle).expect_err("extra file must fail");
     assert!(err.to_string().contains("unmanifested file extra"));
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_stage_rejects_backslash_filename_alias_of_manifest_path() {
+    let tmp = test_temp_dir("upgrade-backslash-alias");
+    let package_dir = make_v2_package(
+        &tmp,
+        "rel-backslash-alias",
+        UnitName::CalmServer,
+        ReleaseUnit {
+            version: "0.2.0".into(),
+            binary_sha256: None,
+            tree_sha256: None,
+            restart_policy: RestartPolicy::RestartViaAdminApi,
+            db_migration_policy: Some(DbMigrationPolicy::None),
+        },
+    );
+    fs::write(package_dir.join(r"bin\payload"), "unmanifested alias")
+        .expect("write backslash filename");
+
+    let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+    cfg.release.root = tmp.join("releases");
+    let err = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly)
+        .expect_err("backslash filename must not alias a manifest separator");
+
+    assert!(
+        err.to_string().contains(r"unmanifested file bin\payload"),
+        "{err:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_stage_rejects_non_utf8_extra_path() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let tmp = test_temp_dir("upgrade-non-utf8-path");
+    let package_dir = make_v2_package(
+        &tmp,
+        "rel-non-utf8-path",
+        UnitName::CalmServer,
+        ReleaseUnit {
+            version: "0.2.0".into(),
+            binary_sha256: None,
+            tree_sha256: None,
+            restart_policy: RestartPolicy::RestartViaAdminApi,
+            db_migration_policy: Some(DbMigrationPolicy::None),
+        },
+    );
+    fs::write(
+        package_dir.join(OsString::from_vec(b"extra-\xff".to_vec())),
+        "unmanifested non-UTF-8 path",
+    )
+    .expect("write non-UTF-8 filename");
+
+    let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+    cfg.release.root = tmp.join("releases");
+    let err = stage_upgrade(&cfg, &package_dir, PreflightMode::ServerOnly)
+        .expect_err("non-UTF-8 filename must fail closed");
+
+    assert!(err.to_string().contains("non-UTF-8 path"), "{err:#}");
 }
 
 #[cfg(unix)]

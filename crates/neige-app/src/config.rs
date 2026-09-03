@@ -531,13 +531,9 @@ branch = "main"
 mode = ""
 checkout_dir = "~/.cache/neige-app/source"
 build_args = ["make", "build"]
-# Source-driven upgrades fail closed unless these are explicitly configured.
-# api_version = "1"
-# sync_event_version = 1
-# mcp_protocol_version = "2025-11-25"
-# web_compat_version = 2
-# min_web_compat_version = 2
-# db_migration_policy = "forwardOnly"
+# v2 package compatibility is probed from the freshly built calm-server.
+# DB migration policy defaults to forwardOnly; set NEIGE_DB_MIGRATION_POLICY
+# in the service build environment to override it.
 "#
 }
 
