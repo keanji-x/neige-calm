@@ -42,8 +42,11 @@ const titled: PanelRow = {
   badges: [],
   status: null,
   actions: [
-    { kind: 'open-card', cardId: 'card-1', label: null, hint: null },
-    { kind: 'delete-card', cardId: 'card-1', label: 'Delete card Build log', hint: 'Delete card' },
+    { kind: 'open-card', cardId: 'card-1', label: null, hint: null, description: null },
+    {
+      kind: 'delete-card', cardId: 'card-1', label: 'Delete card Build log',
+      hint: 'Delete card', description: null,
+    },
   ],
 };
 
@@ -56,7 +59,7 @@ const untitled: PanelRow = {
   kind: null,
   badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
   status: null,
-  actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null }],
+  actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null, description: null }],
 };
 
 const cardsModule: RowModuleView = {

@@ -638,11 +638,12 @@
   statement: >
     `track.deleted` 必须失效 area 的 track 列表 + track overlay 快照 + `['tracks-range']`，
     广播失效 `['track-report']` 前缀，并且必须 **removeQueries** 掉该 track 的 detail
-    （而不是仅 invalidate）。
+    与 `['track-report', id]`（而不是仅 invalidate）。
   why: >
     已删除的 track detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
     继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
-    所以所有打开的 task verdict 查询都必须重新读取服务端重投影结果。
+    所以仍存活的 task verdict 查询必须重新读取服务端重投影结果；删除目标自己的 report
+    endpoint 已经是 404，必须先从 cache 移除，不能被 prefix refetch 命中。
   source: fe/core/events/invalidation-plan.ts:204-211; fe/web/src/app/events/query-invalidation-adapter.ts:91-104
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:300
   owner_slice: app/events-glue/invalidation

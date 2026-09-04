@@ -400,6 +400,31 @@ fn readable_action(action: &str) -> String {
     }
 }
 
+/// Mutually exclusive relationship between a declaration verdict and the
+/// persisted task row sharing its key. Pending explanations are derived from
+/// this state, never from independent nullable status/row-presence checks.
+enum TaskVerdictRowState<'a> {
+    Absent,
+    Pending(&'a TaskReadState),
+    Owned,
+    Ambiguous,
+}
+
+fn task_verdict_row_state<'a>(
+    verdict: &BlockVerdict,
+    by_key: &BTreeMap<&str, &'a TaskReadState>,
+) -> TaskVerdictRowState<'a> {
+    match (
+        verdict.status.as_deref(),
+        by_key.get(verdict.key.as_str()).copied(),
+    ) {
+        (Some("pending"), Some(row)) => TaskVerdictRowState::Pending(row),
+        (Some(_), _) => TaskVerdictRowState::Owned,
+        (None, Some(_)) => TaskVerdictRowState::Ambiguous,
+        (None, None) => TaskVerdictRowState::Absent,
+    }
+}
+
 /// Finish the read verdict with the scheduler-facing explanation. All inputs
 /// come from `track_projection_state`'s one statement: the nullable track
 /// override, every task status, and every persisted dependency list. The only
@@ -429,59 +454,61 @@ fn attach_task_pending_reasons(
     let effective_budget = state.task_budget.unwrap_or(task_budget_default).max(0);
 
     for (index, verdict) in verdicts.iter_mut().enumerate() {
-        if verdict.status.as_deref() == Some("pending") {
-            let Some(row) = by_key.get(verdict.key.as_str()) else {
-                continue;
-            };
-            let dependencies: Vec<String> = row
-                .depends_on
-                .iter()
-                .filter(|dependency| !done.contains(dependency.as_str()))
-                .cloned()
-                .collect();
-            if !dependencies.is_empty() {
-                let terminal_dependencies: Vec<_> = dependencies
+        match task_verdict_row_state(verdict, &by_key) {
+            TaskVerdictRowState::Pending(row) => {
+                let mut seen_dependencies = BTreeSet::new();
+                let dependencies: Vec<String> = row
+                    .depends_on
                     .iter()
-                    .filter_map(|dependency| {
-                        let status = by_key.get(dependency.as_str())?.status.as_str();
-                        matches!(status, "failed" | "canceled")
-                            .then_some((dependency.as_str(), status))
+                    .filter(|dependency| {
+                        !done.contains(dependency.as_str())
+                            && seen_dependencies.insert(dependency.as_str())
                     })
+                    .cloned()
                     .collect();
-                let message = match terminal_dependencies.as_slice() {
-                    [] => match dependencies.as_slice() {
-                        [dependency] => format!("Waiting for `{dependency}`"),
-                        many => format!("Waiting for {} dependencies", many.len()),
-                    },
-                    [(dependency, status)] => {
-                        format!("Blocked by `{dependency}` ({status}); revise dependencies")
-                    }
-                    many => {
-                        format!(
+                if !dependencies.is_empty() {
+                    let terminal_dependencies: Vec<_> = dependencies
+                        .iter()
+                        .filter_map(|dependency| {
+                            let status = by_key.get(dependency.as_str())?.status.as_str();
+                            matches!(status, "failed" | "canceled")
+                                .then_some((dependency.as_str(), status))
+                        })
+                        .collect();
+                    let message = match terminal_dependencies.as_slice() {
+                        [] => match dependencies.as_slice() {
+                            [dependency] => format!("Waiting for `{dependency}`"),
+                            many => format!("Waiting for {} dependencies", many.len()),
+                        },
+                        [(dependency, status)] => {
+                            format!("Blocked by `{dependency}` ({status}); revise dependencies")
+                        }
+                        many => format!(
                             "Blocked by {} terminal dependencies; revise dependencies",
                             many.len()
-                        )
-                    }
-                };
-                verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
-                    message,
-                    dependencies,
-                });
-            } else if occupied >= effective_budget {
-                verdict.pending_reason = Some(TaskPendingReason::BudgetQueued {
-                    message: format!("Queued {occupied}/{effective_budget}"),
-                    occupied_task_budget: occupied,
-                    effective_task_budget: effective_budget,
-                });
+                        ),
+                    };
+                    verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
+                        message,
+                        dependencies,
+                    });
+                } else if occupied >= effective_budget {
+                    verdict.pending_reason = Some(TaskPendingReason::BudgetQueued {
+                        message: format!("Queued {occupied}/{effective_budget}"),
+                        occupied_task_budget: occupied,
+                        effective_task_budget: effective_budget,
+                    });
+                }
+                continue;
             }
-            continue;
+            TaskVerdictRowState::Owned | TaskVerdictRowState::Ambiguous => continue,
+            TaskVerdictRowState::Absent => {}
         }
 
         let Some(declaration) = declarations.get(index) else {
             continue;
         };
-        if verdict.status.is_some()
-            || verdict.schedulable
+        if verdict.schedulable
             || !declaration.ready
             || declaration.tombstone
             || verdict.diagnostics.is_empty()
@@ -2219,10 +2246,15 @@ mod tests {
         );
 
         let mut conn = repo.pool.acquire().await.unwrap();
-        let verdicts =
-            evaluate_schedulability(&mut conn, &track, &declarations, &block_local_diags, true)
-                .await
-                .unwrap();
+        let verdicts = evaluate_schedulability_with_task_budget_default(
+            &mut conn,
+            &track,
+            &declarations,
+            &block_local_diags,
+            1,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(verdicts.len(), 2);
         for verdict in &verdicts {
@@ -2232,6 +2264,10 @@ mod tests {
                 verdict.block_id
             );
             assert_eq!(verdict.worker_card_id, None);
+            assert_eq!(
+                verdict.pending_reason, None,
+                "a hidden contested run is not an unadmitted task"
+            );
         }
     }
 

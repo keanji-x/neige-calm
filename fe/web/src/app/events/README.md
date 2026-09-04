@@ -85,7 +85,7 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `area.deleted` | invalidate areas + track overlays | |
 | `track.updated` | invalidate that area's track list + track detail + all active task verdicts | a root budget/policy change can alter descendant admission; `track-files`/`tracks-range` parts drop (stubs) |
 | `track.lifecycle_changed` | invalidate that area's track list + track detail | the route normally pairs it with `track.updated`, but this event alone does not claim a task-policy change; `track-files`/`tracks-range` parts drop (stubs) |
-| `track.deleted` | invalidate area's track list + track overlays + all active task verdicts; **remove** track detail | the detail can never resolve again, while deleting a tree member changes the survivors' B/N shares |
+| `track.deleted` | invalidate area's track list + track overlays + surviving task verdicts; **remove** track detail and that track's verdict query | neither deleted query can resolve again, while deleting a tree member changes the survivors' B/N shares |
 | `card.added` / `card.updated` | invalidate track detail + both conversation lists | |
 | `card.deleted` | invalidate track detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
 | `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |

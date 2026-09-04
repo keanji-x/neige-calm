@@ -74,16 +74,17 @@ export type RowStatus = Readonly<{
  * this type's fields, produced by `track-page.ts`. Since S1b-3b the desktop
  * painter reads them from here and spells none of its own. The mobile Cards row
  * (S1b-4a) writes no wording at all — both of its actions are unsupported there,
- * so it is handed none. The mobile Task row (S1b-4b) consumes **both** fields
- * from here: `hint` becomes the row's pointer tooltip and a non-null `label`
- * becomes its accessible name, so neither surface words a control for itself.
+ * so it is handed none. The mobile Task row (S1b-4b) consumes all three fields
+ * from here: `hint` becomes the row's pointer tooltip, `description` describes
+ * its focused control, and a non-null `label` becomes its accessible name, so
+ * neither surface words a control for itself.
  *
  * **The wording is not a function of `kind`.** `open-card` reads
  * `Open the worker card for ${task.key}` on a Task row and has no wording at
  * all on a Cards row's body button, so the two sentences are
  * derived per row, not looked up per kind.
  *
- * **`label` and `hint` are two channels on purpose**, and must not be merged:
+ * **The wording fields are separate channels on purpose**, and must not be merged:
  * `desktop-painter.tsx`'s `taskRow` states the rule — `title` describes the destination
  * *without touching the accessible name*, which stays the visible word
  * (WCAG 2.5.3). Merging them would either lose the delete target's accessible
@@ -96,6 +97,10 @@ export type RowAction = Readonly<{
   label: string | null;
   /** The pointer tooltip. null = offer no hint. */
   hint: string | null;
+  /** The finished non-visible description for the focused control. Kept
+   * separate from `hint`: touch/assistive-tech users do not inherit `title`,
+   * while pointer text must remain absent from the visible row body. */
+  description: string | null;
 }> & (
   | Readonly<{ kind: 'reveal-block'; blockId: string }>
   | Readonly<{ kind: 'open-card'; cardId: string }>

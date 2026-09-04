@@ -138,7 +138,7 @@ function cardRow(card: CardWire): PanelRow {
   const title = card.title;
   const name = title ?? card.kind;
   const actions: RowAction[] = [
-    { kind: 'open-card', cardId: card.id, label: null, hint: null },
+    { kind: 'open-card', cardId: card.id, label: null, hint: null, description: null },
   ];
   if (card.deletable) {
     actions.push({
@@ -146,6 +146,7 @@ function cardRow(card: CardWire): PanelRow {
       cardId: card.id,
       label: `Delete card ${name}`,
       hint: 'Delete card',
+      description: null,
     });
   }
   return {
@@ -213,11 +214,18 @@ function taskRow(task: ReportTaskRow): PanelRow {
   const badges: RowBadge[] = task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
+  const status = task.status !== null
+    ? { token: task.status, phrase: taskStatusPhrase(task.status, task.statusDetail) }
+    : null;
+  const reason = task.pendingReason?.message ?? null;
   const actions: RowAction[] = [{
     kind: 'reveal-block',
     blockId: task.blockId,
     label: null,
-    hint: task.pendingReason?.message ?? null,
+    hint: reason,
+    description: reason === null
+      ? status?.phrase ?? null
+      : (status === null ? reason : `${status.phrase} — ${reason}`),
   }];
   if (task.kind !== null && workerCardId !== null) {
     actions.push({
@@ -225,6 +233,7 @@ function taskRow(task: ReportTaskRow): PanelRow {
       cardId: workerCardId,
       label: null,
       hint: `Open the worker card for ${task.key}`,
+      description: null,
     });
   }
   return {
@@ -232,9 +241,7 @@ function taskRow(task: ReportTaskRow): PanelRow {
     title: task.key,
     kind: task.kind,
     badges,
-    status: task.status !== null
-      ? { token: task.status, phrase: taskStatusPhrase(task.status, task.statusDetail) }
-      : null,
+    status,
     actions,
   };
 }

@@ -32,11 +32,11 @@ use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TrackRecipeOrigin, TrackTreeTerm, TrackWorkspacePlan,
-    area_folder_create_tx, area_folders_list_all_tx, card_create_with_id_tx,
-    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx,
-    terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx, track_delete_tx,
-    track_recipe_get_tx, track_tree_term, track_update_tx,
+    MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
+    TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
+    card_create_with_id_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
+    overlay_upsert_tx, terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx,
+    track_delete_tx, track_recipe_get_tx, track_tree_term, track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -68,6 +68,7 @@ use crate::track_lifecycle::{track_get_tx, validate_transition};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
     tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
+    validate_task_rebuild_source_tx,
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
@@ -103,6 +104,19 @@ struct TrackDeletePlan {
     cards: Vec<Card>,
     terminals: Vec<crate::model::Terminal>,
     active_runtime_ids: Vec<String>,
+}
+
+struct PreparedTrackDeletion {
+    track: Track,
+    area_kind: Option<AreaKind>,
+    plan: TrackDeletePlan,
+}
+
+struct QuiescedTrackDeletion(PreparedTrackDeletion);
+
+struct RecycledTrackDeletion {
+    prepared: PreparedTrackDeletion,
+    decision: workspace_recycle::RecycleDecision,
 }
 
 #[cfg(feature = "fixtures")]
@@ -3563,6 +3577,43 @@ async fn teardown_track_deletion(
     Ok(())
 }
 
+async fn surviving_root_before_leaf_removal(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &TrackId,
+) -> Result<Option<String>> {
+    match track_tree_term(tx, track_id.as_str()).await?.term {
+        TrackTreeTerm::Share(share) if share.root_id != track_id.as_str() => {
+            Ok(Some(share.root_id))
+        }
+        TrackTreeTerm::Share(_) => Ok(None),
+        TrackTreeTerm::RootUnresolved => Err(CalmError::Conflict(format!(
+            "track {} belongs to an unresolved tree; repair the tree before deleting it",
+            track_id.as_str()
+        ))),
+    }
+}
+
+async fn preflight_track_deletion_reprojection(
+    pool: &sqlx::SqlitePool,
+    track_id: &TrackId,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await? {
+        let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
+            .bind(&root_id)
+            .bind(MAX_TRACK_TREE_DEPTH + 1)
+            .fetch_all(&mut *tx)
+            .await?;
+        for (member_id, _) in members {
+            if member_id != track_id.as_str() {
+                validate_task_rebuild_source_tx(&mut tx, &member_id).await?;
+            }
+        }
+    }
+    tx.rollback().await?;
+    Ok(())
+}
+
 #[allow(deprecated)]
 async fn finish_track_deletion(
     s: &RouteState,
@@ -3587,18 +3638,7 @@ async fn finish_track_deletion(
                 // committing the delete without knowing which projections to
                 // refresh would leave directly claimable rows admitted under
                 // the old share.
-                let surviving_root = match track_tree_term(tx, track_id.as_str()).await?.term {
-                    TrackTreeTerm::Share(share) if share.root_id != track_id.as_str() => {
-                        Some(share.root_id)
-                    }
-                    TrackTreeTerm::Share(_) => None,
-                    TrackTreeTerm::RootUnresolved => {
-                        return Err(CalmError::Conflict(format!(
-                            "track {} belongs to an unresolved tree; repair the tree before deleting it",
-                            track_id.as_str()
-                        )));
-                    }
-                };
+                let surviving_root = surviving_root_before_leaf_removal(tx, &track_id).await?;
                 for terminal in &terminals {
                     match terminal_delete_tx(tx, &terminal.id)
                         .await
@@ -3693,6 +3733,71 @@ fn recycle_track_workspace_for_delete(
     Ok(decision)
 }
 
+impl PreparedTrackDeletion {
+    async fn quiesce(
+        self,
+        route: &RouteState,
+        worker: &WorkerState,
+        codex: &CodexShellState,
+    ) -> Result<QuiescedTrackDeletion> {
+        teardown_track_deletion(route, worker, codex, &self.plan).await?;
+        Ok(QuiescedTrackDeletion(self))
+    }
+}
+
+impl QuiescedTrackDeletion {
+    fn recycle(self, route: &RouteState) -> Result<RecycledTrackDeletion> {
+        let decision = recycle_track_workspace_for_delete(route, &self.0.track, self.0.area_kind)?;
+        Ok(RecycledTrackDeletion {
+            prepared: self.0,
+            decision,
+        })
+    }
+}
+
+impl RecycledTrackDeletion {
+    #[allow(deprecated)]
+    async fn commit(self, route: &RouteState, actor: ActorId) -> Result<()> {
+        let Self { prepared, decision } = self;
+        let track = &prepared.track;
+        let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
+            Ok(sweeps) => sweeps,
+            Err(error) => {
+                // Another deletion boundary (notably area deletion, or another
+                // process in an unsupported multi-server deployment) may have
+                // won while this request was between teardown and its
+                // transaction. A missing row is committed deletion, not
+                // rollback: never resurrect its cache entry or workspace.
+                let track_survived = route.repo.track_get(track.id.as_str()).await?.is_some();
+                if !track_survived {
+                    return Err(error);
+                }
+                // `track_delete_tx` updates this process-local cache before the
+                // surrounding transaction commits. A later projection/error
+                // rolls SQLite back but cannot roll the cache or filesystem
+                // back for us.
+                route
+                    .write
+                    .area_cache()
+                    .insert(track.id.clone(), track.area_id.clone());
+                if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
+                {
+                    return Err(CalmError::Internal(format!(
+                        "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
+                    )));
+                }
+                return Err(error);
+            }
+        };
+        // This sweep is post-commit. A failure here must not restore the
+        // workspace: the track row is already gone and the trash path is now
+        // authoritative.
+        sweep_workspace_worktrees_for_tracks_repo(route.repo.as_ref(), &route.events, sweeps)
+            .await?;
+        Ok(())
+    }
+}
+
 #[utoipa::path(
     delete,
     path = "/api/tracks/{id}",
@@ -3714,6 +3819,10 @@ pub(crate) async fn delete_track(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    // One process owns this track's move + transaction + compensation at a
+    // time. The deployment contract is one calm-server per data directory;
+    // multi-process deletion would require a durable database lease instead.
+    let _delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
     // Issue #197 — eager teardown for every terminal under the track.
     //
     // `terminals.card_id` is now `ON DELETE RESTRICT` (migration 0011)
@@ -3819,29 +3928,23 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    let plan = snapshot_track_deletion(&s, &pool, &track).await?;
-    teardown_track_deletion(&s, &w, &cs, &plan).await?;
-    let recycled = recycle_track_workspace_for_delete(&s, &track, owning_area.map(|c| c.kind))?;
-    let sweeps = match finish_track_deletion(&s, plan, actor.to_actor_id()).await {
-        Ok(sweeps) => sweeps,
-        Err(error) => {
-            // `track_delete_tx` updates this process-local cache before the
-            // surrounding transaction commits. A later projection/error rolls
-            // SQLite back but cannot roll the cache or filesystem back for us.
-            s.write
-                .area_cache()
-                .insert(track.id.clone(), track.area_id.clone());
-            if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&recycled) {
-                return Err(CalmError::Internal(format!(
-                    "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
-                )));
-            }
-            return Err(error);
-        }
+    // Validate every surviving report source before teardown has any external
+    // effect. Production report writers cannot commit malformed CRDT, so a
+    // later rebuild failure is then limited to a genuine concurrent/corrupting
+    // writer; the compensation below remains the last-resort fence for it.
+    preflight_track_deletion_reprojection(&pool, &track_id).await?;
+
+    let prepared = PreparedTrackDeletion {
+        plan: snapshot_track_deletion(&s, &pool, &track).await?,
+        track,
+        area_kind: owning_area.map(|area| area.kind),
     };
-    // This sweep is post-commit. A failure here must not restore the workspace:
-    // the track row is already gone and the trash path is now authoritative.
-    sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
+    prepared
+        .quiesce(&s, &w, &cs)
+        .await?
+        .recycle(&s)?
+        .commit(&s, actor.to_actor_id())
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

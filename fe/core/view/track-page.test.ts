@@ -97,15 +97,16 @@ describe('deriveTrackPageView cards', () => {
     expect(owned.actions.map((action) => action.kind)).toEqual(['open-card']);
     expect(user.actions.map((action) => action.kind)).toEqual(['open-card', 'delete-card']);
     expect(owned.actions).toEqual([
-      { kind: 'open-card', cardId: 'card-owned', label: null, hint: null },
+      { kind: 'open-card', cardId: 'card-owned', label: null, hint: null, description: null },
     ]);
     expect(user.actions).toEqual([
-      { kind: 'open-card', cardId: 'card-user', label: null, hint: null },
+      { kind: 'open-card', cardId: 'card-user', label: null, hint: null, description: null },
       {
         kind: 'delete-card',
         cardId: 'card-user',
         label: 'Delete card Main pane',
         hint: 'Delete card',
+        description: null,
       },
     ]);
   });
@@ -168,6 +169,7 @@ describe('deriveTrackPageView tasks', () => {
       blockId: 'block-3',
       label: null,
       hint: null,
+      description: null,
     }]);
   });
 
@@ -184,14 +186,16 @@ describe('deriveTrackPageView tasks', () => {
       blockId: 'b-a',
       label: null,
       hint: null,
+      description: null,
     }]);
     expect(with_.actions).toEqual([
-      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: null },
+      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: null, description: null },
       {
         kind: 'open-card',
         cardId: 'card-9',
         label: null,
         hint: 'Open the worker card for k-b',
+        description: null,
       },
     ]);
   });
@@ -255,6 +259,7 @@ describe('deriveTrackPageView tasks', () => {
       blockId: 'b-k',
       label: null,
       hint: null,
+      description: null,
     }]);
   });
 
@@ -270,6 +275,7 @@ describe('deriveTrackPageView tasks', () => {
 
   it('uses the server-provided pending reason as the reveal hover and not row copy', () => {
     const [row] = tasksModule([task({
+      status: 'pending',
       pendingReason: {
         kind: 'budgetQueued',
         message: 'Queued 1/1',
@@ -279,6 +285,7 @@ describe('deriveTrackPageView tasks', () => {
     })]).rows;
     expect(row.badges).toEqual([]);
     expect(row.actions[0]?.hint).toBe('Queued 1/1');
+    expect(row.actions[0]?.description).toBe('pending — Queued 1/1');
   });
 
   /*

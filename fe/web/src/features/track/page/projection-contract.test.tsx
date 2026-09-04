@@ -57,6 +57,7 @@ const deleteUnsupported: RowPainter<ReactNode>['action'] = Object.freeze({
 
 const deleteAction: RowAction = Object.freeze({
   kind: 'delete-card', cardId: 'c1', label: 'Delete card Ingest', hint: 'Delete card',
+  description: null,
 });
 
 const cardRow: PanelRow = Object.freeze({
@@ -66,7 +67,7 @@ const cardRow: PanelRow = Object.freeze({
   badges: Object.freeze([Object.freeze({ id: 'b1', text: 'kernel-owned', struck: false })]),
   status: null,
   actions: Object.freeze<readonly RowAction[]>([
-    Object.freeze({ kind: 'open-card', cardId: 'c1', label: null, hint: null }),
+    Object.freeze({ kind: 'open-card', cardId: 'c1', label: null, hint: null, description: null }),
     deleteAction,
   ]),
 });
@@ -86,7 +87,10 @@ const deleteOnlyRow: PanelRow = Object.freeze({
   badges: Object.freeze([]),
   status: null,
   actions: Object.freeze<readonly RowAction[]>([
-    Object.freeze({ kind: 'delete-card', cardId: 'c3', label: 'Delete card Purge', hint: 'Delete card' }),
+    Object.freeze({
+      kind: 'delete-card', cardId: 'c3', label: 'Delete card Purge', hint: 'Delete card',
+      description: null,
+    }),
   ]),
 });
 
@@ -100,7 +104,10 @@ const taskRow: PanelRow = Object.freeze({
   ]),
   status: Object.freeze({ token: 'dispatched', phrase: 'Dispatched a moment ago' }),
   actions: Object.freeze<readonly RowAction[]>([
-    Object.freeze({ kind: 'reveal-block', blockId: 'k', label: null, hint: 'Show T-1 in the report' }),
+    Object.freeze({
+      kind: 'reveal-block', blockId: 'k', label: null, hint: 'Show T-1 in the report',
+      description: 'Dispatched a moment ago',
+    }),
   ]),
 });
 
@@ -850,7 +857,10 @@ describe('a faithful painter is green', () => {
       badges: Object.freeze([]),
       status: null,
       actions: Object.freeze<readonly RowAction[]>([
-        Object.freeze({ kind: 'open-card', cardId: 'm1', label: 'Open card Ingest', hint: null }),
+        Object.freeze({
+          kind: 'open-card', cardId: 'm1', label: 'Open card Ingest', hint: null,
+          description: null,
+        }),
       ]),
     });
     const tapView: readonly RowModuleView[] = Object.freeze([Object.freeze({

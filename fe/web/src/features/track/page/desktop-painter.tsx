@@ -89,7 +89,7 @@ const mark = (name: string, value: string): Readonly<Record<string, string>> => 
 
 /**
  * What a painter needs from one of a row's actions: the payload id it carries,
- * and its two wording channels.
+ * and its three wording channels.
  *
  * The lookup returns `null` when the action is absent — and it is absent for two
  * different reasons that the painter deliberately does not distinguish: the view
@@ -97,7 +97,12 @@ const mark = (name: string, value: string): Readonly<Record<string, string>> => 
  * `paintModule` filtered it out against this painter's capability table. Both
  * mean the same thing here: draw no control, and therefore no marker.
  */
-type Control = Readonly<{ id: string; label: string | null; hint: string | null }>;
+type Control = Readonly<{
+  id: string;
+  label: string | null;
+  hint: string | null;
+  description: string | null;
+}>;
 
 function control(row: PanelRow, kind: RowAction['kind']): Control | null {
   for (const action of row.actions) {
@@ -106,18 +111,20 @@ function control(row: PanelRow, kind: RowAction['kind']): Control | null {
       id: action.kind === 'reveal-block' ? action.blockId : action.cardId,
       label: action.label,
       hint: action.hint,
+      description: action.description,
     };
   }
   return null;
 }
 
-/** `label` / `hint` are exact on both sides: `null` must emit no attribute at
+/** Wording channels are exact on both sides: `null` must emit no attribute at
  *  all, because a second accessible name overrides a control's visible text
  *  (WCAG 2.5.3) and the projection asserts the absence. */
 function wording(action: Control): Readonly<Record<string, string>> {
   return {
     ...(action.label === null ? {} : { 'aria-label': action.label }),
     ...(action.hint === null ? {} : { title: action.hint }),
+    ...(action.description === null ? {} : { 'aria-description': action.description }),
   };
 }
 

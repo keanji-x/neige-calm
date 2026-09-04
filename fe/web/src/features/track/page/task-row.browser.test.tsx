@@ -154,6 +154,7 @@ describe('a TASKS row, laid out', () => {
     expect(row.innerText).not.toContain(message);
     expect(key.innerText).toBe('bench-harness');
     expect(reveal.title).toBe(message);
+    expect(reveal.getAttribute('aria-description')).toBe(`pending — ${message}`);
     expect(reveal.title).not.toContain('Show');
     expect(row.querySelector('[popover]')).toBeNull();
     expect(Array.from(row.querySelectorAll('[title]'))).toEqual([reveal]);

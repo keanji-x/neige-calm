@@ -148,9 +148,10 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
  *
  * Invalidation is not free here. `['track-report', …]` resolves to a live query
  * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
- * whole document and runs `task_diagnostics` — a predicate that issues a
- * data-dependent lookup per reference per declaration (see its comment in
- * `read.rs`). The frontend then throws away everything but `taskDiagnostics`.
+ * whole document and runs `task_diagnostics` — one snapshot statement whose
+ * reference work scales with the declarations' deduplicated lookup set (see
+ * `task_projection.rs`). The frontend then throws away everything but
+ * `taskDiagnostics`.
  * Paying that twice per tool call, per worker, for a value that provably cannot
  * have changed, is the cost this exclusion removes.
  *
@@ -206,7 +207,7 @@ function policies(): PolicyMap {
       ['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range'],
       ['track-report'],
     ],
-    [['track', event.data.id]],
+    [['track', event.data.id], ['track-report', event.data.id]],
   )),
   'track.lifecycle_changed': plan((event) => result([
     ['tracks', 'area', event.data.area_id], ['track', event.data.id],

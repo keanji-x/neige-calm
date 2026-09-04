@@ -86,7 +86,7 @@ describe('invalidation plan behavior', () => {
       invalidate: [
         ['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report'],
       ],
-      remove: [['track', 'w1']],
+      remove: [['track', 'w1'], ['track-report', 'w1']],
       writeThrough: [],
     });
   });

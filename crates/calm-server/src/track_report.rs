@@ -131,6 +131,27 @@ async fn tasks_rebuild_with_tree_term_tx(
     track_id: &str,
     tree_term: Option<TrackTreeTerm>,
 ) -> crate::error::Result<TaskProjectionOutcome> {
+    let Some((declarations, diagnostics)) = task_projection_source_tx(tx, track_id).await? else {
+        return Ok(TaskProjectionOutcome::default());
+    };
+    Ok(match tree_term {
+        Some(tree_term) => {
+            project_tasks_with_tree_term_tx(tx, track_id, &declarations, &diagnostics, tree_term)
+                .await?
+        }
+        None => project_tasks_tx(tx, track_id, &declarations, &diagnostics).await?,
+    })
+}
+
+type TaskProjectionSource = (
+    Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
+    Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
+);
+
+async fn task_projection_source_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &str,
+) -> crate::error::Result<Option<TaskProjectionSource>> {
     let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT json(payload),body_crdt FROM cards WHERE track_id=?1 AND kind='track-report'",
     )
@@ -138,7 +159,7 @@ async fn tasks_rebuild_with_tree_term_tx(
     .fetch_optional(&mut **tx)
     .await?;
     let Some((payload, body_crdt)) = report else {
-        return Ok(TaskProjectionOutcome::default());
+        return Ok(None);
     };
     let payload: TrackReportPayload = serde_json::from_str(&payload).map_err(|error| {
         CalmError::Internal(format!("decode report payload for task rebuild: {error}"))
@@ -158,13 +179,17 @@ async fn tasks_rebuild_with_tree_term_tx(
     })?;
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    Ok(match tree_term {
-        Some(tree_term) => {
-            project_tasks_with_tree_term_tx(tx, track_id, &declarations, &diagnostics, tree_term)
-                .await?
-        }
-        None => project_tasks_tx(tx, track_id, &declarations, &diagnostics).await?,
-    })
+    Ok(Some((declarations, diagnostics)))
+}
+
+/// Validate the exact report/CRDT source a later task rebuild will consume,
+/// without changing any task rows. Track deletion runs this for every survivor
+/// before it stops runtimes or moves the victim workspace.
+pub(crate) async fn validate_task_rebuild_source_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &str,
+) -> crate::error::Result<()> {
+    task_projection_source_tx(tx, track_id).await.map(|_| ())
 }
 
 /// Strictly reproject every member after the root budget `B` is edited or a

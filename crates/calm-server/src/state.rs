@@ -172,6 +172,10 @@ pub struct RouteState {
     ///      and `/planner/reset` take only the recovery lock and never enter
     ///      conversation create); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
+    /// Per-track serialization for the multi-stage DELETE flow. The workspace
+    /// move and database transaction must have one owner, or a losing concurrent
+    /// request could compensate the winner's committed deletion.
+    pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -253,6 +257,7 @@ impl BootState {
             hook_ingest_cache,
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
+            track_delete_locks: crate::per_card_lock::new_keyed_locks(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),

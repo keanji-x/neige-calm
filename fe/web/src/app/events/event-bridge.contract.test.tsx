@@ -280,6 +280,32 @@ describe('EventBridge contracts', () => {
     unsubscribe();
   });
 
+  it('removes the deleted track report before refreshing surviving reports', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = ['track-report', 'w1'] as const;
+    client.setQueryData(key, [{ status: 'pending' }]);
+    let calls = 0;
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      staleTime: Infinity,
+      queryFn: () => {
+        calls += 1;
+        return Promise.reject(new Error('deleted report returned 404'));
+      },
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    expect(calls).toBe(0);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(12, { ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }));
+    await waitFor(() => expect(client.getQueryState(key)).toBeUndefined());
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(calls).toBe(0);
+    unsubscribe();
+  });
+
   it('resolves a runtime card through cached track detail before invalidating', async () => {
     const { record, stream, emit } = fakeStream();
     const client = new QueryClient();

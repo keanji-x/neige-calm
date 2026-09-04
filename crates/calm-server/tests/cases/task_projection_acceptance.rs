@@ -426,7 +426,7 @@ async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
     let boot = new_boot().await;
     upsert(&boot, None, task("failed-first")).await;
     let mut blocked = task("blocked-next");
-    blocked["depends_on"] = json!(["failed-first"]);
+    blocked["depends_on"] = json!(["failed-first", "failed-first"]);
     upsert(&boot, None, blocked).await;
     sqlx::query("UPDATE tasks SET status='failed' WHERE track_id=?1 AND key='failed-first'")
         .bind(boot.track_id.as_str())

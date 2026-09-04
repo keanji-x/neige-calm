@@ -236,10 +236,15 @@ function visibleText(root: Element): string {
  *  The two selectors are spelled as literals and chosen by a branch, for the
  *  same reason `renderedRows` does it: `no-class-dom-query` requires a static
  *  selector. */
-function attributeValues(root: Element, attribute: 'title' | 'aria-label'): readonly string[] {
+function attributeValues(
+  root: Element,
+  attribute: 'title' | 'aria-label' | 'aria-description',
+): readonly string[] {
   const carriers = attribute === 'title'
     ? root.querySelectorAll('[title]')
-    : root.querySelectorAll('[aria-label]');
+    : attribute === 'aria-label'
+      ? root.querySelectorAll('[aria-label]')
+      : root.querySelectorAll('[aria-description]');
   const values: string[] = [];
   for (const element of [root, ...carriers]) {
     const value = element.getAttribute(attribute);
@@ -258,10 +263,14 @@ function attributeValues(root: Element, attribute: 'title' | 'aria-label'): read
 function expectActionWording(rowElement: Element, row: PanelRow, where: string): void {
   const titles = attributeValues(rowElement, 'title');
   const labels = attributeValues(rowElement, 'aria-label');
+  const descriptions = attributeValues(rowElement, 'aria-description');
   row.actions.forEach((action, index) => {
     const at = `${where}.actions[${index}] (${action.kind})`;
     if (action.hint !== null) expect(titles, `${at}: hint`).toContain(action.hint);
     if (action.label !== null) expect(labels, `${at}: label`).toContain(action.label);
+    if (action.description !== null) {
+      expect(descriptions, `${at}: description`).toContain(action.description);
+    }
   });
 }
 

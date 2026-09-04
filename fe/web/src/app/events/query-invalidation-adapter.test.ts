@@ -383,6 +383,7 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
       { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
+      { op: 'remove', queryKey: queryKeys.trackReport('w1') },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
     ]);
   });

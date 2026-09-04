@@ -199,11 +199,20 @@ pub fn restore_recycled_workspace(decision: &RecycleDecision) -> Result<()> {
     let RecycleDecision::Trashed { from, to } = decision else {
         return Ok(());
     };
-    if from.exists() {
-        return Err(CalmError::Internal(format!(
-            "cannot restore recycled workspace {}: original path is occupied",
-            from.display()
-        )));
+    match std::fs::symlink_metadata(from) {
+        Ok(_) => {
+            return Err(CalmError::Internal(format!(
+                "cannot restore recycled workspace {}: original path is occupied",
+                from.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CalmError::Internal(format!(
+                "inspect original workspace path {} before restore: {error}",
+                from.display()
+            )));
+        }
     }
     std::fs::rename(to, from).map_err(|error| {
         CalmError::Internal(format!(

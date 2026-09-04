@@ -825,16 +825,17 @@ async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspac
     assert_eq!(survivor_status, "running");
 }
 
-/// The workspace move precedes the short delete transaction by design. If a
-/// surviving member cannot be reprojected, that transaction rolls back; the
-/// filesystem rename and process-local track cache must be compensated too.
+/// A malformed surviving report must fail before the victim's runtime or
+/// workspace is touched. The compensation path remains a last-resort fence for
+/// a concurrent failure after this preflight, not the ordinary error path.
 #[tokio::test]
-async fn failed_tree_reprojection_restores_the_recycled_workspace_and_track_cache() {
+async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (root_id, _) = managed_track(&b, &area_id, "root").await;
     let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
     let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
+    let runtime_id = install_live_harness(&b, &victim_id).await;
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
         .bind(&root_id)
         .bind(&victim_id)
@@ -856,6 +857,7 @@ async fn failed_tree_reprojection_restores_the_recycled_workspace_and_track_cach
     let (status, body) = delete_track(&b, &victim_id).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     assert!(b.repo.track_get(&victim_id).await.unwrap().is_some());
+    assert!(b.harness.get(&runtime_id).is_some());
     assert!(victim_path.exists());
     assert!(diff(&before, &fingerprint(&victim_path)).is_empty());
     assert!(trash_entry_for(&b.workspace_root, &victim_id).is_none());
@@ -863,6 +865,65 @@ async fn failed_tree_reprojection_restores_the_recycled_workspace_and_track_cach
         b.tracks
             .area_of(&calm_server::ids::TrackId::from(victim_id.clone())),
         Some(area_id.into())
+    );
+}
+
+/// The multi-stage delete is serialized per track. A concurrent loser must
+/// observe the committed absence before it can move or compensate anything.
+#[tokio::test]
+async fn concurrent_deletes_cannot_resurrect_the_winners_workspace_or_cache_entry() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "one owner").await;
+    let hook = calm_server::routes::tracks::TrackDeleteTeardownHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::tracks::install_track_delete_teardown_hook_for_test(
+        &track_id,
+        hook.clone(),
+    );
+
+    let first_app = b.app.clone();
+    let first_id = track_id.clone();
+    let first = tokio::spawn(async move {
+        request(
+            first_app,
+            "DELETE",
+            &format!("/api/tracks/{first_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    let second_app = b.app.clone();
+    let second_id = track_id.clone();
+    let second = tokio::spawn(async move {
+        request(
+            second_app,
+            "DELETE",
+            &format!("/api/tracks/{second_id}"),
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !second.is_finished(),
+        "the second delete bypassed the per-track lock"
+    );
+
+    hook.release.notify_one();
+    let (first_status, first_body) = first.await.unwrap();
+    let (second_status, second_body) = second.await.unwrap();
+    assert_eq!(first_status, StatusCode::NO_CONTENT, "body={first_body}");
+    assert_eq!(second_status, StatusCode::NOT_FOUND, "body={second_body}");
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    assert!(!path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
+        None
     );
 }
 

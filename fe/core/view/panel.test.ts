@@ -58,9 +58,13 @@ function recordingPainter(support: Readonly<Record<RowAction['kind'], ActionSupp
   return { painter, calls };
 }
 
-const REVEAL: RowAction = { kind: 'reveal-block', blockId: 'b1', label: null, hint: 'Show b1' };
-const OPEN: RowAction = { kind: 'open-card', cardId: 'c1', label: null, hint: null };
-const DELETE: RowAction = { kind: 'delete-card', cardId: 'c1', label: 'Delete card One', hint: 'Delete card' };
+const REVEAL: RowAction = {
+  kind: 'reveal-block', blockId: 'b1', label: null, hint: 'Show b1', description: 'Describe b1',
+};
+const OPEN: RowAction = { kind: 'open-card', cardId: 'c1', label: null, hint: null, description: null };
+const DELETE: RowAction = {
+  kind: 'delete-card', cardId: 'c1', label: 'Delete card One', hint: 'Delete card', description: null,
+};
 
 describe('paintModule', () => {
   it('paints the empty text, and no rows, for a module with zero rows', () => {
