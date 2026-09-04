@@ -287,8 +287,13 @@ export type NewTrackBody = Readonly<{
    * Supplying it also changes what a failed harness start means: without it
    * that failure is still a 201 (an inert planner agent is recoverable), with
    * it the create answers 500 because the delivery it promised may or may not
-   * have happened. The create is **not** retryable either way — resending
-   * makes a second track, and a message that did arrive arrives twice (#1384).
+   * have happened.
+   *
+   * Since #1384 sending it also makes `Idempotency-Key` **required** — see
+   * `createTrackOperation`. Under that key the create IS retryable: the retry
+   * lands on the track the first attempt already made and delivers no second
+   * copy. What it still does not tell you is whether the first attempt's
+   * delivery happened; the server cannot know that.
    */
   first_message?: string;
 }>;
@@ -429,8 +434,38 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
   return { method: 'GET', path: `/api/tracks/${encodeURIComponent(trackId)}`, responseSchema: trackDetailSchema };
 }
 
-export function createTrackOperation(body: NewTrackBody): ApiOperation<TrackWire> {
-  return { method: 'POST', path: '/api/tracks', body, responseSchema: trackWireSchema };
+/**
+ * `POST /api/tracks`.
+ *
+ * `idempotencyKey` is **required by the kernel whenever `body.first_message` is
+ * present** (#1384) and ignored entirely otherwise, which is why it is a
+ * separate optional parameter rather than a body field: it travels as a header,
+ * and an operation that cannot express a header cannot call this endpoint with
+ * a first message at all.
+ *
+ * What the key buys, and it is the reason it must be minted **per draft and not
+ * per call**: the kernel binds it to the track it creates, inside the same
+ * transaction that mints the track id. A retry under the same key returns that
+ * track and does not deliver the sentence a second time. A key minted per call
+ * is a different key on the retry, and a different key mints a second track
+ * holding the same message — the exact failure the header exists to stop.
+ *
+ * Not sent when `first_message` is absent: the kernel does not read it there,
+ * and a message-less create is deliberately still not idempotent.
+ */
+export function createTrackOperation(
+  body: NewTrackBody,
+  idempotencyKey?: string,
+): ApiOperation<TrackWire> {
+  return {
+    method: 'POST',
+    path: '/api/tracks',
+    body,
+    responseSchema: trackWireSchema,
+    ...(body.first_message === undefined || idempotencyKey === undefined
+      ? {}
+      : { headers: { 'Idempotency-Key': idempotencyKey } }),
+  };
 }
 
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {
