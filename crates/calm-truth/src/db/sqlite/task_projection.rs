@@ -390,7 +390,14 @@ fn attach_task_read_state(
 }
 
 fn readable_action(action: &str) -> String {
-    action.replace('_', " ")
+    match action {
+        "raise_planner_task_ceiling" => "raise planner ceiling".into(),
+        "raise_tree_task_budget" => "raise tree budget".into(),
+        "add_gate_or_reason" => "add gate or reason".into(),
+        "edit_dependencies" => "edit dependencies".into(),
+        "release_task" => "release task".into(),
+        other => other.replace('_', " "),
+    }
 }
 
 /// Finish the read verdict with the scheduler-facing explanation. All inputs
@@ -433,22 +440,17 @@ fn attach_task_pending_reasons(
                 .cloned()
                 .collect();
             if !dependencies.is_empty() {
-                let names = dependencies
-                    .iter()
-                    .map(|dependency| format!("`{dependency}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let message = match dependencies.as_slice() {
+                    [dependency] => format!("Waiting for `{dependency}`"),
+                    many => format!("Waiting for {} dependencies", many.len()),
+                };
                 verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
-                    message: format!(
-                        "Waiting for {names} — finish dependencies or adjust the plan"
-                    ),
+                    message,
                     dependencies,
                 });
             } else if occupied >= effective_budget {
                 verdict.pending_reason = Some(TaskPendingReason::BudgetQueued {
-                    message: format!(
-                        "Queued {occupied}/{effective_budget} — wait for a slot or raise task_budget"
-                    ),
+                    message: format!("Queued {occupied}/{effective_budget}"),
                     occupied_task_budget: occupied,
                     effective_task_budget: effective_budget,
                 });
@@ -483,8 +485,8 @@ fn attach_task_pending_reasons(
             verdict
                 .diagnostics
                 .first()
-                .map(|diagnostic| diagnostic.message.clone())
-                .unwrap_or_else(|| "inspect the task declaration".into())
+                .map(|diagnostic| diagnostic.code.replace('_', " "))
+                .unwrap_or_else(|| "inspect diagnostics".into())
         } else {
             actions
                 .iter()
@@ -493,7 +495,7 @@ fn attach_task_pending_reasons(
                 .join(" and ")
         };
         verdict.pending_reason = Some(TaskPendingReason::NotAdmitted {
-            message: format!("Not admitted — {explanation}"),
+            message: format!("Not admitted · {explanation}"),
             diagnostic_codes,
             actions,
         });

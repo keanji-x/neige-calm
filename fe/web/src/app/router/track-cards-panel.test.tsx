@@ -390,14 +390,14 @@ describe('track route TASKS panel', () => {
         blockId: 'b-term', key: 'has-adapter', schedulable: true, status: 'pending', diagnostics: [],
         pendingReason: {
           kind: 'dependencyBlocked', dependencies: ['foundation'],
-          message: 'Waiting for `foundation` — finish it or adjust the plan',
+          message: 'Waiting for `foundation`',
         },
       },
       {
         blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'pending', diagnostics: [],
         pendingReason: {
           kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
-          message: 'Queued 1/1 — wait for a slot or raise task_budget',
+          message: 'Queued 1/1',
         },
       },
       {
@@ -405,14 +405,20 @@ describe('track route TASKS panel', () => {
         pendingReason: {
           kind: 'notAdmitted', diagnosticCodes: ['planner_task_ceiling'],
           actions: ['raise_planner_task_ceiling'],
-          message: 'Not admitted — raise planner_task_ceiling',
+          message: 'Not admitted · planner ceiling',
         },
       },
     ] });
     const list = within(await tasks());
-    expect(list.getByText('Waiting for `foundation` — finish it or adjust the plan')).toBeTruthy();
-    expect(list.getByText('Queued 1/1 — wait for a slot or raise task_budget')).toBeTruthy();
-    expect(list.getByText('Not admitted — raise planner_task_ceiling')).toBeTruthy();
+    for (const [key, message] of [
+      ['has-adapter', 'Waiting for `foundation`'],
+      ['codex-adapter', 'Queued 1/1'],
+      ['no-adapter', 'Not admitted · planner ceiling'],
+    ] as const) {
+      const row = list.getByRole('button', { name: new RegExp(`^${key}`) });
+      expect(row.textContent).not.toContain(message);
+      expect(list.getByText(message).closest('[popover]')).not.toBeNull();
+    }
   });
 });
 

@@ -336,10 +336,7 @@ async fn pending_reasons_distinguish_dependency_budget_and_admission() {
         assert_eq!(queued["kind"], "budgetQueued", "{surface}");
         assert_eq!(queued["occupiedTaskBudget"], 1, "{surface}");
         assert_eq!(queued["effectiveTaskBudget"], 1, "{surface}");
-        assert_eq!(
-            queued["message"],
-            "Queued 1/1 — wait for a slot or raise task_budget"
-        );
+        assert_eq!(queued["message"], "Queued 1/1");
 
         let rejected = &task_verdict(&response, "not-admitted")["pendingReason"];
         assert_eq!(rejected["kind"], "notAdmitted", "{surface}");

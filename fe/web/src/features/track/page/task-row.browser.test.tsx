@@ -32,7 +32,7 @@
  * onto a canvas to measure the separation the colour channel actually
  * delivers.
  */
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { commands, page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -123,9 +123,9 @@ describe('a TASKS row, laid out', () => {
       .toBeLessThanOrEqual(1);
   });
 
-  it('puts a pending reason below the key without crossing the kind column', async () => {
+  it('keeps a pending reason out of the row and reveals compact copy only on hover', async () => {
     await browserPage.viewport(1200, 800);
-    const message = 'Queued 1/1 — wait for a slot or raise task_budget';
+    const message = 'Queued 1/1';
     render(
       <div style={{ inlineSize: 1200, blockSize: 800 }}>
         <TrackPage
@@ -150,19 +150,17 @@ describe('a TASKS row, laid out', () => {
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
     const key = row.querySelector<HTMLElement>('[data-nc-field="title"]')!;
     const reason = row.querySelector<HTMLElement>('[data-nc-badge="pending-reason:budgetQueued"]')!;
-    const kind = [...row.querySelectorAll<HTMLElement>('[data-nc-field="kind"]')]
-      .find((candidate) => candidate.textContent === 'codex')!;
-    const rowBox = row.getBoundingClientRect();
-    const keyBox = key.getBoundingClientRect();
-    const reasonBox = reason.getBoundingClientRect();
-    const kindBox = kind.getBoundingClientRect();
+    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+    const layer = reason.closest<HTMLElement>('[popover]')!;
 
-    expect(reasonBox.top).toBeGreaterThanOrEqual(keyBox.bottom);
-    expect(reasonBox.right).toBeLessThanOrEqual(kindBox.left);
-    expect(reasonBox.bottom).toBeLessThanOrEqual(rowBox.bottom);
-    expect(getComputedStyle(reason).overflow).toBe('hidden');
-    expect(getComputedStyle(reason).textOverflow).toBe('ellipsis');
-    expect(reason.title).toBe(message);
+    expect(row.innerText).not.toContain(message);
+    expect(key.innerText).toBe('bench-harness');
+    expect(layer.matches(':popover-open')).toBe(false);
+
+    await userEvent.hover(reveal);
+    await waitFor(() => { expect(layer.matches(':popover-open')).toBe(true); }, { timeout: 2000 });
+    expect(reason.innerText).toBe(message);
+    expect(getComputedStyle(reason).fontSize).toBe('11px');
   });
 
   it('gives the row, its open middle and its dot to the reveal control, and only the kind to the card', async () => {
