@@ -1226,18 +1226,26 @@ export interface paths {
         put?: never;
         /**
          * Mint a track assistant conversation and deliver its first message.
-         * @description The `Idempotency-Key` contract has two known gaps, restated where they bite:
+         * @description #1314 — the message is folded INTO the mint operation. `first_message`
+         *     travels in the `planner-harness-start` payload and
+         *     `PlannerHarnessStartAdapter::prepare_tx` seeds the
+         *     `Observation::UserMessage` and writes `harness.user_message.enqueued` in the
+         *     same transaction that mints the card and its session. There is no
+         *     post-operation send here, and consequently no first-message claim: the two
+         *     #1098 gaps this handler used to document — a claim that asked "has this CARD
+         *     ever had a user message enqueued?" instead of "has THIS request's message
+         *     landed?", and evidence written outside the transaction that carried the
+         *     message — are gone with the code that had them.
          *
-         *     * the first-message claim asks "has this CARD ever had a user message
-         *       enqueued?", not "has THIS request's message landed?", so a foreign
-         *       `POST /api/cards/{id}/planner/input` between a failed send and its retry
-         *       satisfies the claim;
-         *     * the evidence is written non-transactionally, so a send whose audit write
-         *       fails is re-sent on retry.
-         *
-         *     Both are tracked on #1098 and deliberately unchanged here: fixing them means
-         *     folding the first message into the mint operation, which would change both
-         *     sides of this endpoint and belongs in one dedicated change.
+         *     **Nothing on this path may read that evidence row back.** A failed attempt
+         *     is compensated by deleting the card, but its `harness.user_message.enqueued`
+         *     row survives (`events` is append-only and compensation only marks the
+         *     runtime failed), while the retry re-derives the very same card id from the
+         *     same `Idempotency-Key`. So the row means "a delivery was attempted", never
+         *     "a delivery happened", and treating it as a delivered-marker would turn
+         *     every retry-after-failure into a silently dropped message.
+         *     `a_retry_after_a_failed_attempt_still_delivers_the_message` pins that, and a
+         *     persisted marker that could answer the question honestly is #1384.
          */
         post: operations["create_track_conversation"];
         delete?: never;
@@ -7041,7 +7049,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
+            /** @description Conversation card minted, harness started, first message delivered — all three in the mint operation's own transaction, so a 201 means the message is on the assistant's queue and not merely that a card exists. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7079,7 +7087,7 @@ export interface operations {
             };
             /**
              * @description Distinguished by the body's `code`:
-             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).
+             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares). A key whose operation row was written by a pre-#1314 build also lands here on retry, because folding the message into the payload moved that hash; retry under a new key.
              *     * `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.
              */
             409: {
@@ -7090,7 +7098,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
+            /** @description Internal error. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started. */
             500: {
                 headers: {
                     [name: string]: unknown;

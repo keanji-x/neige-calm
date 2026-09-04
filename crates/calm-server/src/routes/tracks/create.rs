@@ -863,6 +863,9 @@ async fn start_planner_harness_with_first_message(
         // Other producers leave the field `None`, preserving their payload
         // bytes across deployment.
         create_request_sha256: Some(create_request_sha256),
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     // Same hash shape as `start_planner_harness`, so the two paths cannot drift

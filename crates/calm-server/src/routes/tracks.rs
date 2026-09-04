@@ -2372,6 +2372,9 @@ async fn start_planner_harness(
         // there is no longer anything else it could be.
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
@@ -3326,6 +3329,9 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let hash = match stable_payload_hash(
         &serde_json::json!({"actor": actor.as_str(), "request": &request}),

@@ -102,11 +102,27 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// Has this conversation card ever had a user message enqueued?
 ///
 /// The truth read here is the same row the transcript, the tests and the audit
-/// log read — `harness.user_message.enqueued`, written by `send_planner_input`
-/// *after* the observation reached the harness queue. There is deliberately no
-/// separate "first message sent" flag: a write-only marker would have to be
-/// set before or after the send and would be wrong in one direction either way
-/// (double send, or a silently swallowed message).
+/// log read — `harness.user_message.enqueued`. It has two writers, and they
+/// differ in exactly the way a caller has to know about:
+///
+/// * `send_planner_input` writes it *after* the observation reached a live
+///   harness queue, so the row trails a delivery that already happened;
+/// * `PlannerHarnessStartAdapter::prepare_tx` writes it *inside* the mint
+///   transaction that seeds the observation onto a session that has not started
+///   yet (#1299 S1, #1314), so the row commits before anything could have been
+///   handed over — and survives a later compensation that deletes the card,
+///   because `events` is append-only.
+///
+/// The only caller left is `today_summary`, which asks a question the second
+/// writer answers correctly: "is the bootstrap text already on this card's
+/// queue?" — a seeded-but-not-started observation is inherited by the dormant
+/// restart, so it counts. A caller that instead needs "did a delivery *reach*
+/// the agent?" must not use this: see `routes/track_conversations.rs`, which
+/// deliberately reads nothing back, and #1384.
+///
+/// There is deliberately no separate "first message sent" flag: a write-only
+/// marker would have to be set before or after the send and would be wrong in
+/// one direction either way (double send, or a silently swallowed message).
 ///
 /// Both scope columns are bound: `scope_track` is indexed (`0007`), so the scan
 /// is bounded by one track rather than by every conversation in the DB.

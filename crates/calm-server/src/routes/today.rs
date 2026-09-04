@@ -882,6 +882,9 @@ pub(crate) async fn ensure_today_launchpad(
         first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let start_mode = if out.created || out.adopted_legacy {
         "bootstrap"

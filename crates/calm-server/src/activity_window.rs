@@ -94,7 +94,8 @@
 
 use sqlx::{Pool, Sqlite};
 
-use crate::error::Result;
+use crate::db::Repo;
+use crate::error::{CalmError, Result};
 
 /// The event kinds that count as workspace activity, adjudicated in design D4.
 ///
@@ -401,6 +402,48 @@ fn local_start_of_day_ms(date: chrono::NaiveDate) -> i64 {
         .expect("midnight is a valid time")
         .and_utc()
         .timestamp_millis()
+}
+
+/// Today's activity briefing, if this track is the launchpad (#1343).
+///
+/// `None` for every other track. The predicate is
+/// [`routes::today::is_launchpad_track`], which is the one criterion in the
+/// codebase — the agent's identity (`planner_harness_start_adapter`) forks on
+/// the same call, and two spellings of "is this the launchpad?" would let the
+/// briefing and the identity disagree about one track.
+///
+/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
+///
+/// The window itself comes from [`todays_workspace_activity`], the same entry
+/// `POST /api/today/summary` uses, so the two surfaces cannot report different
+/// numbers for one day. The launchpad excludes itself — that is the reflexive
+/// exclusion documented on `workspace_activity_window`, so a report the agent
+/// goes on to write does not turn up in the next briefing as activity the
+/// workspace did.
+///
+/// **A workspace with no launchpad yet is `None`, not an empty briefing.**
+/// Nothing is ensured from here: `ensure_today_launchpad` materialises a
+/// workspace and waits on a `planner-harness-start` (INV-TODAYDOC-001), and a
+/// conversation create on some other track has no business doing that.
+///
+/// It takes a bare `&dyn Repo` rather than the route states it was written
+/// against because since #1314 its caller is
+/// `PlannerHarnessStartAdapter::prepare_tx`, which holds neither. Both reads
+/// below are single autocommit statements off the pool; see the call site for
+/// why that, and their placement before the transaction's first write, is what
+/// keeps them out of the lock cycle.
+pub(crate) async fn launchpad_opening_briefing(
+    repo: &dyn Repo,
+    track_id: &str,
+) -> Result<Option<String>> {
+    if !crate::routes::today::is_launchpad_track(repo, track_id).await? {
+        return Ok(None);
+    }
+    let pool = repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Internal("today's activity window requires a sqlite-backed repo".into())
+    })?;
+    let activity = todays_workspace_activity(&pool, Some(track_id)).await?;
+    Ok(Some(opening_activity_briefing(&activity)))
 }
 
 #[cfg(test)]

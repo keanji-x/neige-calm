@@ -42,10 +42,11 @@
 //!
 //! Steps 4 and 5 are **one path, not two branches**. An earlier revision gave
 //! the summary to a "re-run" branch and let the create path carry only its
-//! first message; because `create_track_conversation` skips its send once
-//! `user_message_already_enqueued` is true, that shape produced a summary with
-//! no material on the very first use — the one impression the user gets. See
-//! the design's §0c.1.
+//! first message; since the create carries nothing but
+//! [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — and a same-key replay of it answers 201
+//! without delivering anything a second time — that shape produced a summary
+//! with no material on the very first use, the one impression the user gets.
+//! See the design's §0c.1.
 
 use axum::{
     Json, Router,
@@ -65,7 +66,7 @@ use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversatio
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::ActorId;
 use crate::operation::planner_harness_start_adapter::{
-    HarnessProfile, PlannerHarnessStartOperationPayload,
+    HarnessProfile, OpeningBriefing, PlannerHarnessStartOperationPayload,
 };
 use crate::per_card_lock::lock_card;
 use crate::routes::cards::{
@@ -74,7 +75,7 @@ use crate::routes::cards::{
 use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
 use crate::routes::track_conversations::{
-    NewTrackConversationBody, OpeningBriefing, create_track_conversation_inner,
+    NewTrackConversationBody, create_track_conversation_inner,
 };
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
@@ -410,28 +411,43 @@ pub(crate) async fn write_today_summary(
     // opposite ends, and both end in the same place: a derived card that exists
     // with an empty transcript.
     //
+    // #1314 changed what those two entrances look like, and the honest record
+    // of it is:
+    //
     // * The create operation lands `Stuck`. `plan_compensation` marks it on the
     //   first compensation error and never re-drives it, leaving the card
     //   behind (`deletable: false`, so the user cannot clear it) with no
-    //   runtime and no first message.
-    // * The create operation *succeeds* — card and harness minted — and then
-    //   `create_track_conversation`'s own first `send_planner_input` fails (a 503
-    //   from a shared app-server that went down in between). It returns `Err`,
-    //   so no summary is sent either, and the card is left with an empty
-    //   transcript.
+    //   runtime. Since #1314 the bootstrap text is enqueued by that operation's
+    //   own transaction, so what survives is a card whose message is already on
+    //   the dormant session's pending queue, with its
+    //   `harness.user_message.enqueued` row committed alongside it. The
+    //   predicate therefore reads true here and declines to send a second copy,
+    //   which is the right answer: the dormant restart inherits the pending
+    //   queue.
+    // * The create operation *succeeds* and `create_track_conversation`'s own
+    //   post-operation `send_planner_input` then fails (a 503 from a shared
+    //   app-server that went down in between). **This entrance no longer
+    //   exists**: #1314 deleted that send, so the mint and the delivery of the
+    //   bootstrap commit or roll back together and a successful create cannot
+    //   leave an empty transcript.
     //
-    // Under a card-only predicate the next press skips the create arm and sends
-    // only the summary. Two things then break at once: the *first successful*
-    // trigger leaves ONE `harness.user_message.enqueued` row where
-    // INV-TODAYDOC-010 requires two, and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — the
-    // standing instruction that keeps a bootstrap-only turn from writing a
-    // report with no material — is never delivered at all, permanently.
+    // So no production path is known to reach this arm with a card that has
+    // never been sent a message; `a_card_left_with_an_empty_transcript_still_
+    // receives_the_bootstrap` stages the state by deleting the audit rows.
+    // The read stays anyway, and not out of caution alone: what
+    // INV-TODAYDOC-010 and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] are stated in terms
+    // of is *messages*, not cards. Under a card-only predicate a press that
+    // found such a card would skip the create arm and send only the summary,
+    // and two things break at once: the *first successful* trigger leaves ONE
+    // `harness.user_message.enqueued` row where INV-TODAYDOC-010 requires two,
+    // and the standing instruction that keeps a bootstrap-only turn from
+    // writing a report with no material is never delivered at all,
+    // permanently — the card exists from then on.
     //
-    // So the transcript is consulted, through the same read the create arm
-    // itself uses to decide whether to send (`user_message_already_enqueued`),
-    // and it is read *after* the create arm rather than inside its condition:
-    // that way one statement covers both entrances, plus the ordinary one where
-    // the card was minted seconds ago by this very request.
+    // It is read *after* the create arm rather than inside its condition: that
+    // way one statement covers the recovery entrance, the 409-race fallback and
+    // the ordinary case where the card was minted seconds ago by this very
+    // request.
     //
     // The recovery is NOT "call `create_track_conversation` again". Against an
     // existing card the adapter's `validate` refuses to re-mint and answers 409
@@ -458,17 +474,21 @@ pub(crate) async fn write_today_summary(
             barrier.wait().await;
         }
         // The real handler, not a reimplementation of it: the mint, the
-        // derived-id guard, the four retry arms and the first-message claim all
-        // have to be the ones production uses. The one thing this caller says
-        // for itself is `CallerSuppliesItsOwn`: #1343 gives a user-started
-        // launchpad conversation the day's counts as opening material, and this
-        // path already carries them in `summary_prompt` below — being briefed
-        // as well would state them twice and leave a third
+        // derived-id guard, the four retry arms and the in-transaction
+        // delivery of the bootstrap text all have to be the ones production
+        // uses. The one thing this caller says for itself is
+        // `CallerSuppliesItsOwn`: #1343 gives a user-started launchpad
+        // conversation the day's counts as opening material, and this path
+        // already carries them in `summary_prompt` below — being briefed as
+        // well would state them twice and leave a third
         // `harness.user_message.enqueued` row where INV-TODAYDOC-010 wants two.
+        //
+        // Since #1314 that ruling rides in the operation payload rather than
+        // being acted on after the operation commits, so it reaches the same
+        // decision from inside the mint transaction.
         let created = create_track_conversation_inner(
             s.clone(),
             w.clone(),
-            cs.clone(),
             synthetic_actor(),
             headers,
             track_id.clone(),
@@ -531,13 +551,14 @@ pub(crate) async fn write_today_summary(
     // at-least-once, deduplicated by a permanent row in the ordinary case.
     //
     // **Under the per-card first-message claim, and that is not optional.**
-    // This is the same read-then-send `create_track_conversation` performs, and
-    // both paths need the same claim for
-    // the same reason: two concurrent requests both read "no user message yet"
-    // and both send, so the agent gets the same standing instruction twice.
-    // Moving this step out of `create_track_conversation` and into here moved it
-    // out from under that lock; measured, two concurrent triggers against a
-    // card with an empty transcript delivered two bootstraps.
+    // `create_track_conversation` used to perform the same read-then-send under
+    // this same lock; #1314 removed both from there, because its delivery now
+    // rides inside the mint operation and is serialized by the operation row
+    // rather than by a lock. This read-then-send is not, so it keeps the claim
+    // for the reason it was introduced: two concurrent requests both read "no
+    // user message yet" and both send, so the agent gets the same standing
+    // instruction twice. Measured — two concurrent triggers against a card with
+    // an empty transcript delivered two bootstraps.
     //
     // The window is open **only** in the empty-transcript state, which makes it
     // worse rather than better: an ordinary double-click on a first trigger is
@@ -721,6 +742,9 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     })?;
     run_planner_card_operation(s, "planner-harness-start", payload).await
 }
