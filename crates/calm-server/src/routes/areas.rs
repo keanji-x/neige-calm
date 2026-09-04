@@ -34,6 +34,7 @@ use crate::operation::workspace_lease::{
 };
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::workspace_materialize::validate_attached_workspace;
 use crate::workspace_recycle;
 use axum::{
     Json, Router,
@@ -43,6 +44,9 @@ use axum::{
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+
+use super::area_folders::normalize_path;
+use crate::templates::template_by_key;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -70,6 +74,46 @@ pub struct ListAreasQuery {
     /// and integration tests.
     #[serde(default)]
     pub include_system: bool,
+}
+
+/// User-facing Area creation. The raw sync-domain `NewArea` stays narrow for
+/// internal callers; these two preferences belong to the REST product surface
+/// and are applied inside the same audited transaction as the Area row.
+///
+/// Deliberately permissive about unknown JSON keys, matching the historical
+/// `NewArea` contract: in particular a caller-supplied `kind` must continue to
+/// be ignored rather than gaining a path to create a system Area.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateAreaRequest {
+    pub name: String,
+    pub color: String,
+    /// If absent, server appends to end.
+    pub sort: Option<f64>,
+    #[serde(default)]
+    pub default_template_id: Option<String>,
+    #[serde(default)]
+    pub default_cwd: Option<String>,
+}
+
+fn validate_default_template(default_template_id: Option<&str>) -> Result<()> {
+    let Some(template_id) = default_template_id else {
+        return Ok(());
+    };
+    if template_by_key(template_id).is_none() {
+        return Err(CalmError::BadRequest(format!(
+            "area default: `default_template_id` must reference a known track template; got `{template_id}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_and_normalize_default_cwd(default_cwd: &mut Option<String>) -> Result<()> {
+    let Some(cwd) = default_cwd else {
+        return Ok(());
+    };
+    validate_attached_workspace(std::path::Path::new(cwd))?;
+    *cwd = normalize_path(cwd);
+    Ok(())
 }
 
 #[utoipa::path(
@@ -102,17 +146,31 @@ pub(crate) async fn list_areas(
     post,
     path = "/api/areas",
     tag = "areas",
-    request_body = NewArea,
+    request_body = CreateAreaRequest,
     responses(
         (status = 201, description = "Area created", body = Area),
+        (status = 400, description = "Unknown default template or invalid attached default folder", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn create_area(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(p): Json<NewArea>,
+    Json(mut request): Json<CreateAreaRequest>,
 ) -> Result<(StatusCode, Json<Area>)> {
+    validate_default_template(request.default_template_id.as_deref())?;
+    validate_and_normalize_default_cwd(&mut request.default_cwd)?;
+    let p = NewArea {
+        name: request.name,
+        color: request.color,
+        sort: request.sort,
+    };
+    let has_defaults = request.default_template_id.is_some() || request.default_cwd.is_some();
+    let defaults = AreaPatch {
+        default_template_id: request.default_template_id.map(Some),
+        default_cwd: request.default_cwd.map(Some),
+        ..AreaPatch::default()
+    };
     // Judgment call (PR2 of #136): create uses `EventScope::System`
     // rather than `EventScope::Area { area: <new_id> }`. The area id is
     // minted inside the txn closure; we don't know it before the write.
@@ -134,7 +192,11 @@ pub(crate) async fn create_area(
         &s.write,
         move |tx| {
             Box::pin(async move {
-                let area = area_create_tx(tx, p).await?;
+                let mut area = area_create_tx(tx, p).await?;
+                if has_defaults {
+                    let area_id = area.id.clone();
+                    area = area_update_tx(tx, area_id.as_str(), defaults).await?;
+                }
                 Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
@@ -246,6 +308,7 @@ pub(crate) async fn get_or_create_system_area(
     request_body = AreaPatch,
     responses(
         (status = 200, description = "Area updated", body = Area),
+        (status = 400, description = "Unknown default template or invalid attached default folder", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -254,8 +317,24 @@ pub(crate) async fn update_area(
     State(s): State<RouteState>,
     actor: Actor,
     Path(id): Path<String>,
-    Json(p): Json<AreaPatch>,
+    Json(mut p): Json<AreaPatch>,
 ) -> Result<Json<Area>> {
+    // Preserve the route's resource-first error contract. Besides returning
+    // the documented 404 for an unknown id, this prevents an invalid
+    // caller-supplied path from triggering filesystem metadata and `git`
+    // probes for a resource that does not exist.
+    s.repo
+        .area_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("area {id}")))?;
+    validate_default_template(
+        p.default_template_id
+            .as_ref()
+            .and_then(|value| value.as_deref()),
+    )?;
+    if let Some(value) = p.default_cwd.as_mut() {
+        validate_and_normalize_default_cwd(value)?;
+    }
     let scope = EventScope::Area {
         area: id.clone().into(),
     };

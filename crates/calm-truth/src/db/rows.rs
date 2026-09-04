@@ -36,6 +36,8 @@ pub struct AreaRow {
     pub sort: f64,
     #[sqlx(try_from = "String")]
     pub kind: AreaKind,
+    pub default_template_id: Option<String>,
+    pub default_cwd: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -48,6 +50,8 @@ impl From<AreaRow> for Area {
             color: r.color,
             sort: r.sort,
             kind: r.kind,
+            default_template_id: r.default_template_id,
+            default_cwd: r.default_cwd,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }

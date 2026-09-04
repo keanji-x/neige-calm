@@ -17,7 +17,10 @@ function memoryStorage() {
 }
 
 function area(overrides: Partial<Area> = {}): Area {
-  return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
+  return {
+    id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0, ...overrides,
+  };
 }
 
 function track(overrides: Partial<Track> = {}): Track {
@@ -39,8 +42,8 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         tracks={tracks}
         currentPath={props.currentPath ?? '/'}
         onGo={props.onGo ?? vi.fn()}
-        onCreateArea={props.onCreateArea ?? vi.fn()}
-        onRenameArea={props.onRenameArea ?? vi.fn()}
+        onRequestCreateArea={props.onRequestCreateArea ?? vi.fn()}
+        onRequestEditArea={props.onRequestEditArea ?? vi.fn()}
         onDeleteArea={props.onDeleteArea ?? vi.fn()}
         onNewTrack={props.onNewTrack ?? vi.fn()}
         onSetPinned={props.onSetPinned ?? vi.fn()}
@@ -121,19 +124,15 @@ describe('INV-SIDEBAR-013 every area row carries a permanent New track control',
     expect(screen.queryByRole('button', { name: 'New track' })).toBeNull();
   });
 
-  /*
-   * Permanently visible, unlike the delete beside it. jsdom applies no CSS Module,
-   * so "visible" cannot be read off a computed style here; what this pins is
-   * the fact the reveal is *built* on — `.areaDelete` carries the opacity rule
-   * and `.areaNew` does not, so the two controls cannot silently converge on
-   * one behaviour. The `browser` tier owns the rendered opacity.
-   */
-  it('leaves the New track control out of the hover-revealed class the delete uses', () => {
+  /* Both controls are permanent but occupy different slots. jsdom cannot read
+     their positioned geometry, so this pins their separate styling hooks; the
+     browser tier owns rendered visibility and alignment. */
+  it('keeps New track and Area actions in separate permanent control slots', () => {
     renderSidebar({ areas, tracksByArea });
     const create = screen.getByRole('button', { name: 'New track in Work' });
-    const remove = screen.getByRole('button', { name: 'Delete area Work' });
-    expect(create.className).not.toBe(remove.className);
-    expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
+    const actions = screen.getByRole('button', { name: 'Area actions for Work' });
+    expect(create.className).not.toBe(actions.className);
+    expect(create.className.split(/\s+/).some((token) => actions.className.split(/\s+/).includes(token)))
       .toBe(false);
   });
 
@@ -159,7 +158,7 @@ describe('E2E-INV-SHELL-003 the kernel system area never reaches the rail', () =
     // there is no "No areas yet." sentence pointing at a button elsewhere —
     // the create field is already open in the first row's place.
     expect(screen.queryByText(/no areas/i)).toBeNull();
-    expect(screen.getByRole('textbox', { name: 'Area name' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create your first area' })).toBeTruthy();
   });
 });
 

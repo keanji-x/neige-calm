@@ -33,7 +33,10 @@ function renderForm(overrides: Partial<React.ComponentProps<typeof NewTaskForm>>
   return { ...utils, onCreated, onCancel, qc };
 }
 
-const ATLAS = { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 };
+const ATLAS = {
+  id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, kind: 'user' as const,
+  default_template_id: null, default_cwd: null, updated_at: 0, created_at: 0,
+};
 
 function mockCreatedTrack() {
   return vi.spyOn(api, 'createTrack').mockResolvedValue({

@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
-import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 
@@ -18,7 +17,10 @@ function memoryStorage() {
 }
 
 function area(overrides: Partial<Area> = {}): Area {
-  return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
+  return {
+    id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0, ...overrides,
+  };
 }
 
 function track(overrides: Partial<Track> = {}): Track {
@@ -44,8 +46,8 @@ function renderSidebar(props: Partial<Props> = {}) {
           tracks={tracks}
           currentPath={merged.currentPath ?? '/'}
           onGo={merged.onGo ?? vi.fn()}
-          onCreateArea={merged.onCreateArea ?? vi.fn()}
-          onRenameArea={merged.onRenameArea ?? vi.fn()}
+          onRequestCreateArea={merged.onRequestCreateArea ?? vi.fn()}
+          onRequestEditArea={merged.onRequestEditArea ?? vi.fn()}
           onDeleteArea={merged.onDeleteArea ?? vi.fn()}
           onNewTrack={merged.onNewTrack ?? vi.fn()}
           onSetPinned={merged.onSetPinned ?? vi.fn()}
@@ -68,11 +70,16 @@ function renderSidebar(props: Partial<Props> = {}) {
   return { ...result, update: (overrides: Partial<Props>) => result.rerender(build(overrides)) };
 }
 
+async function requestAreaDelete(): Promise<void> {
+  await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
+}
+
 describe('workspace read feedback', () => {
   it('shows loading, read failure, and retries the workspace read', async () => {
     const onRetryRead = vi.fn();
     const { update } = renderSidebar({ readLoading: true, onRetryRead });
-    expect(screen.getByRole('status').textContent).toContain('Loading workspace');
+    expect(screen.getByText('Loading workspace…')).toBeTruthy();
     update({ readLoading: false, readError: 'areas down', onRetryRead });
     expect(screen.getByRole('alert').textContent).toContain('areas down');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -143,12 +150,14 @@ describe('area row', () => {
       track({ id: 'c', lifecycle: 'draft' }),
     ];
     renderSidebar({ tracks, tracksByArea: new Map([['c1', tracks]]) });
+    const name = screen.getByTitle('Work');
     const row = screen.getByRole('button', { name: 'Collapse area Work' });
-    expect(row.textContent).toBe('Work');
-    expect(row.querySelectorAll('[style]').length).toBe(0);
+    expect(name.textContent).toBe('Work');
+    expect(name.closest('button')).toBe(row);
+    expect(name.querySelectorAll('[style]').length).toBe(0);
   });
 
-  it('makes the Area row one disclosure control and not a navigation target', async () => {
+  it('makes the whole Area row a disclosure and never a navigation target', async () => {
     const onGo = vi.fn();
     renderSidebar({ tracks: [track()], onGo });
     const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
@@ -156,6 +165,17 @@ describe('area row', () => {
     expect(disclosure.querySelector('svg')).toBeTruthy();
     await userEvent.click(disclosure);
     expect(onGo).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /^Track Task/ })).toBeNull();
+  });
+
+  it('toggles immediately for Enter and Space keyboard activation', async () => {
+    renderSidebar({ tracks: [track()] });
+    const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
+    disclosure.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('button', { name: 'Expand area Work' })).toBeTruthy();
+    await userEvent.keyboard(' ');
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
   /* The rail does not own the new-track surface — since #1211 it is a route,
@@ -172,65 +192,41 @@ describe('area row', () => {
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     expect(onNewTrack.mock.calls).toEqual([['c2']]);
     expect(onGo).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Collapse area Reading' })).toBeTruthy();
   });
 });
 
 describe('new area', () => {
-  it('submits on Enter with a palette colour, and cancels on Escape', async () => {
-    const onCreateArea = vi.fn();
-    renderSidebar({ onCreateArea });
-
+  it('requests the shared editor from both the header and zero-state action', async () => {
+    const onRequestCreateArea = vi.fn();
+    const view = renderSidebar({ onRequestCreateArea });
     await userEvent.click(screen.getByRole('button', { name: 'New area' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Escape}');
-    expect(onCreateArea).not.toHaveBeenCalled();
+    expect(onRequestCreateArea).toHaveBeenCalledTimes(1);
 
-    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Enter}');
-    expect(onCreateArea).toHaveBeenCalledTimes(1);
-    const [name, color] = onCreateArea.mock.calls[0] as [string, string];
-    expect(name).toBe('Reading');
-    expect(AREA_PALETTE).toContain(color);
-  });
-
-  it('submits on blur', async () => {
-    const onCreateArea = vi.fn();
-    renderSidebar({ onCreateArea });
-    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Later');
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
-    expect(onCreateArea.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
+    view.update({ areas: [], tracksByArea: new Map() });
+    await userEvent.click(screen.getByRole('button', { name: 'Create your first area' }));
+    expect(onRequestCreateArea).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('rename area', () => {
-  it('renames inline on double-click without navigating', async () => {
-    const onRenameArea = vi.fn();
+describe('edit area', () => {
+  it('does not overload the disclosure double-click with editing', async () => {
+    const onRequestEditArea = vi.fn();
     const onGo = vi.fn();
-    renderSidebar({ onRenameArea, onGo });
+    renderSidebar({ tracks: [track({ title: 'Inside' })], onRequestEditArea, onGo });
     await userEvent.dblClick(screen.getByRole('button', { name: 'Collapse area Work' }));
-    const input = screen.getByRole('textbox', { name: 'Rename area Work' });
-    await userEvent.clear(input);
-    await userEvent.type(input, 'Studio{Enter}');
-    expect(onRenameArea).toHaveBeenCalledWith('c1', 'Studio');
-    expect(onGo).not.toHaveBeenCalled();
+    expect(onRequestEditArea).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
+    expect(onGo).not.toHaveBeenCalled();
   });
 
-  it('uses F2 as the keyboard equivalent and restores focus after commit or cancel', async () => {
-    const onRenameArea = vi.fn();
-    renderSidebar({ onRenameArea });
-    const disclosure = screen.getByRole('button', { name: 'Collapse area Work' });
-    disclosure.focus();
-    await userEvent.keyboard('{F2}');
-    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), '{Enter}');
-    await waitFor(() => expect(document.activeElement)
-      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
-
-    await userEvent.keyboard('{F2}');
-    await userEvent.type(screen.getByRole('textbox', { name: 'Rename area Work' }), 'discarded{Escape}');
-    await waitFor(() => expect(document.activeElement)
-      .toBe(screen.getByRole('button', { name: 'Collapse area Work' })));
-    expect(onRenameArea).not.toHaveBeenCalled();
+  it('is discoverable from the Area actions menu', async () => {
+    const onRequestEditArea = vi.fn();
+    renderSidebar({ onRequestEditArea });
+    await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit area' }));
+    expect(onRequestEditArea).toHaveBeenCalledWith(area());
   });
 });
 
@@ -254,7 +250,7 @@ describe('destructive confirms', () => {
     const onDeleteArea = vi.fn();
     renderSidebar({ onDeleteArea });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    await requestAreaDelete();
     // §6.13 / CR-5a — the title names the area, and Confirm stays blocked until
     // the name is reproduced. Deleting an area cascades to every track inside it;
     // it is the one operation in the product that earns a typed confirm, and
@@ -270,14 +266,14 @@ describe('destructive confirms', () => {
 
   it('states that the cascade count is unknown when the area track query has no data', async () => {
     renderSidebar({ tracksByArea: new Map() });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    await requestAreaDelete();
     expect(screen.getByRole('dialog').textContent).toContain('The number of tracks is not available.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });
 
   it('describes deletion of a genuinely empty area without claiming it deletes zero tracks', async () => {
     renderSidebar({ tracksByArea: new Map([['c1', []]]) });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    await requestAreaDelete();
     expect(screen.getByRole('dialog').textContent).toContain('This deletes the area.');
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });

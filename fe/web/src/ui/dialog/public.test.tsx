@@ -219,6 +219,118 @@ describe('Dialog behavior', () => {
     expect(unmounted).not.toHaveBeenCalled();
   });
 
+  it('hands focus into a child view and restores the control that opened it', () => {
+    let controller: DialogViewController | null = null;
+    render(
+      <Dialog open title="Parent" onClose={vi.fn()}>
+        <Capture onController={(value) => { controller = value; }} />
+      </Dialog>,
+    );
+    const opener = screen.getByRole('button', { name: 'Original child' });
+    opener.focus();
+    let dispose!: () => void;
+    act(() => {
+      dispose = controller!.pushView({
+        title: 'Child',
+        body: <><input aria-label="Child path" /><button type="button">Cancel child</button></>,
+      });
+    });
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Child path' }));
+
+    act(dispose);
+    expect(screen.getByRole('dialog', { name: 'Parent' })).toBeTruthy();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('preserves every opener across a nested child-view focus stack', () => {
+    let controller: DialogViewController | null = null;
+    render(
+      <Dialog open title="Parent" onClose={vi.fn()}>
+        <Capture onController={(value) => { controller = value; }} />
+      </Dialog>,
+    );
+    const baseOpener = screen.getByRole('button', { name: 'Original child' });
+    baseOpener.focus();
+    let disposeFirst!: () => void;
+    act(() => {
+      disposeFirst = controller!.pushView({
+        title: 'First child', body: <button type="button">Open second child</button>,
+      });
+    });
+    const firstOpener = screen.getByRole('button', { name: 'Open second child' });
+    expect(document.activeElement).toBe(firstOpener);
+
+    let disposeSecond!: () => void;
+    act(() => {
+      disposeSecond = controller!.pushView({
+        title: 'Second child', body: <input aria-label="Second child field" />,
+      });
+    });
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Second child field' }));
+
+    act(disposeSecond);
+    // Only the top child body is mounted; returning to child 1 remounts its
+    // control, so restoration falls back to that view's first focusable.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open second child' }));
+    act(disposeFirst);
+    expect(document.activeElement).toBe(baseOpener);
+  });
+
+  it('falls back inside the visible view when a popped child opener disappeared', () => {
+    let controller: DialogViewController | null = null;
+    render(
+      <Dialog open title="Parent" onClose={vi.fn()}>
+        <Capture onController={(value) => { controller = value; }} />
+      </Dialog>,
+    );
+    screen.getByRole('button', { name: 'Original child' }).focus();
+    let disposeFirst!: () => void;
+    act(() => {
+      disposeFirst = controller!.pushView({
+        title: 'First child', body: <button type="button">Open second child</button>,
+      });
+    });
+    let disposeSecond!: () => void;
+    act(() => {
+      disposeSecond = controller!.pushView({
+        title: 'Second child', body: <input aria-label="Second child field" />,
+      });
+    });
+    // Remove the non-top view containing child 2's recorded opener, then pop
+    // child 2. Restoring that detached button is impossible; focus must still
+    // land inside the now-visible parent Dialog.
+    act(disposeFirst);
+    act(disposeSecond);
+    const dialog = screen.getByRole('dialog', { name: 'Parent' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  it('falls back when a recorded opener becomes fieldset-disabled while the child is open', () => {
+    let controller: DialogViewController | null = null;
+    render(
+      <Dialog open title="Parent" onClose={vi.fn()}>
+        <fieldset aria-label="Base controls">
+          <button type="button">Open child</button>
+        </fieldset>
+        <Capture onController={(value) => { controller = value; }} />
+      </Dialog>,
+    );
+    const opener = screen.getByRole('button', { name: 'Open child' });
+    opener.focus();
+    let dispose!: () => void;
+    act(() => {
+      dispose = controller!.pushView({ title: 'Child', body: <button type="button">Child action</button> });
+    });
+    const fieldset = document.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Base controls"]')!;
+    fieldset.disabled = true;
+    act(dispose);
+
+    const dialog = screen.getByRole('dialog', { name: 'Parent' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
   it('uses a disposable LIFO child-view stack', () => {
     let controller: DialogViewController | null = null;
     render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
@@ -248,9 +360,10 @@ describe('Dialog behavior', () => {
   it('traps Tab on the close button when a child view has no focusable controls', () => {
     let controller: DialogViewController | null = null;
     render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    screen.getByRole('button', { name: 'Original child' }).focus();
     act(() => { controller!.pushView({ title: 'Child', body: <p>No controls</p> }); });
     const close = screen.getByRole('button', { name: 'Close' });
-    close.focus();
+    expect(document.activeElement).toBe(close);
     const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
     expect(close.dispatchEvent(event)).toBe(false);
     expect(document.activeElement).toBe(close);

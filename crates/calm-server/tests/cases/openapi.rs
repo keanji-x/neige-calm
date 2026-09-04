@@ -92,6 +92,7 @@ fn document_contains_every_wire_model() {
         "Terminal",
         "Plugin",
         // route-local DTOs
+        "CreateAreaRequest",
         "CreateCardBody",
         "ViaToolCall",
         "NewTerminalCardBody",
@@ -114,6 +115,35 @@ fn document_contains_every_wire_model() {
             "expected schema `{name}` in OpenAPI document; got: {:?}",
             schemas
         );
+    }
+}
+
+#[test]
+fn area_defaults_are_required_nullable_output_fields() {
+    let json = serde_json::to_value(ApiDoc::openapi()).expect("OpenAPI doc serializes to JSON");
+    let area = json
+        .pointer("/components/schemas/Area")
+        .expect("Area schema is present");
+    let required = area
+        .get("required")
+        .and_then(|value| value.as_array())
+        .expect("Area required list is present");
+
+    for field in ["default_template_id", "default_cwd"] {
+        assert!(
+            required.iter().any(|value| value.as_str() == Some(field)),
+            "Area.{field} is always serialized and must be required in OpenAPI: {area}"
+        );
+        let types = area
+            .pointer(&format!("/properties/{field}/type"))
+            .and_then(|value| value.as_array())
+            .expect("nullable Area default has an OpenAPI type union");
+        for expected in ["string", "null"] {
+            assert!(
+                types.iter().any(|value| value.as_str() == Some(expected)),
+                "Area.{field} must allow {expected}: {area}"
+            );
+        }
     }
 }
 

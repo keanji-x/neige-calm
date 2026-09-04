@@ -8,6 +8,7 @@ import { z } from 'zod';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { areaWireSchema, toArea } from '../../../../core/domain/area.ts';
 import {
   readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
@@ -167,6 +168,164 @@ describe('delete mutation wiring', () => {
     controller.abort();
     await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+  });
+
+  it('writes an Area PATCH response through before its background refetch', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const original = toArea(areaWireSchema.parse(userArea));
+    client.setQueryData(queryKeys.areas(), [original]);
+    const updatedWire = {
+      ...userArea,
+      name: 'Studio',
+      default_template_id: 'small-change',
+      default_cwd: '/srv/studio',
+      updated_at: original.updatedAt + 1,
+    };
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(updatedWire)) };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => result.current.update('c1', {
+      name: 'Studio', default_template_id: 'small-change', default_cwd: '/srv/studio',
+    }));
+
+    expect(client.getQueryData<ReturnType<typeof toArea>[]>(queryKeys.areas())).toEqual([
+      expect.objectContaining({
+        name: 'Studio', defaultTemplateId: 'small-change', defaultCwd: '/srv/studio',
+      }),
+    ]);
+  });
+
+  it('invalidates Areas after a failed PATCH', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const transport: ApiTransportPort = {
+      send: () => Promise.reject(new Error('PATCH failed')),
+    };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await expect(result.current.update('c1', { name: 'Studio' })).rejects.toBeInstanceOf(ApiError);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+  });
+
+  it('does not let a delayed Area PATCH response overwrite a newer event row', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const original = toArea(areaWireSchema.parse(userArea));
+    client.setQueryData(queryKeys.areas(), [original]);
+
+    const responseWire = {
+      ...userArea,
+      name: 'My edit',
+      default_template_id: 'small-change',
+      default_cwd: '/srv/mine',
+      updated_at: original.updatedAt + 1,
+    };
+    let releaseResponse!: () => void;
+    const responseHeld = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    const send = vi.fn(async () => {
+      await responseHeld;
+      return ok(responseWire);
+    });
+    const transport: ApiTransportPort = { send };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    let pending!: ReturnType<typeof result.current.update>;
+    act(() => {
+      pending = result.current.update('c1', {
+        name: 'My edit', default_template_id: 'small-change', default_cwd: '/srv/mine',
+      });
+    });
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+    // `area_update_tx` assigns the later PATCH a strictly greater row version
+    // even when both writes share one wall-clock millisecond. Its event reaches
+    // this cache before the older HTTP response.
+    const newerEvent = {
+      ...original,
+      name: 'Remote edit',
+      defaultTemplateId: null,
+      defaultCwd: '/srv/remote',
+      updatedAt: responseWire.updated_at + 1,
+    };
+    act(() => { client.setQueryData(queryKeys.areas(), [newerEvent]); });
+    releaseResponse();
+    await act(async () => { await pending; });
+
+    expect(client.getQueryData(queryKeys.areas())).toEqual([newerEvent]);
+  });
+
+  it('writes a created Area into an empty cache before the zero-state opener disappears', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.areas(), []);
+    const createdWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      default_template_id: null,
+      default_cwd: null,
+    };
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+
+    expect(client.getQueryData<ReturnType<typeof toArea>[]>(queryKeys.areas()))
+      .toEqual([expect.objectContaining({ id: 'c-new', name: 'Reading' })]);
+  });
+
+  it('does not promote one created Area into a complete list when the cache is uninitialized', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const createdWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      default_template_id: null,
+      default_cwd: null,
+    };
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+
+    expect(client.getQueryData(queryKeys.areas())).toBeUndefined();
+    expect(client.getQueryState(queryKeys.areas())).toBeUndefined();
+  });
+
+  it('preserves a failed no-data Area list instead of replacing it with one created row', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    await expect(client.fetchQuery({
+      queryKey: queryKeys.areas(),
+      queryFn: () => Promise.reject(new Error('areas unavailable')),
+    })).rejects.toThrow('areas unavailable');
+    const createdWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      default_template_id: null,
+      default_cwd: null,
+    };
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+
+    expect(client.getQueryData(queryKeys.areas())).toBeUndefined();
+    expect(client.getQueryState(queryKeys.areas())?.status).toBe('error');
   });
 });
 

@@ -8,6 +8,8 @@
       "color": "#aabbcc",
       "sort": 1.5,
       "kind": "system",
+      "default_template_id": "small-change",
+      "default_cwd": "/srv/work",
       "created_at": 1000,
       "updated_at": 2000
     }

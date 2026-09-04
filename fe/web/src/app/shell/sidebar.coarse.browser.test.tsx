@@ -8,13 +8,13 @@ import { Sidebar } from './sidebar.tsx';
 
 afterEach(cleanup);
 
-it('keeps Area delete reachable on a wide no-hover touch display', () => {
+it('keeps Area actions reachable on a wide no-hover touch display', () => {
   expect(matchMedia('(width >= 60rem)').matches).toBe(true);
   expect(matchMedia('(hover: none)').matches).toBe(true);
 
   const area: Area = {
     id: 'a1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
-    createdAt: 1, updatedAt: 1,
+    defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1,
   };
   render(
     <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
@@ -24,8 +24,8 @@ it('keeps Area delete reachable on a wide no-hover touch display', () => {
         tracks={[]}
         currentPath="/"
         onGo={vi.fn()}
-        onCreateArea={vi.fn()}
-        onRenameArea={vi.fn()}
+        onRequestCreateArea={vi.fn()}
+        onRequestEditArea={vi.fn()}
         onDeleteArea={vi.fn()}
         onNewTrack={vi.fn()}
         onSetPinned={vi.fn()}
@@ -39,9 +39,9 @@ it('keeps Area delete reachable on a wide no-hover touch display', () => {
     </ThemeProvider>,
   );
 
-  const remove = document.querySelector<HTMLElement>('[aria-label="Delete area Work"]');
-  expect(remove).not.toBeNull();
-  const style = getComputedStyle(remove!);
+  const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]');
+  expect(actions).not.toBeNull();
+  const style = getComputedStyle(actions!.parentElement!);
   expect(style.opacity).toBe('1');
   expect(style.pointerEvents).toBe('auto');
 });

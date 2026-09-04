@@ -175,10 +175,12 @@ describe('activeTracksOn', () => {
 
 describe('userVisibleTracks', () => {
   const userArea: Area = {
-    id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0,
+    id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
   };
   const systemArea: Area = {
-    id: 'sys', name: 'Kernel', color: '#000000', sort: 0, kind: 'system', createdAt: 0, updatedAt: 0,
+    id: 'sys', name: 'Kernel', color: '#000000', sort: 0, kind: 'system',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
   };
   const mine = track({ id: 'w1', areaId: 'c1' });
   const scaffolding = track({ id: 'w-sys', areaId: 'sys' });

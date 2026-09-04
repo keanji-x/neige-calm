@@ -13,13 +13,13 @@
 //!      surface a successful response and the DB ends up with exactly
 //!      one system row.
 //!
-//!   2. **`POST /api/areas` silently ignores `kind`.** `NewArea`
+//!   2. **`POST /api/areas` silently ignores `kind`.** `CreateAreaRequest`
 //!      deliberately omits a `kind` field (and `serde` is permissive by
 //!      default — `deny_unknown_fields` is *not* set), so a client
 //!      payload like `{"name":"x","color":"#000","kind":"system"}` is
 //!      accepted, the unknown field is dropped, and the row lands as
 //!      `AreaKind::User`. This test pins that behavior so a future
-//!      well-meaning patch that adds `kind` to `NewArea` lights up here
+//!      well-meaning patch that adds `kind` to `CreateAreaRequest` lights up here
 //!      before it ships — promoting a user area to the singleton system
 //!      kind through the public surface would break #175's invariants.
 
@@ -243,12 +243,13 @@ async fn post_areas_system_concurrent_calls_both_succeed() {
 }
 
 /// Issue #175 — contract test. `POST /api/areas` accepts a JSON body
-/// shaped by `NewArea { name, color, sort? }`. `serde`'s default
+/// shaped by `CreateAreaRequest` (whose required identity fields remain
+/// `name` and `color`). `serde`'s default
 /// behavior is to silently drop unknown fields, so a payload that
 /// includes `"kind": "system"` parses cleanly and the row still lands
 /// as `AreaKind::User` (because `area_create_tx` hardcodes `User`).
 /// This test pins the silent-drop behavior so a future patch that adds
-/// a `kind` field to `NewArea` — even with the best intentions — turns
+/// a `kind` field to `CreateAreaRequest` — even with the best intentions — turns
 /// red here before it ships. Promoting a user area to `kind='system'`
 /// through the public surface would let any client claim the singleton
 /// system slot and break the invariants of the hidden Today scaffolding.

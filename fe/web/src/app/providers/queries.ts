@@ -555,9 +555,11 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
 /**
  * #1209 — templates for the new-track page.
  *
- * `retry: false` and a plain failure are the point: the page degrades to
- * Blank-only when this read fails, and a retrying query would leave the entry
- * point spinning instead. Creating a track must never depend on this list.
+ * `retry: false` makes a failed roster visible instead of leaving either
+ * consumer spinning. New Track can continue with an explicit No template when
+ * no saved default must be resolved; a saved but unresolved Area default stays
+ * blocked until the reader clears or replaces it. The Area editor likewise
+ * keeps the missing value visible rather than silently changing the setting.
  */
 export function trackTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
@@ -568,10 +570,9 @@ export function trackTemplatesQueryOptions(transport: ApiTransportPort, unauthor
 }
 
 export type TrackTemplates = Readonly<{
-  /** Never `undefined`: for the new-track page, pending and failed both read
-   *  as "Blank only". */
+  /** Never `undefined`; `loaded` and `error` distinguish empty, pending, and failed. */
   templates: TrackTemplate[];
-  /** A notice for the page, not a blocker. `null` while pending. */
+  /** Visible roster failure. Whether it blocks depends on the saved selection. */
   error: string | null;
   /** `false` while the first read is still in flight — see `useTrackTemplates`. */
   loaded: boolean;
@@ -579,27 +580,26 @@ export type TrackTemplates = Readonly<{
 }>;
 
 /**
- * The new-track page's template list, collapsed to the two things the page
- * can act on. A hook and not raw `useQuery` at the call site so the shell's
- * contract tests keep mocking exactly one module (`providers/queries`) —
- * the same shape `useWorkspace` and the mutation hooks already have.
+ * Shared template roster for New Track and the Area editor. A hook and not raw
+ * `useQuery` at either call site keeps loading/error semantics in one place and
+ * lets shell contract tests mock the same provider boundary as the workspace
+ * and mutation hooks.
  */
 export function useTrackTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackTemplates {
   const query = useQuery(trackTemplatesQueryOptions(transport, unauthorized));
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
-    // `[]` must not be readable as "loaded and empty" — the New track picker
-    // renders a different affordance for "no templates" than for "not yet".
+    // `[]` must not be readable as "loaded and empty" — both template pills
+    // render a different affordance for "no templates" than for "not yet".
     //
     // A **failed** read is not loaded either. The first cut wrote
     // `!query.isPending`, which is true once a read has errored — so a dead
     // server produced `loaded: true` with `templates: []`, i.e. a picker
     // claiming the server has no templates instead of reporting the failure.
     //
-    // #1300 S1 removed the Settings editor, which was this field's other
-    // consumer. It stays because the picker is a consumer in its own right —
-    // `new-track/public.tsx` branches on it — not as a leftover.
+    // New Track uses this to fail closed for an unresolved saved default; the
+    // Area editor uses it to label a saved id as pending vs unavailable.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
@@ -782,20 +782,52 @@ export function prefetchAreaList(client: QueryClient, transport: ApiTransportPor
 
 export type AreaMutations = Readonly<{
   create: (body: NewAreaBody) => Promise<Area>;
-  rename: (areaId: string, body: AreaPatchBody) => Promise<Area>;
+  update: (areaId: string, body: AreaPatchBody) => Promise<Area>;
   remove: (areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
+
+function reconcileAreaUpdate(current: Area, updated: Area): Area {
+  // `area_update_tx` advances updatedAt strictly for every committed write.
+  // The event and HTTP response for one write therefore share a version, while
+  // a later event is always greater even when both writes occur in one wall-
+  // clock millisecond. Equal keeps the cache's equivalent event carrier.
+  return current.updatedAt >= updated.updatedAt ? current : updated;
+}
 
 export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: (body: NewAreaBody) => runOperation(transport, createAreaOperation(body), unauthorized),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
+    onSuccess: (wire) => {
+      const created = toArea(wire);
+      client.setQueryData<Area[]>(queryKeys.areas(), (current) => current === undefined
+        ? current
+        : sortedAreas([
+          ...current.filter((area) => area.id !== created.id),
+          created,
+        ]));
+      void client.invalidateQueries({ queryKey: queryKeys.areas() });
+    },
   });
-  const rename = useMutation({
+  const update = useMutation({
     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>
       runOperation(transport, updateAreaOperation(areaId, body), unauthorized),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
+    onSuccess: (wire) => {
+      const updated = toArea(wire);
+      // The Area editor closes as soon as mutateAsync resolves, and its row's
+      // New Track action is immediately usable. Write the authoritative PATCH
+      // response through before that close; otherwise a click in the refetch
+      // window snapshots stale defaults into NewTrackForm's local state.
+      client.setQueryData<Area[]>(queryKeys.areas(), (current) => current?.map(
+        (area) => area.id === updated.id
+          ? reconcileAreaUpdate(area, updated)
+          : area,
+      ));
+    },
+    // Success and failure both reconcile with the server. A transport failure
+    // may still follow a committed write, so failure cannot leave cached Area
+    // defaults authoritative.
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   const remove = useMutation({
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>
@@ -810,7 +842,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   });
   return {
     create: async (body) => toArea(await create.mutateAsync(body)),
-    rename: async (areaId, body) => toArea(await rename.mutateAsync({ areaId, body })),
+    update: async (areaId, body) => toArea(await update.mutateAsync({ areaId, body })),
     remove: async (areaId, signal) => { await remove.mutateAsync({ areaId, signal }); },
   };
 }

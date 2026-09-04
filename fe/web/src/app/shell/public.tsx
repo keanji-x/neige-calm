@@ -16,8 +16,17 @@ import { createContext, useContext, useEffect, useRef, type CSSProperties } from
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { Area } from '../../../../core/domain/area.ts';
+import {
+  AreaEditorForm, type AreaEditorPatch, type AreaEditorValues,
+} from '../../features/area/editor/public.tsx';
+import { AREA_PALETTE } from '../../features/area/palette.ts';
+import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { useAreaMutations, useTrackMutations, useWorkspace } from '../providers/queries.ts';
+import { createDirectoryLister } from '../providers/directory.ts';
+import {
+  useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+} from '../providers/queries.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
@@ -54,6 +63,12 @@ type OpenMobileSection = (section: MobileSection, areaId?: string | null) => voi
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
 
+type AreaEditorTarget = Readonly<{ kind: 'create' }> | Readonly<{ kind: 'edit'; area: Area }>;
+
+function randomAreaColor(): string {
+  return AREA_PALETTE[Math.floor(Math.random() * AREA_PALETTE.length)] ?? AREA_PALETTE[0];
+}
+
 function noOpenMobileSection(): void { /* no shell above this consumer */ }
 
 /** Opens one of the shell's mobile workspace sheets. */
@@ -80,6 +95,12 @@ export function AppShell({
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
   const trackMutations = useTrackMutations(transport, unauthorized);
+  const templates = useTrackTemplates(transport, unauthorized);
+  const listDirectory = createDirectoryLister(transport, unauthorized);
+  const [areaEditorTarget, setAreaEditorTarget] = useState<AreaEditorTarget | null>(null);
+  const [areaEditorPending, setAreaEditorPending] = useState(false);
+  const [areaEditorError, setAreaEditorError] = useState<string | null>(null);
+  const areaEditorNameRef = useRef<HTMLInputElement | null>(null);
   const currentPath = useCurrentPath();
   const go = useGo();
   // The report's panel is a history *destination* (§1.1), so the shell leaves
@@ -209,6 +230,56 @@ export function AppShell({
     clearReportPanel();
   };
 
+  const requestCreateArea = () => {
+    setAreaEditorError(null);
+    setAreaEditorTarget({ kind: 'create' });
+  };
+  const requestEditArea = (area: Area) => {
+    setAreaEditorError(null);
+    setAreaEditorTarget({ kind: 'edit', area });
+  };
+  const closeAreaEditor = () => {
+    if (areaEditorPending) return;
+    setAreaEditorTarget(null);
+    setAreaEditorError(null);
+  };
+  const submitAreaEditor = (values: AreaEditorValues) => {
+    const target = areaEditorTarget;
+    if (target === null || areaEditorPending) return;
+    const patch: AreaEditorPatch | null = target.kind === 'create' ? null : {
+      ...(values.name === target.area.name ? {} : { name: values.name }),
+      ...(values.defaultTemplateId === target.area.defaultTemplateId
+        ? {} : { defaultTemplateId: values.defaultTemplateId }),
+      ...(values.defaultCwd === target.area.defaultCwd ? {} : { defaultCwd: values.defaultCwd }),
+    };
+    if (patch !== null && Object.keys(patch).length === 0) {
+      setAreaEditorTarget(null);
+      return;
+    }
+    setAreaEditorPending(true);
+    setAreaEditorError(null);
+    const write = target.kind === 'create'
+      ? areaMutations.create({
+        name: values.name,
+        color: randomAreaColor(),
+        default_template_id: values.defaultTemplateId,
+        default_cwd: values.defaultCwd,
+      })
+      : areaMutations.update(target.area.id, {
+        ...(patch?.name === undefined ? {} : { name: patch.name }),
+        ...(patch?.defaultTemplateId === undefined
+          ? {} : { default_template_id: patch.defaultTemplateId }),
+        ...(patch?.defaultCwd === undefined ? {} : { default_cwd: patch.defaultCwd }),
+      });
+    void write.then(() => {
+      setAreaEditorTarget(null);
+    }).catch((failure: unknown) => {
+      setAreaEditorError(
+        failure instanceof Error ? failure.message : `Could not ${target.kind === 'create' ? 'create' : 'update'} the area.`,
+      );
+    }).finally(() => { setAreaEditorPending(false); });
+  };
+
   const navigateFromRail = (target: Parameters<typeof go>[0]) => {
     closeMobileSection();
     go(target);
@@ -253,6 +324,8 @@ export function AppShell({
                 motion={areaSelection.motion}
                 onSelectArea={(areaId) => setAreaSelection({ areaId, motion: 'forward' })}
                 onBack={() => setAreaSelection({ areaId: null, motion: 'back' })}
+                onCreateArea={requestCreateArea}
+                onEditArea={requestEditArea}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
                   go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });
@@ -278,8 +351,8 @@ export function AppShell({
               for (const area of workspace.areas) workspace.retryTracks(area.id);
             }}
             onGo={navigateFromRail}
-            onCreateArea={async (name, color) => { await areaMutations.create({ name, color }); }}
-            onRenameArea={async (areaId, name) => { await areaMutations.rename(areaId, { name }); }}
+            onRequestCreateArea={requestCreateArea}
+            onRequestEditArea={requestEditArea}
             onDeleteArea={(areaId, signal) => areaMutations.remove(areaId, signal)}
             onNewTrack={requestNewTrack}
             onSetPinned={async (trackId, pinned) => {
@@ -349,6 +422,37 @@ export function AppShell({
           nearest thing above `<Outlet />` that survives one. See
           `settings-overlay.tsx`. */}
       <SettingsOverlay transport={transport} unauthorized={unauthorized} />
+      <Dialog
+        open={areaEditorTarget !== null}
+        title={areaEditorTarget?.kind === 'edit' ? `Edit ${areaEditorTarget.area.name}` : 'New area'}
+        onClose={closeAreaEditor}
+        hideTitleRow
+        hideClose={areaEditorPending}
+        initialFocusRef={areaEditorNameRef}
+      >
+        {areaEditorTarget !== null && (
+          <AreaEditorForm
+            key={areaEditorTarget.kind === 'edit' ? areaEditorTarget.area.id : 'new-area'}
+            initial={areaEditorTarget.kind === 'edit'
+              ? {
+                name: areaEditorTarget.area.name,
+                defaultTemplateId: areaEditorTarget.area.defaultTemplateId,
+                defaultCwd: areaEditorTarget.area.defaultCwd,
+              }
+              : { name: '', defaultTemplateId: null, defaultCwd: null }}
+            submitting={areaEditorPending}
+            error={areaEditorError}
+            templates={templates.templates}
+            templatesLoaded={templates.loaded}
+            templatesError={templates.error}
+            listDirectory={listDirectory}
+            nameInputRef={areaEditorNameRef}
+            submitLabel={areaEditorTarget.kind === 'edit' ? 'Save changes' : 'Create area'}
+            onCancel={closeAreaEditor}
+            onSubmit={submitAreaEditor}
+          />
+        )}
+      </Dialog>
     </div>
   );
 }

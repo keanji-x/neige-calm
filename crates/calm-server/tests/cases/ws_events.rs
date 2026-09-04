@@ -78,6 +78,8 @@ fn sample_area(id: &str) -> Area {
         color: "#fff".into(),
         sort: 0.0,
         kind: AreaKind::User,
+        default_template_id: None,
+        default_cwd: None,
         created_at: 0,
         updated_at: 0,
     }

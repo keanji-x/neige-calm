@@ -46,7 +46,10 @@ function fontSizeOf(token: '--text-lg' | '--text-base'): string {
 }
 
 function area(): Area {
-  return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
+  return {
+    id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
+  };
 }
 
 function track(overrides: Partial<Track> = {}): Track {

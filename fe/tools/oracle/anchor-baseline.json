@@ -504,12 +504,6 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "GATE-WIRE-008",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "INV-A11Y-004",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",

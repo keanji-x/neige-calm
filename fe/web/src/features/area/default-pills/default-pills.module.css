@@ -1,0 +1,26 @@
+@layer features {
+  .host {
+    display: contents;
+  }
+
+  .trigger {
+    max-inline-size: 16rem;
+  }
+
+  .taskScroll {
+    display: block;
+    max-inline-size: 28rem;
+    max-block-size: 14rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* A quiet, non-interactive band label when recipes and built-ins coexist. */
+  .menuGroupHeading {
+    padding: var(--space-1) var(--space-2);
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    user-select: none;
+  }
+}

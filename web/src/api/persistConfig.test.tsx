@@ -42,6 +42,7 @@ import {
   createIDBPersister,
   isPersistableQueryKey,
   shouldPersistQuery,
+  PERSIST_CACHE_SCHEMA_VERSION,
   PERSIST_MAX_AGE_MS,
 } from './persistConfig';
 
@@ -99,6 +100,10 @@ beforeEach(() => {
 // each shape directly so a regression names itself in the test output.
 
 describe('isPersistableQueryKey (allowlist)', () => {
+  it('invalidates v1 snapshots that predate required Area defaults', () => {
+    expect(PERSIST_CACHE_SCHEMA_VERSION).toBe('query-cache-v2');
+  });
+
   it("accepts ['areas']", () => {
     expect(isPersistableQueryKey({ queryKey: ['areas'] })).toBe(true);
   });
@@ -135,7 +140,10 @@ describe('isPersistableQueryKey (allowlist)', () => {
 describe('PersistQueryClientProvider + IndexedDB', () => {
   it('restores an allowlisted query (["areas"]) across a remount', async () => {
     const fakeAreas = [
-      { id: 'c1', name: 'Persisted', color: '#abc', sort: 0, created_at: 1, updated_at: 2 },
+      {
+        id: 'c1', name: 'Persisted', color: '#abc', sort: 0, kind: 'user',
+        default_template_id: null, default_cwd: null, created_at: 1, updated_at: 2,
+      },
     ];
     const buildOpts = buildPersistOptions();
 

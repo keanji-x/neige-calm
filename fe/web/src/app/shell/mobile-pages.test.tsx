@@ -10,7 +10,8 @@ import { MobilePages } from './mobile-pages.tsx';
 afterEach(cleanup);
 
 const area: Area = {
-  id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0,
+  id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user',
+  defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
 };
 const track = (overrides: Partial<Track>): Track => ({
   id: 'w1', areaId: 'c1', title: 'Recent report', sort: 1, lifecycle: 'working', cwd: '/tmp',

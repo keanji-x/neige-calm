@@ -7,7 +7,17 @@ export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "Ker
 
 export type AgentProvider = "codex" | "claude";
 
-export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, created_at: number, updated_at: number, };
+export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, 
+/**
+ * Built-in Track template preselected by the official New Track surface.
+ * `None` keeps "No template" as the Area's creation default.
+ */
+default_template_id: string | null, 
+/**
+ * Exact attached Git working directory preselected for a new Track.
+ * `None` keeps the server-managed Neige workspace default.
+ */
+default_cwd: string | null, created_at: number, updated_at: number, };
 
 /**
  * One row per claimed directory; `path` is absolute and globally

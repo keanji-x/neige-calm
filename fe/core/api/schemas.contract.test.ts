@@ -235,7 +235,7 @@ describe('zod ↔ ts-rs conformance', () => {
 });
 
 describe('entity sub-schema compatibility', () => {
-  it('areaSchema fills kind="user" when absent (legacy fixture)', () => {
+  it('areaSchema fills kind and Area defaults when absent from a legacy event', () => {
     const parsed = areaSchema.parse({
       id: 'c1',
       name: 'n',
@@ -244,7 +244,9 @@ describe('entity sub-schema compatibility', () => {
       created_at: 1,
       updated_at: 2,
     });
-    expect(parsed.kind).toBe('user');
+    expect(parsed).toMatchObject({
+      kind: 'user', default_template_id: null, default_cwd: null,
+    });
   });
 });
 
@@ -738,6 +740,8 @@ describe('entity sub-schemas', () => {
       color: '#fff',
       sort: 0,
       kind: 'user' as const,
+      default_template_id: null,
+      default_cwd: null,
       created_at: 1,
       updated_at: 2,
     };

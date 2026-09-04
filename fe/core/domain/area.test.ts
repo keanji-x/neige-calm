@@ -9,12 +9,17 @@ import {
 const baseWire = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, created_at: 1, updated_at: 1 };
 
 function area(overrides: Partial<Area>): Area {
-  return { id: 'c', name: 'n', color: '#000', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
+  return {
+    id: 'c', name: 'n', color: '#000', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0, ...overrides,
+  };
 }
 
 describe('area wire decode', () => {
   it('defaults a pre-#175 payload without kind to user', () => {
-    expect(areaWireSchema.parse(baseWire).kind).toBe('user');
+    expect(areaWireSchema.parse(baseWire)).toMatchObject({
+      kind: 'user', default_template_id: null, default_cwd: null,
+    });
   });
 
   it('keeps an explicit system kind', () => {
@@ -28,6 +33,15 @@ describe('area wire decode', () => {
   it('maps the wire row onto the camelCase domain shape', () => {
     expect(toArea(areaWireSchema.parse(baseWire)))
       .toEqual(area({ id: 'c1', name: 'Work', color: '#5B8DEF', createdAt: 1, updatedAt: 1 }));
+  });
+
+  it('preserves both Area defaults as required nullable domain fields', () => {
+    const parsed = areaWireSchema.parse({
+      ...baseWire, default_template_id: 'small-change', default_cwd: '/srv/work',
+    });
+    expect(toArea(parsed)).toMatchObject({
+      defaultTemplateId: 'small-change', defaultCwd: '/srv/work',
+    });
   });
 
   it('reads the areas list from the documented path', () => {

@@ -15,14 +15,18 @@ test.afterEach(async ({ request }) => {
   createdAreaIds.length = 0;
 });
 
-test('creates and deletes an area through the UI and persists both changes', async ({ page, request }) => {
+test('creates, edits, and deletes an area through the shared dialog', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const name = `FE e2e CRUD ${Date.now()}`;
+  const renamed = `${name} edited`;
   await page.goto('/next/');
   const rail = page.locator('nav[aria-label="Workspace"]');
   await rail.getByRole('button', { name: 'New area' }).click();
-  await rail.getByRole('textbox', { name: 'Area name' }).fill(name);
-  await rail.getByRole('textbox', { name: 'Area name' }).press('Enter');
+  const create = page.getByRole('dialog', { name: 'New area' });
+  await create.getByRole('textbox', { name: /^Name/ }).fill(name);
+  await create.getByRole('button', { name: 'Default template: No template' }).click();
+  await page.getByRole('menuitem', { name: /^Small change/ }).click();
+  await create.getByRole('button', { name: 'Create area' }).click();
 
   const row = rail.getByRole('button', { name: `Collapse area ${name}` });
   await expect(row).toBeVisible();
@@ -36,11 +40,27 @@ test('creates and deletes an area through the UI and persists both changes', asy
   createdAreaIds.push(area!.id);
 
   await row.hover();
-  await rail.getByRole('button', { name: `Delete area ${name}` }).click();
-  const dialog = page.getByRole('dialog', { name: `Delete ${name}?` });
-  await dialog.getByLabel(`Type ${name} to confirm.`).fill(name);
+  await rail.getByRole('button', { name: `Area actions for ${name}` }).click();
+  await page.getByRole('menuitem', { name: 'Edit area' }).click();
+  const edit = page.getByRole('dialog', { name: `Edit ${name}` });
+  await edit.getByRole('textbox', { name: /^Name/ }).fill(renamed);
+  await edit.getByRole('button', { name: 'Save changes' }).click();
+  const renamedRow = rail.getByRole('button', { name: `Collapse area ${renamed}` });
+  await expect(renamedRow).toBeVisible();
+  await expect.poll(async () => {
+    const response = await request.get('/api/areas');
+    return (await response.json() as {
+      id: string; name: string; default_template_id: string | null;
+    }[]).find((item) => item.id === area!.id);
+  }).toMatchObject({ name: renamed, default_template_id: 'small-change' });
+
+  await renamedRow.hover();
+  await rail.getByRole('button', { name: `Area actions for ${renamed}` }).click();
+  await page.getByRole('menuitem', { name: 'Delete area' }).click();
+  const dialog = page.getByRole('dialog', { name: `Delete ${renamed}?` });
+  await dialog.getByLabel(`Type ${renamed} to confirm.`).fill(renamed);
   await dialog.getByRole('button', { name: 'Delete area', exact: true }).click();
-  await expect(row).toHaveCount(0);
+  await expect(renamedRow).toHaveCount(0);
   await expect.poll(async () => {
     const response = await request.get('/api/areas');
     return (await response.json() as { id: string }[]).some((item) => item.id === area!.id);

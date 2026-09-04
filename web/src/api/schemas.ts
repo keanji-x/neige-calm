@@ -64,6 +64,8 @@ export const areaSchema = z.object({
   color: z.string(),
   sort: z.number(),
   kind: areaKindSchema,
+  default_template_id: z.string().nullable().default(null),
+  default_cwd: z.string().nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });

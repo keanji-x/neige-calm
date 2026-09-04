@@ -1631,6 +1631,9 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listDirectory = createDirectoryLister(transport, unauthorized);
+  const area = areaId === undefined
+    ? undefined
+    : workspace.areas.find((candidate) => candidate.id === areaId);
   /*
    * "Is this route still the screen?" — read by the create continuation, which
    * outlives the route whenever the reader navigates during a slow POST.
@@ -1785,15 +1788,18 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
      "could not be found" the server never said. */
   if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
   /* Settled and successful: `[]` now means empty, and absence means deleted. */
-  if (!workspace.areas.some((area) => area.id === areaId)) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
+  if (area === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
   return (
     <NewTrackForm
       submitting={creating}
       error={error}
       templates={templates.templates}
+      templatesLoaded={templates.loaded}
       templatesError={templates.error}
       recipes={recipes.recipes}
       onManageRecipes={() => go({ name: 'recipes' })}
+      initialTemplateId={area.defaultTemplateId}
+      initialCwd={area.defaultCwd}
       listDirectory={listDirectory}
       onSubmit={submit}
     />

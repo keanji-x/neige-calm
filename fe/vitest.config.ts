@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 import { defineBrowserProvider } from '@vitest/browser';
 import { playwright } from '@vitest/browser-playwright';
 
+import { OPTIMIZED_DEPENDENCIES } from './tools/vitest/optimized-dependencies.ts';
+
 // See `tools/vitest/build-constants.ts` for why this is a setup file and not a
 // second `define` block.
 // `dom-diagnostics.ts` no-ops outside the DOM projects, so it can live in the
@@ -20,35 +22,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   optimizeDeps: {
-    include: [
-      '@tanstack/react-query',
-      '@tanstack/react-router',
-      '@astryxdesign/core/Button',
-      '@astryxdesign/core/Calendar',
-      '@astryxdesign/core/Card',
-      /*
-       * `Chat` and `Typeahead` were reached by the composer long before this
-       * list mentioned them, and they were discovered mid-run: Vite optimised
-       * them on first import, announced "optimized dependencies changed", and
-       * reloaded the page under the suite that had just imported them. Measured
-       * on a cold `node_modules/.vite`: the reload lands as `Failed to fetch
-       * dynamically imported module` on `thread.browser.test.tsx`, which is a
-       * red run with nothing wrong in it. Adding `Markdown` made it reproducible
-       * by adding one more first-import to the same window; the two below were
-       * always in it.
-       */
-      '@astryxdesign/core/Chat',
-      '@astryxdesign/core/Heading',
-      '@astryxdesign/core/Icon',
-      '@astryxdesign/core/IconButton',
-      '@astryxdesign/core/List',
-      '@astryxdesign/core/Markdown',
-      '@astryxdesign/core/MetadataList',
-      '@astryxdesign/core/MoreMenu',
-      '@astryxdesign/core/SegmentedControl',
-      '@astryxdesign/core/TextInput',
-      '@astryxdesign/core/Typeahead',
-    ],
+    include: [...OPTIMIZED_DEPENDENCIES],
   },
   test: {
     projects: [
@@ -71,6 +45,11 @@ export default defineConfig({
         },
       },
       {
+        optimizeDeps: {
+          // Browser projects are isolated Vite configs and do not inherit the
+          // root list, so use the complete roster rather than a partial copy.
+          include: [...OPTIMIZED_DEPENDENCIES],
+        },
         test: {
           name: 'browser',
           include: ['**/*.browser.test.{ts,tsx}'],
@@ -168,6 +147,9 @@ export default defineConfig({
        * alone leaves all three geometry cases at 0.
        */
       {
+        optimizeDeps: {
+          include: [...OPTIMIZED_DEPENDENCIES],
+        },
         test: {
           name: 'browser-coarse',
           include: ['**/*.coarse.browser.test.{ts,tsx}'],

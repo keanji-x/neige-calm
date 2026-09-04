@@ -29,6 +29,8 @@ describe('wireEventSchema', () => {
         color: '#abc',
         sort: 0,
         kind: 'user',
+        default_template_id: 'builtin:review',
+        default_cwd: '/srv/atlas',
         created_at: 1000,
         updated_at: 2000,
       },
@@ -39,13 +41,14 @@ describe('wireEventSchema', () => {
       expect(parsed.data.id).toBe('area_1');
       expect(parsed.data.name).toBe('Atlas');
       expect(parsed.data.kind).toBe('user');
+      expect(parsed.data.default_template_id).toBe('builtin:review');
+      expect(parsed.data.default_cwd).toBe('/srv/atlas');
     }
   });
 
-  it('defaults area.updated kind to "user" when absent (legacy wire payload)', () => {
-    // Issue #175 — `areaKindSchema` carries `.default('user')` so pre-#175
-    // wire payloads (event-log replay, legacy fixtures) parse without
-    // requiring a fixture migration.
+  it('defaults missing area.updated fields for legacy wire payloads', () => {
+    // Replay compatibility belongs at the decoder boundary, while its output
+    // retains the complete current Area contract.
     const payload = {
       ev: 'area.updated',
       data: {
@@ -59,7 +62,9 @@ describe('wireEventSchema', () => {
     };
     const parsed = wireEventSchema.parse(payload);
     if (parsed.ev === 'area.updated') {
-      expect(parsed.data.kind).toBe('user');
+      expect(parsed.data).toMatchObject({
+        kind: 'user', default_template_id: null, default_cwd: null,
+      });
     }
   });
 
@@ -691,23 +696,24 @@ describe('PR2 of #247: track.report_edited', () => {
 });
 
 describe('entity sub-schemas', () => {
-  it('areaSchema round-trips a minimal area', () => {
+  it('areaSchema round-trips a current area', () => {
     const c = {
       id: 'c1',
       name: 'n',
       color: '#fff',
       sort: 0,
       kind: 'user' as const,
+      default_template_id: null,
+      default_cwd: null,
       created_at: 1,
       updated_at: 2,
     };
     expect(areaSchema.parse(c)).toEqual(c);
   });
 
-  it('areaSchema fills kind="user" when absent (legacy fixture)', () => {
-    // Issue #175 — same default story as the event-schema test above:
-    // pre-#175 wire payloads must round-trip without forcing a fixture
-    // migration on every recorded session.
+  it('areaSchema fills kind and Area defaults when absent from a legacy event', () => {
+    // Replay compatibility stays at the decoder boundary so consumers still
+    // receive the complete current Area shape.
     const c = {
       id: 'c1',
       name: 'n',
@@ -717,7 +723,9 @@ describe('entity sub-schemas', () => {
       updated_at: 2,
     };
     const parsed = areaSchema.parse(c);
-    expect(parsed.kind).toBe('user');
+    expect(parsed).toMatchObject({
+      kind: 'user', default_template_id: null, default_cwd: null,
+    });
   });
 
   it('trackSchema accepts archived_at: null', () => {

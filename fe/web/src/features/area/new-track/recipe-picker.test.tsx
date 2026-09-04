@@ -46,6 +46,9 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     submitting: false,
     error: null,
     templates: [SMALL_CHANGE],
+    templatesLoaded: true,
+    initialTemplateId: null,
+    initialCwd: null,
     onManageRecipes: vi.fn(),
     listDirectory: vi.fn(() => Promise.resolve(LISTING)),
     onSubmit,
@@ -117,6 +120,37 @@ describe('the picker groups two kinds only when it has two kinds', () => {
 });
 
 describe('two id spaces, never crossed', () => {
+  it('keeps an Area default in the template namespace when a recipe shares its id', async () => {
+    const { onSubmit } = renderForm({
+      recipes: [COLLIDING_RECIPE],
+      initialTemplateId: 'small-change',
+    });
+    await fillMessage();
+    expect(templateTrigger().getAttribute('aria-label')).toBe('Template: Small change');
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({
+      message: 'Ship the thing', template_id: 'small-change',
+    });
+  });
+
+  it('does not let a same-id recipe resolve an Area template while its roster is pending', async () => {
+    const { onSubmit } = renderForm({
+      templates: [],
+      templatesLoaded: false,
+      recipes: [COLLIDING_RECIPE],
+      initialTemplateId: 'small-change',
+    });
+    await fillMessage();
+    expect(templateTrigger().getAttribute('aria-label')).toBe('Template: small-change');
+    expect((submitButton() as HTMLButtonElement).disabled).toBe(true);
+
+    const menu = await openTemplates();
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /^No template/ }));
+    expect((submitButton() as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
   /*
    * A recipe and a template with the same id string. Choosing the recipe must
    * produce `recipe_id`, and it must not produce `template_id` — which is the

@@ -61,7 +61,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewArea"
+                "$ref": "#/components/schemas/CreateAreaRequest"
               }
             }
           },
@@ -74,6 +74,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Area"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown default template or invalid attached default folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -488,6 +498,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Area"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown default template or invalid attached default folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -4756,6 +4776,8 @@
           "name",
           "color",
           "sort",
+          "default_template_id",
+          "default_cwd",
           "created_at",
           "updated_at"
         ],
@@ -4766,6 +4788,20 @@
           "created_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "default_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact attached Git working directory preselected for a new Track.\n`None` keeps the server-managed Neige workspace default."
+          },
+          "default_template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Built-in Track template preselected by the official New Track surface.\n`None` keeps \"No template\" as the Area's creation default."
           },
           "id": {
             "type": "string"
@@ -4828,6 +4864,20 @@
               "string",
               "null"
             ]
+          },
+          "default_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Missing leaves the preference alone, null restores managed workspaces,\nand a string sets the exact attached working directory to preselect."
+          },
+          "default_template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Missing leaves the preference alone, null clears it, and a string sets\nthe built-in template preselected by the New Track surface."
           },
           "name": {
             "type": [
@@ -5115,6 +5165,42 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "CreateAreaRequest": {
+        "type": "object",
+        "description": "User-facing Area creation. The raw sync-domain `NewArea` stays narrow for\ninternal callers; these two preferences belong to the REST product surface\nand are applied inside the same audited transaction as the Area row.\n\nDeliberately permissive about unknown JSON keys, matching the historical\n`NewArea` contract: in particular a caller-supplied `kind` must continue to\nbe ignored rather than gaining a path to create a system Area.",
+        "required": [
+          "name",
+          "color"
+        ],
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "default_cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_template_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "If absent, server appends to end."
           }
         }
       },

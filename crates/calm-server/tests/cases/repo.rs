@@ -142,6 +142,8 @@ async fn area_crud_round_trip() {
                 name: Some("Work".into()),
                 color: None,
                 sort: None,
+                default_template_id: None,
+                default_cwd: None,
             },
         )
         .await
@@ -159,6 +161,43 @@ async fn area_crud_round_trip() {
         .await
         .unwrap_err();
     assert!(matches!(err, CalmError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn area_updates_advance_timestamp_strictly() {
+    let repo = fresh_repo().await;
+    let area = make_area(&repo, "Original").await;
+    let future = now_ms() + 60_000;
+    sqlx::query("UPDATE areas SET updated_at = ?1 WHERE id = ?2")
+        .bind(future)
+        .bind(area.id.as_str())
+        .execute(repo.pool())
+        .await
+        .expect("seed future Area timestamp");
+
+    let first = repo
+        .area_update(
+            area.id.as_str(),
+            AreaPatch {
+                name: Some("First".into()),
+                ..AreaPatch::default()
+            },
+        )
+        .await
+        .expect("first Area update");
+    assert_eq!(first.updated_at, future + 1);
+
+    let second = repo
+        .area_update(
+            area.id.as_str(),
+            AreaPatch {
+                name: Some("Second".into()),
+                ..AreaPatch::default()
+            },
+        )
+        .await
+        .expect("second Area update");
+    assert!(second.updated_at > first.updated_at);
 }
 
 #[tokio::test]

@@ -423,7 +423,7 @@ function parseStructuredList(path: string | undefined): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-const ANCHOR_BASELINE_MAXIMUM = 174;
+const ANCHOR_BASELINE_MAXIMUM = 173;
 const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 
 // `anchor-pending.json` is NOT a second baseline. It holds the anchors the #1148 scanner fix exposed as

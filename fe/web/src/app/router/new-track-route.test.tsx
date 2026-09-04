@@ -91,6 +91,8 @@ const TEMPLATES = [
 
 function harness(options: {
   templates?: unknown;
+  areaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
+  otherAreaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   trackCreate?: ApiTransportResponse;
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
@@ -174,7 +176,9 @@ function harness(options: {
       if (request.path === '/api/areas' && options.heldAreas) {
         return options.heldAreas.then(() => ({ status: 200, statusText: 'OK', body: [AREA, OTHER] }));
       }
-      const body = request.path === '/api/areas' ? [AREA, OTHER]
+      const body = request.path === '/api/areas' ? [
+        { ...AREA, ...options.areaDefaults }, { ...OTHER, ...options.otherAreaDefaults },
+      ]
         : request.path.startsWith('/api/fs/listdir') ? LISTING
           : request.method === 'POST' && request.path === '/api/tracks'
             ? { ...TRACK_ROW, area_id: posted?.area_id ?? 'c1' }
@@ -270,6 +274,53 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c1/new`);
+  });
+
+  it('remounts the route when switching directly between Areas and takes only the new Area defaults', async () => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/work-a' },
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/work-b' },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Folder: /srv/work-a' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for A');
+
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`));
+    expect(composerText()).toBe('');
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Folder: /srv/work-b' })).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for B');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+    const body = createdTrackBodies(sent)[0] as Record<string, unknown>;
+    expect(body).toMatchObject({ area_id: 'c2', cwd: '/srv/work-b', attach_folder: true });
+    expect(body).not.toHaveProperty('template_id');
+  });
+
+  it('does not let a create started in one Area navigate away after switching to another Area', async () => {
+    let releaseCreate!: () => void;
+    const heldCreate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    const { sent } = harness({ templates: TEMPLATES, heldCreate });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Create in A');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`));
+    releaseCreate();
+    await act(async () => {
+      await heldCreate;
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
   });
 
   /*
@@ -386,6 +437,48 @@ describe('the new-track page is a route reached from Area groups', () => {
     // at all. `template_id: null` or `''` is a 400 from the kernel.
     expect(body).not.toHaveProperty('template_id');
     expect(body).not.toHaveProperty('template_input');
+  });
+
+  it('turns the Area defaults into an explicit template and attached-folder request', async () => {
+    const message = '  Read it exactly  ';
+    const { sent } = harness({
+      templates: TEMPLATES,
+      areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/ area ' },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await findComposer()).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
+    const folder = screen.getByRole('button', { name: 'Folder: /srv/ area' });
+    expect(folder.getAttribute('aria-label')).toBe('Folder: /srv/ area ');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), message);
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+    expect(createdTrackBodies(sent)[0]).toMatchObject({
+      area_id: 'c1',
+      first_message: message,
+      template_id: 'small-change',
+      cwd: '/srv/ area ',
+      attach_folder: true,
+    });
+  });
+
+  it('lets one Track clear Area defaults back to a new managed folder', async () => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/area-default' },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await findComposer()).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^No template/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+    const body = createdTrackBodies(sent)[0] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('template_id');
+    expect(body).not.toHaveProperty('cwd');
+    expect(body).not.toHaveProperty('attach_folder');
   });
 
   /*

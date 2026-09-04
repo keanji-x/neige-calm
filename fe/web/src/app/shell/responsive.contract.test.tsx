@@ -17,7 +17,10 @@ vi.mock('@tanstack/react-router', () => ({
   useRouter: () => ({}),
   useRouterState: () => undefined,
 }));
-const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
+const AREA = {
+  id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user',
+  defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
+};
 const TRACK = {
   id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
@@ -29,11 +32,11 @@ vi.mock('../providers/queries.ts', () => ({
     areasError: null, overlaysError: null, areasLoading: false, overlaysLoading: false,
     retryAreas: vi.fn(), retryOverlays: vi.fn(), retryTracks: vi.fn(),
   }),
-  useAreaMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
+  useAreaMutations: () => ({ create: vi.fn(), update: vi.fn(), remove: vi.fn() }),
   useTrackMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   // #1209 — the dialog's template read. Blank-only is a working state, so the
   // rail contract needs nothing more than the degraded shape here.
-  useTrackTemplates: () => ({ templates: [], error: null }),
+  useTrackTemplates: () => ({ templates: [], error: null, loaded: true, refetch: vi.fn() }),
   ApiError: class ApiError extends Error {},
 }));
 /*

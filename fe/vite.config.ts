@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+import { OPTIMIZED_DEPENDENCIES } from './tools/vitest/optimized-dependencies.ts';
+
 const apiProxyTarget = process.env.FE_API_PROXY_TARGET ?? 'http://127.0.0.1:4041';
 const devPort = Number(process.env.FE_DEV_PORT ?? 5180);
 const devHost = process.env.FE_DEV_HOST ?? 'localhost';
@@ -30,19 +32,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   optimizeDeps: {
-    include: [
-      '@astryxdesign/core/Button',
-      '@astryxdesign/core/Calendar',
-      '@astryxdesign/core/Card',
-      '@astryxdesign/core/Heading',
-      '@astryxdesign/core/Icon',
-      '@astryxdesign/core/IconButton',
-      '@astryxdesign/core/List',
-      '@astryxdesign/core/MetadataList',
-      '@astryxdesign/core/MoreMenu',
-      '@astryxdesign/core/SegmentedControl',
-      '@astryxdesign/core/TextInput',
-    ],
+    include: [...OPTIMIZED_DEPENDENCIES],
   },
   define: {
     __NC_VERSION__: JSON.stringify(version),

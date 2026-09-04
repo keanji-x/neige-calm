@@ -846,6 +846,8 @@ mod tests {
             color: "#fff".into(),
             sort: 1.0,
             kind: AreaKind::User,
+            default_template_id: None,
+            default_cwd: None,
             created_at: 0,
             updated_at: 0,
         })

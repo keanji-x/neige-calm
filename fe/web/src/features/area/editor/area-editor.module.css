@@ -1,0 +1,28 @@
+@layer features {
+  .form {
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+
+  .pills {
+    min-inline-size: 0;
+    flex-wrap: wrap;
+  }
+
+  .controlRow {
+    min-inline-size: 0;
+    flex-wrap: wrap;
+  }
+
+  .actions {
+    flex: none;
+    margin-inline-start: auto;
+  }
+
+  .notice {
+    margin: 0;
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+  }
+}

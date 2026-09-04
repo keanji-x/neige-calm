@@ -164,6 +164,8 @@ golden_test!(
         color: "#aabbcc".into(),
         sort: 1.5,
         kind: AreaKind::System,
+        default_template_id: Some("small-change".into()),
+        default_cwd: Some("/srv/work".into()),
         created_at: 1000,
         updated_at: 2000,
     })
@@ -178,6 +180,8 @@ golden_test!(
         color: "#aabbcc".into(),
         sort: 1.5,
         kind: AreaKind::User,
+        default_template_id: None,
+        default_cwd: None,
         created_at: 1000,
         updated_at: 2000,
     })

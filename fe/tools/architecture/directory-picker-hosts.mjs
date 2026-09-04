@@ -56,6 +56,7 @@ import { extname, resolve } from 'node:path';
 export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/ui/schema-form/fields/DirectoryField/public.tsx': 'component',
   'web/src/features/track/new-card/public.tsx': 'pushes-into-host-dialog',
+  'web/src/features/area/editor/public.tsx': 'pushes-into-host-dialog',
   'web/src/features/area/new-track/public.tsx': 'owns-its-modal',
 });
 
