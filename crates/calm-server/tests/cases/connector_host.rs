@@ -411,7 +411,7 @@ impl StubServer {
     }
 
     /// `(method, Authorization)` per request — the pairing an auth assertion
-    /// needs in order to say anything about a specific `Phase`.
+    /// needs in order to say anything about one named `Phase`.
     fn auth_by_method(&self) -> Vec<(String, String)> {
         self.seen_auth_by_method.lock().unwrap().clone()
     }

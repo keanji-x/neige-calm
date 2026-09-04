@@ -82,8 +82,9 @@
 //! and a `tools/call` result reaches the track transcript — both are
 //! upstream-authored and both could echo our credential back. Header auth does
 //! not change that: `{"error":"Invalid API key: sk-…"}` is a common upstream
-//! shape and it reaches the wave transcript through `tools_call` regardless of
-//! which slot we put the credential in.
+//! shape and it reaches the track transcript — the conversation record the
+//! operator and the agent read — through `tools_call`, regardless of which slot
+//! we put the credential in.
 //!
 //! **That choke point sits AFTER the parse, not before it** ([`parse_scrubbed`]
 //! → [`scrub_value`]). Literal-replacing a credential in the raw response text
@@ -202,7 +203,7 @@
 //! **Why the remaining gaps are not closed by adding literals or a smarter
 //! matcher.** Enumeration does not converge (an unbounded set of alphabets, and
 //! within percent-encoding alone 2ⁿ hex spellings). A matcher does converge for
-//! the hex case specifically — and one was written and then REVERTED, on
+//! the hex case in particular — and one was written and then REVERTED, on
 //! measurement: comparing every `%XX` triplet case-insensitively means a
 //! hand-rolled scan instead of `str::replace`'s two-way search, and its cost is
 //! paid on the CLEAN path, per `tools/call`, whether or not the body contains
@@ -2425,27 +2426,27 @@ mod tests {
     #[test]
     fn an_unroutable_api_key_in_sends_the_credential_nowhere() {
         let key = "sk-unrouted-8213";
-        for spec in ["query:api_key", "cookie:k", "body:token", "api_key"] {
+        for placement in ["query:api_key", "cookie:k", "body:token", "api_key"] {
             let block = McpHttpBlock {
                 url: "https://mcp.example.com/mcp".to_string(),
                 api_key_secret: Some("K".to_string()),
-                api_key_in: Some(spec.to_string()),
+                api_key_in: Some(placement.to_string()),
                 tools_allow: Vec::new(),
                 request_timeout_ms: None,
                 bringup_timeout_ms: None,
             };
             let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
-            assert_eq!(client.header_auth, None, "`{spec}` invented a header");
+            assert_eq!(client.header_auth, None, "`{placement}` invented a header");
             assert_eq!(
                 client.url, "https://mcp.example.com/mcp",
-                "`{spec}` touched the url"
+                "`{placement}` touched the url"
             );
             // Unrouted is not a reason to stop redacting: the secret was read
             // off disk and may already be in a string somewhere.
-            assert_eq!(client.secret_forms, vec![key.to_string()], "`{spec}`");
+            assert_eq!(client.secret_forms, vec![key.to_string()], "`{placement}`");
             assert!(
                 format!("{client:?}").contains("unrouted:<redacted>"),
-                "`{spec}`: {client:?}"
+                "`{placement}`: {client:?}"
             );
         }
     }
