@@ -132,6 +132,15 @@ set -euo pipefail
 #   S1  the `INSERT INTO events` census equals the pinned baseline, in both
 #       directions. See G3 for what this does and does not mean.
 
+# Every pinned list below is a `sort`ed blob compared as text, so the collation
+# order has to be the same on every machine. It is not, by default: E5's census
+# lines differ first at `authorize|tx` vs `authorize_with_caches|tx`, and a
+# UTF-8 locale ignores the `|` while the C locale compares it as a byte (`_`
+# 0x5F sorts before `|` 0x7C). This gate was green on a developer box and RED on
+# CI for exactly that reason, on the unmodified production file — a false RED,
+# which is the more expensive kind. Pin the collation instead of guessing it.
+export LC_ALL=C
+
 script_dir="${BASH_SOURCE[0]%/*}"
 [ "$script_dir" != "${BASH_SOURCE[0]}" ] || script_dir=.
 # shellcheck source=scripts/ci/ratchets/lib.sh
@@ -165,8 +174,8 @@ EXPECTED_IMPL="impl<'a> Authorized<'a> { pub(in crate::db::sqlite::events) fn ac
 # `RepoEventWrite` wrappers; the eight appends are those six plus the
 # `#[cfg(test)]` fixture replay plus the `#[cfg(feature)]` escape probe's
 # deliberately-wrong call.
-EXPECTED_TX_CENSUS="2 authorize|tx
-4 authorize_with_caches|tx
+EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
+2 authorize|tx
 8 event_append_in_tx|tx"
 
 # S1 baseline: `<path>:<count-of-MATCHING-LINES>` (`grep -c` counts lines, not
