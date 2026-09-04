@@ -38,7 +38,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
-use crate::track_binding::{TrackOwnerBinding, resolve_track_owner_binding};
+use crate::track_binding::{TemplateContract, TrackOwnerBinding, resolve_track_owner_binding};
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -162,28 +162,50 @@ impl PlannerHarnessStartAdapter {
                 return Ok(None);
             }
         };
-        match resolve_track_owner_binding(&track, Some(self.plugin.as_ref())).await {
+        let binding = resolve_track_owner_binding(&track, Some(self.plugin.as_ref())).await;
+        let scoped_plugin_id = binding.scoped_plugin_id().unwrap_or("<none>").to_string();
+        match binding {
             TrackOwnerBinding::Owned {
-                template: Some(descriptor),
-                input,
+                contract: TemplateContract::Honored { template, input },
                 ..
-            } => Ok(Some(BoundTemplate { descriptor, input })),
+            } => Ok(Some(BoundTemplate {
+                descriptor: template,
+                input,
+            })),
             // Owner resolved but the track names no template, or the track is
             // unbound: an ordinary vanilla prompt, not a degradation.
-            TrackOwnerBinding::Owned { template: None, .. } | TrackOwnerBinding::Unbound => {
-                Ok(None)
+            TrackOwnerBinding::Owned {
+                contract: TemplateContract::NotTemplated,
+                ..
             }
-            // Fail closed: the persisted `template_input` is dropped along
-            // with the descriptor rather than injected without a checked
-            // contract behind it.
-            TrackOwnerBinding::FailedClosed(failure) => {
+            | TrackOwnerBinding::Unbound => Ok(None),
+            // #1321 S1 第一轮评审 MAJOR-2 — the owner is alive and keeps its
+            // tool scope (`Only(owner)`); it is only the *template contract*
+            // that is unusable, so the descriptor and the persisted
+            // `template_input` are dropped rather than injected without a
+            // checked contract behind them. The prompt degrades, the track
+            // does not lose its plugin.
+            TrackOwnerBinding::Owned {
+                contract: TemplateContract::Broken(failure),
+                ..
+            } => {
                 tracing::error!(
                     target: "planner_harness::template_binding",
                     track_id,
                     template_id = track.template_id.as_deref().unwrap_or("<none>"),
-                    plugin_id = failure.plugin_id().unwrap_or("<none>"),
+                    plugin_id = %scoped_plugin_id,
                     failure = %failure,
-                    "bound template did not resolve from the track's recorded owner; using vanilla planner prompt"
+                    "the track's owner is live but its template contract no longer holds; using vanilla planner prompt (tool scope is unaffected)"
+                );
+                Ok(None)
+            }
+            TrackOwnerBinding::OwnerUnavailable { plugin_id } => {
+                tracing::error!(
+                    target: "planner_harness::template_binding",
+                    track_id,
+                    template_id = track.template_id.as_deref().unwrap_or("<none>"),
+                    plugin_id = %plugin_id,
+                    "the track's recorded owner is not running ∧ trusted; using vanilla planner prompt"
                 );
                 Ok(None)
             }

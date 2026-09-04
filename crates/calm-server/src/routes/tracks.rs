@@ -53,7 +53,6 @@ use crate::operation::workspace_lease::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
-use crate::plugin_host::template_input::validate_template_input;
 use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::cards::interrupt_shared_card_active_turn;
@@ -1150,49 +1149,19 @@ pub(crate) async fn resolve_template_binding(
     })
 }
 
-/// #891 / #1110 S2 — create-time `template_input` validation matrix.
-/// Fail-closed: input is only accepted when the bound plugin Manifest
-/// declares an `input_schema`, and a schema with required fields makes
-/// input mandatory. The kernel never applies schema `default`s — the
-/// value persists exactly as the caller sent it. Descriptor-level
-/// `input_schema` is never consulted.
+/// #1321 S1 — create-time `template_input` validation now *is* the shared
+/// judgement: the matrix moved to
+/// [`crate::plugin_host::template_input::validate_template_input_binding`] so
+/// the run-time owner-binding re-check calls the same function instead of
+/// restating a subset of it. This wrapper adds nothing but the route's error
+/// vocabulary, which is what keeps every pre-existing 400 body
+/// byte-identical.
 fn validate_template_input_binding(
     plugin: Option<&Manifest>,
     input: Option<&serde_json::Value>,
 ) -> Result<()> {
-    let Some(plugin) = plugin else {
-        if input.is_some() {
-            return Err(CalmError::BadRequest(
-                "track create: `template_input` requires `template_id`".into(),
-            ));
-        }
-        return Ok(());
-    };
-    let plugin_id = &plugin.id;
-    match (plugin.input_schema.as_ref(), input) {
-        (None, None) => Ok(()),
-        (None, Some(_)) => Err(CalmError::BadRequest(format!(
-            "track create: plugin `{plugin_id}` does not declare an input_schema; \
-             `template_input` is not accepted"
-        ))),
-        (Some(schema), None) => {
-            let required: Vec<&str> = schema
-                .get("required")
-                .and_then(serde_json::Value::as_array)
-                .map(|keys| keys.iter().filter_map(serde_json::Value::as_str).collect())
-                .unwrap_or_default();
-            if required.is_empty() {
-                Ok(())
-            } else {
-                Err(CalmError::BadRequest(format!(
-                    "track create: plugin `{plugin_id}` requires `template_input` \
-                     (required: {required:?})"
-                )))
-            }
-        }
-        (Some(schema), Some(input)) => validate_template_input(schema, input)
-            .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}"))),
-    }
+    crate::plugin_host::template_input::validate_template_input_binding(plugin, input)
+        .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))
 }
 
 /// Issue #275 — the cwd claim scan runs **inside** the track-create

@@ -18,16 +18,24 @@
 //!
 //! #1321 S1 — the paragraph above used to end "The gate reads
 //! `tracks.plugin_scope` only — it does not look up `templates[]` by
-//! `template_id`". The first half still holds and is now stronger: the owner
-//! column is the *only* way in, and this module no longer decides that by
-//! itself — it delegates to [`crate::track_binding::resolve_track_owner_binding`],
-//! the single per-track owner judgement shared with the planner harness. The
-//! second half no longer describes the code: the resolver *does* consult
-//! `templates[]`, not to find an owner, but to check that the recorded owner
-//! still declares the track's `template_id` and still accepts its persisted
-//! `template_input`. Both checks fail closed here for the same reason a
-//! stopped owner does — a track whose template contract has drifted out from
-//! under it has no coherent plugin context left to scope tools to.
+//! `template_id`". Both halves still hold, and the first is now stronger: the
+//! owner column is the *only* way in, and this module no longer decides that
+//! by itself — it delegates to
+//! [`crate::track_binding::resolve_track_owner_binding`], the single per-track
+//! owner judgement shared with the planner harness.
+//!
+//! What this gate reads out of that judgement is **owner identity only**. The
+//! resolver also reports whether the track's *template contract* still holds
+//! (the owner still declares its `template_id`, its current `input_schema`
+//! still accepts the persisted `template_input`), and this module deliberately
+//! ignores that: tool authorization is proven by `plugin_scope` alone, and a
+//! broken contract is not evidence that someone else owns the track. Failing
+//! closed on it would also be unrecoverable — `TrackPatch` cannot write those
+//! three columns, so one incompatible `input_schema` bump would strip a live
+//! track of every plugin tool with no API left to restore it. The contract
+//! failure is honored where it is actually dangerous: the planner harness
+//! drops the descriptor and the input rather than prompting against an
+//! unchecked contract.
 
 use std::sync::Arc;
 
@@ -65,8 +73,8 @@ impl TrackPluginScope {
 /// * Track row has `plugin_scope = None` (unbound) → [`TrackPluginScope::All`].
 /// * Track has `plugin_scope = Some(id)` → [`TrackPluginScope::Only`] if
 ///   [`resolve_track_owner_binding`] resolves that owner (running ∧ trusted ∧
-///   still declaring the track's `template_id` ∧ still accepting its
-///   persisted `template_input`); [`TrackPluginScope::None`] otherwise.
+///   present in the registry), **whatever became of the track's template
+///   contract**; [`TrackPluginScope::None`] otherwise.
 /// * Track lookup failure / missing track row → [`TrackPluginScope::None`]:
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
@@ -126,14 +134,15 @@ async fn resolve_plugin_scope_for_track(
         // Unbound track — historical union, but routed through the shared
         // resolver so the policy has exactly one home.
         TrackOwnerBinding::Unbound => TrackPluginScope::All,
+        // Owner identity is the whole input here; `contract` is the planner's
+        // business (see the module doc).
         TrackOwnerBinding::Owned { plugin, .. } => TrackPluginScope::Only(plugin.id),
-        TrackOwnerBinding::FailedClosed(failure) => {
+        TrackOwnerBinding::OwnerUnavailable { plugin_id } => {
             tracing::warn!(
                 target: "mcp_server::tool_visibility",
                 track_id,
-                plugin_id = failure.plugin_id().unwrap_or("<none>"),
-                failure = %failure,
-                "plugin tool scope: the track's recorded owner did not resolve; failing closed"
+                plugin_id,
+                "plugin tool scope: the track's recorded owner is not running ∧ trusted; failing closed"
             );
             TrackPluginScope::None
         }

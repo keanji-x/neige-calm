@@ -354,6 +354,65 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
     validate_instance("template_input", schema, input)
 }
 
+/// #891 / #1110 S2 — the **whole** `(Manifest.input_schema, template_input)`
+/// matrix, fail-closed: input is only accepted when the bound plugin Manifest
+/// declares an `input_schema`, and a schema with required fields makes input
+/// mandatory. The kernel never applies schema `default`s — the value persists
+/// exactly as the caller sent it. Descriptor-level `input_schema` is never
+/// consulted.
+///
+/// # #1321 S1 — why this lives here and not in `routes::tracks`
+///
+/// It used to be a private fn in `routes::tracks`, and the run-time re-check
+/// in [`crate::track_binding`] restated *half* of it (only the
+/// `(Some(schema), Some(input))` arm). The two therefore disagreed on the
+/// same triple: a track created while its owner declared no `input_schema`
+/// stores `template_input = NULL`, and after an owner upgrade that adds
+/// `required: [...]` the create route answers 400 for that exact
+/// (plugin, template, input) while the run-time restatement answered "fine".
+/// CLAUDE.md「Mirror Code Must Call The Original」: the restatement is gone
+/// and both callers now enter *this* function.
+///
+/// The error is a bare reason with no route vocabulary in it —
+/// `routes::tracks::create_track` prefixes `track create: ` (keeping every
+/// pre-existing 400 body byte-identical) and the binding resolver reports it
+/// as a contract failure.
+pub fn validate_template_input_binding(
+    plugin: Option<&crate::plugin_host::manifest::Manifest>,
+    input: Option<&Value>,
+) -> Result<(), String> {
+    let Some(plugin) = plugin else {
+        if input.is_some() {
+            return Err("`template_input` requires `template_id`".into());
+        }
+        return Ok(());
+    };
+    let plugin_id = &plugin.id;
+    match (plugin.input_schema.as_ref(), input) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(format!(
+            "plugin `{plugin_id}` does not declare an input_schema; \
+             `template_input` is not accepted"
+        )),
+        (Some(schema), None) => {
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if required.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "plugin `{plugin_id}` requires `template_input` \
+                     (required: {required:?})"
+                ))
+            }
+        }
+        (Some(schema), Some(input)) => validate_template_input(schema, input),
+    }
+}
+
 /// Check a single value against a property schema's `type` + `enum`.
 fn check_value(value: &Value, schema: &Map<String, Value>) -> Result<(), String> {
     let ty = schema
