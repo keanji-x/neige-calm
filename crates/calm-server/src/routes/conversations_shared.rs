@@ -6,7 +6,6 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
 use crate::routes::cards::MAX_PLANNER_INPUT_CHARS;
@@ -127,12 +126,16 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// in the ACTIVE paragraph below).
 ///
 /// **What "ACTIVE" means is not restated here.** The row is picked by
-/// [`session_projection_active_for_card_tx`], which owns the state filter
+/// `Repo::session_projection_active_for_card`, which owns the state filter
 /// (`starting | running | idle | turn_pending`) and the newest-first ordering.
-/// It is the same read `session_supersede_and_start_tx` and every dormancy check
-/// go through, so "this predicate's notion of active" and "the runtime a send
-/// would actually reach" cannot drift apart — a second copy of that state list
-/// here is exactly how they would.
+/// That is the pool-side twin of `session_projection_active_for_card_tx` — the
+/// read `session_supersede_and_start_tx` and every dormancy check go through —
+/// and the two are pinned equal for every runtime kind by
+/// `runtime_get_active_for_card_from_pool_matches_runtimes_backed_for_all_kinds`
+/// (`calm-truth/src/db/sqlite/runtime_read_flip_parity_tests.rs`). So "this
+/// predicate's notion of active" and "the runtime a send would actually reach"
+/// cannot drift apart. A third copy of that state list, written out here, is
+/// exactly how they would.
 ///
 /// **No active runtime ⇒ `false`.** There is nothing a queued message could be
 /// waiting on, so the next send is a re-send onto whatever runtime the caller's
@@ -205,11 +208,26 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
         .repo
         .sqlite_pool()
         .ok_or_else(|| CalmError::Internal("conversations require a sqlite-backed repo".into()))?;
-    // One transaction for both reads, so the runtime this answer is about
-    // cannot be superseded between picking it and looking for its row. Read
-    // only — it is rolled back by the drop below either way.
-    let mut tx = pool.begin().await?;
-    let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id).await? else {
+    // Two AUTOCOMMIT statements, deliberately NOT one explicit transaction.
+    // #930/#1016: a deferred `pool.begin()` holds every table lock it has taken
+    // (R locks included) until commit, so a multi-table read like this one —
+    // `worker_sessions`+`cards`, then `events` — is exactly the lock-holding
+    // waiter that closes a deadlock cycle against a concurrent IMMEDIATE
+    // writer. `deferred_write_tx_invariant` fails closed on it, the allowlist is
+    // empty on purpose, and autocommit is the route that needs no proof.
+    //
+    // What that costs is atomicity between the two reads: the runtime can be
+    // superseded in between, and the answer is then about a runtime that is no
+    // longer active. Both outcomes are already inside this predicate's stated
+    // contract — one extra bootstrap onto the new runtime, or one skipped that
+    // the *next* trigger sends — and neither is worth a deadlock class. The
+    // caller serializes itself with a per-card lock, so the interleaving needs a
+    // different endpoint restarting the harness mid-read.
+    let Some(runtime) = w
+        .repo
+        .session_projection_active_for_card(&card_id.to_string())
+        .await?
+    else {
         return Ok(false);
     };
     let found: Option<i64> = sqlx::query_scalar(
@@ -225,7 +243,7 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
     .bind(track_id)
     .bind(card_id)
     .bind(&runtime.id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&pool)
     .await?;
     Ok(found.is_some())
 }
