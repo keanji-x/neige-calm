@@ -163,6 +163,19 @@ export CALM_PROC_SUPERVISOR_BIN := $(PROC_SUP)
 export CALM_WEB_DIST := $(DIST)
 export CALM_FE_DIST := $(FE_DIST)
 
+# Resolve the installed Codex package as one unit. Current Codex releases defer
+# MCP tools through `codex-code-mode-host`; mounting only the main `codex`
+# executable makes the app-server boot successfully but leaves every deferred
+# tool undiscoverable. Explicit .env overrides still win, while the normal path
+# follows whichever Codex installation is active on PATH (including the
+# standalone package and nvm installs).
+CALM_CODEX_HOST_BIN ?= $(shell command -v codex 2>/dev/null)
+override CALM_CODEX_HOST_BIN := $(realpath $(CALM_CODEX_HOST_BIN))
+CALM_CODEX_CODE_MODE_HOST_BIN ?= $(dir $(CALM_CODEX_HOST_BIN))codex-code-mode-host
+override CALM_CODEX_CODE_MODE_HOST_BIN := $(realpath $(CALM_CODEX_CODE_MODE_HOST_BIN))
+export CALM_CODEX_HOST_BIN
+export CALM_CODEX_CODE_MODE_HOST_BIN
+
 # Wipe the local sqlite DB (with a timestamped backup) before `up -d` so
 # the new stack boots from a clean schema. Useful when switching between
 # branches with different migration histories — old rows + migration
@@ -240,6 +253,19 @@ dev-bundles: build fe-build
 	chmod -R a+rX "$(DIST)" "$(FE_DIST)"
 
 # ---- docker lifecycle ---------------------------------------------------
+
+.PHONY: check-codex-host
+check-codex-host: ## Verify the Codex CLI and its deferred-tool host before Docker bind-mounts them.
+	@test -f "$(CALM_CODEX_HOST_BIN)" && test -x "$(CALM_CODEX_HOST_BIN)" || { \
+	  echo "Codex executable is missing or not executable: $(CALM_CODEX_HOST_BIN)" >&2; \
+	  echo "Set CALM_CODEX_HOST_BIN to the real codex binary (not a directory)." >&2; \
+	  exit 1; \
+	}
+	@test -f "$(CALM_CODEX_CODE_MODE_HOST_BIN)" && test -x "$(CALM_CODEX_CODE_MODE_HOST_BIN)" || { \
+	  echo "Codex deferred-tool host is missing or not executable: $(CALM_CODEX_CODE_MODE_HOST_BIN)" >&2; \
+	  echo "Install a complete Codex package or set CALM_CODEX_CODE_MODE_HOST_BIN." >&2; \
+	  exit 1; \
+	}
 
 .PHONY: proxy-forwarder-up
 proxy-forwarder-up: ## Ensure the host-loopback → docker0 proxy forwarder container is running.
@@ -324,7 +350,7 @@ e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence & tool-prefligh
 	scripts/e2e-isolated/check_tools.sh
 
 .PHONY: dev
-dev: proxy-forwarder-up dev-bundles dirs ## Build both frontends, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+dev: check-codex-host proxy-forwarder-up dev-bundles dirs ## Build both frontends, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
 ifeq ($(FRESH),1)
 	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
 	-$(COMPOSE) down -v --remove-orphans
@@ -345,7 +371,7 @@ endif
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: dev-fresh
-dev-fresh: proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with both frontends.
+dev-fresh: check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with both frontends.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
 	$(COMPOSE) up -d --build
@@ -359,7 +385,7 @@ dev-fresh: proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/sta
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: up
-up: proxy-forwarder-up dirs ## Bring the stack up without rebuilding.
+up: check-codex-host proxy-forwarder-up dirs ## Bring the stack up without rebuilding.
 	$(COMPOSE) up -d
 
 .PHONY: stop
