@@ -449,9 +449,9 @@ macro_rules! assistant_prompt_mechanics {
         "
 ## What you can do
 
-* **Read the track.** Use the `neige` shell CLI (`neige state`, `neige ls`, \
-  `neige cat`) for track and card state, and `calm.report.read` for the track \
-  report.
+* **Read the report.** Use `calm.report.read` for the track report. General \
+  track/card state reads through the `neige` CLI are not available to the \
+  Assistant role.
 * **Run shell commands** in the track's workspace, subject to the usual sandbox.
 * **Write prose into the track report** through the block tools: \
   `calm.report.blocks.upsert`, `.move`, `.delete` \
@@ -465,6 +465,14 @@ whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
 the track's plan belongs to the planner agent, and a `task` block written from here \
 is rejected — the whole write, not just that block. If the user asks for work \
 to be scheduled, say so plainly and let them take it to the planner agent.
+
+## Loading deferred tools
+
+Codex may defer MCP tools until they are requested. Before report work, use \
+tool search to load the exact `calm.report.read` tool and the exact report write \
+tool you need. If a named tool is not immediately visible, use tool search to \
+load that exact `calm.*` tool; do not substitute a planner-only tool or declare \
+the report tools unavailable merely because they are deferred.
 
 ## Writing to the report, concretely
 
@@ -866,29 +874,21 @@ mod tests {
         );
     }
 
-    /// The pre-#1343 assistant prompt, byte for byte.
-    ///
-    /// **The file is generated from `origin/main`'s constant, not from this
-    /// build**, which is the whole point: #1343 split the template into a
-    /// shared mechanics macro plus two identities, and the one thing that has
-    /// to be provable is that ordinary tracks came out the other side
-    /// unchanged. A golden regenerated from the current code would agree with
-    /// whatever the current code says.
+    /// The reviewed ordinary assistant prompt, byte for byte. The #1343
+    /// follow-up corrects its shared mechanics after a real turn proved the
+    /// previous prompt advertised planner/worker-only CLI reads and omitted
+    /// deferred MCP discovery.
     const ASSISTANT_PROMPT_GOLDEN: &str = include_str!("../tests/goldens/assistant_prompt.txt");
 
     /// #1343's launchpad identity, byte for byte.
     const LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN: &str =
         include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
 
-    /// #1343 — splitting the assistant prompt changed nothing for ordinary
-    /// tracks.
-    ///
-    /// Equality against a whole document, not a keyword list: the refactor
-    /// moved the middle of the prompt into a macro and both ends into
-    /// `concat!`, and a stray newline at either seam is exactly the kind of
-    /// change a `contains` check cannot see.
+    /// Equality against a whole document, not a keyword list: both assistant
+    /// identities share the mechanics macro, and a stray newline at either
+    /// seam is exactly the kind of change a `contains` check cannot see.
     #[test]
-    fn the_ordinary_assistant_prompt_is_unchanged_by_the_launchpad_fork() {
+    fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
         assert_eq!(
             render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189"),
             ASSISTANT_PROMPT_GOLDEN,
@@ -928,6 +928,27 @@ mod tests {
         // …and the mechanics really are one paragraph, not two that can drift.
         let markers = "1. Call `calm.report.read` with `with_markers: true` FIRST.";
         assert!(ordinary.contains(markers) && launchpad.contains(markers));
+    }
+
+    #[test]
+    fn assistant_prompts_match_their_actual_read_and_tool_discovery_surface() {
+        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
+        let launchpad = render_system_prompt(
+            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            "track-golden-1189",
+        );
+        for prompt in [ordinary, launchpad] {
+            assert!(
+                !prompt.contains("`neige state`")
+                    && !prompt.contains("`neige ls`")
+                    && !prompt.contains("`neige cat`"),
+                "Assistant is rejected from planner/worker-only neige reads"
+            );
+            assert!(
+                prompt.contains("use tool search to load that exact `calm.*` tool"),
+                "deferred MCP tools must be discovered before declaring them unavailable"
+            );
+        }
     }
 
     #[test]
