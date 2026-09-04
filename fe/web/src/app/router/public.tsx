@@ -2180,16 +2180,18 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
       transport={transport}
       unauthorized={unauthorized}
       track={track}
+      canResumeTrack={detail.data.can_resume}
       cards={detail.data.cards}
       cardRuntime={cardRuntime}
     />
   );
 }
 
-function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: {
+function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
+  canResumeTrack: boolean;
   cards: TrackDetailWire['cards'];
   cardRuntime: CardRuntime;
 }) {
@@ -2686,6 +2688,7 @@ function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: 
     <TrackStage>
     <TrackPage
       track={track}
+      canResumeTrack={canResumeTrack}
       cards={panelCards}
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
@@ -2767,6 +2770,7 @@ function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: 
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
+      onResumeTrack={() => trackMutations.patch(track.id, track.areaId, { lifecycle: 'working' }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {
         if (signal.aborted) return;
         go({ name: 'today' });

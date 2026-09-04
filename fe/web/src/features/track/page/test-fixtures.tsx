@@ -56,7 +56,9 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
     /* A track with no report has no tasks, which is the honest default — the
        TASKS cases below pass their own. */
     tasks: [],
+    canResumeTrack: false,
     onRenameTrack: vi.fn(),
+    onResumeTrack: vi.fn(),
     onDeleteTrack: vi.fn(),
     ...overrides,
   };

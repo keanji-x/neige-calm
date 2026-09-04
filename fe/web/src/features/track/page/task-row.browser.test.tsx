@@ -85,7 +85,9 @@ function renderRow(onOpenCard: () => void, onOpenTask: () => void) {
         tasks={[assigned]}
         onOpenCard={onOpenCard}
         onOpenTask={onOpenTask}
+        canResumeTrack={false}
         onRenameTrack={vi.fn()}
+        onResumeTrack={vi.fn()}
         onDeleteTrack={vi.fn()}
       />
     </div>,
@@ -142,7 +144,9 @@ describe('a TASKS row, laid out', () => {
           }]}
           onOpenCard={vi.fn()}
           onOpenTask={vi.fn()}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -219,7 +223,9 @@ describe('a TASKS row, laid out', () => {
           tasks={[{ ...assigned, kind: 'codex', workerCardId: null }]}
           onOpenCard={onOpenCard}
           onOpenTask={onOpenTask}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -260,7 +266,9 @@ describe('a TASKS row, laid out', () => {
           tasks={[{ ...assigned, status: null, declaration: 'Not ready' }]}
           onOpenCard={onOpenCard}
           onOpenTask={onOpenTask}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -364,7 +372,9 @@ function renderMarks(): Map<string, HTMLElement> {
         }))}
         onOpenCard={vi.fn()}
         onOpenTask={vi.fn()}
+        canResumeTrack={false}
         onRenameTrack={vi.fn()}
+        onResumeTrack={vi.fn()}
         onDeleteTrack={vi.fn()}
       />
     </div>,
@@ -541,7 +551,9 @@ describe('the TASKS status mark', () => {
           }]}
           onOpenCard={vi.fn()}
           onOpenTask={vi.fn()}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -861,7 +873,9 @@ describe('hovering the TASKS status', () => {
           tasks={[failedWithReason]}
           onOpenCard={vi.fn()}
           onOpenTask={vi.fn()}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -918,7 +932,9 @@ describe('hovering the TASKS status', () => {
           tasks={[failedWithReason]}
           onOpenCard={onOpenCard}
           onOpenTask={onOpenTask}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,
@@ -971,7 +987,9 @@ describe('hovering the TASKS status', () => {
           tasks={[failedWithReason]}
           onOpenCard={vi.fn()}
           onOpenTask={vi.fn()}
+          canResumeTrack={false}
           onRenameTrack={vi.fn()}
+          onResumeTrack={vi.fn()}
           onDeleteTrack={vi.fn()}
         />
       </div>,

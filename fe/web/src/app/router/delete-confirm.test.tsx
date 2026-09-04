@@ -57,7 +57,9 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
-    if (request.path === '/api/tracks/w1') return Promise.resolve({ status: 200, statusText: 'OK', body: { track, cards: [], overlays: [] } });
+    if (request.path === '/api/tracks/w1') return Promise.resolve({
+      status: 200, statusText: 'OK', body: { track, can_resume: false, cards: [], overlays: [] },
+    });
     if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
@@ -114,7 +116,9 @@ it('round-trips an encoded track id through useGo, TanStack history, and useRout
       { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
-    if (request.path.includes('/api/tracks/')) return Promise.resolve({ status: 200, statusText: 'OK', body: { track, cards: [], overlays: [] } });
+    if (request.path.includes('/api/tracks/')) return Promise.resolve({
+      status: 200, statusText: 'OK', body: { track, can_resume: false, cards: [], overlays: [] },
+    });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -52,8 +52,12 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, cards: [CARD], overlays: [] });
-      if (request.path === '/api/tracks/w2') return ok({ track: TRACK_B, cards: [CARD_B], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_resume: false, cards: [CARD], overlays: [],
+      });
+      if (request.path === '/api/tracks/w2') return ok({
+        track: TRACK_B, can_resume: false, cards: [CARD_B], overlays: [],
+      });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' });
       if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
@@ -327,13 +331,17 @@ describe('planner conversation regressions', () => {
        arrived before the card is swapped underneath it. */
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
-    client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD_SAME_TRACK], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail(TRACK.id), {
+      track: TRACK, can_resume: false, cards: [CARD_SAME_TRACK], overlays: [],
+    });
     /* The listed row is the swapped-in card, and the drawer's row is gone with
        the old one — a `'rows'` route lists what the server (here, the track
        detail) says, so the count only comes back when this one is opened. */
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
-    client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail(TRACK.id), {
+      track: TRACK, can_resume: false, cards: [CARD], overlays: [],
+    });
     /* Swapped back, and reopened: the original row is listed again and counts
        again. Both directions on one panel instance, which is what a route that
        forked on its planner card could not do. */

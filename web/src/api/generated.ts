@@ -2665,8 +2665,8 @@ export interface components {
              *     entered a terminal lifecycle state (Done / Canceled / Failed),
              *     or `None` while the track is non-terminal. Stamped inside the
              *     same transaction as the `TrackLifecycleChanged` event by
-             *     `track_update_tx`; cleared back to `None` on reopen
-             *     (Done/Canceled/Failed → Planning). The calendar window query
+             *     `track_update_tx`; cleared back to `None` when a terminal track
+             *     returns to Planning or Working. The calendar window query
              *     `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
              *     terminal_at >= since)` to keep open tracks visible across every
              *     day they span.
@@ -2730,10 +2730,16 @@ export interface components {
             updatedAt: number;
         };
         /**
-         * @description What a Track detail page renders: the track itself plus its cards and
-         *     any overlays scoped to the track (status/progress badges) and its cards.
+         * @description What a Track detail page renders: the track itself, its server-derived
+         *     capabilities, its cards, and overlays scoped to the track or those cards.
          */
         TrackDetail: {
+            /**
+             * @description Server-derived capability for the user-facing `Resume work` action.
+             *     Lifecycle permission and child-track structural integrity are resolved
+             *     together so clients do not advertise an action the write must reject.
+             */
+            can_resume: boolean;
             cards: components["schemas"]["Card"][];
             overlays: components["schemas"]["Overlay"][];
             track: components["schemas"]["Track"];

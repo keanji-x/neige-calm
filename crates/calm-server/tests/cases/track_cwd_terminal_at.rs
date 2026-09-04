@@ -1068,7 +1068,8 @@ async fn lifecycle_reopen_clears_terminal_at() {
         "preconditon: terminal_at stamped"
     );
 
-    // Now reopen — terminal → planning is the only legal reopen edge.
+    // Reopen through the planning branch; Resume work covers the sibling
+    // terminal → working edge in `payload_validation`.
     let reopened = boot
         .repo
         .track_update(

@@ -84,7 +84,7 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await within(await screen.findByRole('navigation', { name: 'Workspace' })).findByText('Reliable');
-    resolveDetail(ok({ track, cards: [], overlays: [{
+    resolveDetail(ok({ track, can_resume: false, cards: [], overlays: [{
       id: 'o1', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
       kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
     }] }));
@@ -99,7 +99,9 @@ describe('degraded workspace reads stay usable', () => {
         id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
         kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
       }]);
-      if (request.path === '/api/tracks/w1') return ok({ track, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({
+        track, can_resume: false, cards: [], overlays: [],
+      });
       return ok([]);
     });
     await screen.findByRole('button', { name: 'Rename track' });

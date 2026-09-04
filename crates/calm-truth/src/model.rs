@@ -495,11 +495,15 @@ impl Task {
 
 // ---------------- Composites ----------------
 
-/// What a Track detail page renders: the track itself plus its cards and
-/// any overlays scoped to the track (status/progress badges) and its cards.
+/// What a Track detail page renders: the track itself, its server-derived
+/// capabilities, its cards, and overlays scoped to the track or those cards.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TrackDetail {
     pub track: Track,
+    /// Server-derived capability for the user-facing `Resume work` action.
+    /// Lifecycle permission and child-track structural integrity are resolved
+    /// together so clients do not advertise an action the write must reject.
+    pub can_resume: bool,
     pub cards: Vec<Card>,
     pub overlays: Vec<Overlay>,
 }

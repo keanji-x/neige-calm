@@ -143,7 +143,7 @@ function setup(
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, cards: [...cards], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, can_resume: false, cards: [...cards], overlays: [] }));
       }
       if (request.path === '/api/tracks/w1/report') {
         reportReads += 1;

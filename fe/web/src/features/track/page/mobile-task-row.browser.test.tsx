@@ -72,7 +72,9 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
         tasks={TASKS}
         panel="tasks"
         onOpenTask={vi.fn()}
+        canResumeTrack={false}
         onRenameTrack={vi.fn()}
+        onResumeTrack={vi.fn()}
         onDeleteTrack={vi.fn()}
       />,
     );

@@ -437,7 +437,8 @@ describe('card mutation cache writes', () => {
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
+    track: { ...baseTrackWire }, can_resume: false,
+    cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
   function mounted(transport: ApiTransportPort) {

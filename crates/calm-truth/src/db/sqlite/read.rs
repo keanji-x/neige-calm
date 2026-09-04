@@ -18,14 +18,15 @@ use calm_types::worker::{WorkerSession, WorkerSessionId};
 /// Row shape of the single-statement `track_detail` read (#1016).
 ///
 /// The track columns decode through the usual [`crate::db::rows::TrackRow`]
-/// mirror; `cards` and `overlays` ride along as JSON arrays produced by
-/// `json_group_array` so that all three come from ONE implicit transaction
-/// without the row multiplication a join would cause (a track-scoped overlay
-/// would pair with every card).
+/// mirror; the child-reference capability and the `cards` / `overlays` JSON
+/// arrays ride on the same SELECT so all four facts come from ONE implicit
+/// transaction without the row multiplication a join would cause (a
+/// track-scoped overlay would pair with every card).
 #[derive(sqlx::FromRow)]
 struct TrackDetailRow {
     #[sqlx(flatten)]
     track: crate::db::rows::TrackRow,
+    referenced_as_child: bool,
     cards_json: String,
     overlays_json: String,
 }
@@ -370,6 +371,8 @@ impl RepoRead for SqlxRepo {
         // `json_group_array` over zero rows is an empty array.
         let row = sqlx::query_as::<_, TrackDetailRow>(&format!(
             r#"SELECT {TRACK_SELECT_COLUMNS_W},
+                      EXISTS(SELECT 1 FROM tasks parent_task
+                              WHERE parent_task.child_track_id = w.id) AS referenced_as_child,
                       (SELECT json_group_array(json_object(
                            'id', c.id, 'track_id', c.track_id, 'kind', c.kind,
                            'sort', json(printf('%!.17g', c.sort)),
@@ -455,8 +458,14 @@ impl RepoRead for SqlxRepo {
             ))
         });
 
+        // Child ownership constrains only a terminal reopen: Blocked and
+        // Reviewing children may legally return to Working, while a terminal
+        // child has already resolved its parent task and cannot be reopened.
+        let can_resume = calm_types::track_lifecycle::user_can_resume(row.track.lifecycle)
+            && (!row.track.lifecycle.is_terminal() || !row.referenced_as_child);
         Ok(Some(TrackDetail {
             track: Track::from(row.track),
+            can_resume,
             cards,
             overlays,
         }))

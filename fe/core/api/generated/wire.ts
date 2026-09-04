@@ -432,8 +432,8 @@ template_input: unknown,
  * entered a terminal lifecycle state (Done / Canceled / Failed),
  * or `None` while the track is non-terminal. Stamped inside the
  * same transaction as the `TrackLifecycleChanged` event by
- * `track_update_tx`; cleared back to `None` on reopen
- * (Done/Canceled/Failed → Planning). The calendar window query
+ * `track_update_tx`; cleared back to `None` when a terminal track
+ * returns to Planning or Working. The calendar window query
  * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
  * terminal_at >= since)` to keep open tracks visible across every
  * day they span.
@@ -725,8 +725,8 @@ template_input: unknown,
  * entered a terminal lifecycle state (Done / Canceled / Failed),
  * or `None` while the track is non-terminal. Stamped inside the
  * same transaction as the `TrackLifecycleChanged` event by
- * `track_update_tx`; cleared back to `None` on reopen
- * (Done/Canceled/Failed → Planning). The calendar window query
+ * `track_update_tx`; cleared back to `None` when a terminal track
+ * returns to Planning or Working. The calendar window query
  * `GET /api/tracks?since&until` uses `(terminal_at IS NULL OR
  * terminal_at >= since)` to keep open tracks visible across every
  * day they span.

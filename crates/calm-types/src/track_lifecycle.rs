@@ -35,7 +35,8 @@
 //! | `working → blocked`                        | no   | yes       | no     |
 //! | `working → reviewing`                      | no   | yes       | no     |
 //! | `blocked → working`                        | yes  | yes       | no     |
-//! | `reviewing → working`                      | no   | yes       | no     |
+//! | `reviewing → working`                      | yes  | yes       | no     |
+//! | `done`/`canceled`/`failed` → `working`     | yes  | no        | no     |
 //! | `reviewing → done`                         | no   | yes       | no     |
 //! | `reviewing → failed`                       | no   | yes       | no     |
 //! | `draft → failed`  (dead-root, #741-4)      | no   | yes       | no     |
@@ -138,7 +139,7 @@ pub fn actor_is_planner_author(actor: &ActorId) -> bool {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransitionError {
     /// The (from → to) edge is structurally impossible regardless of
-    /// who tried it (e.g. `done → working` by anyone, `draft → done`
+    /// who tried it (e.g. `done → reviewing` by anyone, `draft → done`
     /// by anyone).
     #[error("track lifecycle: illegal transition {from:?} → {to:?}")]
     IllegalEdge {
@@ -161,6 +162,20 @@ pub enum TransitionError {
         to: TrackLifecycle,
         actor_kind: ActorKind,
     },
+}
+
+/// Whether the user may apply the product's one `Resume work` action from this
+/// lifecycle. Structural constraints such as a child-track parent verdict live
+/// in the persistence layer and can narrow this capability further.
+pub fn user_can_resume(lifecycle: TrackLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        TrackLifecycle::Blocked
+            | TrackLifecycle::Reviewing
+            | TrackLifecycle::Done
+            | TrackLifecycle::Canceled
+            | TrackLifecycle::Failed
+    )
 }
 
 /// Validate a track lifecycle transition against the rule table.
@@ -233,11 +248,20 @@ pub fn validate_transition(
         };
     }
 
-    // Reopen: terminal (done/canceled/failed) → planning is the
-    // user-only escape hatch. Picking `planning` keeps the reopened
-    // track on the happy path's first non-draft state — the user
-    // doesn't have to re-do goal entry, but the Planner Agent gets a
-    // clean start when it next picks up the track.
+    // #1450 user recovery: a human may correct any waiting / terminal state back to
+    // Working without granting the Planner Agent a new edge. This is the
+    // narrow authority behind the Track header's single `Resume work` action;
+    // it is deliberately not a general user override over the nine-state FSM.
+    // Blocked already had a user edge in the table below, while Reviewing and
+    // terminal states need this user-only escape hatch.
+    if to == TrackLifecycle::Working && user_can_resume(from) && kind == ActorKind::User {
+        return Ok(());
+    }
+
+    // Reopen: terminal (done/canceled/failed) → planning remains the other
+    // user-only escape hatch. Picking `planning` gives a reopened track a clean
+    // Planner Agent pass; the explicit recovery branch above is for the user
+    // saying the track should already be considered Working.
     if from.is_terminal() {
         if to == TrackLifecycle::Planning {
             return match kind {
@@ -366,9 +390,16 @@ mod tests {
             // #741-4 (DR-1) — kernel dead-root convergence (planner-authority)
             (L::Draft, L::Failed, ActorKind::PlannerAgent),
             (L::Planning, L::Failed, ActorKind::PlannerAgent),
-            // unblock (both)
+            // unblock (both); the user arm is also accepted by the explicit
+            // recovery branch above and remains listed here as documentation of
+            // the original edge.
             (L::Blocked, L::Working, ActorKind::User),
             (L::Blocked, L::Working, ActorKind::PlannerAgent),
+            // user-only resume
+            (L::Reviewing, L::Working, ActorKind::User),
+            (L::Done, L::Working, ActorKind::User),
+            (L::Canceled, L::Working, ActorKind::User),
+            (L::Failed, L::Working, ActorKind::User),
             // user-only: cancel from any non-terminal
             (L::Draft, L::Canceled, ActorKind::User),
             (L::Planning, L::Canceled, ActorKind::User),
@@ -496,24 +527,43 @@ mod tests {
     }
 
     #[test]
-    fn cannot_regress_from_terminal_except_reopen_to_planning() {
-        // Terminal states allow reopen → planning (user-only) and
-        // nothing else. The exhaustive table already covers this; this
-        // test exists for documentation: it's the human-readable
-        // counterexample list.
+    fn user_can_resume_recoverable_states_to_working() {
+        for from in [
+            TrackLifecycle::Blocked,
+            TrackLifecycle::Reviewing,
+            TrackLifecycle::Done,
+            TrackLifecycle::Canceled,
+            TrackLifecycle::Failed,
+        ] {
+            let result = validate_transition(from, TrackLifecycle::Working, &user());
+            assert!(
+                result.is_ok(),
+                "user should be able to resume {from:?} -> Working, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_states_only_allow_user_reopen_or_resume() {
+        // Terminal states allow the user to reopen → planning or resume →
+        // working. Planner, Worker and Plugin still get no terminal escape.
+        // The exhaustive table already covers this; this test keeps the
+        // authority distinction readable.
         for from in [
             TrackLifecycle::Done,
             TrackLifecycle::Canceled,
             TrackLifecycle::Failed,
         ] {
             for to in ALL_STATES {
-                if to == TrackLifecycle::Planning {
-                    continue; // covered by the reopen rule
-                }
                 if from == to {
                     continue; // same-state idempotency — covered separately
                 }
                 for actor in [user(), planner(), worker(), plugin()] {
+                    if actor == user()
+                        && matches!(to, TrackLifecycle::Planning | TrackLifecycle::Working)
+                    {
+                        continue;
+                    }
                     let res = validate_transition(from, to, &actor);
                     assert!(
                         res.is_err(),
@@ -590,17 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn user_cannot_drive_planner_only_progressions() {
-        // The user is not allowed to skip ahead on the planner-driven
-        // happy path. Each of these edges is `(false, true)` in the
-        // implementation; we re-assert here so an accidental flip to
-        // `(true, true)` surfaces as a test diff.
+    fn user_cannot_drive_non_recovery_planner_progressions() {
+        // Resume intentionally shares Reviewing → Working with the user. The
+        // rest of the planner-driven happy path remains planner-only; re-assert
+        // it here so the narrow recovery grant cannot broaden by accident.
         let planner_only = [
             (TrackLifecycle::Planning, TrackLifecycle::Dispatching),
             (TrackLifecycle::Dispatching, TrackLifecycle::Working),
             (TrackLifecycle::Working, TrackLifecycle::Blocked),
             (TrackLifecycle::Working, TrackLifecycle::Reviewing),
-            (TrackLifecycle::Reviewing, TrackLifecycle::Working),
             (TrackLifecycle::Reviewing, TrackLifecycle::Done),
             (TrackLifecycle::Reviewing, TrackLifecycle::Failed),
             // #741-4 (DR-1) — dead-root convergence edges are planner-authority:

@@ -103,7 +103,9 @@ function setup(options: Options = {}) {
         if (detail.track.id === created.id && created.id !== track.id && gate.createdDetailFails) {
           return Promise.resolve({ status: 500, statusText: 'Server Error', body: {} });
         }
-        return Promise.resolve(ok({ track: detail.track, cards: detail.cards, overlays: [] }));
+        return Promise.resolve(ok({
+          track: detail.track, can_resume: false, cards: detail.cards, overlays: [],
+        }));
       }
       if (request.path.endsWith('/planner/run')) {
         return Promise.resolve(ok({ card_id: PLANNER_CARD.id, runtime_id: 'r', phase: 'idle' }));

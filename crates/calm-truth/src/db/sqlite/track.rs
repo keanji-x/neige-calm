@@ -343,9 +343,9 @@ pub async fn track_update_tx(
     //
     // Issue #250 PR 2 — `terminal_at` rides on the lifecycle column:
     // when this patch advances the track into a terminal state we
-    // stamp the current time; when it reopens a terminal track
-    // (terminal → planning, the only legal reopen edge today) we
-    // clear `terminal_at` back to NULL. A patch that doesn't touch
+    // stamp the current time; when it reopens or resumes a terminal track
+    // (terminal → planning / working) we clear `terminal_at` back to NULL. A
+    // patch that doesn't touch
     // `lifecycle` leaves `terminal_at` alone — that matches the
     // archive precedent (changing `title` doesn't bump `archived_at`).
     // The stamp happens inside the same transaction as the track row
@@ -368,9 +368,9 @@ pub async fn track_update_tx(
             if new_lifecycle.is_terminal() {
                 w.terminal_at = Some(now_ms());
             } else if w.lifecycle.is_terminal() {
-                // Reopen (terminal → non-terminal). Today the only
-                // legal edge here is `terminal → planning` (user-
-                // driven, gated by `validate_transition`). Clearing
+                // Reopen / resume (terminal → non-terminal). The legal edges
+                // here are user-driven terminal → planning / working, gated by
+                // `validate_transition`. Clearing
                 // the stamp ensures a reopened track doesn't render
                 // with a stale terminal date on the calendar.
                 w.terminal_at = None;

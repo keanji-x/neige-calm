@@ -19,11 +19,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::error::CalmError;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
-use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack};
+use calm_server::ids::ActorId;
+use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack, TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::track_lifecycle::validate_transition_snapshot_in_tx;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -893,6 +896,92 @@ async fn track_detail_keeps_kernel_owned_supported_schema_version() {
     assert_eq!(overlays[0]["kind"], "status");
 }
 
+#[tokio::test]
+async fn track_detail_exposes_resume_when_transition_is_structurally_allowed() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Done),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("seed root Done lifecycle");
+
+    let response = get_track_detail(app(state.clone()), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_to_json(response).await["can_resume"], true);
+
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Reviewing),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("reopen root before attaching it to a parent task");
+
+    let child = state.repo.track_get(&track_id).await.unwrap().unwrap();
+    let parent = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: child.area_id,
+            title: "parent".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .expect("seed parent track");
+    sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
+        .bind(parent.id.as_str())
+        .bind(&track_id)
+        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .await
+        .expect("attach child to parent");
+    sqlx::query(
+        "INSERT INTO tasks(\
+            id, track_id, key, kind, goal, context_json, status, child_track_id, \
+            created_at_ms, updated_at_ms\
+         ) VALUES(\
+            'parent:resume-capability', ?1, 'resume-capability', 'codex', 'g', '{}', \
+            'running', ?2, 1, 1\
+         )",
+    )
+    .bind(parent.id.as_str())
+    .bind(&track_id)
+    .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+    .await
+    .expect("bind child to parent task");
+
+    let response = get_track_detail(app(state.clone()), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_to_json(response).await["can_resume"],
+        true,
+        "a non-terminal child has no structural reopen restriction"
+    );
+
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Done),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("finish child track");
+
+    let response = get_track_detail(app(state), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_to_json(response).await["can_resume"], false);
+}
+
 // --------------------------------------------------------------------------
 // Track lifecycle PATCH — issue #145 followup, idempotent same-state semantics
 //
@@ -957,6 +1046,108 @@ async fn track_patch_same_state_lifecycle_is_idempotent_no_event() {
     assert_eq!(
         post.updated_at, pre.updated_at,
         "updated_at must not advance on a lifecycle-only no-op",
+    );
+}
+
+#[tokio::test]
+async fn track_patch_user_resume_done_to_working_clears_terminal_at_and_emits() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    let done = repo
+        .track_update(
+            &track_id,
+            TrackPatch {
+                lifecycle: Some(TrackLifecycle::Done),
+                ..TrackPatch::default()
+            },
+        )
+        .await
+        .expect("seed Done lifecycle");
+    assert!(
+        done.terminal_at.is_some(),
+        "Done fixture must carry terminal_at"
+    );
+
+    let mut rx = state.events.subscribe();
+    let resp = patch_track(
+        app(state.clone()),
+        &track_id,
+        json!({ "lifecycle": "working" }),
+    )
+    .await;
+    let status = resp.status();
+    let body = body_to_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "resume response: {body}");
+    assert_eq!(body["lifecycle"], "working");
+    assert_eq!(body["terminal_at"], Value::Null);
+
+    let lifecycle = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("lifecycle event arrives")
+        .expect("event bus remains open");
+    assert_eq!(lifecycle.actor, ActorId::User);
+    assert!(
+        matches!(
+            lifecycle.event,
+            Event::TrackLifecycleChanged {
+                from: TrackLifecycle::Done,
+                to: TrackLifecycle::Working,
+                ..
+            }
+        ),
+        "first event must be Done -> Working, got {:?}",
+        lifecycle.event,
+    );
+
+    let updated = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("track update event arrives")
+        .expect("event bus remains open");
+    assert_eq!(updated.actor, ActorId::User);
+    match updated.event {
+        Event::TrackUpdated(payload) => {
+            assert_eq!(payload.lifecycle, TrackLifecycle::Working);
+            assert_eq!(payload.terminal_at, None);
+        }
+        other => panic!("second event must be TrackUpdated, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stale_rest_lifecycle_snapshot_conflicts_before_the_row_or_events_change() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Planning),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("advance row after the simulated REST pre-read");
+
+    let pool = repo.sqlite_pool().expect("sqlite-backed fixture");
+    let mut tx = pool.begin().await.expect("begin guard transaction");
+    let typed_track_id = calm_server::ids::TrackId::from(track_id.clone());
+    let error = validate_transition_snapshot_in_tx(
+        &mut tx,
+        &typed_track_id,
+        TrackLifecycle::Done,
+        TrackLifecycle::Working,
+        &ActorId::User,
+    )
+    .await
+    .expect_err("stale Done snapshot must not authorize Planning -> Working");
+    assert!(matches!(error, CalmError::Conflict(_)), "got {error:?}");
+    tx.rollback()
+        .await
+        .expect("rollback read-only guard transaction");
+
+    let current = state.repo.track_get(&track_id).await.unwrap().unwrap();
+    assert_eq!(current.lifecycle, TrackLifecycle::Planning);
+    let events = repo.events_since(0, i64::MAX).await.expect("event log");
+    assert!(
+        events.is_empty(),
+        "stale snapshot must emit nothing: {events:?}"
     );
 }
 

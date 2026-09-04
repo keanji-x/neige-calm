@@ -65,7 +65,9 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, template_by_key};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
-use crate::track_lifecycle::{track_get_tx, validate_transition};
+use crate::track_lifecycle::{
+    track_get_tx, validate_transition, validate_transition_snapshot_in_tx,
+};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
     tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
@@ -3436,10 +3438,11 @@ pub(crate) async fn update_track(
         ));
     }
 
-    // Issue #145 — lifecycle transitions go through a typed state
-    // machine. The validator runs *before* the write so an illegal
-    // transition surfaces as `Forbidden` without persisting either
-    // the row update or the event.
+    // Issue #145 — lifecycle transitions go through a typed state machine.
+    // This preflight returns deterministic illegal-edge errors before opening
+    // a write transaction. The same snapshot is checked again after BEGIN
+    // IMMEDIATE below: only that in-tx check can authorize the row write and
+    // supply a truthful `from` value when another lifecycle request races us.
     //
     // Same-state requests (`p.lifecycle == Some(current)`) are an
     // idempotent silent success for authorized actors: the validator
@@ -3543,6 +3546,16 @@ pub(crate) async fn update_track(
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
+                if let Some((expected_from, to)) = lifecycle_change {
+                    validate_transition_snapshot_in_tx(
+                        tx,
+                        &track_id_for_event,
+                        expected_from,
+                        to,
+                        &actor_id,
+                    )
+                    .await?;
+                }
                 let track = track_update_tx(tx, &id, p_for_tx).await?;
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {

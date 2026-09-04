@@ -135,6 +135,7 @@ export type CardWire = z.infer<typeof cardWireSchema>;
 
 export const trackDetailSchema = z.object({
   track: trackWireSchema,
+  can_resume: z.boolean(),
   cards: z.array(cardWireSchema),
   overlays: z.array(overlayWireSchema),
 });
@@ -428,6 +429,7 @@ export type TrackPatchBody = Readonly<{
   sort?: number;
   pinned_at?: number | null;
   archived_at?: number | null;
+  lifecycle?: TrackLifecycle;
 }>;
 
 export function tracksInAreaOperation(areaId: string): ApiOperation<TrackWire[]> {

@@ -4,8 +4,8 @@
 //! `track_lifecycle::validate_transition`: 9 from-states × 9 to-states × 4
 //! actor kinds = 324 rows, each mapped to `"ok"` / `"illegal_edge"` /
 //! `"not_authorized"`. The file was generated from the implementation and
-//! hand-checked against the rule table in `track_lifecycle.rs` docs (40 `ok`
-//! rows = 22 distinct legal edges [incl. #741-4 dead-root draft→failed +
+//! hand-checked against the rule table in `track_lifecycle.rs` docs (44 `ok`
+//! rows = 26 distinct legal edges [incl. #741-4 dead-root draft→failed +
 //! planning→failed] + 9×2 same-state idempotent shortcuts;
 //! Worker/Other are denied everywhere). It is now the contract: any change
 //! to the validator's answer for any cell fails this test and requires a
@@ -149,8 +149,8 @@ fn edge_table_matches_golden() {
     );
     let ok_rows = golden.iter().filter(|r| r.outcome == "ok").count();
     assert_eq!(
-        ok_rows, 40,
-        "expected 22 legal distinct edges (incl. #741-4 dead-root \
+        ok_rows, 44,
+        "expected 26 legal distinct edges (incl. #741-4 dead-root \
          draft→failed + planning→failed) + 18 same-state idempotent rows"
     );
     assert!(

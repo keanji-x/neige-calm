@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,23 +19,63 @@ describe('TrackPage header', () => {
   it('shows the track title and the lifecycle badge', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('status', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
   });
 
-  it('does not put Draft in the header', () => {
+  it('puts Draft in the header', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.queryByRole('status', { name: 'Track lifecycle: Draft' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Track lifecycle: Draft' })).toBeTruthy();
   });
 
-  it('hides done and canceled, and still shows failed', () => {
-    renderPage({ track: track({ lifecycle: 'done' }) });
-    expect(screen.queryByRole('status', { name: 'Track lifecycle: Done' })).toBeNull();
-    cleanup();
-    renderPage({ track: track({ lifecycle: 'canceled' }) });
-    expect(screen.queryByRole('status', { name: 'Track lifecycle: Canceled' })).toBeNull();
-    cleanup();
-    renderPage({ track: track({ lifecycle: 'failed' }) });
-    expect(screen.getByRole('status', { name: 'Track lifecycle: Failed' })).toBeTruthy();
+  it('shows done, canceled and failed', () => {
+    for (const [lifecycle, label] of [
+      ['done', 'Done'], ['canceled', 'Canceled'], ['failed', 'Failed'],
+    ] as const) {
+      cleanup();
+      renderPage({ track: track({ lifecycle }) });
+      expect(screen.getByRole('button', { name: `Track lifecycle: ${label}` })).toBeTruthy();
+    }
+  });
+
+  it('resumes a recoverable lifecycle from the status button', async () => {
+    const onResumeTrack = vi.fn();
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+    await userEvent.click(screen.getByRole('button', { name: 'Track lifecycle: Done' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+  });
+
+  it('deduplicates Resume work while the first request is pending', async () => {
+    let finishResume!: () => void;
+    const pendingResume = new Promise<void>((resolve) => { finishResume = resolve; });
+    const onResumeTrack = vi.fn(() => pendingResume);
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+
+    const trigger = screen.getByRole('button', { name: 'Track lifecycle: Done' });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await userEvent.click(trigger);
+    const repeatedAction = screen.getByRole('menuitem', { name: /Resume work/ });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+    await userEvent.click(repeatedAction);
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      finishResume();
+      await pendingResume;
+    });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps Resume work reachable from compact Track actions', async () => {
+    const onResumeTrack = vi.fn();
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+    await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Resume work' }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
   });
 
   it('falls back to the untitled label for a blank title', () => {
@@ -567,7 +607,7 @@ describe('TrackPage card inventory', () => {
   it('renders whatever panel it is handed, and closes when that becomes null', () => {
     const props = {
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
-      onRenameTrack: vi.fn(), onDeleteTrack: vi.fn(),
+      canResumeTrack: false, onRenameTrack: vi.fn(), onResumeTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -649,7 +689,9 @@ describe('TrackPage card inventory', () => {
       track={track()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
       tasks={[]}
+      canResumeTrack={false}
       onRenameTrack={vi.fn()}
+      onResumeTrack={vi.fn()}
       onDeleteTrack={vi.fn()}
     />);
     // Exactly once: with no title the kind stands alone rather than twice.

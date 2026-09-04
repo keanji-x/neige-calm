@@ -67,6 +67,12 @@
 
   .title {
     min-inline-size: 0;
+    /* EditableTitle offsets its own inline padding into the leading gutter.
+       Inside the title/status flex cluster, intrinsic sizing otherwise counts
+       that negative margin against the control and clips its last 4px even
+       when the row has abundant room. Spend the matching space at the trailing
+       edge; the outer heading still owns truncation for genuinely long names. */
+    max-inline-size: calc(100% + var(--space-2));
     font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
@@ -80,7 +86,7 @@
   .titleCluster {
     display: flex;
     flex: 0 1 auto;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-4);
     min-inline-size: 0;
     max-inline-size: 100%;

@@ -20,7 +20,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
-  UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track, type TrackLifecycle,
+  UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track,
 } from '../../../../../core/domain/track.ts';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -29,7 +29,9 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
-import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
+import {
+  OperationFeedback, useDeleteConfirm, useOperationFeedback,
+} from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
@@ -121,16 +123,11 @@ export type TrackPageProps = Readonly<{
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
+  canResumeTrack: boolean;
   onRenameTrack: (title: string) => void | Promise<void>;
+  onResumeTrack: () => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
 }>;
-
-
-/** Draft / done / canceled are idle facts; they do not earn a header badge. */
-function headerLifecycle(lifecycle: TrackLifecycle): TrackLifecycle | null {
-  if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
-  return lifecycle;
-}
 
 /**
  * The view model's module under `key`.
@@ -155,9 +152,20 @@ export function TrackPage({
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
-  onRenameTrack, onDeleteTrack,
+  canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
+  const resumeFeedback = useOperationFeedback();
+  const [resumePending, setResumePending] = useState(false);
+  const resumePendingRef = useRef(false);
+  useEffect(() => {
+    // The PATCH promise settles before its invalidation refetch. Keep Resume
+    // fenced after a successful response until the authoritative capability
+    // disappears; otherwise the stale Done detail can launch a second PATCH.
+    if (canResumeTrack || !resumePendingRef.current) return;
+    resumePendingRef.current = false;
+    setResumePending(false);
+  }, [canResumeTrack]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
@@ -165,7 +173,20 @@ export function TrackPage({
    *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
    *  detail page it was named after is gone; the motion is not.) */
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
-  const lifecycle = headerLifecycle(track.lifecycle);
+  const resumeWork = async (): Promise<boolean> => {
+    if (!canResumeTrack || resumePendingRef.current) return false;
+    resumePendingRef.current = true;
+    setResumePending(true);
+    const resumed = await resumeFeedback.run(
+      Promise.resolve().then(() => onResumeTrack()),
+      'Could not resume this track.',
+    );
+    if (!resumed) {
+      resumePendingRef.current = false;
+      setResumePending(false);
+    }
+    return resumed;
+  };
   /*
    * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
    *
@@ -320,6 +341,9 @@ export function TrackPage({
           })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
+          ...(canResumeTrack ? [{
+            label: 'Resume work', isDisabled: resumePending, onClick: resumeWork,
+          }] : []),
           { label: 'Delete track', onClick: () => deletion.request(track.id) },
         ]}
       />
@@ -388,7 +412,12 @@ export function TrackPage({
                 className={styles.title}
                 isPageTitle
               /></h1>
-              {lifecycle !== null && <TrackLifecycleBadge lifecycle={lifecycle} />}
+              <TrackLifecycleBadge
+                lifecycle={track.lifecycle}
+                canResume={canResumeTrack}
+                resumePending={resumePending}
+                onResume={resumeWork}
+              />
             </div>
           </>
         }
@@ -661,6 +690,7 @@ export function TrackPage({
         onCancel={deletion.cancel}
       />
       <OperationFeedback feedback={deletion.feedback} />
+      <OperationFeedback feedback={resumeFeedback} />
     </section>
   );
 }
