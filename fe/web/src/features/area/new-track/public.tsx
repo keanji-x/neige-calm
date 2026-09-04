@@ -2,8 +2,8 @@
 // what it is carried out on.
 //
 // Presentational + local form state — it never calls an API. The caller owns
-// `POST /api/tracks`, `submitting`, `error`, and the template list itself. It
-// does **not** yet own a first message: see "Where the sentence goes" below.
+// `POST /api/tracks`, `submitting`, `error`, and the template list itself —
+// including putting the sentence on that create: see "Where the sentence goes".
 //
 // `area_id` is not a field. The page is `/area/{id}/new`; the route already
 // knows which area and sends it.
@@ -43,21 +43,22 @@
 // "Back" but does not update history. And there is no separate "Create track"
 // step: the send button *is* the create, and Enter reaches it.
 //
-// ## Where the sentence goes — and where it does not, yet (#1299)
+// ## Where the sentence goes (#1299)
 //
 // **Not** into `title`: the draft carries it as `message`, and the caller
 // creates the track with no title at all.
 //
-// Its destination is the new track's planner card, as the first message. That
-// delivery is **not implemented yet** — two review rounds showed the three-write
-// sequence it needs cannot be made sound from a component (see `NewTrackRoute`),
-// and #1299 moves it into the create request where the kernel can do it
-// atomically. Until then the track is created and the reader says it again in
-// the planner conversation, which the route opens for them on arrival.
+// Its destination is the new track's planner agent, as the first message, and
+// it gets there on the create itself — `first_message` on `POST /api/tracks`,
+// seeded inside the same transaction that starts the harness. This form does
+// not deliver it and must not learn to: two review rounds showed the three-write
+// sequence a component would need cannot be made sound (see `NewTrackRoute`),
+// which is why the kernel took the write. All this form does is hand the
+// trimmed sentence to its caller.
 //
-// The form says so, on screen, above the send button. A field whose contents
-// are quietly dropped is worse than no field; a field that tells you what it
-// will and will not do is a smaller product than intended but an honest one.
+// So there is nothing on screen about repeating yourself, and there used not to
+// be: until delivery landed, a notice above the send button said the sentence
+// would have to be said again in the track's chat. It went with the retyping.
 //
 // ## The folder picker needs a `Dialog` above it
 //
@@ -265,10 +266,10 @@ export type NewTrackDraft = Readonly<{
    *
    * The caller creates the track with no `title` — the kernel stores the empty
    * string and the planner agent names it later (#1211). This text's destination
-   * is the new track's planner card as its first message, but **that delivery is
-   * not implemented yet** (#1299); today the caller creates the track and the
-   * reader says it again in the conversation the track page opens. Always
-   * non-empty and already trimmed: the composer will not submit otherwise.
+   * is the new track's planner agent as its first message, which the caller puts
+   * on the create as `first_message` (#1299). Always non-empty and already
+   * trimmed: the composer will not submit otherwise, and a blank one would be a
+   * 400 the reader never asked for.
    */
   message: string;
   /**
@@ -402,17 +403,6 @@ export function greetingFor(now: Date): string {
  */
 const TASK_LABEL = 'What this track should do';
 
-/**
- * What the composer says about where the sentence goes, until #1299 lands.
- *
- * It states the cost plainly, because the cost is real: this slice does not
- * carry the sentence, so the reader will retype it in the conversation the track
- * page opens for them. Saying so *before* they type is the difference between a
- * known limitation and a field that silently eats input — and it is why this
- * string exists rather than the page quietly discarding the text. It goes when
- * #1299 lands, along with the retyping.
- */
-const PENDING_DELIVERY_NOTICE = "You'll say this again in the track's chat";
 const TASK_PLACEHOLDER = 'What should this track do?';
 
 /**
@@ -479,7 +469,6 @@ export function NewTrackForm({
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   const folderId = `${fieldId}-folder`;
-  const noticeId = `${fieldId}-pending-delivery`;
   const triggerId = `${fieldId}-start-from-trigger`;
 
   /*
@@ -498,24 +487,8 @@ export function NewTrackForm({
    */
   useEffect(() => {
     const field = composerHostRef.current?.querySelector<HTMLElement>('[contenteditable="true"]');
-    /*
-     * The notice is the field's accessible *description*, not a second label:
-     * it states what will happen to what you type, and a reader who cannot see
-     * it needs it more than one who can — this page puts the caret straight
-     * into the field, so there is no moment on the way in where unassociated
-     * text nearby would be read out.
-     *
-     * Set on the element imperatively because `ChatComposerInput` spreads its
-     * rest props onto the *wrapper* around the editable, not the editable
-     * itself (`ChatComposerInput.tsx` — `ref`/`mergeProps` at the outer node,
-     * a separate prop set on the `contenteditable`), so `aria-describedby`
-     * passed as a prop lands on a node with no role and describes nothing.
-     * Measured: the assertion in `public.test.tsx` read `null` off the field
-     * until this moved here.
-     */
-    field?.setAttribute('aria-describedby', noticeId);
     field?.focus();
-  }, [noticeId]);
+  }, []);
 
   /*
    * A starting point that vanished between renders (the list refetched without
@@ -841,11 +814,6 @@ export function NewTrackForm({
                 )}
               </HStack>
             )}
-            /* #1299 — said where it is read, not in a tooltip and not after the
-             fact: the sentence starts the track off but is not delivered to the
-             agent yet, so the reader knows before they type that they will be
-             repeating it. Removed in the same change that lands delivery. */
-          headerContext={<span id={noticeId} className={styles.notice}>{PENDING_DELIVERY_NOTICE}</span>}
           /* Astryx's own `ChatSendButton` is named "Send", which is true of
                every other composer in the app and false of this one: pressing it
                creates a track. The name is the only thing overridden — the shape,

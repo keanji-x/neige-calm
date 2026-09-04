@@ -208,6 +208,38 @@ export type NewTrackBody = Readonly<{
    * Absent, never `''`: same rule as `template_id`.
    */
   recipe_id?: string;
+  /**
+   * Issue #1299 — the sentence the reader typed on the new-track page,
+   * delivered to the track's planner agent **by this create** instead of
+   * having to be retyped after landing on the track.
+   *
+   * The kernel seeds it as an `Observation::UserMessage` inside the same
+   * `planner-harness-start` transaction, so it is delivered exactly once and
+   * attributed to the human. It is **not** the track's `title` and not a
+   * `TrackGoal`: those are different slots, and this one is "what the user
+   * said first".
+   *
+   * **Blank omits the key entirely.** The kernel validates it exactly like
+   * `POST /api/cards/{id}/planner/input` — non-blank after trim, at most 32768
+   * **characters** — and rejects the create with a 400 before anything is
+   * minted, so posting `''` for "the reader typed nothing" would turn an
+   * ordinary empty composer into a failed create. Absence is the only spelling
+   * of "no first message" this layer uses.
+   *
+   * Typed `string` rather than `string | null` even though OpenAPI says
+   * `string | null`: `null` is the wire's *second* spelling of the same
+   * omitted branch (`#[serde(default)] Option<String>`), and offering it here
+   * would let a caller send a key that means exactly what sending no key
+   * means. `cwd` above is nullable for the opposite reason — there `null` and
+   * `''` are genuinely different kernel branches, so the spelling matters.
+   *
+   * Supplying it also changes what a failed harness start means: without it
+   * that failure is still a 201 (an inert planner agent is recoverable), with
+   * it the create answers 500 because the delivery it promised may or may not
+   * have happened. The create is **not** retryable either way — resending
+   * makes a second track, and a message that did arrive arrives twice (#1384).
+   */
+  first_message?: string;
 }>;
 
 /**

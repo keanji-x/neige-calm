@@ -438,23 +438,22 @@ describe('NewTrackForm asks only what the track starts from', () => {
   });
 
   /*
-   * #1299 — the notice is the entire justification for shipping a composer that
-   * does not deliver what you type, so it is asserted rather than trusted.
-   * Without this, deleting the `headerContext` prop leaves every suite green
-   * and the field silently eats the sentence.
+   * #1299 — the composer no longer warns that the sentence will have to be
+   * repeated, because it no longer will be: the route delivers it on the create
+   * (`first_message`). The warning went, and so did the `aria-describedby` that
+   * pointed at it — a description is a promise about what happens to what you
+   * type, and there is no longer one to make that the label does not already.
+   *
+   * Asserted as an absence in both channels, because the two failed
+   * differently: the visible string could come back on its own, and the
+   * attribute could be left behind pointing at an id nothing renders, which is
+   * a dangling IDREF a sighted reviewer cannot see.
    */
-  it('says the sentence will have to be repeated, before it is typed', () => {
+  it('promises no repetition, and leaves no description pointing at nothing', () => {
     renderForm();
-    const notice = screen.getByText("You'll say this again in the track's chat");
-    expect(notice).toBeTruthy();
-    /* And says it to a screen reader too. The page puts the caret straight into
-       this field, so a reader who cannot see the notice would otherwise land
-       *inside* the control with no way to have been told — the silent-loss the
-       notice exists to prevent, for exactly the audience least able to recover
-       from it. Asserted as the field's description, not merely as text on the
-       page, because unassociated text near a focused field is not announced. */
-    expect(screen.getByLabelText(TASK_LABEL).getAttribute('aria-describedby'))
-      .toBe(notice.getAttribute('id'));
+    expect(screen.queryByText("You'll say this again in the track's chat")).toBeNull();
+    const describedBy = screen.getByLabelText(TASK_LABEL).getAttribute('aria-describedby');
+    expect(describedBy === null || document.getElementById(describedBy) !== null).toBe(true);
   });
 
   /*

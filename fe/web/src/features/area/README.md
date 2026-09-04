@@ -20,9 +20,11 @@ The surface is `/area/{id}/new`; `area_id` comes from the URL, not from a form
 field. Submit is enabled iff the composer is non-empty. Template and folder are
 optional and default to nothing.
 
-`NewTrackDraft.message` is the Track's intent, not its title. Its eventual
-destination is the new Track's planner conversation, but atomic delivery is
-still tracked by #1299; until then the route opens that conversation on arrival.
+`NewTrackDraft.message` is the Track's intent, not its title. The route puts it
+on the create as `first_message` (#1299), which delivers it to the planner agent
+inside the harness-start transaction; a blank draft omits the key rather than
+sending an empty string the kernel would reject. The route still opens that
+conversation on arrival — now for the reply.
 
 With no folder, the request omits both `cwd` and `attach_folder` and the kernel
 creates a managed workspace. Choosing a folder sends `{ cwd, attach_folder:
