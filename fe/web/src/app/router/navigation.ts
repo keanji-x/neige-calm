@@ -72,6 +72,27 @@ export type NavTarget =
     from?: TrackSource;
     openPlanner?: boolean;
   }>
+  /**
+   * #1292 — the reader's own recipes: the list, and the editor for one.
+   *
+   * A route and not a dialog, for #1211's reasons applied to a second
+   * authoring surface: it survives a refresh, it has a real Back, and it is
+   * one click from the New track picker — the one place a recipe is ever
+   * *used*.
+   *
+   * What it does **not** do is preserve the composer behind it. Navigating
+   * here unmounts `NewTrackForm`, whose message, folder, issue URL and
+   * selection are plain component state with nowhere to be saved, so Back
+   * lands on an empty composer. Keeping that draft is a feature of its own and
+   * is not in #1292.
+   *
+   * Not under `/settings`: a recipe is content the reader writes, not a
+   * preference they set, and every Settings group so far is the second thing.
+   * The one recipe being edited is local state on this route rather than a
+   * route parameter of its own, because a recipe has no shareable identity
+   * worth a URL yet — see `features/report/recipe`.
+   */
+  | Readonly<{ name: 'recipes' }>
   | Readonly<{ name: 'settings' }>
   /**
    * #1230 — Settings drills in rather than stacking every group on one page.
@@ -100,6 +121,7 @@ export function pathFor(target: NavTarget): string {
     case 'today': return '/';
     case 'new-track': return `/area/${encodeURIComponent(target.areaId)}/new`;
     case 'track': return `/track/${encodeURIComponent(target.trackId)}`;
+    case 'recipes': return '/recipes';
     case 'settings': return '/settings';
     case 'settings-plugins': return '/settings/plugins';
     case 'settings-appearance': return '/settings/appearance';

@@ -125,6 +125,10 @@ aliases:
   "report/layout": "features/report/layout"
   "report/activity": "features/report/activity"
   "report/outline": "features/report/outline"
+  # #1292 S4 — 用户自建配方的列表与编辑器。落在 features/report 之下不是分类偏好：
+  # 渲染体用的就是 report document 的 `ProseBlock`，而 features-no-cross-domain
+  # 禁止别的 feature 引入 features/report/*，INV-DUP-004/005 又禁止再写一个渲染器。
+  "features/report/recipe": "features/report/recipe"
   "track/report": "features/report/write"
   "track/backlinks": "features/report/backlinks"
   "planner-chat": "features/planner/chat"

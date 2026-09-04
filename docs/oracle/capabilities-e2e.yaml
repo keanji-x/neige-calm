@@ -4898,7 +4898,7 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/tracks.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/area/new-track/public.tsx:205-227; fe/web/src/app/router/public.tsx:1870,1916-1941
+  source: fe/web/src/features/area/new-track/public.tsx:262-281; fe/web/src/app/router/public.tsx:1940,1986-2011
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:322
   owner_slice: features/track/create
   intentional_omission: false
@@ -4919,7 +4919,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1670-1679
+  source: fe/web/src/app/router/public.tsx:1687-1696
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:366
   owner_slice: features/track/create
   intentional_omission: false
@@ -4956,8 +4956,8 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-track/public.tsx:737-752
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:847
+  source: fe/web/src/features/area/new-track/public.tsx:906-921
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:860
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -5023,7 +5023,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:1964-1971
+  source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:2034-2041
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:430
   owner_slice: features/track/create
   intentional_omission: false
@@ -5056,8 +5056,8 @@
     the statement had to move from "collects nothing" to "collects the intent and not a name" —
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
-  source: fe/web/src/features/area/new-track/public.tsx:205-217,462-472
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:187;
+  source: fe/web/src/features/area/new-track/public.tsx:262-273,585-593
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:191;
     fe/web/src/app/router/new-track-route.test.tsx:295
   owner_slice: features/track/create
   intentional_omission: false
@@ -5082,7 +5082,7 @@
     `ChatComposerInput` forwards its DOM ref to the *wrapper*, which is not focusable, so a ref
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
-  source: fe/web/src/features/area/new-track/public.tsx:392-425
+  source: fe/web/src/features/area/new-track/public.tsx:485-518
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:265
   owner_slice: features/track/create
   intentional_omission: false
@@ -5166,8 +5166,8 @@
     failed landing complete the create the reader asked for, and what makes Back to that same
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
-  source: fe/web/src/app/router/navigation.ts:35,74,139-145,221-244;
-    fe/web/src/app/router/public.tsx:1555,1896-1915,1962-1963,2254-2260;
+  source: fe/web/src/app/router/navigation.ts:35,74,161-167,243-266;
+    fe/web/src/app/router/public.tsx:1566,1966-1985,2032-2033,2324-2330;
     fe/web/src/features/chat/thread/public.tsx:1869
   # One line per clause of the statement, because no single case covers it: 207 the landing and the
   # caret, 263 that a fresh navigation carries no mark, 300 that returning by Back to the entry whose
@@ -5177,6 +5177,79 @@
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-TRACKRECIPE-001
+  kind: capability
+  family: track-recipe
+  statement: >
+    After a recipe is saved, the view must render the body from the server's response, never the
+    local draft, and on the create path as much as on the update path. An update reseeds the open
+    editor and renders that: `setCurrent(outcome.recipe)`. A create hands the same row up through
+    `onCreated`, and `RecipesPage` holds it as `created` and seeds the editor it opens from that
+    row — so neither path is waiting on the list refetch to be right.
+  why: >
+    `PUT /api/track-recipes/{id}` does not store what it was sent. The write boundary
+    (`normalize_recipe_body`) re-renders every fence through `render_fence`, drops tombstones and
+    normalizes the task privilege fields, so the stored body and the submitted body routinely
+    differ. Rendering the draft hides that rewrite until the author next opens the recipe, where it
+    reads as their text having been changed behind their back; rendering the response makes it the
+    thing they see at the moment it happens. This is the failure an implementation is likeliest to
+    have, because it looks correct in every case where the server changed nothing.
+  source: fe/web/src/features/report/recipe/public.tsx:147-180,298-308
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:210,343,361
+  owner_slice: features/report/recipe
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-TRACKRECIPE-002
+  kind: capability
+  family: track-recipe
+  statement: >
+    A 409 from the recipe write must keep the author's draft on screen and leave the editor in edit
+    mode; the conflict is a `kind: 'conflict'` outcome, never a message the editor parses.
+  why: >
+    The write is a whole-document PUT gated on `if_revision`, and per-block CAS was rejected in
+    design — a recipe has one writer and no partially synced state. What a conflict costs is
+    therefore a re-read, and the draft is the only thing in the exchange that exists nowhere else;
+    dropping it would turn the cheap failure into an expensive one. Modelled as its own outcome
+    because "keep the draft" is a behaviour, and deciding a behaviour by matching an error string
+    makes it depend on wording.
+  source: fe/web/src/features/report/recipe/public.tsx:93-99,284-291
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:230,258
+  owner_slice: features/report/recipe
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-TRACKRECIPE-003
+  kind: capability
+  family: track-recipe
+  statement: >
+    The New track picker must keep recipe ids and template keys in separate spaces: the selection is
+    a tagged `StartingPoint`, a create carries `recipe_id` or `template_id` and never both, and a
+    selection whose row disappeared falls back to no template rather than resolving against the
+    other list.
+  why: >
+    The two ids come from two endpoints with no discriminator on either payload, and the kernel
+    answers a request naming both with a 400. A bare selection string made both mistakes reachable:
+    `templates.find` over it resolves a recipe id that happens to equal a template key, and the
+    stale-selection fallback beside it silently promoted a deleted recipe to the identically-keyed
+    template — creating a track from something the reader never picked. The tag makes exclusivity a
+    property of the submit function's shape rather than a rule it has to remember.
+  source: fe/web/src/features/area/new-track/public.tsx:347-351,528-545,597-609
+  authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:127,147;
+    fe/web/src/app/router/recipes-route.test.tsx:384
+  owner_slice: features/track/create
+  intentional_omission: false
+  runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
   migration: migrated

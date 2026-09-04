@@ -48,6 +48,7 @@ function renderForm() {
       submitting={false}
       error={null}
       templates={TEMPLATES}
+      onManageRecipes={vi.fn()}
       /* #1147 S3 — the folder picker's port. Never exercised here: this file
          is about the Start from menu's top layer. It is passed because the
          prop is required, which is deliberate — an optional one would let a

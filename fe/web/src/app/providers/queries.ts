@@ -39,10 +39,13 @@ import {
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
-  deleteCardOperation, deleteTrackOperation, overlaysByKindOperation, toTrack,
-  updateTrackOperation, trackActivityFrom, trackDetailOperation, trackTemplatesOperation, tracksInAreaOperation,
+  createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
+  overlaysByKindOperation, toTrack, updateTrackOperation, updateTrackRecipeOperation,
+  trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
+  tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewTrackBody,
-  type OverlayWire, type Track, type TrackDetailWire, type TrackPatchBody, type TrackTemplate,
+  type OverlayWire, type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe,
+  type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
@@ -137,6 +140,14 @@ export const queryKeys = Object.freeze({
      can move under them is a plugin starting or stopping, which changes an
      `input_schema` the new-track page reads. */
   trackTemplates: () => ['track-templates'] as const,
+  /* #1292 — the user's own recipes. Not invalidated by any event either, for a
+     different reason than `trackTemplates`: recipe writes emit no `Event` at
+     all (`routes/track_recipes.rs` — minting a variant would buy only "the
+     other window refreshes by itself", and the `revision` CAS already stops
+     that window from clobbering). The mutations below invalidate this key
+     directly, which is what keeps the list and the picker current in the
+     window that did the writing. */
+  trackRecipes: () => ['track-recipes'] as const,
   /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by track:
      the kernel's partial unique index makes `purpose = 'launchpad'` a
      singleton, and the id is what this query is fetching.
@@ -591,6 +602,103 @@ export function useTrackTemplates(transport: ApiTransportPort, unauthorized: Una
     // `new-track/public.tsx` branches on it — not as a leftover.
     loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
+  };
+}
+
+/**
+ * #1292 — the user's own recipes, for the New track picker and the manage
+ * route.
+ *
+ * `retry: false` for the same reason as `trackTemplatesQueryOptions`: this
+ * list feeds the app's only track-creation entry point, and a read that fails
+ * must degrade that page to "built-ins only" rather than leave it spinning.
+ */
+export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.trackRecipes(),
+    queryFn: (): Promise<TrackRecipe[]> => runOperation(transport, trackRecipesOperation(), unauthorized),
+    retry: false,
+  };
+}
+
+export type TrackRecipes = Readonly<{
+  /** Never `undefined`: for the picker, pending and failed both read as "no
+   *  recipes of mine", which is a fully working state. */
+  recipes: TrackRecipe[];
+  /** A notice, not a blocker. `null` while pending. */
+  error: string | null;
+  /** `false` while the first read is in flight **or** after it failed — the
+   *  manage route's "you have no recipes yet" copy is a claim about the
+   *  server, and a failed read is not entitled to make it. Same rule, and the
+   *  same past defect, as `useTrackTemplates`. */
+  loaded: boolean;
+}>;
+
+export function useTrackRecipes(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackRecipes {
+  const query = useQuery(trackRecipesQueryOptions(transport, unauthorized));
+  return {
+    recipes: query.data ?? [],
+    error: query.isError ? 'Could not load your recipes.' : null,
+    loaded: !query.isPending && !query.isError,
+  };
+}
+
+export type TrackRecipeMutations = Readonly<{
+  create: (body: { title: string; body: string }) => Promise<TrackRecipe>;
+  /**
+   * Whole-document `PUT` gated on `if_revision`. **Resolves with the stored
+   * row**, which is not always the bytes sent — the write boundary re-renders
+   * every fence, drops tombstones and normalizes the task privilege fields.
+   * Callers render the resolution, never their own draft.
+   *
+   * Rejects with an `ApiError` whose `failure.status` is 409 when the recipe
+   * moved under the writer.
+   */
+  save: (recipeId: string, body: { title: string; body: string; if_revision: number }) => Promise<TrackRecipe>;
+  remove: (recipeId: string) => Promise<void>;
+}>;
+
+export function useTrackRecipeMutations(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+): TrackRecipeMutations {
+  const client = useQueryClient();
+  const invalidate = () => { void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() }); };
+  const create = useMutation({
+    mutationFn: (body: { title: string; body: string }) => runOperation(
+      transport, createTrackRecipeOperation(body), unauthorized,
+    ),
+    onSuccess: invalidate,
+  });
+  const save = useMutation({
+    mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }) =>
+      runOperation(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
+    /* Invalidate but do **not** write the response through to the cache here.
+       The response is also the editor's next rendered state, and it reaches
+       the editor as the promise's value; writing it into the list as well
+       would give the same fact two homes with no third party to keep them in
+       step.
+
+       `onSettled`, not `onSuccess`, for the reason `remove` gives below and
+       for one more: a save rejected with a 409 means the list is holding a
+       revision the server has moved past, and the editor's conflict notice
+       tells the reader to close and reopen the recipe to start from the
+       current version — which only produces a current version if something
+       refetched. On success the refetch this queues is what updates the
+       list's row; on a 409 it is what makes that instruction true. */
+    onSettled: invalidate,
+  });
+  const remove = useMutation({
+    mutationFn: (recipeId: string) => runOperation(transport, deleteTrackRecipeOperation(recipeId), unauthorized),
+    /* `onSettled`, not `onSuccess`: a delete that failed because the row was
+       already gone leaves the list holding a row that does not exist, and
+       refetching is how the reader finds out. */
+    onSettled: invalidate,
+  });
+  return {
+    create: (body) => create.mutateAsync(body),
+    save: (recipeId, body) => save.mutateAsync({ recipeId, body }),
+    remove: async (recipeId) => { await remove.mutateAsync(recipeId); },
   };
 }
 

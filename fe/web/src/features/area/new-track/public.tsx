@@ -115,6 +115,33 @@
 // used to describe, where the read side and the write side used different
 // words for the same thing.)
 //
+// ## Two kinds in one list (#1292)
+//
+// The same chip now also offers the reader's own **recipes**. They are two
+// server resources — `GET /api/track-templates` and `GET /api/track-recipes` —
+// with no combined endpoint and no discriminator field on either payload; the
+// kind *is* which endpoint answered, and this file is where the two are tagged
+// and merged. See `StartingPoint` for why the selection had to stop being a
+// bare id string, and `MenuGroup` for the band headings, which appear only
+// when both kinds are present.
+//
+// **Duplicating a built-in as a recipe is not offered**, and that is a
+// deliberate omission rather than an oversight: `GET /api/track-templates`
+// returns structured `tasks[]` and never a Markdown `body`, so producing a
+// recipe from a template client-side would mean re-implementing the kernel's
+// `render_fence` in TypeScript — a second fence writer, which is exactly the
+// duplication #1300 spent a slice removing. It belongs on the server if it is
+// ever wanted.
+//
+// ## Mobile: declared, not inherited
+//
+// **This page has no mobile entry point today.** The only way in is the
+// sidebar's per-area `+`, and the sidebar is not rendered below
+// `@media (width < 60rem)` — so nothing here, including the two-group picker,
+// is reachable on a phone. That is a pre-existing divergence this slice does
+// not widen and does not fix; it is written down because the project's rule is
+// that mobile may be partial as long as the difference is declared.
+//
 // ### Collapsed, not spread out
 //
 // `DropdownMenu` and not `Selector`, `Popover` or `CommandPalette` — the
@@ -175,11 +202,12 @@
 //     layer — but that is astryx's rendering detail carrying the ARIA
 //     structure, not something this file guarantees.
 
-import { useEffect, useRef, useId } from 'react';
+import { useEffect, useRef, useId, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
+import { Divider } from '@astryxdesign/core/Divider';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -196,12 +224,40 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
-import type { TrackTemplate } from '../../../../../core/domain/track.ts';
+import type { TrackRecipe, TrackTemplate } from '../../../../../core/domain/track.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-track.module.css';
+
+/**
+ * The starting point the draft carries, as a union rather than two independent
+ * optional keys (#1292).
+ *
+ * `template_id` and `recipe_id` are mutually exclusive on the wire — the
+ * kernel answers a request naming both with a 400 — and two optional string
+ * fields say nothing about that: `{template_id, recipe_id}` type-checks
+ * perfectly and is a 400. Written as three arms with the other keys pinned to
+ * `undefined`, the exclusivity is a property of the type, so a draft carrying
+ * both does not compile. This is the same trick `StartingPoint` uses for the
+ * selection this is built from, one screen away.
+ *
+ * Every arm names every key, which is what lets the caller keep reading
+ * `draft.template_id` / `draft.recipe_id` without narrowing first.
+ */
+type StartingPointFields =
+  /** No starting point: neither id goes on the wire. */
+  | Readonly<{ template_id?: undefined; template_input?: undefined; recipe_id?: undefined }>
+  /** A built-in template, and the input it declared, if any. */
+  | Readonly<{
+    template_id: string;
+    template_input?: Readonly<Record<string, unknown>>;
+    recipe_id?: undefined;
+  }>
+  /** A user recipe. It takes no `template_input`: that field is only accepted
+   *  alongside `template_id`. */
+  | Readonly<{ recipe_id: string; template_id?: undefined; template_input?: undefined }>;
 
 export type NewTrackDraft = Readonly<{
   /**
@@ -215,9 +271,6 @@ export type NewTrackDraft = Readonly<{
    * non-empty and already trimmed: the composer will not submit otherwise.
    */
   message: string;
-  /** Absent for no template — never `null` or `''`, which the kernel 400s. */
-  template_id?: string;
-  template_input?: Readonly<Record<string, unknown>>;
   /**
    * Absolute path, **or the key is absent**. Absent is not "the empty string":
    * the caller distinguishes the two to decide whether the request carries
@@ -225,7 +278,7 @@ export type NewTrackDraft = Readonly<{
    * value that would take the attached branch with a path that cannot work.
    */
   cwd?: string;
-}>;
+}> & StartingPointFields;
 
 export type NewTrackFormProps = Readonly<{
   submitting: boolean;
@@ -242,6 +295,22 @@ export type NewTrackFormProps = Readonly<{
    */
   templatesError?: string | null;
   /**
+   * The reader's own recipes, from `GET /api/track-recipes` (#1292). Empty is
+   * the ordinary day-one state and is not an error: the menu then looks
+   * exactly as it did before recipes existed.
+   *
+   * Defaulted rather than required so that a caller which has no recipe read
+   * — there is one such surface in the tests, and there may be others later —
+   * gets the built-ins-only picker instead of a type error, which is the same
+   * degradation `templates: []` already has.
+   */
+  recipes?: readonly TrackRecipe[];
+  /**
+   * Open the manage-recipes screen. Injected because `features/**` may not
+   * import `app/**`, so the navigation is the router's to perform.
+   */
+  onManageRecipes: () => void;
+  /**
    * The folder picker's read port. Injected: `ui/` primitives never reach a
    * transport, and `features/**` may not import `app/**` — so the port is
    * created at the composition layer (`app/providers/directory.ts`) and passed
@@ -256,12 +325,35 @@ export type NewTrackFormProps = Readonly<{
 const ISSUE_DEVELOPMENT = 'issue-development';
 
 /**
- * Selection sentinel for "no template".
+ * What the picker has selected — a **tagged union**, not an id string (#1292).
  *
- * `''` because it is the *absence* of a template id, which no server row can
- * ever collide with, and because that absence is what goes on the wire.
+ * The tag is not decoration. `template_id` and `recipe_id` are separate,
+ * mutually exclusive request fields — sending both is a 400 — and they are
+ * drawn from two different id spaces served by two different endpoints, with
+ * no `builtin` / `read_only` discriminator on either payload (the kernel
+ * records that as intentional in `routes/track_recipes.rs`: the kind *is*
+ * which endpoint answered). A bare string cannot say which space a value came
+ * from, and two things went wrong the moment recipes joined the list:
+ *
+ *  1. `templates.find((t) => t.id === selected)` resolves a **recipe** id that
+ *     happens to equal a template key, and the request then names a template
+ *     the reader never picked;
+ *  2. the stale-selection fallback beside it asks the same question, so a
+ *     recipe deleted in another window silently resolved against the template
+ *     list instead of falling back to "no template".
+ *
+ * Both call sites are below and both read the tag first.
  */
-const BLANK = '';
+type StartingPoint =
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'template'; id: string }>
+  | Readonly<{ kind: 'recipe'; id: string }>;
+
+/**
+ * "No template" — the absence of a starting point, which is what goes on the
+ * wire (both id keys absent) and what the composer opens on.
+ */
+const NO_STARTING_POINT: StartingPoint = Object.freeze({ kind: 'none' });
 
 /**
  * What the template chip says when nothing has been picked.
@@ -375,11 +467,12 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 }
 
 export function NewTrackForm({
-  submitting, error, templates, templatesError = null, listDirectory, onSubmit,
+  submitting, error, templates, templatesError = null, recipes = [], onManageRecipes,
+  listDirectory, onSubmit,
 }: NewTrackFormProps) {
   const fieldId = useId();
   const [message, setMessage] = useState('');
-  const [selected, setSelected] = useState<string>(BLANK);
+  const [selected, setSelected] = useState<StartingPoint>(NO_STARTING_POINT);
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
   const [cwd, setCwd] = useState('');
@@ -424,13 +517,43 @@ export function NewTrackForm({
     field?.focus();
   }, [noticeId]);
 
-  // A template that vanished between renders (the list refetched without it)
-  // must not leave a selection pointing at nothing; falling back to no template
-  // is the safe direction — it always submits.
-  const chosen = templates.find((template) => template.id === selected);
-  const effectiveSelection = selected === BLANK || chosen ? selected : BLANK;
+  /*
+   * A starting point that vanished between renders (the list refetched without
+   * it, or the reader deleted the recipe in the manage screen) must not leave a
+   * selection pointing at nothing; falling back to no template is the safe
+   * direction — it always submits.
+   *
+   * **Each lookup is confined to its own id space by the tag.** Before #1292
+   * this was one `templates.find` against a bare string, which for a recipe id
+   * asked the wrong list: a deleted recipe whose id equalled a template key
+   * would have resolved to that template and created a track from something
+   * the reader never chose, silently. The two `find`s below can only ever
+   * answer about the kind that was selected.
+   */
+  const chosen = selected.kind === 'template'
+    ? templates.find((template) => template.id === selected.id)
+    : undefined;
+  const chosenRecipe = selected.kind === 'recipe'
+    ? recipes.find((recipe) => recipe.id === selected.id)
+    : undefined;
+  const effectiveSelection: StartingPoint = selected.kind === 'none'
+    || (selected.kind === 'template' && chosen !== undefined)
+    || (selected.kind === 'recipe' && chosenRecipe !== undefined)
+    ? selected
+    : NO_STARTING_POINT;
+  /* The chip's text. `chosen` and `chosenRecipe` are never both set — the tag
+     makes that structural, not a convention — so this reads as "whichever kind
+     is selected, or the default". */
+  const chosenTitle = chosen?.title ?? chosenRecipe?.title ?? NO_TEMPLATE;
+  /* Headings only when there is something to tell apart. Day one the reader
+     has no recipes, and the menu is then exactly the list it was before this
+     feature existed: no empty group, no "no recipes yet" row. That copy
+     belongs on the manage screen, which has room for it. */
+  const showGroupHeadings = recipes.length > 0 && templates.length > 0;
   const wantsInput = needsInput(chosen);
-  const issueDev = wantsInput && effectiveSelection === ISSUE_DEVELOPMENT;
+  const issueDev = wantsInput
+    && effectiveSelection.kind === 'template'
+    && effectiveSelection.id === ISSUE_DEVELOPMENT;
   const parsedIssue = issueDev ? parseGitHubIssueUrl(issueUrl) : null;
 
   // Fail-closed: a bound template this build has no editor for cannot be
@@ -468,15 +591,25 @@ export function NewTrackForm({
        inspects the draft before it is serialized — including the tests. */
     const folder = cwd.trim();
     const base = { message: trimmed, ...(folder === '' ? {} : { cwd: folder }) };
-    if (effectiveSelection === BLANK) { onSubmit(base); return; }
-    if (parsedIssue === null) { onSubmit({ ...base, template_id: effectiveSelection }); return; }
+    if (effectiveSelection.kind === 'none') { onSubmit(base); return; }
+    /* A recipe carries `recipe_id` and stops here. It can never also carry
+       `template_id`: the union has one arm at a time, so the exclusivity the
+       kernel enforces with a 400 is a property of this function's shape rather
+       than a rule it remembers to follow. A recipe never takes
+       `template_input` either — that field is only accepted alongside
+       `template_id`. */
+    if (effectiveSelection.kind === 'recipe') {
+      onSubmit({ ...base, recipe_id: effectiveSelection.id });
+      return;
+    }
+    if (parsedIssue === null) { onSubmit({ ...base, template_id: effectiveSelection.id }); return; }
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     onSubmit({
       ...base,
-      template_id: effectiveSelection,
+      template_id: effectiveSelection.id,
       template_input: { ...parsedIssue, merge_policy: mergePolicy },
     });
   }
@@ -594,13 +727,13 @@ export function NewTrackForm({
                   placement="above"
                   button={{
                     id: triggerId,
-                    label: chosen?.title ?? NO_TEMPLATE,
+                    label: chosenTitle,
                     /* The chip's text is the choice; its *name* has to survive
                        being read on its own, out of the row, with nothing beside
                        it — so it says which kind of choice it is. Unset the two
                        coincide, because "Choose a template" already is that
                        sentence. */
-                    'aria-label': `Template: ${chosen?.title ?? NO_TEMPLATE}`,
+                    'aria-label': `Template: ${chosenTitle}`,
                     variant: 'secondary',
                     size: 'sm',
                     className: styles.trigger,
@@ -612,18 +745,54 @@ export function NewTrackForm({
                       its name. */}
                   <TemplateChoice
                     label={NO_TEMPLATE}
-                    isSelected={effectiveSelection === BLANK}
-                    onSelect={() => setSelected(BLANK)}
+                    isSelected={effectiveSelection.kind === 'none'}
+                    onSelect={() => setSelected(NO_STARTING_POINT)}
                   />
-                  {templates.map((template) => (
-                    <TemplateChoice
-                      key={template.id}
-                      label={template.title}
-                      tasks={template.tasks}
-                      isSelected={effectiveSelection === template.id}
-                      onSelect={() => setSelected(template.id)}
-                    />
-                  ))}
+                  {/* ── Mine, then the built-ins ────────────────────────────
+                      Rows look the same for both kinds, because to a reader
+                      choosing one they *are* the same thing: a report the new
+                      track starts from. What differs is only who wrote it, and
+                      that is what the headings say.
+
+                      Mine first, in server order; the built-ins keep the order
+                      the kernel constant declares. And neither kind carries an
+                      edit or delete affordance here — omit, never disable
+                      (`systems/cards/ui/board-host.tsx`): a gesture the reader
+                      can see but not use is worse than one that is not on this
+                      screen. Editing lives behind `Manage recipes…` below. */}
+                  <MenuGroup heading={showGroupHeadings ? 'My recipes' : null}>
+                    {recipes.map((recipe) => (
+                      <TemplateChoice
+                        /* Prefixed because the two id spaces are unrelated and
+                           a recipe may legitimately be called `small-change`.
+                           An unprefixed key would collide and React would
+                           reuse one row's state for the other. */
+                        key={`recipe:${recipe.id}`}
+                        label={recipe.title}
+                        isSelected={effectiveSelection.kind === 'recipe' && effectiveSelection.id === recipe.id}
+                        onSelect={() => setSelected({ kind: 'recipe', id: recipe.id })}
+                      />
+                    ))}
+                  </MenuGroup>
+                  <MenuGroup heading={showGroupHeadings ? 'Built in' : null}>
+                    {templates.map((template) => (
+                      <TemplateChoice
+                        key={`template:${template.id}`}
+                        label={template.title}
+                        tasks={template.tasks}
+                        isSelected={effectiveSelection.kind === 'template' && effectiveSelection.id === template.id}
+                        onSelect={() => setSelected({ kind: 'template', id: template.id })}
+                      />
+                    ))}
+                  </MenuGroup>
+                  {/* The way to the authoring screen, and the only one: there
+                      is no other entry point to recipes in the product, so it
+                      is here whether or not the reader has any yet — a menu
+                      that offers recipes and no way to write one would be a
+                      dead end. It is an action, not a choice, so it sits under
+                      a rule and changes no selection. */}
+                  <Divider />
+                  <DropdownMenuItem label="Manage recipes…" onClick={onManageRecipes} />
                 </DropdownMenu>
 
                 {/* The folder, #1147 S3. The chip's text is the default's name
@@ -806,6 +975,42 @@ export function NewTrackForm({
  * template actually does the way a hand-written description would (#1209
  * declined to add one for exactly that reason).
  */
+/**
+ * One labelled band of the picker, in the shape astryx's own data-driven menu
+ * gives a section: `role="group"` with an `aria-label`, and the visible
+ * heading `aria-hidden` inside it.
+ *
+ * Copied from `renderDropdownItems.tsx` rather than reached for, because the
+ * compound path this menu has to use — the template rows are wrapped in
+ * `HoverCard`s — exposes no section component. The *markup* is astryx's; only
+ * the type rank is ours (`styles.menuGroupHeading`, the quiet rank
+ * `kernel-owned` uses on the track page: a fact about the rows, not a row).
+ *
+ * The heading is `aria-hidden` and the group carries the same string as its
+ * `aria-label` so a screen reader hears the band once, on entering it, instead
+ * of meeting an unowned text node between menu items. `role="group"` is a
+ * legal child of `role="menu"`; a bare `<span>` would not be, and
+ * `useListFocus` finds `[role="menuitem"]` by descendant query, so the extra
+ * level costs the keyboard nothing.
+ *
+ * `heading === null` renders the rows and no band at all — not an unnamed
+ * group. One group is not a grouping.
+ *
+ * Not collapsible, unlike the sidebar's `TrackSection` this borrows the
+ * static-header half from: a popover that hides some of its own options behind
+ * a disclosure is a menu you cannot see, and the reader opened it precisely to
+ * see the options.
+ */
+function MenuGroup({ heading, children }: Readonly<{ heading: string | null; children: ReactNode }>) {
+  if (heading === null) return <>{children}</>;
+  return (
+    <div role="group" aria-label={heading}>
+      <div className={styles.menuGroupHeading} aria-hidden="true">{heading}</div>
+      {children}
+    </div>
+  );
+}
+
 function TemplateChoice({ label, tasks, isSelected, onSelect }: Readonly<{
   label: string;
   tasks?: TrackTemplate['tasks'];

@@ -64,11 +64,16 @@ import {
   ApiError, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodaySummaryMutation,
-  useTrackConversationMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+  useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
+  useTrackTemplates, useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackForm, type NewTrackDraft } from '../../features/area/new-track/public.tsx';
+import {
+  RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
+} from '../../features/report/recipe/public.tsx';
+import { useTheme } from '../theme/public.tsx';
 import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
@@ -700,6 +705,12 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <TrackRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
+  const recipesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/recipes',
+    component: () => <RecipesRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
   /*
    * Every settings route renders nothing, deliberately.
    *
@@ -735,7 +746,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, newTrackRoute, trackRoute, settingsRoute,
+    indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
@@ -1608,6 +1619,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const workspace = useWorkspace(transport, unauthorized);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
+  const recipes = useTrackRecipes(transport, unauthorized);
   const go = useGo();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1665,6 +1677,11 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
       // serialized.
       ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
+      /* #1292 — the third starting point, spread the same way and for the same
+         reason. It is never present at the same time as `template_id`: the
+         draft comes from a tagged union with one arm at a time, and the kernel
+         answers a request naming both with a 400. */
+      ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
        * already claimed by some area", which the kernel answers with a 409
@@ -1747,8 +1764,61 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
       error={error}
       templates={templates.templates}
       templatesError={templates.error}
+      recipes={recipes.recipes}
+      onManageRecipes={() => go({ name: 'recipes' })}
       listDirectory={listDirectory}
       onSubmit={submit}
+    />
+  );
+}
+
+/**
+ * `/recipes` — the reader's own saved starting points (#1292 S4).
+ *
+ * This route owns exactly two things the feature module must not: the
+ * transport, and the translation of a rejected write into the outcome the
+ * editor branches on.
+ *
+ * That translation is the reason `RecipeWriteOutcome` exists. A 409 is not a
+ * failure the editor reports and moves on from — it is the one status whose
+ * handling is "stay in edit mode and keep every character the author typed" —
+ * and deciding that by matching on an error message inside the feature would
+ * make a user-visible behaviour depend on wording. `ApiError.failure.status`
+ * is decided here, where the transport's own vocabulary already lives.
+ */
+function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const recipes = useTrackRecipes(transport, unauthorized);
+  const mutations = useTrackRecipeMutations(transport, unauthorized);
+  const { resolved } = useTheme();
+
+  const write = async (draft: RecipeDraft, recipeId: string | null): Promise<RecipeWriteOutcome> => {
+    try {
+      const recipe = draft.if_revision === null || recipeId === null
+        ? await mutations.create({ title: draft.title, body: draft.body })
+        : await mutations.save(recipeId, {
+          title: draft.title, body: draft.body, if_revision: draft.if_revision,
+        });
+      return { kind: 'saved', recipe };
+    } catch (failure: unknown) {
+      if (failure instanceof ApiError && failure.failure.kind === 'http' && failure.failure.status === 409) {
+        return { kind: 'conflict' };
+      }
+      /* Everything else is reported verbatim, including the 400 a malformed
+         fence earns: the kernel's message names the fence that would not
+         parse, and paraphrasing it here would lose the only part the author
+         can act on. */
+      return { kind: 'failed', message: failure instanceof Error ? failure.message : 'Could not save this recipe.' };
+    }
+  };
+
+  return (
+    <RecipesPage
+      recipes={recipes.recipes}
+      loaded={recipes.loaded}
+      error={recipes.error}
+      theme={resolved}
+      onWrite={write}
+      onDelete={mutations.remove}
     />
   );
 }

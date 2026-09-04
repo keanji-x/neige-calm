@@ -79,6 +79,10 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     submitting: false,
     error: null,
     templates: TEMPLATES,
+    /* Required, like `listDirectory` and for the same reason: a call site that
+       forgot it would render the one route into the recipe editor as a dead
+       menu row. */
+    onManageRecipes: vi.fn(),
     listDirectory: vi.fn(() => Promise.resolve(LISTING)),
     onSubmit,
     ...overrides,
@@ -251,8 +255,12 @@ describe('NewTrackForm asks only what the track starts from', () => {
     expect(templateTrigger().getAttribute('aria-expanded')).toBe('false');
     await openTemplates();
     expect(templateTrigger().getAttribute('aria-expanded')).toBe('true');
+    /* #1292 — the last row is the way to the recipe editor, and it is not a
+       template: it is present whether or not the reader has recipes, because
+       it is the only entry point to writing one. With no recipes there are no
+       band headings either; `recipe-picker.test.tsx` asserts that half. */
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
-      .toEqual(['No templateSelected', 'Issue development', 'Small change', 'Investigation']);
+      .toEqual(['No templateSelected', 'Issue development', 'Small change', 'Investigation', 'Manage recipes…']);
   });
 
   /*
@@ -504,7 +512,12 @@ describe('Start from — no template is the default and stays free', () => {
     const { props } = renderForm({ templates: [], templatesError: 'Could not load templates.' });
     expect(screen.getByRole('button', { name: 'Template: No template' })).toBe(templateTrigger());
     await openTemplates();
-    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    /* Two: "No template", still the working default, and "Manage recipes…",
+       which does not create anything. Neither is a template — the read gave
+       none — so this is still the "the picker offers nothing but the free
+       choice" assertion it was before #1292. */
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
+      .toEqual(['No templateSelected', 'Manage recipes…']);
     await userEvent.keyboard('{Escape}');
     await fillMessage();
     expect(submitButton().disabled).toBe(false);
