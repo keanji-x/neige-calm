@@ -72,6 +72,25 @@ export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire | nul
   };
 }
 
+export const todayLaunchpadEnsureSchema = z.object({ track_id: z.string() });
+
+export type TodayLaunchpadEnsureWire = z.infer<typeof todayLaunchpadEnsureSchema>;
+
+/**
+ * Materialise the Today launchpad after an explicit user action.
+ *
+ * This operation is deliberately separate from the page-load resolve above:
+ * it starts the launchpad harness and may therefore wait on the agent service.
+ * It sends no client-authored launchpad shape or report body.
+ */
+export function todayLaunchpadEnsureOperation(): ApiOperation<TodayLaunchpadEnsureWire> {
+  return {
+    method: 'POST',
+    path: '/api/today/launchpad/ensure',
+    responseSchema: todayLaunchpadEnsureSchema,
+  };
+}
+
 export const todayReportResetSchema = z.object({
   /** The launchpad track whose report was restored. */
   track_id: z.string(),

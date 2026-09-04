@@ -125,20 +125,22 @@ or DST.
 
 ## The document region (#1253)
 
-The main column is **status bar, then document**. The status bar is the header's
-`N waiting · N running` plus the compact waiting rows; it is O(1) in height, so
-it cannot grow and push the document off the first screen. "The document is the
-protagonist" is expressed by area and visual weight — and, since 2026-09-03, by
-type: the document region reads at the prose rank (`--text-lg` paired with
-`--measure-prose`, the only pairing tokens.css sanctions) while everything
-around it stays interface-sized. Running is ambience and lives in the panel.
+The main column is **the document**. The header retains the compact
+`N waiting · N running` summary, but the former `Waiting on you` row list is
+gone by owner call: it duplicated operational detail above the durable result
+and delayed the document. "The document is the protagonist" is expressed by
+area and visual weight — and, since 2026-09-03, by type: the document region
+reads at the prose rank (`--text-lg` paired with `--measure-prose`, the only
+pairing tokens.css sanctions) while everything around it stays interface-sized.
+Running is ambience and lives in the panel.
 
 - **INV-TODAYDOC-001** — the page load only *resolves* (`GET /api/today/launchpad`).
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
   `planner-harness-start` operation, so it must never be on this path; it belongs
-  to an explicit action. There is no browser caller after #1343 removes the
-  write-the-report trigger. `app/router/today-document.test.tsx` pins the
-  remaining invariant: no write of any kind occurs during a page load.
+  to an explicit action. The Conversations `+` is that action when no launchpad
+  exists: the press ensures it, then opens a draft scoped to the returned track.
+  `app/router/today-document.test.tsx` still pins that no write of any kind
+  occurs during page load.
 - **INV-TODAYDOC-002** — **`null` is data; any failure is an error.** A failed
   read is rendered as an error and the empty state is suppressed: a 5xx that
   degrades into "nothing written today" tells the reader their day was empty
@@ -225,18 +227,16 @@ around it stays interface-sized. Running is ambience and lives in the panel.
     and names what is *not* lost as well as what is.
   * **It is offered only beside a written report.** There is nothing to reset
     when the report is already canonical, and the empty state is one sentence.
-- **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
-  reason for putting it above the document, so an uncapped list would not be a
-  cosmetic problem — it would falsify the layout's justification. The overflow
-  sits behind one disclosure control rather than being dropped: RUNNING
-  excludes anything already counted as waiting.
+- **Waiting remains a count, not a main-column list.** The header still reports
+  the true waiting total; the document begins immediately below it. Tracks stay
+  reachable through their Area and the selected day in Calendar.
 - **The first-run page uses the full Today layout.** `areas` is the
   *user-visible* list — #175 filters the system area out of `GET /api/areas` and
   the launchpad lives there — so "no tracks, no areas" is an ordinary state,
   not a reason to replace the page with a second generic empty sentence. The
   Calendar and Conversations panel remain visible; the document region alone
-  says `Nothing written today yet.`. The conversation `+` still appears only
-  once a launchpad exists, because it needs a real track to post to.
+  says `Nothing written today yet.`. The conversation `+` remains visible
+  before a launchpad exists and explicitly creates it when pressed.
 
 ### The refresh chain, and why nothing generated protects it
 
@@ -288,14 +288,13 @@ Consequences worth knowing before "fixing" one of them:
   row is on the launchpad and the launchpad's page is this one; the launchpad
   lives in the system area, which `GET /api/areas` filters out (#175), so a
   navigation would land the reader on a track that no list of theirs contains.
-- **The `+` is offered**, because there is now a single track to attach a
-  conversation to. `TodayRoute` withholds it on one condition, `launchpadTrackId
-  === ''`: with no launchpad there is no track to attach to, and minting one is
-  `POST /api/today/launchpad/ensure` — a write that waits on codex, which this
-  `+` is not the place for. It stays withheld. Since #1343 also removes the
-  document trigger, a fresh workspace has no browser action that materializes
-  the launchpad; that is an explicit gap, not an implicit `ensure` hidden behind
-  page load or `+`.
+- **The `+` is always offered.** Once a launchpad exists it opens the ordinary
+  launchpad-scoped draft. Before one exists its visible empty copy says `Start
+  a conversation with Today.`; pressing it calls
+  `POST /api/today/launchpad/ensure`, uses the returned track id as the draft's
+  scope, and opens the same composer. Creation is therefore attributable to the
+  press, never hidden on page load, and the reader never has to choose or guess
+  which assistant owns Today.
 - **A cross-track index is gone from here, and is not lost.** Owner's plan is a
   card of its own holding everything about one track; it has its own issue. Do
   not squeeze it back into this module.

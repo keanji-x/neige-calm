@@ -85,7 +85,6 @@
   .mainColumn {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
     min-inline-size: 0;
     min-block-size: 0;
     container-type: inline-size;
@@ -206,24 +205,6 @@
     font-size: var(--text-lg);
     line-height: var(--leading-loose);
     color: var(--text-1);
-  }
-
-  /* The status bar's overflow control. Text-weight, aligned with the rows it
-     follows: it is a disclosure, not an action the page wants you to take. */
-  .moreButton {
-    align-self: flex-start;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-    background: none;
-    border: none;
-    padding-inline: var(--space-2);
-    cursor: pointer;
-  }
-
-  .moreButton:hover {
-    color: var(--text-2);
   }
 
   /* The document's own control row (#1343: Reset, and nothing else yet).

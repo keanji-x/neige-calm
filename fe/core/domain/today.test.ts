@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   nameTodaySummaryConversation, TODAY_SUMMARY_CONVERSATION_KEY,
-  TODAY_SUMMARY_CONVERSATION_TITLE, todayLaunchpadOperation, todayReportResetOperation,
+  TODAY_SUMMARY_CONVERSATION_TITLE, todayLaunchpadEnsureOperation,
+  todayLaunchpadOperation, todayReportResetOperation,
 } from './today.js';
 import { trackConversationCardId, type Conversation } from './conversation.js';
 
@@ -46,5 +47,15 @@ describe('the Today report reset (#1343)', () => {
     expect(nameTodaySummaryConversation('lp', summary).title).toBe(TODAY_SUMMARY_CONVERSATION_TITLE);
     expect(nameTodaySummaryConversation('lp', { ...summary, title: 'Server title' }).title).toBe('Server title');
     expect(nameTodaySummaryConversation('other-track', summary)).toBe(summary);
+  });
+});
+
+describe('the explicit Today launchpad entry', () => {
+  it('materialises the launchpad without a client-authored body', () => {
+    const operation = todayLaunchpadEnsureOperation();
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/today/launchpad/ensure');
+    expect(operation.body).toBeUndefined();
+    expect(operation.responseSchema.parse({ track_id: 'lp' })).toEqual({ track_id: 'lp' });
   });
 });

@@ -15,7 +15,7 @@
 // wiring, because the wiring IS the claim.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -108,12 +108,22 @@ function renderApp({
 /** The same page on a workspace that has no launchpad yet: `200 null`. */
 function renderNoLaunchpad() {
   const requests: ApiRequest[] = [];
+  let launchpadExists = false;
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
-      if (request.path === '/api/today/launchpad') return Promise.resolve(ok(null));
+      if (request.path === '/api/today/launchpad/ensure') {
+        launchpadExists = true;
+        return Promise.resolve({ status: 201, statusText: 'Created', body: { track_id: 'lp' } });
+      }
+      if (request.path === '/api/today/launchpad') {
+        return Promise.resolve(ok(launchpadExists
+          ? { track_id: 'lp', report_has_noninitial_content: false }
+          : null));
+      }
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
+      if (request.path === LAUNCHPAD_CONVERSATIONS) return Promise.resolve(ok([]));
       return Promise.resolve(ok([]));
     },
   };
@@ -220,13 +230,9 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(screen.queryByRole('complementary', { name: /daily-progress writer/ })).toBeNull();
   });
 
-  /*
-   * The `+`, and the one state it is withheld in.
-   *
-   * Withheld is not "broken": with no launchpad there is no track to post to,
-   * and materializing one is `POST /api/today/launchpad/ensure`, a write that
-   * waits on codex. An action that cannot act is not offered.
-   */
+  /* The `+` always means a conversation with Today. With a launchpad it opens
+     an ordinary scoped draft; without one, its press materialises the track
+     first and remains the only write in that entry flow. */
   it('offers a + once there is a launchpad to attach a conversation to', async () => {
     renderApp();
     await screen.findByText('No conversations yet.');
@@ -263,10 +269,21 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(conversation).toEqual(area);
   });
 
-  it('offers no + at all while there is no launchpad', async () => {
-    renderNoLaunchpad();
-    await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: 'New conversation' })).toBeNull();
+  it('offers an explicit Today-assistant entry before a launchpad exists', async () => {
+    const { requests } = renderNoLaunchpad();
+    await screen.findByText('Nothing written today yet.');
+    expect(screen.getByText('Start a conversation with Today.')).toBeTruthy();
+    const start = screen.getByRole('button', { name: 'Start a conversation with Today' });
+    // Merely rendering the entry must remain a pure read; launchpad creation is
+    // attributable to the reader's press, never to opening Today.
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
+
+    await userEvent.click(start);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+        .toEqual(['/api/today/launchpad/ensure']);
+    });
+    expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
   });
 
   /*
@@ -278,7 +295,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
    */
   it('asks for no conversation list at all when there is no launchpad yet', async () => {
     const { requests } = renderNoLaunchpad();
-    await screen.findByText('No conversations yet.');
+    await screen.findByText('Start a conversation with Today.');
     expect(requests.map((request) => request.path).filter((path) => path.endsWith('/conversations')))
       .toEqual([]);
     /* And nothing keyed on the empty card id either, from any layer. */

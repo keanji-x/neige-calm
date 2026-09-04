@@ -34,8 +34,8 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadOperation, todayReportResetOperation,
-  type TodayLaunchpadWire, type TodayReportResetWire,
+  todayLaunchpadEnsureOperation, todayLaunchpadOperation, todayReportResetOperation,
+  type TodayLaunchpadEnsureWire, type TodayLaunchpadWire, type TodayReportResetWire,
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
@@ -494,6 +494,36 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
     queryKey: queryKeys.todayLaunchpad(),
     queryFn: (): Promise<TodayLaunchpadWire | null> =>
       runOperation(transport, todayLaunchpadOperation(), unauthorized),
+  };
+}
+
+export type TodayLaunchpadEnsureMutation = Readonly<{
+  ensure: () => Promise<TodayLaunchpadEnsureWire>;
+  pending: boolean;
+  failure: ApiFailure | null;
+}>;
+
+/**
+ * Materialise the launchpad for the Conversations `+` after a reader presses
+ * it. The returned track id lets the route open the draft immediately; the
+ * resolve is reconciled in the background because it alone owns the report's
+ * empty-state predicate.
+ */
+export function useTodayLaunchpadEnsureMutation(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+): TodayLaunchpadEnsureMutation {
+  const client = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (): Promise<TodayLaunchpadEnsureWire> =>
+      runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
+    },
+  });
+  return {
+    ensure: () => mutation.mutateAsync(),
+    pending: mutation.isPending,
+    failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
   };
 }
 

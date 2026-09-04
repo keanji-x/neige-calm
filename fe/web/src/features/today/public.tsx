@@ -2,20 +2,15 @@
 // from app/router, and navigation leaves through `onOpenTrack` (features must
 // not import app).
 //
-// §8.1 — the user opens this to answer one question: *is anything waiting for
-// me?* That question owns the top of the main column, and it is answered by
-// position plus the only --warn pixels on the page — never by type size. The
-// clock, which used to be 36px, is ambient information and now sits at the
-// header's right edge at --text-base: a page whose job is "what needs me" cannot
-// have a clock as its main emphasis.
+// §8.1 — the header keeps the compact waiting/running summary, while the main
+// column belongs wholly to the durable Today document. The clock, which used to
+// be 36px, is ambient information and sits at the header's right edge at
+// --text-base rather than competing with that document.
 //
-// #1253 D2/D7 — the main column is now **the status bar, then the document**.
-// The status bar is `N waiting · N running` in the header plus the compact
-// waiting rows; it is O(1) in height, so it cannot grow and push the document
-// off the first screen. "The document is the protagonist" is expressed by area
-// and visual weight, and by the document region reading at the prose rank while
-// the rest of the page stays interface-sized. Running moved into the panel: it
-// is ambience, and the reading column belongs to the document.
+// #1253 D2 — "the document is the protagonist" is expressed by area and visual
+// weight, and by the document region reading at the prose rank while the rest of
+// the page stays interface-sized. Running remains ambience in the panel; the
+// former Waiting-on-you list was removed from the reading column by owner call.
 
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -84,26 +79,6 @@ function weekLabel(weekStart: Date, weekEnd: Date): string {
  * unresolvable case is exactly the one worth seeing.
  */
 const UNKNOWN_AREA = 'Unknown area';
-
-/**
- * How many waiting rows the status bar draws before it stops growing.
- *
- * D7 puts the status bar above the document **because it is O(1) in height**,
- * and that is the whole load-bearing reason for the order: a bar that grew with
- * the workspace would push the document off the first screen, which is the one
- * thing the layout exists to prevent. `waiting` has no natural bound — every
- * blocked track in every area lands in it — so without a cap that property is
- * simply false, and a review found it false with 100 blocked tracks.
- *
- * The overflow is not dropped. It sits behind one inert-until-clicked control,
- * so the *loaded* page is bounded while every waiting track stays reachable:
- * these rows are not repeated in the panel's RUNNING module (it excludes
- * anything already counted as waiting), so hiding them outright would make them
- * unreachable from this page. The calendar's agenda does list them, but only
- * for the selected day and without the attention framing, so it is not a
- * substitute for the bar.
- */
-const WAITING_ROW_LIMIT = 5;
 
 function addDays(day: Date, count: number): Date {
   const next = new Date(day);
@@ -281,18 +256,10 @@ function TodayDesktop({
         now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after. Every row follows its content.
-
-            A dashed "Today terminal" placeholder used to close this column and
-            the README carried a whole unbuilt contract for it (INV-TODAYTERM-*).
-            Neither shipped; both are retired rather than left as a promise the
-            page keeps making. Owner call, 2026-09-03. */}
+        {/* The reading column is the document and nothing else. A dashed
+            terminal placeholder and the Waiting-on-you list previously shared
+            it; both are retired by owner call. */}
         <div className={styles.mainColumn}>
-          {/* The status bar. An empty section renders nothing at all — no
-              label, no dashed box. The absence is the message. */}
-          <WaitingSection tracks={waiting} render={renderTrackRow} />
-
-          {/* …and the document immediately after it. */}
           <TodayDocument
             launchpad={launchpad}
             document={launchpadDocument}
@@ -325,55 +292,6 @@ function TodayDesktop({
         {panel}
       </div>
     </div>
-  );
-}
-
-/**
- * The status bar's waiting rows, bounded.
- *
- * Collapsed it draws at most `WAITING_ROW_LIMIT` rows plus one control, so its
- * height does not depend on how much is waiting — which is what makes D7's
- * "status bar first" ordering safe for the document below it. Expanding is an
- * explicit act by a reader who has decided the list is what they came for.
- *
- * The control is a `<button>`, not a link: this surface emits no `<a href>`
- * anywhere (INV-A11Y-061), and it navigates nowhere — it reveals rows that are
- * already on this page.
- */
-function WaitingSection({ tracks, render }: {
-  tracks: readonly Track[];
-  render: TrackRowRenderer;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const rowsId = 'today-waiting-rows';
-  if (tracks.length === 0) return null;
-  const hidden = tracks.length - WAITING_ROW_LIMIT;
-  const shown = expanded ? tracks : tracks.slice(0, WAITING_ROW_LIMIT);
-  return (
-    <section className={styles.section}>
-      <h2 className={styles.sectionLabel}>Waiting on you</h2>
-      {/* `aria-controls` names what `aria-expanded` is talking about: without
-          it the control announces a state with no referent, and a screen
-          reader cannot jump to what just appeared. Today renders one of these
-          per page, so a constant id is not a collision risk. */}
-      <div className={styles.rows} id={rowsId}>
-        {shown.map((track) => (
-          <span key={track.id}>{render(track, { variant: 'compact' })}</span>
-        ))}
-      </div>
-      {hidden > 0 && (
-        <button
-          type="button"
-          data-nc-action="tertiary"
-          className={styles.moreButton}
-          aria-expanded={expanded}
-          aria-controls={rowsId}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? 'Show fewer' : `+${hidden} more waiting`}
-        </button>
-      )}
-    </section>
   );
 }
 
