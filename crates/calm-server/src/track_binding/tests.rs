@@ -1048,6 +1048,15 @@ async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
         rendered.contains("running and trusted"),
         "the 400 must name the stopped owner as the cause: {rendered}"
     );
+    // 第三轮评审 MINOR — `OWNER_A` is stopped, not unregistered: its Manifest
+    // is still in the registry and still declares `SHARED_TEMPLATE_ID`. So the
+    // cause clause must be scoped to running ∧ trusted; "no plugin declares
+    // this template" would be a false statement about this very state.
+    assert!(
+        rendered.contains("no running and trusted plugin declares this template"),
+        "the 400's cause clause must be scoped to running ∧ trusted — the stopped \
+         owner still declares this template: {rendered}"
+    );
     assert!(
         !rendered.contains("requires `template_id`"),
         "the 400 must not ask for a template_id that was supplied: {rendered}"

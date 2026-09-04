@@ -4088,6 +4088,16 @@ mod tests {
             };
             assert!(message.starts_with(ROUTE_PREFIX), "{message}");
             assert!(message.contains("running and trusted"), "{message}");
+            // 第三轮评审 MINOR — the *second* clause must stay narrow too.
+            // `NoBoundPlugin` also covers a stopped/untrusted owner whose
+            // Manifest is still in the registry and still declares this
+            // template; a bare "no plugin declares this template" would be
+            // false in exactly the case this test drives.
+            assert!(
+                message.contains("no running and trusted plugin declares this template"),
+                "the cause clause must be scoped to running ∧ trusted, not to all \
+                 plugins — a stopped owner still declares the template: {message}"
+            );
             // The discriminating half: it must NOT tell the caller to supply a
             // `template_id` they already supplied.
             assert!(

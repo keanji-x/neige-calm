@@ -401,9 +401,17 @@ pub enum TemplateInputOwner<'a> {
 /// and both callers now enter *this* function.
 ///
 /// The error is a bare reason with no route vocabulary in it —
-/// `routes::tracks::create_track` prefixes `track create: ` (keeping every
-/// pre-existing 400 body byte-identical) and the binding resolver reports it
-/// as a contract failure.
+/// `routes::tracks::create_track` prefixes `track create: ` and the binding
+/// resolver reports it as a contract failure. The prefix keeps the
+/// pre-existing 400 bodies byte-identical **except** for the
+/// [`TemplateInputOwner::NoBoundPlugin`] + `Some(input)` cell, which #1321 S1
+/// deliberately changed: it used to answer "`template_input` requires
+/// `template_id`" — asking the caller for the field they had just sent — and
+/// now names the real cause (no running ∧ trusted plugin declares the
+/// template). That single reworded body is pinned by
+/// `routes::tracks::tests::template_input_binding::input_with_a_template_whose_owner_is_not_running_names_that_cause`
+/// and, at the HTTP boundary, by
+/// `track_binding::tests::create_time_and_run_time_binding_agree_for_a_stopped_owner`.
 pub fn validate_template_input_binding(
     owner: TemplateInputOwner<'_>,
     input: Option<&Value>,
@@ -420,8 +428,8 @@ pub fn validate_template_input_binding(
             if input.is_some() {
                 return Err(
                     "`template_input` requires a `template_id` whose owning plugin is \
-                     currently running and trusted; no plugin declares this template right \
-                     now, so there is no input_schema to validate against"
+                     currently running and trusted; no running and trusted plugin declares \
+                     this template right now, so there is no input_schema to validate against"
                         .into(),
                 );
             }

@@ -225,23 +225,26 @@ pub(crate) enum TemplateContract {
     /// The owner is live but the contract cannot be honored: nothing template
     /// -shaped may reach the prompt. Tool visibility is unaffected.
     ///
-    /// # It is not behaviourally distinguishable from [`Self::NotTemplated`]
+    /// # Same return values as [`Self::NotTemplated`], and no current test
+    /// tells them apart
     ///
     /// This enum has exactly two consumers —
     /// `operation::planner_harness_start_adapter::bound_template` and
     /// `mcp_server::tool_visibility` — and **both project this variant and
-    /// `NotTemplated` onto the same output** (`Ok(None)` / `Only(owner)`). The
-    /// only difference either one produces is the `tracing::error!` on the
-    /// `Broken` arm of `bound_template`. Nothing asserts on that log line, so
-    /// **no test in this repository can tell the two variants apart**: swapping
-    /// every `Broken(..)` construction for `NotTemplated` leaves the suite
-    /// green.
+    /// `NotTemplated` onto the same return value** (`Ok(None)` / `Only(owner)`).
+    /// They are *not* indistinguishable in general: `bound_template`'s `Broken`
+    /// arm additionally emits a `tracing::error!` on the
+    /// `planner_harness::template_binding` target, so an operator subscribed to
+    /// that target can tell the two apart without any change to return values.
+    /// What is true is narrower: nothing in this repository asserts on that log
+    /// line, so **no test here tells the two variants apart** — swapping every
+    /// `Broken(..)` construction for `NotTemplated` leaves the suite green.
     ///
     /// Keep the distinction anyway — the log *is* the carrier (it is the only
     /// operator-visible signal that a contract broke, and see the module doc's
     /// KNOWN GAP (2) for how thin that signal is), and `NotTemplated` cannot
     /// carry a [`ContractFailure`] to render. But do not reason from "the type
-    /// distinguishes them" to "some behaviour distinguishes them": if you add a
+    /// distinguishes them" to "a *test* distinguishes them": if you add a
     /// consumer that must treat them differently, it needs its own test,
     /// because no existing one will go red for you.
     Broken(ContractFailure),

@@ -1144,6 +1144,20 @@ P2. planner-harness start      tracks.rs:1660-1676   → 运行期失败降级�
 | 17 | **破前提 4**：名册内 key + **显式** `fork_report_from` 指向不存在的 track（或跨 area 且源不在 system area） | 400（**阶段 2 事务内**：`tracks.rs:1410-1418` / `:1424-1430`），**且模板已被播种** | ``…fork source track `X` does not exist`` / ``…must be in the target area or the system area`` | 同 | 同 | 同（正文不含本字段） | **无变化**（搬位改不掉它：判定在事务内、播种在事务外，见 §4.2 的裁决） |
 | **P1** | **（v5 新增）** 任何合法 create，但工作区物化失败 | **非 2xx**，**且 track / cards / events 已提交**（`tracks.rs:1620-1633`，在 `:1609` 提交之后） | 含 `materialize workspace` | 同 | 同 | 同 | **无变化**；本行的作用是钉住「非 201 ⇒ 无副作用」**永远为假**。已有 pin：`track_workspace_materialize.rs:270-313` |
 
+> **#1321 S1 补记（行 8 的「误导性不变」已经作废）。** 上表行 8
+> （名册内 template + 绑定插件 stopped/untrusted + 带 input）在「PR-2 后」一列
+> 记的正文是 `` `template_input` requires `template_id` ``，并明确写着**误导性不变**。
+> 这两句在今天的树上都是假的：#1321 S1 **有意**改掉了这一格——它是唯一一格
+> 「调用方已经给了 `template_id`，却被要求再给一次 `template_id`」，
+> 现在改为点名真实成因（没有 running ∧ trusted 的插件声明该 template，
+> 因而没有 `input_schema` 可校验）。**结论没变**（这一格仍然是 400，判定顺序、
+> 状态码、其余各行的正文一个都没动），变的是这一格的正文与「误导性不变」这句话本身。
+> 判定处已从 `tracks.rs` 搬到 `plugin_host/template_input.rs` 的
+> `validate_template_input_binding`（`TemplateInputOwner::NoBoundPlugin` 臂），
+> 创建期与运行期两个读者共用它。行 11（有 input 无 `template_id`）**不受影响**：
+> 那一格走的是 `TemplateInputOwner::NoTemplateId` 臂，正文仍是
+> `` `template_input` requires `template_id` ``，因为那里调用方确实没给。
+
 **PR-2 新增的三行（D2 改名带来的，见 §3；它们发生在**阶段 0**，不经过 handler 函数体）**：
 
 | # | 输入（在上述前提下） | 今天 / PR-1 后 | **PR-2 后** | 变化 |
