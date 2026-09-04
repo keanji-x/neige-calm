@@ -176,6 +176,40 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([{ op: 'set', queryKey: ['areas'] }]);
   });
 
+  it('write-through ignores an older area event that arrives after a newer cache version', () => {
+    const current = {
+      id: 'c1', name: 'newer', color: '#111', sort: 1, kind: 'user',
+      defaultTemplateId: 'small-change', defaultCwd: '/srv/new', createdAt: 10, updatedAt: 30,
+    } as const;
+    const { client, areas } = recordingClient([current]);
+    applyEventEffects(client, [{ type: 'write-through', writes: [{
+      key: ['areas'], mode: 'replace-existing-area',
+      value: {
+        id: 'c1', name: 'older', color: '#abc', sort: 3, kind: 'user',
+        default_template_id: 'investigation', default_cwd: '/srv/old', created_at: 10, updated_at: 20,
+      },
+    }] }]);
+    expect(areas()).toEqual([current]);
+  });
+
+  it('write-through applies an equal-version area event for historical replay compatibility', () => {
+    const current = {
+      id: 'c1', name: 'before', color: '#111', sort: 1, kind: 'user',
+      defaultTemplateId: null, defaultCwd: null, createdAt: 10, updatedAt: 20,
+    } as const;
+    const { client, areas } = recordingClient([current]);
+    applyEventEffects(client, [{ type: 'write-through', writes: [{
+      key: ['areas'], mode: 'replace-existing-area',
+      value: {
+        id: 'c1', name: 'after', color: '#abc', sort: 3, kind: 'user',
+        default_template_id: 'small-change', default_cwd: '/srv/work', created_at: 10, updated_at: 20,
+      },
+    }] }]);
+    expect(areas()?.[0]).toMatchObject({
+      name: 'after', defaultTemplateId: 'small-change', defaultCwd: '/srv/work', updatedAt: 20,
+    });
+  });
+
   it('write-through never creates a phantom area when the row is absent', () => {
     const existing = {
       id: 'c2', name: 'other', color: '#222', sort: 2, kind: 'user',

@@ -17,7 +17,7 @@ import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../cor
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   asFolderConflict, areaListOperation, createAreaOperation, deleteAreaOperation,
-  sortedAreas, toArea, updateAreaOperation, visibleAreas,
+  newestArea, sortedAreas, toArea, updateAreaOperation, visibleAreas,
   type Area, type AreaPatchBody, type FolderConflict, type NewAreaBody,
 } from '../../../../core/domain/area.ts';
 import {
@@ -786,14 +786,6 @@ export type AreaMutations = Readonly<{
   remove: (areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
-function reconcileAreaUpdate(current: Area, updated: Area): Area {
-  // `area_update_tx` advances updatedAt strictly for every committed write.
-  // The event and HTTP response for one write therefore share a version, while
-  // a later event is always greater even when both writes occur in one wall-
-  // clock millisecond. Equal keeps the cache's equivalent event carrier.
-  return current.updatedAt >= updated.updatedAt ? current : updated;
-}
-
 export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
   const create = useMutation({
@@ -820,7 +812,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
       // window snapshots stale defaults into NewTrackForm's local state.
       client.setQueryData<Area[]>(queryKeys.areas(), (current) => current?.map(
         (area) => area.id === updated.id
-          ? reconcileAreaUpdate(area, updated)
+          ? newestArea(area, updated)
           : area,
       ));
     },

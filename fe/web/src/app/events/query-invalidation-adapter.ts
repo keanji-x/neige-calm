@@ -8,7 +8,7 @@
 // must never invent a key shape of its own, and a plan key with no query behind
 // it is dropped here rather than turned into a fabricated key.
 
-import { toArea } from '../../../../core/domain/area.ts';
+import { newestArea, toArea } from '../../../../core/domain/area.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
@@ -103,7 +103,9 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);
         if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;
         const updated = toArea(write.value);
-        client.setQueryData(mapped, existing.map((area) => area.id === updated.id ? updated : area));
+        client.setQueryData(mapped, existing.map((area) => area.id === updated.id
+          ? newestArea(area, updated)
+          : area));
       }
       continue;
     }

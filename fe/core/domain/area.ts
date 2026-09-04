@@ -57,6 +57,19 @@ export function toArea(wire: AreaWire): Area {
   };
 }
 
+/**
+ * Chooses the newest authoritative snapshot of one Area.
+ *
+ * Current server writes advance `updatedAt` strictly, so a lower version can
+ * never replace a higher one when the HTTP response and event stream race.
+ * Equal versions deliberately accept the incoming carrier: historical event
+ * logs can contain multiple same-millisecond updates and replay order remains
+ * their only tie-breaker.
+ */
+export function newestArea(current: Area, incoming: Area): Area {
+  return current.updatedAt > incoming.updatedAt ? current : incoming;
+}
+
 export function areaListOperation(): ApiOperation<AreaWire[]> {
   return { method: 'GET', path: '/api/areas', responseSchema: z.array(areaWireSchema) };
 }

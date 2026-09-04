@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   asFolderConflict, areaFolderWireSchema, areaFoldersOperation, areaListOperation, areaOf,
-  areaWireSchema, folderConflictMessage, sortedAreaFolders, sortedAreas, toArea, toAreaFolder,
+  areaWireSchema, folderConflictMessage, newestArea, sortedAreaFolders, sortedAreas, toArea, toAreaFolder,
   visibleAreas, type Area, type AreaFolder,
 } from './area.js';
 
@@ -73,6 +73,14 @@ describe('area ordering and lookup', () => {
     const list = [area({ id: 'a' })];
     expect(areaOf('a', list)?.id).toBe('a');
     expect(areaOf('nope', list)).toBeUndefined();
+  });
+
+  it('keeps a newer snapshot but lets an equal-version incoming snapshot win replay order', () => {
+    const current = area({ id: 'a', name: 'current', updatedAt: 2 });
+    const older = area({ id: 'a', name: 'older', updatedAt: 1 });
+    const equal = area({ id: 'a', name: 'equal', updatedAt: 2 });
+    expect(newestArea(current, older)).toBe(current);
+    expect(newestArea(current, equal)).toBe(equal);
   });
 });
 

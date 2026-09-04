@@ -11,8 +11,10 @@ use axum::http::{Method, Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
+use calm_server::model::NewTrack;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::routes::theme::RequestTheme;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -266,17 +268,21 @@ async fn changing_area_defaults_never_rewrites_existing_tracks() {
     let (status, created) = create_area(boot.app.clone(), json!({})).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let area_id = created["id"].as_str().expect("Area id");
-    sqlx::query(
-        "INSERT INTO tracks (
-             id, area_id, title, sort, template_id, workspace_kind,
-             workspace_path, created_at, updated_at
-         ) VALUES ('existing-track', ?1, 'Existing', 1, 'investigation',
-                   'attached', '/existing/worktree', 10, 20)",
-    )
-    .bind(area_id)
-    .execute(boot.repo.pool())
-    .await
-    .expect("seed existing Track");
+    let existing = boot
+        .repo
+        .track_create(NewTrack {
+            area_id: area_id.to_owned().into(),
+            title: "Existing".into(),
+            sort: Some(1.0),
+            cwd: "/existing/worktree".into(),
+            template_id: Some("investigation".into()),
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create existing Track through the production writer");
 
     let uri = format!("/api/areas/{area_id}");
     let (status, body) = request(
@@ -287,12 +293,12 @@ async fn changing_area_defaults_never_rewrites_existing_tracks() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let row: (Option<String>, String) = sqlx::query_as(
-        "SELECT template_id, workspace_path FROM tracks WHERE id = 'existing-track'",
-    )
-    .fetch_one(boot.repo.pool())
-    .await
-    .expect("read existing Track");
+    let row: (Option<String>, String) =
+        sqlx::query_as("SELECT template_id, workspace_path FROM tracks WHERE id = ?1")
+            .bind(existing.id.as_str())
+            .fetch_one(boot.repo.pool())
+            .await
+            .expect("read existing Track");
     assert_eq!(
         row,
         (Some("investigation".into()), "/existing/worktree".into())
