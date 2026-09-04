@@ -17,7 +17,6 @@ use crate::db::sqlite::{
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
-use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
     PlannerHarness, PlannerHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
@@ -39,6 +38,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
+use crate::track_binding::{TrackOwnerBinding, resolve_track_owner_binding};
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -129,9 +129,29 @@ impl PlannerHarnessStartAdapter {
         }
     }
 
+    /// #1321 S1 — resolve the track's bound template **through the track's
+    /// recorded owner** (`tracks.plugin_scope`), never by scanning the running
+    /// roster for `tracks.template_id`.
+    ///
+    /// That scan was the bug: it made this reader and the MCP per-track tool
+    /// scope answer "who owns this track" from different columns, so a plugin
+    /// that took over a stopped owner's template id got its descriptor
+    /// injected here — together with a `template_input` only the *previous*
+    /// owner's schema ever validated — while the tool scope stayed on the
+    /// stopped owner. Both readers now share
+    /// [`crate::track_binding::resolve_track_owner_binding`], so there is one
+    /// owner answer per track.
     pub(crate) async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
         let track = match self.repo.track_get(track_id).await {
-            Ok(track) => track,
+            Ok(Some(track)) => track,
+            Ok(None) => {
+                tracing::error!(
+                    target: "planner_harness::template_binding",
+                    track_id,
+                    "bound template track was not found while resolving descriptor; using vanilla planner prompt"
+                );
+                return Ok(None);
+            }
             Err(error) => {
                 tracing::error!(
                     target: "planner_harness::template_binding",
@@ -142,43 +162,32 @@ impl PlannerHarnessStartAdapter {
                 return Ok(None);
             }
         };
-        let Some(track) = track else {
-            tracing::error!(
-                target: "planner_harness::template_binding",
-                track_id,
-                "bound template track was not found while resolving descriptor; using vanilla planner prompt"
-            );
-            return Ok(None);
-        };
-        let Some(template_id) = track.template_id.as_deref() else {
-            return Ok(None);
-        };
-        let running_plugin_ids = self.plugin.running_plugin_ids().await;
-        for manifest in self.plugin.registry().list() {
-            if !running_plugin_ids.contains(&manifest.id) || !trusted_forge_plugin(&manifest.id) {
-                continue;
+        match resolve_track_owner_binding(&track, Some(self.plugin.as_ref())).await {
+            TrackOwnerBinding::Owned {
+                template: Some(descriptor),
+                input,
+                ..
+            } => Ok(Some(BoundTemplate { descriptor, input })),
+            // Owner resolved but the track names no template, or the track is
+            // unbound: an ordinary vanilla prompt, not a degradation.
+            TrackOwnerBinding::Owned { template: None, .. } | TrackOwnerBinding::Unbound => {
+                Ok(None)
             }
-            if let Some(template) = manifest
-                .templates
-                .into_iter()
-                .find(|template| template.id == template_id)
-            {
-                return Ok(Some(BoundTemplate {
-                    descriptor: template,
-                    input: track.template_input.clone(),
-                }));
+            // Fail closed: the persisted `template_input` is dropped along
+            // with the descriptor rather than injected without a checked
+            // contract behind it.
+            TrackOwnerBinding::FailedClosed(failure) => {
+                tracing::error!(
+                    target: "planner_harness::template_binding",
+                    track_id,
+                    template_id = track.template_id.as_deref().unwrap_or("<none>"),
+                    plugin_id = failure.plugin_id().unwrap_or("<none>"),
+                    failure = %failure,
+                    "bound template did not resolve from the track's recorded owner; using vanilla planner prompt"
+                );
+                Ok(None)
             }
         }
-        // Descriptor unresolved (plugin stopped / trust revoked): fail-safe
-        // to the vanilla prompt — the persisted template_input is dropped
-        // along with the descriptor rather than injected without context.
-        tracing::error!(
-            target: "planner_harness::template_binding",
-            track_id,
-            template_id,
-            "bound template descriptor was not resolved from a running trusted forge plugin; using vanilla planner prompt"
-        );
-        Ok(None)
     }
 }
 
@@ -1671,6 +1680,7 @@ mod tests {
     use crate::db::prelude::{ServerRepoOutOfDomainExt, ServerRepoSyncDomainRawExt};
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
+    use crate::forge_trust::trusted_forge_plugin;
     use crate::model::{NewArea, NewPlugin, NewTrack};
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
@@ -1802,7 +1812,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite repo"),
         );
-        let track = make_track(repo.as_ref(), None, None).await;
+        let track = make_track(repo.as_ref(), None, None, None).await;
 
         let mut base = HarnessSnapshot::initial(0, vec![]);
         base.phase = HarnessPhaseTag::Idle;
@@ -1887,9 +1897,25 @@ mod tests {
                 .expect("open in-memory sqlite repo"),
         );
         let bound_input = json!({ "issue_url": "https://github.com/o/r/issues/1" });
-        let bound_track =
-            make_track(repo.as_ref(), Some(TEMPLATE_ID), Some(bound_input.clone())).await;
-        let unbound_track = make_track(repo.as_ref(), None, None).await;
+        let bound_track = make_track(
+            repo.as_ref(),
+            Some(TEMPLATE_ID),
+            Some(bound_input.clone()),
+            Some(trusted_plugin_id.as_str()),
+        )
+        .await;
+        let unbound_track = make_track(repo.as_ref(), None, None, None).await;
+        // #1321 S1 — a track owned by the *untrusted* plugin. Pins the
+        // trust half of the filter on the owner column itself, which the
+        // old "untrusted plugin declares the id" arm can no longer reach
+        // now that declaration is not how an owner is found.
+        let untrusted_owned_track = make_track(
+            repo.as_ref(),
+            Some(TEMPLATE_ID),
+            None,
+            Some(untrusted_plugin_id.as_str()),
+        )
+        .await;
 
         let (trusted_running_host, trusted_running_tmp) =
             plugin_host_with_template(repo.clone(), &trusted_plugin_id, true).await;
@@ -1932,7 +1958,17 @@ mod tests {
                 .bound_template(bound_track.id.as_str())
                 .await
                 .expect("untrusted running lookup")
-                .is_none()
+                .is_none(),
+            "the track's owner is the trusted plugin, which is not running here"
+        );
+        assert!(
+            untrusted_running_adapter
+                .bound_template(untrusted_owned_track.id.as_str())
+                .await
+                .expect("untrusted owner lookup")
+                .is_none(),
+            "an untrusted owner must not bind even while it is running and \
+             declaring the template id"
         );
 
         assert!(
@@ -1978,10 +2014,19 @@ mod tests {
         candidate
     }
 
+    /// #1321 S1 — `plugin_scope` is now a parameter, and every caller has to
+    /// state it. It used to be hard-coded `None`, which combined with a
+    /// `Some` `template_id` + `template_input` into a row `POST /api/tracks`
+    /// cannot produce: create copies the bound plugin into `plugin_scope`,
+    /// and refuses `template_input` without a bound plugin. That fixture is
+    /// what let the two owner readers drift apart unnoticed —
+    /// `crate::track_binding::tests` now drives the same states through the
+    /// real create route.
     async fn make_track(
         repo: &SqlxRepo,
         template_id: Option<&str>,
         template_input: Option<serde_json::Value>,
+        plugin_scope: Option<&str>,
     ) -> crate::model::Track {
         let area = repo
             .area_create(NewArea {
@@ -1998,7 +2043,7 @@ mod tests {
             sort: None,
             cwd: String::new(),
             template_id: template_id.map(str::to_string),
-            plugin_scope: None,
+            plugin_scope: plugin_scope.map(str::to_string),
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -2028,6 +2073,18 @@ mod tests {
             "min_kernel_version": "0.0.1",
             "display_name": "Template Resolver Stub",
             "entrypoint": { "command": "bin/stub" },
+            // #1321 S1 — a plugin that accepts no `template_input` cannot be
+            // the owner of a track that carries one: `POST /api/tracks`
+            // refuses that create (`validate_template_input_binding`), and
+            // the per-track resolver now fails closed on the same
+            // combination. Declaring the schema keeps this fixture inside
+            // the set of states production can actually reach.
+            "input_schema": {
+                "type": "object",
+                "properties": { "issue_url": { "type": "string" } },
+                "required": ["issue_url"],
+                "additionalProperties": false
+            },
             "templates": [
                 { "id": TEMPLATE_ID }
             ],

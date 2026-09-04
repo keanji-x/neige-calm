@@ -122,46 +122,56 @@ fn both_owners() -> Vec<OwnerSpec> {
     ]
 }
 
+/// The trusted set is a process-global env var, so these tests are mutually
+/// exclusive within a process. Under nextest (process-per-test, what CI runs)
+/// the lock is uncontended; under `cargo test` it is what keeps two guards
+/// from clobbering each other.
+static TRUST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 struct TrustGuard {
     previous: Option<String>,
-    expected: String,
+    expected: Vec<String>,
+    _lock: tokio::sync::MutexGuard<'static, ()>,
 }
 
 impl TrustGuard {
-    fn trust(ids: &str) -> Self {
+    async fn trust(ids: &str) -> Self {
+        let lock = TRUST_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
         let previous = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS").ok();
-        // SAFETY: nextest gives every test its own process, and this is the
-        // only writer in it.
+        // SAFETY: the lock above serializes this module's writers, and nextest
+        // additionally gives every test its own process.
         unsafe { std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", ids) };
         Self {
             previous,
-            expected: ids.to_string(),
+            expected: ids.split(',').map(str::to_string).collect(),
+            _lock: lock,
         }
     }
 
-    /// The trusted set is process-global, so under a *thread*-parallel runner
-    /// (`cargo test`, not nextest) two of these guards clobber each other —
-    /// and the failure mode is a **vacuous pass**: with the successor plugin
-    /// no longer trusted, "the planner must not adopt it" holds for the wrong
-    /// reason. Called immediately before every decisive assertion so that
-    /// clobbering turns the suite red instead.
+    /// Re-assert the load-bearing property — *every* plugin this test needs
+    /// trusted is still trusted — immediately before each decisive assertion.
+    ///
+    /// Without it the failure mode of a clobbered env var is a **vacuous
+    /// pass**: with the successor plugin no longer trusted, "the planner must
+    /// not adopt it" holds for entirely the wrong reason.
     fn check(&self) {
-        assert_eq!(
-            std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS").ok().as_deref(),
-            Some(self.expected.as_str()),
-            "another test clobbered NEIGE_TRUSTED_FORGE_PLUGINS — run this \
-             module under a process-per-test runner (`cargo nextest`), not \
-             `cargo test --test-threads > 1`"
-        );
+        for id in &self.expected {
+            assert!(
+                trusted_forge_plugin(id),
+                "`{id}` must still be trusted; NEIGE_TRUSTED_FORGE_PLUGINS is \
+                 process-global and something else in this process changed it"
+            );
+        }
     }
 }
 
 impl Drop for TrustGuard {
     fn drop(&mut self) {
         match self.previous.as_deref() {
-            Some(previous) => unsafe {
-                std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", previous)
-            },
+            Some(previous) => unsafe { std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", previous) },
             None => unsafe { std::env::remove_var("NEIGE_TRUSTED_FORGE_PLUGINS") },
         }
     }
@@ -327,7 +337,10 @@ impl Boot {
             .await
             .expect("collect body")
             .to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     async fn create_bound_track(&self, template_input: Option<Value>) -> String {
@@ -497,7 +510,7 @@ fn owner_schemas_actually_disagree() {
 /// closed. Two readers, two owners.
 #[tokio::test]
 async fn planner_must_not_adopt_a_successor_owner_after_the_original_stops() {
-    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}"));
+    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
     let boot = boot(&both_owners()).await;
     spawn_on(&boot.host, OWNER_A).await;
 
@@ -544,7 +557,7 @@ async fn planner_must_not_adopt_a_successor_owner_after_the_original_stops() {
 /// owner. Runs the whole A→stop→B lifecycle and cross-checks at every step.
 #[tokio::test]
 async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
-    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}"));
+    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
     let boot = boot(&both_owners()).await;
     spawn_on(&boot.host, OWNER_A).await;
     let track_id = boot.create_bound_track(Some(owner_a_input())).await;
@@ -574,7 +587,7 @@ async fn planner_and_tool_scope_agree_at_every_step_of_a_takeover() {
 /// owner is running (so admission binds nothing), then start the plugin.
 #[tokio::test]
 async fn an_unbound_track_stays_unbound_when_a_declaring_plugin_starts_later() {
-    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}"));
+    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
     let boot = boot(&both_owners()).await;
 
     // Nobody running → the create route admits the roster id but binds no
@@ -625,7 +638,7 @@ async fn an_unbound_track_stays_unbound_when_a_declaring_plugin_starts_later() {
 /// that dropped the template). Both readers must fail closed.
 #[tokio::test]
 async fn owner_that_stopped_declaring_the_template_id_fails_closed() {
-    let _trust = TrustGuard::trust(OWNER_A);
+    let _trust = TrustGuard::trust(OWNER_A).await;
     let owners = vec![owner(
         OWNER_A,
         &[SHARED_TEMPLATE_ID],
@@ -678,7 +691,7 @@ async fn owner_that_stopped_declaring_the_template_id_fails_closed() {
 /// satisfies it. The stale blob must not reach the planner prompt.
 #[tokio::test]
 async fn stale_template_input_is_revalidated_against_the_current_owner_schema() {
-    let _trust = TrustGuard::trust(OWNER_A);
+    let _trust = TrustGuard::trust(OWNER_A).await;
     let owners = vec![owner(
         OWNER_A,
         &[SHARED_TEMPLATE_ID],
@@ -727,7 +740,7 @@ async fn stale_template_input_is_revalidated_against_the_current_owner_schema() 
 /// (`resolve_template_binding`), and the run-time readers agree.
 #[tokio::test]
 async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
-    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}"));
+    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
     let boot = boot(&both_owners()).await;
     spawn_on(&boot.host, OWNER_A).await;
     let bound_track = boot.create_bound_track(Some(owner_a_input())).await;

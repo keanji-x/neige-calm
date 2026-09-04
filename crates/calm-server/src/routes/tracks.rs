@@ -40,7 +40,6 @@ use crate::db::sqlite::{
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewTrack,
@@ -1139,8 +1138,11 @@ pub(crate) async fn resolve_template_binding(
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
-        running_plugin_ids.contains(&manifest.id)
-            && trusted_forge_plugin(&manifest.id)
+        // #1321 S1 — "may this plugin own a template" has one definition,
+        // shared with the per-track resolver that later re-checks the owner
+        // this line picks. Restating it here is how the two ends of the
+        // binding drifted apart in the first place.
+        crate::track_binding::plugin_is_eligible_owner(&running_plugin_ids, &manifest.id)
             && manifest
                 .templates
                 .iter()
