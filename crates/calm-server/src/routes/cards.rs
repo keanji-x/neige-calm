@@ -911,15 +911,40 @@ pub(crate) async fn send_planner_input(
     Path(id): Path<String>,
     Json(body): Json<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
-    if body.text.trim().is_empty() {
-        return Err(CalmError::BadRequest("text must not be empty".into()));
+    send_planner_input_with_context(s, w, cs, actor, id, None, body.text).await
+}
+
+/// The production planner-input path, optionally preceded by kernel context
+/// that must become durable in the same batch. The public endpoint supplies no
+/// context; launchpad conversation creation supplies its opening briefing.
+#[allow(deprecated)]
+pub(crate) async fn send_planner_input_with_context(
+    s: RouteState,
+    w: WorkerState,
+    cs: CodexShellState,
+    actor: Actor,
+    id: String,
+    context: Option<String>,
+    text: String,
+) -> Result<Json<SendPlannerInputResponse>> {
+    let validate = |value: &str| {
+        if value.trim().is_empty() {
+            return Err(CalmError::BadRequest("text must not be empty".into()));
+        }
+        let char_count = value.chars().count();
+        if char_count > MAX_PLANNER_INPUT_CHARS {
+            return Err(CalmError::BadRequest(format!(
+                "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
+            )));
+        }
+        Ok(char_count)
+    };
+    if let Some(context) = context.as_deref() {
+        // Server-owned context is bounded independently from the user's input;
+        // neither gets to consume the other's public message limit.
+        validate(context)?;
     }
-    let char_count = body.text.chars().count();
-    if char_count > MAX_PLANNER_INPUT_CHARS {
-        return Err(CalmError::BadRequest(format!(
-            "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
-        )));
-    }
+    let char_count = validate(&text)?;
 
     let card = s
         .repo
@@ -966,8 +991,18 @@ pub(crate) async fn send_planner_input(
         _ => planner_input_audit_actor(&actor, &card.id),
     };
 
-    let text = body.text;
-    harness.observe_user_message_durable(text).await?;
+    match context {
+        Some(context) => {
+            harness
+                .observe_user_message_with_context_durable(context, text)
+                .await?;
+            tracing::info!(
+                card_id = %card.id,
+                "planner harness system context enqueued with user message"
+            );
+        }
+        None => harness.observe_user_message_durable(text).await?,
+    }
 
     tracing::info!(
         actor = %actor.as_str(),
@@ -995,9 +1030,10 @@ pub(crate) async fn send_planner_input(
         )
         .await
     {
-        // The user message is already durably accepted. Returning 500 here
-        // would invite a retry and execute the same intent twice; keep the
-        // accepted response and surface the audit failure operationally.
+        // The user message (and any kernel context paired with it) is already
+        // durably accepted. Returning 500 here would invite a retry and execute
+        // the same intent twice; keep the accepted response and surface the
+        // audit failure operationally.
         tracing::error!(
             card_id = %card.id,
             runtime_id = %runtime.id,

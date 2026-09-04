@@ -85,7 +85,6 @@
   .mainColumn {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
     min-inline-size: 0;
     min-block-size: 0;
     container-type: inline-size;
@@ -180,17 +179,16 @@
    * recomputes it against its actual grid column, including a classic scrollbar
    * gutter that the outer container's `100cqi` cannot see.
    *
-   * `inline-size: 100%` rather than a stretch: the first-run branch places this
-   * region in a `place-items: center` grid, where a flex/grid item is sized to
-   * fit-content, and a document sized to its own content is not a document.
+   * `inline-size: 100%` makes the region own the full main column explicitly:
+   * the empty sentence is centred in the same space the report will occupy,
+   * and the document gutter variables below are resolved against that space.
    *
    * The type rank stays. `--text-lg` is the prose rank and `--measure-prose` is
    * measured for it (tokens.css); `ReportDocument` already reads at that rank,
    * so this sets the region *around* it and sizes the empty line
    * (`.documentEmpty`) against a document rather than against a label. It does
-   * not resize the trigger — `[data-nc-action]` declares its own size, and a
-   * declaration beats an inherited value — and the notice is pinned back to the
-   * label rank below.
+   * not resize the action — `[data-nc-action]` declares its own size, and a
+   * declaration beats an inherited value.
    */
   .document {
     --document-measure: min(
@@ -209,107 +207,18 @@
     color: var(--text-1);
   }
 
-  /* The status bar's overflow control. Text-weight, aligned with the rows it
-     follows: it is a disclosure, not an action the page wants you to take. */
-  .moreButton {
-    align-self: flex-start;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-    background: none;
-    border: none;
-    padding-inline: var(--space-2);
-    cursor: pointer;
-  }
-
-  .moreButton:hover {
-    color: var(--text-2);
-  }
-
-  /*
-   * The document's trigger: one caption, then the button and whatever the last
-   * press answered.
-   *
-   * **On the document's own column, not on the region's left edge.** The region
-   * now spans the whole main column and `.doc` places the prose itself, so a
-   * trigger flush left would sit `--document-start` to the left of the first
-   * word of the report it belongs to. The start margin is the same value
-   * `ui/page-header` uses to put a page title on the prose's first character —
-   * the leading gutter, read from the page — and the measure caps the caption to
-   * the column it explains.
-   *
-   * The 0px fallback matches `ui/page-header`'s: on a route that publishes no
-   * gutter this is flush left rather than un-rendered.
-   */
-  .summaryTrigger {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-3);
-    margin-inline-start: var(--document-start, 0px);
-    max-inline-size: var(--document-measure, var(--measure-prose));
-  }
-
-  /* The button and its answer on one row, so the answer reads as belonging to
-     the button rather than to the report. */
-  .summaryRow {
+  /* The document's own control row (#1343: Reset, and nothing else yet).
+     Its own block so a control cannot sit on the report's last line. The
+     leading margin places it on the same reading column as the report while
+     `align-self: flex-start` keeps it as wide as its label. */
+  .documentAction {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-4);
-    align-items: center;
-  }
-
-  /*
-   * What the button does, said once above it.
-   *
-   * The control read as an unexplained phrase before it read as a control, and
-   * a label alone cannot say that pressing it hands the day to an agent. Label
-   * rank and the hint tone: it is a caption for the button, not a line of the
-   * report — the region around it is at the prose rank, and an inherited 18px
-   * serif-adjacent sentence here would read as the document's first paragraph.
-   */
-  .summaryCaption {
-    margin: 0;
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-  }
-
-  /*
-   * What the last press answered, at the label rank.
-   *
-   * `app/router` renders the notice as a bare `[data-nc-role="hint"]` with no
-   * type of its own, so inside `.document` it would inherit the prose rank and
-   * the darkest text colour — 18px `--text-1` beside the button, which reads as
-   * the page's most important sentence when it is an aside about a press. It
-   * answers a control, so it takes a control-adjacent register.
-   *
-   * **It steps down a size rather than a tone, and the tone is why.** Owner
-   * asked for this line to be greyer and quieter; `--text-3` is already the
-   * faintest rank the ladder offers *text*. The next one down, `--text-4`,
-   * belongs to real `:disabled` alone (base.css §5.1/§9) and measures ~2.2:1
-   * against the card — under any text floor there is, and
-   * `tools/styles/check-contrast.mjs` records that number as the reason it
-   * refuses to sanction the rank. So the quiet is bought at `--text-xs`, the
-   * label rank, against the button's `--text-base`: the notice is now visibly
-   * subordinate to the control it answers without spending contrast on it.
-   *
-   * One selector covers both shapes: the refusal (`data-nc-role="hint"`) and
-   * the failure (`role="alert"` on the same element, which the rule below only
-   * steps up in colour — a failure is worth more contrast, not more size).
-   */
-  .summaryTrigger [data-nc-role='hint'] {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-  }
-
-  .summaryTrigger [role='alert'] {
-    color: var(--text-2);
+    align-items: flex-start;
+    gap: var(--space-2);
+    margin-inline-start: var(--document-start, 0px);
+    max-inline-size: var(--document-measure, var(--measure-prose));
+    align-self: flex-start;
   }
 
   /* `.inlineEmpty` is gone. It styled two empty lines that wanted different
@@ -334,9 +243,6 @@
    * (`--document-start` is the leftover halved), so the empty sentence and the
    * report it is standing in for share one axis.
    *
-   * The trigger below it re-centres too — it carries a `--document-start` start
-   * margin for the written case, which in a centred column would push it off
-   * axis by exactly that gutter.
    */
   .documentVacant {
     flex: 1 1 auto;
@@ -344,15 +250,6 @@
     align-items: center;
     text-align: center;
     min-block-size: var(--slot-h);
-  }
-
-  .documentVacant .summaryTrigger {
-    align-items: center;
-    margin-inline-start: 0;
-  }
-
-  .documentVacant .summaryRow {
-    justify-content: center;
   }
 
   /* The document's own empty line. It is a sentence standing where the document
@@ -365,21 +262,6 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);
-  }
-
-  .emptyPage {
-    display: grid;
-    place-items: center;
-    min-block-size: 0;
-    container-type: inline-size;
-  }
-
-  /* The only 22px in the app, and only on a whole-page empty state. */
-  .hero {
-    font-size: var(--text-xl);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
   }
 
   /*

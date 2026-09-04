@@ -107,6 +107,15 @@ async fn boot_with_rendezvous(
     };
     let system_area_mint = Arc::clone(&state.system_area_mint);
     let app = routes::router()
+        // `POST /api/today/launchpad/report/reset` extracts a `Principal`, so
+        // the session layer has to be present exactly as `main.rs` assembles
+        // it. Every other case here is indifferent to it.
+        .layer(axum::Extension(calm_server::auth::Principal {
+            user_id: "owner".into(),
+            display_name: "owner".into(),
+            role: "owner".into(),
+            session_id: "test".into(),
+        }))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -1503,4 +1512,206 @@ async fn today_launchpad_adopt_branch_survives_the_column_rename() {
         template_input, None,
         "adoption must clear the template input through the renamed column"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #1343 — `POST /api/today/launchpad/report/reset`
+// ---------------------------------------------------------------------------
+
+async fn post(
+    app: axum::Router,
+    uri: &str,
+    actor: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::post(uri);
+    if let Some(actor) = actor {
+        builder = builder.header("x-calm-actor", actor);
+    }
+    // Harmless everywhere else; required by the conversation create, which
+    // derives its card id from it.
+    builder = builder.header("idempotency-key", "today-launchpad-case");
+    let request = match body {
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// #1343 — reset puts today's report back to the empty state, and touches
+/// nothing else.
+///
+/// Three things are asserted and each rules out a different way of being
+/// wrong:
+///
+/// * the state really was non-empty first, through the production write route
+///   — otherwise every assertion below is satisfied by a no-op;
+/// * `report_has_noninitial_content` is `false` afterwards, read back from
+///   `GET /api/today/launchpad` rather than trusted from the reset's own
+///   response, because the predicate is a byte comparison the endpoint does
+///   not get to grade itself on;
+/// * the launchpad's conversation and its transcript survive untouched. That
+///   is the whole reason this is a report action and not a "clear Today"
+///   action, and a reset implemented as a card rewrite or a planner reset
+///   would take the conversation with it.
+#[tokio::test]
+async fn resetting_todays_report_restores_the_empty_state_without_touching_conversations() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let track_id = ensured["track_id"].as_str().unwrap().to_string();
+
+    // A conversation on the launchpad, minted through the production route, so
+    // "conversations are untouched" has something to be true of.
+    let (status, conversation) = post(
+        b.app.clone(),
+        &format!("/api/tracks/{track_id}/conversations"),
+        None,
+        Some(serde_json::json!({ "text": "What happened today?" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "conversation={conversation}");
+    let conversation_card = conversation["id"].as_str().unwrap().to_string();
+    let messages_before = count(
+        &b,
+        &format!(
+            "SELECT COUNT(*) FROM events WHERE kind='harness.user_message.enqueued' \
+             AND scope_card='{conversation_card}'"
+        ),
+    )
+    .await;
+    assert!(
+        messages_before > 0,
+        "the fixture must actually have a transcript to preserve"
+    );
+
+    // Written, through the route a person writes through.
+    let (status, written) = post(
+        b.app.clone(),
+        &format!("/api/tracks/{track_id}/report"),
+        None,
+        Some(serde_json::json!({
+            "ifDocRev": 0,
+            "summary": "两个 PR",
+            "body": "# 概要\n\n今天合了两个 PR。\n",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "written={written}");
+    let (_, resolved) = resolve(b.app.clone()).await;
+    assert_eq!(
+        resolved["report_has_noninitial_content"],
+        Value::Bool(true),
+        "the fixture must be in the written state before the reset means \
+         anything: {resolved}"
+    );
+
+    let (status, reset) = post(
+        b.app.clone(),
+        "/api/today/launchpad/report/reset",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reset={reset}");
+    assert_eq!(reset["track_id"], Value::String(track_id.clone()));
+    assert_eq!(reset["report_has_noninitial_content"], Value::Bool(false));
+
+    let (_, resolved) = resolve(b.app.clone()).await;
+    assert_eq!(
+        resolved["report_has_noninitial_content"],
+        Value::Bool(false),
+        "the empty-state predicate is the server's own read, and it is the one \
+         that has to flip: {resolved}"
+    );
+
+    assert_eq!(
+        count(
+            &b,
+            &format!("SELECT COUNT(*) FROM cards WHERE id='{conversation_card}'")
+        )
+        .await,
+        1,
+        "the conversation card must survive a report reset"
+    );
+    assert_eq!(
+        count(
+            &b,
+            &format!(
+                "SELECT COUNT(*) FROM events WHERE kind='harness.user_message.enqueued' \
+                 AND scope_card='{conversation_card}'"
+            )
+        )
+        .await,
+        messages_before,
+        "…and so must its transcript"
+    );
+}
+
+/// The reset writes through the same door as `POST /api/tracks/{id}/report`,
+/// so it carries the same user-only gate.
+///
+/// Asserted with a declared AI actor rather than with an absent one, because
+/// `Actor::to_actor_id`'s fallback maps unknown values to `User`: a gate built
+/// on the typed mapping would let `ai:claude` through, which is exactly the
+/// hole `require_rest_user_actor`'s raw string check exists to close.
+#[tokio::test]
+async fn resetting_todays_report_refuses_a_non_user_actor() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let track_id = ensured["track_id"].as_str().unwrap().to_string();
+    let (_, written) = post(
+        b.app.clone(),
+        &format!("/api/tracks/{track_id}/report"),
+        None,
+        Some(serde_json::json!({
+            "ifDocRev": 0, "summary": "s", "body": "# 概要\n\nx\n",
+        })),
+    )
+    .await;
+    assert_eq!(written["summary"], Value::String("s".into()), "{written}");
+
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/today/launchpad/report/reset",
+        Some("ai:codex"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    let (_, resolved) = resolve(b.app.clone()).await;
+    assert_eq!(
+        resolved["report_has_noninitial_content"],
+        Value::Bool(true),
+        "a refused reset must not have written anything: {resolved}"
+    );
+}
+
+/// No launchpad, no report, so nothing to reset — and, in particular, nothing
+/// gets *created* in order to reset it.
+///
+/// INV-TODAYDOC-001 is why the second half matters: `ensure` materialises a
+/// workspace and waits on a `planner-harness-start`, so a reset that ensured
+/// first would make a destructive no-op start a harness.
+#[tokio::test]
+async fn resetting_without_a_launchpad_is_a_404_and_creates_nothing() {
+    let b = boot().await;
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/today/launchpad/report/reset",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM tracks").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
 }

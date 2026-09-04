@@ -3240,6 +3240,12 @@ impl SharedCodexAppServer {
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
+        // The notification task must not keep its own client alive. The
+        // client's writer is what lets the reader side reach EOF; retaining a
+        // strong Arc here makes supervisor drop self-defeating and leaves the
+        // old connection open forever. Upgrade only for the narrow late-turn
+        // interrupt that actually needs to issue an RPC.
+        let client = Arc::downgrade(&client);
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
@@ -3275,7 +3281,9 @@ impl SharedCodexAppServer {
                 if let Some((thread_id, turn_id)) =
                     track_active_turn(&active_turns, &sealed_turn_threads, &notification)
                 {
-                    let client = client.clone();
+                    let Some(client) = client.upgrade() else {
+                        break;
+                    };
                     let active_turns = active_turns.clone();
                     tokio::spawn(async move {
                         match client.turn_interrupt(&thread_id, &turn_id).await {

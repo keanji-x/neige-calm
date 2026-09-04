@@ -2762,6 +2762,78 @@
         }
       }
     },
+    "/api/today/launchpad/report/reset": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "summary": "`POST /api/today/launchpad/report/reset` — put today's report back to the\ncanonical empty document (#1343).",
+        "description": "**Why this is a server action and not a client-supplied write.** The\nexisting route `POST /api/tracks/{id}/report` can express a reset: send the\ncanonical `summary` and `body` and `report_startup_read_required` flips back\nto false. But that predicate is a **byte-for-byte** comparison against\n[`TrackReportPayload::initial`], whose body is two `include_str!`-ed\nmarkdown files plus a closing `-->` and four empty H1s — around 2.6 kB that\nno client can reproduce without copying kernel-owned text. One byte out and\nthe predicate stays `true`, so the reset fails *silently*: a 200, an edited\nreport, and an empty state that never appears. Worse, the two contract\nfragments are private and **unclosed** on purpose (`track_report.rs`), so a\nclient reassembling them wrongly ships an unterminated HTML comment that\nswallows the whole document with no diagnostic.\n\nSo the kernel calls `TrackReportPayload::initial()` itself. Nothing about\nthe canonical content crosses the wire in either direction.\n\n**It touches the report and nothing else.** No conversation is created,\nnone is reset, no harness is started or stopped, and the launchpad is read\nrather than ensured — a workspace with no launchpad has no report to reset\nand gets a 404.\n\n**Attribution is `EditAuthor::User`**, because `rest_user_replace` is the\nentry used and its signature admits nothing else. That is the right record:\na person pressed a button, and the resulting `track.report_edited` is a\nhuman edit. It is also why the same `X-Calm-Actor: user` gate the wholesale\nreplace uses is applied here — the two write the same thing through the\nsame door.\n\n**The revision anchor is read here, not supplied by the browser.** A report\nedit can still land between this read and the write. The ordinary CRDT CAS\nthen returns 409 and writes nothing; Reset never silently overwrites an edit\nit did not read. Retrying the confirmed action reads the new revision.",
+        "operationId": "reset_today_launchpad_report",
+        "responses": {
+          "200": {
+            "description": "Today's report is back to the canonical empty document. Conversations are untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayLaunchpadReportReset"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Non-user actor (worker / plugin / planner) rejected, exactly as on `POST /api/tracks/{id}/report`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no launchpad track yet, so there is no report to reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The report changed after Reset read its revision; nothing was reset and the action may be retried",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/today/summary": {
       "post": {
         "tags": [
@@ -6965,6 +7037,24 @@
           },
           "track_id": {
             "type": "string"
+          }
+        }
+      },
+      "TodayLaunchpadReportReset": {
+        "type": "object",
+        "description": "What a reset answers with.",
+        "required": [
+          "track_id",
+          "report_has_noninitial_content"
+        ],
+        "properties": {
+          "report_has_noninitial_content": {
+            "type": "boolean",
+            "description": "The predicate `GET /api/today/launchpad` will now report. Always\n`false` on success — it is returned rather than assumed so a caller can\nsee the reset land without a second round trip."
+          },
+          "track_id": {
+            "type": "string",
+            "description": "The launchpad track whose report was restored."
           }
         }
       },

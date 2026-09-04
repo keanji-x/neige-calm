@@ -4527,7 +4527,10 @@ async fn adopt_drain_obligation_survives_supervisor_loss() {
     );
 
     let instance_b = server(&root, repo.clone()).await;
-    instance_b.start_or_takeover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), instance_b.start_or_takeover())
+        .await
+        .expect("a dropped supervisor must release its client so re-adoption cannot hang")
+        .unwrap();
     assert_eq!(
         instance_b
             .status_snapshot()
@@ -4630,7 +4633,10 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
         .await
         .unwrap();
     let instance_b = server(&root, repo.clone()).await;
-    instance_b.start_or_takeover().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), instance_b.start_or_takeover())
+        .await
+        .expect("a dropped supervisor must release its client so re-adoption cannot hang")
+        .unwrap();
     assert_eq!(
         instance_b
             .status_snapshot()

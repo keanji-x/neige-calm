@@ -9,6 +9,17 @@
 //!
 //! The list predicate is intentionally exact: a Track also carries a planner card,
 //! a report card and dispatched worker cards, none of which are conversations.
+//!
+//! # One track is treated differently, and it is named (#1343)
+//!
+//! A conversation created on **Today's launchpad track** is opened with the
+//! day's activity window ahead of the user's first message; see
+//! [`launchpad_opening_briefing`]. Every other track gets exactly the behaviour
+//! it always had. That is the only track-dependent branch in this module, and
+//! it exists because the launchpad is where the user asks "what happened
+//! today?" — the projection that answers it is server-side by design
+//! (`activity_window`, D4), so nothing but the server can put it in front of
+//! the agent.
 
 use axum::{
     Json, Router,
@@ -19,6 +30,7 @@ use axum::{
 use serde::Deserialize;
 use utoipa::ToSchema;
 
+use crate::activity_window::{opening_activity_briefing, todays_workspace_activity};
 use crate::actor::Actor;
 use crate::conversation_keys::derive_track_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -29,7 +41,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{SendPlannerInputRequest, send_planner_input};
+use crate::routes::cards::send_planner_input_with_context;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
     user_message_already_enqueued, validate_first_message,
@@ -123,6 +135,56 @@ pub(crate) async fn create_track_conversation(
     headers: HeaderMap,
     Path(track_id): Path<String>,
     Json(body): Json<NewTrackConversationBody>,
+) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
+    create_track_conversation_inner(
+        s,
+        w,
+        cs,
+        actor,
+        headers,
+        track_id,
+        body,
+        OpeningBriefing::TodaysActivityOnTheLaunchpad,
+    )
+    .await
+}
+
+/// Whether this create prepends #1343's activity briefing.
+///
+/// **An explicit parameter, because the answer is not a property of the track.**
+/// `POST /api/today/summary` also creates its conversation on the launchpad, by
+/// calling the very handler below, and it carries the day's counts itself in
+/// `summary_prompt` — briefing it as well would put the same five numbers in
+/// front of the agent twice and leave three
+/// `harness.user_message.enqueued` rows where INV-TODAYDOC-010 requires two.
+/// Deriving the answer from the track would make that outcome unavoidable; a
+/// parameter makes each caller say what it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpeningBriefing {
+    /// The user is starting this conversation. On the launchpad track it opens
+    /// with today's activity window; on any other track it opens with nothing.
+    TodaysActivityOnTheLaunchpad,
+    /// The caller supplies its own material and must not be given a second
+    /// copy of it. `POST /api/today/summary` is the only such caller.
+    CallerSuppliesItsOwn,
+}
+
+/// `create_track_conversation`, plus the caller's ruling on opening material.
+///
+/// Server-internal callers go through here rather than through the route
+/// handler so that the mint, the derived-id guard, the retry arms and the
+/// first-message claim are still the ones production uses — the only thing that
+/// varies is [`OpeningBriefing`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_track_conversation_inner(
+    s: RouteState,
+    w: WorkerState,
+    cs: CodexShellState,
+    actor: Actor,
+    headers: HeaderMap,
+    track_id: String,
+    body: NewTrackConversationBody,
+    briefing: OpeningBriefing,
 ) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
     // Required, not optional. The deterministic card id and the operation
     // idempotency key are both derived from this header; without it a retried
@@ -230,16 +292,46 @@ pub(crate) async fn create_track_conversation(
     let _first_message_claim =
         lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
     if !user_message_already_enqueued(&w, track.id.as_str(), &derived.card_id).await? {
-        // Call the real handler rather than reimplementing it: the first
-        // message and every later message must go through byte-identical
-        // validation, locking, harness recovery and audit.
-        let _queued = send_planner_input(
-            State(s.clone()),
-            State(w.clone()),
-            State(cs),
+        // #1343 — on the launchpad track, and only there, the day's activity
+        // window goes in **before** the user's first message.
+        //
+        // Before, because it is opening material: an agent whose first turn
+        // holds the user's question and no context answers it from the
+        // workspace, which is the state this injection exists to end. The
+        // ordering is only as strong as the enqueue order — the harness may
+        // fold both into one turn — but within that turn the briefing precedes
+        // the question, which is the property that matters.
+        //
+        // Inside the claim and in one durable batch with the first message, not
+        // as two independent sends. If the briefing committed and the user's
+        // message failed, a retry would see "some user message" and permanently
+        // skip the user's words. The batch persists both or restores both.
+        //
+        // **It is not part of the create operation's payload, and must not
+        // become part of it.** `first_message_sha256` above binds the first
+        // message into `payload_hash`; the counts change through the day, so a
+        // briefing folded in there would make every retry under one
+        // `Idempotency-Key` a permanent 409 (`operations` has no pruner). It
+        // travels the harness observation channel instead, as typed system
+        // context paired with the user's message; neither enters the key.
+        let opening = match briefing {
+            OpeningBriefing::TodaysActivityOnTheLaunchpad => {
+                launchpad_opening_briefing(&s, &w, track.id.as_str()).await?
+            }
+            OpeningBriefing::CallerSuppliesItsOwn => None,
+        };
+        // The public one-message handler and this context-aware path share
+        // validation, harness recovery, durable persistence and audit in one
+        // implementation. The context is deliberately not audited or rendered
+        // as a user message; it is kernel material paired atomically with one.
+        let _queued = send_planner_input_with_context(
+            s.clone(),
+            w.clone(),
+            cs,
             actor,
-            Path(derived.card_id.clone()),
-            Json(SendPlannerInputRequest { text }),
+            derived.card_id.clone(),
+            opening,
+            text,
         )
         .await?;
     }
@@ -254,6 +346,42 @@ pub(crate) async fn create_track_conversation(
             ))
         })?;
     Ok((StatusCode::CREATED, Json(summary)))
+}
+
+/// Today's activity briefing, if this track is the launchpad (#1343).
+///
+/// `None` for every other track. The predicate is
+/// [`routes::today::is_launchpad_track`], which is the one criterion in the
+/// codebase — the agent's identity (`planner_harness_start_adapter`) forks on
+/// the same call, and two spellings of "is this the launchpad?" would let the
+/// briefing and the identity disagree about one track.
+///
+/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
+///
+/// The window itself comes from `activity_window::todays_workspace_activity`,
+/// the same entry `POST /api/today/summary` uses, so the two surfaces cannot
+/// report different numbers for one day. The launchpad excludes itself — that
+/// is the reflexive exclusion documented on `workspace_activity_window`, so a
+/// report the agent goes on to write does not turn up in the next briefing as
+/// activity the workspace did.
+///
+/// **A workspace with no launchpad yet is `None`, not an empty briefing.**
+/// Nothing is ensured from here: `ensure_today_launchpad` materialises a
+/// workspace and waits on a `planner-harness-start` (INV-TODAYDOC-001), and a
+/// conversation create on some other track has no business doing that.
+async fn launchpad_opening_briefing(
+    s: &RouteState,
+    w: &WorkerState,
+    track_id: &str,
+) -> Result<Option<String>> {
+    if !crate::routes::today::is_launchpad_track(s.repo.as_ref(), track_id).await? {
+        return Ok(None);
+    }
+    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Internal("today's activity window requires a sqlite-backed repo".into())
+    })?;
+    let activity = todays_workspace_activity(&pool, Some(track_id)).await?;
+    Ok(Some(opening_activity_briefing(&activity)))
 }
 
 /// Read the assistant conversation rows of one track.

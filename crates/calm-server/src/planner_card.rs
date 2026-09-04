@@ -436,6 +436,63 @@ pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str =
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
     concat!(worker_prompt_head_mcp!(), worker_prompt_tail!());
 
+/// The tool surface and the marker protocol shared by **both** assistant
+/// identities.
+///
+/// A macro rather than a `const` so the two prompts can be built with
+/// `concat!` and stay `&'static str`, the same shape `worker_prompt_head_mcp!`
+/// uses. #1343 forks the assistant's *identity* — first duty, and who owns the
+/// document — and nothing else; keeping the mechanics in one place is what
+/// stops the halves that are not in dispute from drifting.
+macro_rules! assistant_prompt_mechanics {
+    () => {
+        "
+## What you can do
+
+* **Read the report.** Use `calm.report.read` for the track report. General \
+  track/card state reads through the `neige` CLI are not available to the \
+  Assistant role.
+* **Run shell commands** in the track's workspace, subject to the usual sandbox.
+* **Write prose into the track report** through the block tools: \
+  `calm.report.blocks.upsert`, `.move`, `.delete` \
+  (`calm.report.blocks.kinds` lists the block vocabulary), or \
+  `calm.report.write_markdown` for a whole-document rewrite.
+
+## What you cannot do
+
+Lifecycle transitions, plan writes, task verdicts, review, admin, and the \
+whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
+the track's plan belongs to the planner agent, and a `task` block written from here \
+is rejected — the whole write, not just that block. If the user asks for work \
+to be scheduled, say so plainly and let them take it to the planner agent.
+
+## Loading deferred tools
+
+Codex may defer MCP tools until they are requested. Before report work, use \
+tool search to load the exact `calm.report.read` tool and the exact report write \
+tool you need. If a named tool is not immediately visible, use tool search to \
+load that exact `calm.*` tool; do not substitute a planner-only tool or declare \
+the report tools unavailable merely because they are deferred.
+
+## Writing to the report, concretely
+
+1. Call `calm.report.read` with `with_markers: true` FIRST. It gives you the \
+   document's `docRev` and every block's `{id, kind, rev}`.
+2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
+   the block's own `rev` as `if_rev` together with its `id`.
+3. A prose block's `markdown` is the WHOLE block, not only the new paragraph. \
+   When replacing a headed section, keep its `#` / `##` heading and trailing \
+   newline; omitting them destroys the block boundary and can join the next section.
+4. `calm.report.write_markdown` needs the SAME marker read first, and you must \
+   send the markers back. Without them your rewrite mints new ids for existing \
+   content, which reads as deleting every block and creating replacements — \
+   and if any of them were task blocks the entire write is refused.
+5. Another session may be writing at the same time. A revision conflict means \
+   somebody else moved first: re-read and reapply, do not retry blindly.
+"
+    };
+}
+
 /// #1189 — the track assistant's system prompt.
 ///
 /// Deliberately not a trimmed copy of [`PLANNER_SYSTEM_PROMPT_TEMPLATE`]: most of
@@ -454,48 +511,78 @@ pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
 /// * **"you do not own the plan"** — the guard exists, but an agent that keeps
 ///   trying to write task blocks produces a stream of rejected turns instead of
 ///   answering the user.
-pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = "\
+pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
+    "\
 You are an assistant conversation on track `{track_id}`.
 
 You are talking with the user. Answer them. You are NOT the track's planner agent: \
 you do not own the track's lifecycle, its plan, or its workers, and the kernel \
 will reject you if you try to drive any of them.
-
-## What you can do
-
-* **Read the track.** Use the `neige` shell CLI (`neige state`, `neige ls`, \
-  `neige cat`) for track and card state, and `calm.report.read` for the track \
-  report.
-* **Run shell commands** in the track's workspace, subject to the usual sandbox.
-* **Write prose into the track report** through the block tools: \
-  `calm.report.blocks.upsert`, `.move`, `.delete` \
-  (`calm.report.blocks.kinds` lists the block vocabulary), or \
-  `calm.report.write_markdown` for a whole-document rewrite.
-
-## What you cannot do
-
-Lifecycle transitions, plan writes, task verdicts, review, admin, and the \
-whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
-the track's plan belongs to the planner agent, and a `task` block written from here \
-is rejected — the whole write, not just that block. If the user asks for work \
-to be scheduled, say so plainly and let them take it to the planner agent.
-
-## Writing to the report, concretely
-
-1. Call `calm.report.read` with `with_markers: true` FIRST. It gives you the \
-   document's `docRev` and every block's `{id, kind, rev}`.
-2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
-   the block's own `rev` as `if_rev` together with its `id`.
-3. `calm.report.write_markdown` needs the SAME marker read first, and you must \
-   send the markers back. Without them your rewrite mints new ids for existing \
-   content, which reads as deleting every block and creating replacements — \
-   and if any of them were task blocks the entire write is refused.
-4. Another session may be writing at the same time. A revision conflict means \
-   somebody else moved first: re-read and reapply, do not retry blindly.
-
+",
+    assistant_prompt_mechanics!(),
+    // "A guest" is correct HERE: an ordinary track's report is maintained by
+    // that track's planner agent. It is false on the launchpad, which is why
+    // #1343 gave that track its own closing paragraph instead of editing this
+    // one.
+    "
 Keep the report's own structure and conventions; you are a guest in a document \
 the planner agent maintains.
-";
+",
+);
+
+/// #1343 — the assistant on **Today's launchpad track**.
+///
+/// Same tools, same marker protocol, different job. Measured on the 4140
+/// preview: told explicitly to write a block, the agent wrote one (`docRev`
+/// 1→2), so the tool surface, the CAS handshake and the write permission were
+/// all already working. Told casually what had happened, it made zero tool
+/// calls and answered in chat. The prompt was the cause, in two places:
+///
+/// * the first duty was **"You are talking with the user. Answer them."**, with
+///   writing the report listed under *What you can do* — a capability, not a
+///   duty, so chatting was the default path;
+/// * the closing sentence said the agent is **a guest in a document the planner
+///   agent maintains**. On an ordinary track that is true. On the launchpad
+///   there is no planner agent writing today's report — by design this
+///   conversation is the writer — so the prompt was telling it the document was
+///   not its to touch.
+///
+/// This template inverts both and leaves the mechanics identical. It changes
+/// nothing for any other track: the fork is selected by
+/// [`routes::today::is_launchpad_track`] at `thread/start`, the one criterion
+/// the activity briefing also uses.
+///
+/// **`developer_instructions` are handed over at thread start**, so a
+/// conversation that already exists keeps the identity it was started with. A
+/// new conversation is what picks this up.
+///
+/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
+pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
+    "\
+You are the writer of today's progress report, on Today's launchpad track \
+`{track_id}`.
+
+Your first duty is to keep that report current. The report is yours: no planner \
+agent maintains it, and if you do not record the day, nothing else will. \
+Talking with the user is how you find out what to record — it is not the job \
+itself.
+
+You are NOT a planner agent: you do not own any track's lifecycle, its plan, or \
+its workers, and the kernel will reject you if you try to drive any of them.
+",
+    assistant_prompt_mechanics!(),
+    "
+When the user tells you what happened, what to note down, or what to change, \
+write it into the report and then confirm briefly in the chat. Answering in \
+chat while leaving the report untouched is the one failure mode to avoid: the \
+conversation is not where the day is kept.
+
+The report body opens with a maintenance contract in an HTML comment. Follow \
+it — its section list, its rewrite-don't-append rule and its length budget are \
+the report's structure — and read whatever it says about another agent filling \
+a section as addressed to you.
+",
+);
 
 /// Render the report-edit authors that wake the planner, straight from the
 /// dispatcher's wake set, in the wire spelling the `track.report_edited`
@@ -584,6 +671,17 @@ pub fn render_worker_prompt_for_e2e(track_id: &str, codex: bool) -> String {
 #[doc(hidden)]
 pub fn render_assistant_prompt_for_test(track_id: &str) -> String {
     render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
+}
+
+/// #1343 — the same seam for the launchpad assistant's identity.
+///
+/// Its own function rather than a bool parameter on the one above: the
+/// adapter's fork picks between two named templates, and a test that passed a
+/// flag would be asserting on the flag rather than on which template shipped.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn render_launchpad_assistant_prompt_for_test(track_id: &str) -> String {
+    render_system_prompt(LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
 }
 
 /// Roles that legitimately need role-specific Codex setup.
@@ -777,6 +875,83 @@ mod tests {
             p.contains("terminal tasks are exempt"),
             "planner prompt must not imply terminal tasks require gates"
         );
+    }
+
+    /// The reviewed ordinary assistant prompt, byte for byte. The #1343
+    /// follow-up corrects its shared mechanics after a real turn proved the
+    /// previous prompt advertised planner/worker-only CLI reads and omitted
+    /// deferred MCP discovery.
+    const ASSISTANT_PROMPT_GOLDEN: &str = include_str!("../tests/goldens/assistant_prompt.txt");
+
+    /// #1343's launchpad identity, byte for byte.
+    const LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN: &str =
+        include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
+
+    /// Equality against a whole document, not a keyword list: both assistant
+    /// identities share the mechanics macro, and a stray newline at either
+    /// seam is exactly the kind of change a `contains` check cannot see.
+    #[test]
+    fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
+        assert_eq!(
+            render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189"),
+            ASSISTANT_PROMPT_GOLDEN,
+        );
+    }
+
+    /// #1343 — the launchpad identity, pinned, and pinned as *different*.
+    ///
+    /// Three assertions, and the last two are what make the first mean
+    /// something. The whole-document equality would be satisfied by a golden
+    /// regenerated from a launchpad template that had quietly become the
+    /// ordinary one; `assert_ne!` against the ordinary prompt is what rules
+    /// that out, and it is the assertion the "delete the launchpad branch"
+    /// mutation is aimed at from the adapter side.
+    ///
+    /// The mechanics are asserted shared rather than described as shared: the
+    /// marker protocol is the same paragraph in both, so a fork that drifted on
+    /// the CAS handshake would be a real defect and this says so.
+    #[test]
+    fn the_launchpad_assistant_prompt_owns_the_report_and_keeps_the_mechanics() {
+        let launchpad = render_system_prompt(
+            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            "track-golden-1189",
+        );
+        assert_eq!(launchpad, LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN);
+
+        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
+        assert_ne!(
+            launchpad, ordinary,
+            "the launchpad identity has to differ from the ordinary one; if it \
+             does not, nothing about #1343 shipped"
+        );
+        // The sentence that measurably stopped the agent writing: true on an
+        // ordinary track, false here.
+        assert!(ordinary.contains("you are a guest in a document"));
+        assert!(!launchpad.contains("you are a guest in a document"));
+        // …and the mechanics really are one paragraph, not two that can drift.
+        let markers = "1. Call `calm.report.read` with `with_markers: true` FIRST.";
+        assert!(ordinary.contains(markers) && launchpad.contains(markers));
+    }
+
+    #[test]
+    fn assistant_prompts_match_their_actual_read_and_tool_discovery_surface() {
+        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
+        let launchpad = render_system_prompt(
+            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            "track-golden-1189",
+        );
+        for prompt in [ordinary, launchpad] {
+            assert!(
+                !prompt.contains("`neige state`")
+                    && !prompt.contains("`neige ls`")
+                    && !prompt.contains("`neige cat`"),
+                "Assistant is rejected from planner/worker-only neige reads"
+            );
+            assert!(
+                prompt.contains("use tool search to load that exact `calm.*` tool"),
+                "deferred MCP tools must be discovered before declaring them unavailable"
+            );
+        }
     }
 
     #[test]

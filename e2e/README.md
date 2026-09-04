@@ -77,9 +77,10 @@ inert shared planner harness should declare `CASE_CHECK_SERVER_LOGS=0`.
 
 `.env` is optional for tier 1: helper lookups read the process environment
 first, then `.env` when present, then call-site defaults. Tier 2 selections
-require Codex credentials. `CALM_CODEX_HOST_BIN` is optional when the compose
-default codex host path exists; set it in `.env` or the environment when the
-host binary lives elsewhere.
+require Codex credentials. `make dev` resolves Codex from `PATH`; for a
+nonstandard package layout, set both `CALM_CODEX_HOST_BIN` and
+`CALM_CODEX_CODE_MODE_HOST_BIN` in `.env` or the environment to executable
+files from the same release.
 
 ## Add A Case
 

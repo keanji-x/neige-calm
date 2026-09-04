@@ -103,6 +103,7 @@ use utoipa::OpenApi;
         crate::routes::tracks::cat_track_file,
         crate::routes::today::ensure_today_launchpad,
         crate::routes::today::resolve_today_launchpad,
+        crate::routes::today::reset_today_launchpad_report,
         crate::routes::today_summary::write_today_summary,
         // ---- cards ----
         crate::routes::cards::list_cards_by_track,
@@ -173,6 +174,7 @@ use utoipa::OpenApi;
         TrackWorkspacePatch,
         TodayLaunchpad,
         TodayLaunchpadResolved,
+        crate::routes::today::TodayLaunchpadReportReset,
         TodaySummaryStarted,
         TracksWindowQuery,
         TrackFsLsQuery,

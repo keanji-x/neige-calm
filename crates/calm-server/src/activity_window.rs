@@ -8,7 +8,21 @@
 //! per-identity augmentation seam handles *plugin* tools. Activity is computed
 //! here and injected into the prompt; the agent never queries for it.
 //!
-//! It has exactly one caller: `routes::today_summary`.
+//! # Two callers, one computation
+//!
+//! Since #1343 this projection is read from two places:
+//!
+//! * `routes::today_summary` — `POST /api/today/summary`, which turns it into
+//!   an instruction to rewrite the day's report;
+//! * `routes::track_conversations` — a conversation started **on the launchpad
+//!   track**, which opens with it as material rather than as an instruction.
+//!
+//! Neither computes it for itself. [`todays_workspace_activity`] is the one
+//! entry point both go through, and [`activity_counts_block`] is the one
+//! rendering of the counts, so the two surfaces cannot report different numbers
+//! for the same day. What they do *not* share is the sentence around those
+//! counts — one asks for a report, the other hands over material — and that
+//! difference is the whole reason there are two callers.
 //!
 //! # `at` is a wall clock, `id` is the cursor — never mix them
 //!
@@ -169,11 +183,17 @@ pub struct WorkspaceActivityWindow {
 impl WorkspaceActivityWindow {
     /// Total counted events. `tracks_touched` is not added in — it is a
     /// dimension of the same rows, not more of them.
+    ///
+    /// Saturating, which costs nothing and buys one thing: the fields are
+    /// `COUNT`/`SUM` results and cannot be negative in production, so the
+    /// widest *renderable* value (`i64::MIN`, which the prompt-length bounds
+    /// are computed at) is a value this sum would otherwise panic on in a debug
+    /// build. A bound that cannot be measured is not a bound.
     pub fn total_events(&self) -> i64 {
         self.track_lifecycle_changed
-            + self.track_report_edited
-            + self.task_completed
-            + self.task_failed
+            .saturating_add(self.track_report_edited)
+            .saturating_add(self.task_completed)
+            .saturating_add(self.task_failed)
     }
 
     /// Nothing counted. The gate INV-TODAYDOC-007 is written against.
@@ -226,6 +246,92 @@ pub async fn workspace_activity_window(
         task_failed,
         tracks_touched,
     })
+}
+
+/// Today's window, computed once and the same way for every caller.
+///
+/// The two surfaces that need the day's activity (#1343) both come through
+/// here, so "the server's day" and "the server's counts" have exactly one
+/// definition. Splitting `local_day_window(now_ms())` back out to the call
+/// sites is what would let one of them drift onto a different clock reading or
+/// a different exclusion.
+///
+/// `exclude_track` is [`workspace_activity_window`]'s reflexive exclusion,
+/// passed through unchanged; see that function for what it is and is not.
+pub async fn todays_workspace_activity(
+    pool: &Pool<Sqlite>,
+    exclude_track: Option<&str>,
+) -> Result<WorkspaceActivityWindow> {
+    let (start_ms, end_ms) = local_day_window(crate::model::now_ms());
+    workspace_activity_window(pool, start_ms, end_ms, exclude_track).await
+}
+
+/// The five counts, as five lines. The only place production renders them —
+/// tests spell the strings back, which is what makes them assertions.
+///
+/// Both prompts that carry the window embed this, which is what keeps them from
+/// disagreeing about what a field is called or which fields exist. It is also
+/// where the length bound lives: a fixed template plus five `i64`s has a
+/// maximum length that can be computed by reading it, which is what lets
+/// `today_summary`'s `the_prompt_is_bounded_far_below_the_planner_input_ceiling`
+/// and this module's `the_opening_briefing_is_bounded_...` both be arithmetic
+/// rather than sampling.
+pub fn activity_counts_block(activity: &WorkspaceActivityWindow) -> String {
+    format!(
+        "- tracks whose lifecycle changed: {}\n\
+         - report edits: {}\n\
+         - tasks completed: {}\n\
+         - tasks failed: {}\n\
+         - distinct tracks touched: {}\n",
+        activity.track_lifecycle_changed,
+        activity.track_report_edited,
+        activity.task_completed,
+        activity.task_failed,
+        activity.tracks_touched,
+    )
+}
+
+/// What a conversation started on the launchpad track opens with (#1343).
+///
+/// **Material, not an instruction.** The summary endpoint's prompt tells the
+/// agent to rewrite the report; this one tells it nothing to do. A conversation
+/// the user starts is theirs to steer, and an opening message that issued an
+/// order would take that turn away from them before they had typed anything.
+///
+/// **An empty day is stated, not skipped, and that is the ruling this function
+/// exists to record.** The alternatives were both rejected: sending nothing
+/// makes "the server told the agent about today" silently untrue exactly when
+/// the day is empty — an agent asked "what happened today?" would then answer
+/// from whatever it could find in the workspace instead of from the server's
+/// count — and refusing to create the conversation would take a working
+/// endpoint away over a condition the user did not ask about. So the empty case
+/// gets its own sentence: the day's material is that there is none.
+///
+/// This is *not* INV-TODAYDOC-007. That invariant is about
+/// `POST /api/today/summary` refusing to commission a report from nothing, and
+/// it is unchanged and still enforced there; this path commissions nothing.
+pub fn opening_activity_briefing(activity: &WorkspaceActivityWindow) -> String {
+    if activity.is_empty() {
+        return "Context from the server before you start: nothing has been \
+                recorded in this workspace today — no track lifecycle changes, \
+                no report edits, no completed or failed tasks. That is the \
+                whole of the day's activity data, and it is empty. If you are \
+                asked what happened today, say that nothing was recorded \
+                rather than inferring work from the workspace."
+            .to_string();
+    }
+    format!(
+        // The wording deliberately avoids the summary prompt's opening phrase:
+        // `today_summary`'s cases identify a delivered message by its bytes,
+        // and two prompts sharing a lead sentence would make "the summary
+        // arrived" unfalsifiable on any card that also holds this briefing.
+        "Context from the server before you start. Here is what this workspace \
+         recorded today, counted by the server. These counts are all the \
+         activity data available to you — there is no tool to query for more, \
+         so do not invent specifics:\n\
+         {}",
+        activity_counts_block(activity),
+    )
 }
 
 /// The server-local day containing `now_ms`, as the half-open window
@@ -555,6 +661,67 @@ mod tests {
             kept.track_report_edited, 2,
             "without the exclusion both rows count — otherwise the case above \
              proves nothing: {kept:?}"
+        );
+    }
+
+    /// #1343 — an empty day still produces material, and it says so.
+    ///
+    /// The load-bearing half is that the two states produce *different* text:
+    /// a briefing that returned the same sentence either way would satisfy
+    /// "something was sent" while telling the agent nothing about which day it
+    /// is in. The empty branch is asserted by content rather than by length,
+    /// because the failure this rules out — silently feeding an empty count
+    /// block — renders as a perfectly plausible message.
+    #[test]
+    fn an_empty_day_is_briefed_as_an_empty_day_rather_than_as_no_briefing() {
+        let empty = opening_activity_briefing(&WorkspaceActivityWindow::default());
+        assert!(
+            !empty.trim().is_empty(),
+            "an empty day must still be stated: {empty}"
+        );
+        assert!(
+            empty.contains("nothing has been recorded"),
+            "the empty branch has to name the emptiness, not just omit the \
+             counts: {empty}"
+        );
+        assert!(
+            !empty.contains("- report edits:"),
+            "…and it must not carry a block of zeroes: {empty}"
+        );
+
+        let busy = opening_activity_briefing(&WorkspaceActivityWindow {
+            track_report_edited: 2,
+            tracks_touched: 1,
+            ..WorkspaceActivityWindow::default()
+        });
+        assert!(busy.contains("- report edits: 2"), "{busy}");
+        assert_ne!(
+            empty, busy,
+            "the two days must not read identically to the agent"
+        );
+    }
+
+    /// The briefing fits `planner/input` for every count the type admits.
+    ///
+    /// Same reasoning as `today_summary`'s bound on the summary prompt, and it
+    /// needs its own case because it is a different template: `i64::MIN` five
+    /// times is the widest rendering of the counts block, so the bound is
+    /// arithmetic rather than a sample. (Counts cannot go negative — they are
+    /// `COUNT(*)`/`SUM` — so this is the bound, not a reachable state.)
+    #[test]
+    fn the_opening_briefing_is_bounded_far_below_the_planner_input_ceiling() {
+        let widest = opening_activity_briefing(&WorkspaceActivityWindow {
+            track_lifecycle_changed: i64::MIN,
+            track_report_edited: i64::MIN,
+            task_completed: i64::MIN,
+            task_failed: i64::MIN,
+            tracks_touched: i64::MIN,
+        });
+        assert!(
+            widest.chars().count() < crate::routes::cards::MAX_PLANNER_INPUT_CHARS,
+            "the briefing must fit `planner/input` for every possible count; it \
+             is {} chars",
+            widest.chars().count()
         );
     }
 

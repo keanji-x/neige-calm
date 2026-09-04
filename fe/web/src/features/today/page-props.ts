@@ -51,9 +51,6 @@ export type TrackRowRenderer = (
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
 ) => ReactNode;
 
-/** Which step of the summary trigger is currently in flight. */
-export type TodaySummaryPhase = 'preparing' | 'writing';
-
 export type TodayPageProps = Readonly<{
   tracks: readonly Track[];
   areas: readonly Area[];
@@ -89,36 +86,26 @@ export type TodayPageProps = Readonly<{
    */
   launchpadError?: ReactNode;
   /**
-   * Ask the server to write today's progress (#1253 D5), or `undefined` when
-   * the composition layer has no trigger to offer.
+   * A control that acts on the day's document, composed by `app/router`
+   * (#1343). Today ships one: Reset, which puts the report back to its
+   * canonical empty state.
    *
-   * **The control is shown whether or not anything happened today, and that is
-   * deliberate.** The design's gate lives on the server: `POST
-   * /api/today/summary` computes the day's activity itself and refuses an empty
-   * window, creating no conversation and sending no message
-   * (INV-TODAYDOC-007). This page cannot make the same decision — there is no
-   * read that would tell it, by design (D4 deleted the layer that would have
-   * offered one) — so hiding the button here would be a guess, and a guess that
-   * is wrong in the direction that makes the feature look broken. The refusal
-   * comes back as `summaryNotice` and reads as a fact about the day.
-   */
-  onWriteSummary?: () => void;
-  /** The trigger is in flight: the control says so and does not fire again. */
-  summaryPending?: boolean;
-  /**
-   * Which step is in flight. Preparing materialises a missing launchpad and
-   * may wait on its harness; writing submits the summary request itself.
-   */
-  summaryPhase?: TodaySummaryPhase;
-  /**
-   * What the last trigger said, when it did not simply work — already worded
-   * and rendered by the composition layer, the same way `launchpadError` is.
+   * A slot rather than a callback pair, for the reason `conversationList` is
+   * one: the control is destructive and therefore needs a confirmation dialog,
+   * `ConfirmDialog` lives in `ui/dialog` and is driven from `app/router`, and
+   * this domain composes neither. What lands here is already wired.
    *
-   * It sits beside the button rather than replacing the document: a refused or
-   * failed trigger changes nothing about the report already on screen, and
-   * swapping the document out for an error would claim otherwise.
+   * It is rendered **only** beside a written document. There is nothing to
+   * reset when the report is already canonical, and the empty state is one
+   * sentence by owner ruling — a control under it would be the second thing on
+   * a surface whose whole message is that there is nothing yet.
+   *
+   * It replaces `onWriteSummary` / `summaryPending` / `summaryNotice`, which
+   * are gone: the day's activity now reaches an agent server-side when a
+   * conversation is started on the launchpad, so the page no longer asks for
+   * the report to be written.
    */
-  summaryNotice?: ReactNode;
+  documentAction?: ReactNode;
   /** Navigation lives inside the injected row; Today itself opens nothing. */
   renderTrackRow: TrackRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
@@ -224,21 +211,9 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
     render: false,
     why: 'Rendered by the document region, which the phone does not draw: a failed resolve is invisible on a phone.',
   } as const),
-  onWriteSummary: Object.freeze({
+  documentAction: Object.freeze({
     render: false,
-    why: 'The write-progress trigger lives inside the document region, so the phone offers no way to fire it.',
-  } as const),
-  summaryPending: Object.freeze({
-    render: false,
-    why: 'Only ever read to put the write-progress trigger in its busy state, and that trigger is not drawn.',
-  } as const),
-  summaryPhase: Object.freeze({
-    render: false,
-    why: 'Only labels the desktop write-progress trigger while it is busy; that trigger is not drawn on a phone.',
-  } as const),
-  summaryNotice: Object.freeze({
-    render: false,
-    why: 'Sits beside the write-progress trigger, which is not drawn.',
+    why: 'The Reset control sits inside the document region, which the phone does not draw, so there is no way to fire it there.',
   } as const),
   renderTrackRow: Object.freeze({
     render: false,

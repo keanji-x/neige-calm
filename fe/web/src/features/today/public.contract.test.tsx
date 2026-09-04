@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 // Invariants for the Today surface. Behavior lives in public.test.tsx.
-import { cleanup, render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
@@ -156,39 +155,13 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     expect(screen.queryByText("the day's report")).toBeNull();
   });
 
-  it('offers no trigger button anywhere in the main column', () => {
+  it('offers no button anywhere in the main column', () => {
     /*
-     * `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
-     * disabled button would be worse than its absence.
-     *
-     * Asserted as "no button at all in the main column", not as "no button
-     * inside the empty-state paragraph" (that paragraph is a `<p>` with one
-     * text node, so querying it for a button is null whatever production does)
-     * and not as a label regex either — "Generate", "Run" or a Chinese label
-     * would walk straight past one.
-     *
-     * THE COLUMN IS FOUND FROM THE OUTSIDE IN, not by walking up from the
-     * empty line, and that is the whole point of the shape below.
-     *
-     * Walking up N `parentElement` hops cannot state which element it landed
-     * on; it can only state how far it climbed, so any wrapper inserted
-     * between the column and the empty line moves the landing spot down while
-     * the test stays green. Adding "…and it contains the waiting heading" does
-     * not fix that:
-     * one wrapper around BOTH `WaitingSection` and `TodayDocument` satisfies
-     * it, and a button added in the column outside that wrapper then goes
-     * unseen. So the walk is replaced by an identification: `.content` has
-     * exactly two children, the panel is the one carrying `role=complementary`
-     * (`<aside>`), and the main column is the other one. Nothing inside the
-     * column can change that, which is what makes "anywhere in the main
-     * column" true as written.
-     *
-     * The workspace is seeded with ONE BLOCKED TRACK so the column has a
-     * second region besides the document — the assertions below check the
-     * landed element really does hold both, i.e. it is the column and not one
-     * of its children. One blocked track and not six: `WAITING_ROW_LIMIT` is
-     * 5, and the sixth would add the "+N more waiting" disclosure — a real
-     * button in the main column, which this assertion would have to carve out.
+     * The empty state is one sentence (#1343, owner call). Nothing else stands
+     * in this column while the day has no report — no caption, and since #1343
+     * no `Rewrite today’s progress` button or Waiting-on-you controls either.
+     * The column is identified as the non-panel child of `.content`, so the
+     * assertion covers the whole reading column rather than one known wrapper.
      */
     render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
@@ -202,10 +175,8 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     expect(content?.children.length).toBe(2);
     const mainColumn = [...(content?.children ?? [])].find((child) => child !== panel);
     expect(mainColumn).toBeDefined();
-    // It is the column: it holds the document region and the status bar, the
-    // two things the column is made of.
+    // It is the column: it holds the document region and nothing actionable.
     expect(mainColumn?.contains(screen.getByText(EMPTY_COPY))).toBe(true);
-    expect(mainColumn?.contains(screen.getByText('Waiting on you'))).toBe(true);
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
   });
 });
@@ -223,85 +194,38 @@ describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state'
   });
 });
 
-describe('#1253 D7 the status bar comes before the document', () => {
-  it('puts the waiting rows above the document in the main column', () => {
-    const { container } = render(<TodayPage
+describe('the main column belongs to the document', () => {
+  it('omits the Waiting on you list while retaining its header count', () => {
+    render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
     />);
-    const main = within(container).getByText('Waiting on you');
-    const document_ = within(container).getByText("the day's report");
-    expect(main.compareDocumentPosition(document_) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('Waiting on you')).toBeNull();
+    expect(screen.getByRole('banner').textContent).toContain('1waiting');
+    expect(screen.getByText("the day's report")).toBeTruthy();
   });
 });
 
-describe('#1253 D7 the status bar is O(1) in height', () => {
-  /*
-   * D7 puts the status bar above the document *because* its height does not
-   * depend on the workspace, and that is the whole justification for the
-   * order. `waiting` has no natural bound, so without a cap the justification
-   * is false — a review found it false at 100 blocked tracks, with the report
-   * pushed off the first screen.
-   */
-  const manyWaiting = Array.from({ length: 100 }, (_, index) => track({
-    id: `blocked-${index}`, title: `Blocked ${index}`, lifecycle: 'blocked',
-  }));
-
-  it('caps the waiting rows so the document cannot be pushed down', () => {
-    const { container } = render(<TodayPage
-      renderTrackRow={renderTrackRow} tracks={manyWaiting} areas={[area()]} nowMs={NOW}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      launchpadDocument={DOCUMENT}
-    />);
-    const waitingLabel = within(container).getByText('Waiting on you');
-    const section = waitingLabel.closest('section');
-    expect(section?.querySelectorAll('[data-nc-role="row"]').length).toBe(5);
-    // The count that is not shown is stated rather than dropped.
-    expect(screen.getByRole('button', { name: '+95 more waiting' })).toBeTruthy();
-    // The header still reports the true total, so the cap hides no fact.
-    expect(screen.getByRole('banner').textContent).toContain('100waiting');
-  });
-
-  it('keeps every waiting track reachable behind the control', async () => {
-    const { container } = render(<TodayPage
-      renderTrackRow={renderTrackRow} tracks={manyWaiting} areas={[area()]} nowMs={NOW}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      launchpadDocument={DOCUMENT}
-    />);
-    /* Scoped to the status bar, because a waiting track whose lifespan overlaps
-       the selected day also shows on the calendar agenda — so an unscoped
-       `queryByText` would be answered by the panel and prove nothing about the
-       cap. RUNNING excludes anything already counted as waiting, so this
-       control is the status bar's only route to the rest. */
-    const waiting = () => within(container).getByText('Waiting on you').closest('section');
-    const rows = () => [...(waiting()?.querySelectorAll('[data-nc-role="row"]') ?? [])]
-      .map((row) => row.textContent);
-    expect(rows()).not.toContain('Blocked 99');
-    await userEvent.click(screen.getByRole('button', { name: '+95 more waiting' }));
-    expect(rows()).toContain('Blocked 99');
-    expect(rows().length).toBe(100);
-    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeTruthy();
-  });
-
-  it('draws no control when the waiting list already fits', () => {
-    render(<TodayPage
-      renderTrackRow={renderTrackRow} tracks={manyWaiting.slice(0, 5)} areas={[area()]} nowMs={NOW}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      launchpadDocument={DOCUMENT}
-    />);
-    expect(screen.queryByRole('button', { name: /more waiting/ })).toBeNull();
-  });
-});
-
-describe('#1253 the first-run page still owns a document', () => {
+describe('#1253 the first-run page keeps the full Today layout', () => {
   /*
    * `areas` is the USER-visible list: #175 filters the system area out of
    * `GET /api/areas`, and the launchpad track lives in the system area. So
    * "no tracks and no areas" is a perfectly ordinary state for a workspace
-   * whose only content is the day's report — and the early return for it used
-   * to drop the document and the resolve failure alike.
+   * whose only content is the day's report. It must use the normal two-column
+   * layout: an empty data set is not a reason to remove the calendar.
    */
+  it('keeps the calendar and one specific empty state before a launchpad exists', () => {
+    render(<TodayPage
+      renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
+      launchpad={null}
+      conversationList={<p>No conversations yet.</p>}
+    />);
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
+  });
+
   it('renders the report on a workspace with no user areas', () => {
     render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
@@ -310,7 +234,8 @@ describe('#1253 the first-run page still owns a document', () => {
       conversationList={<p>Launchpad conversations</p>}
       conversationAction={<button type="button">New conversation</button>}
     />);
-    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
     expect(screen.getByText('Launchpad conversations')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeTruthy();
@@ -325,140 +250,76 @@ describe('#1253 the first-run page still owns a document', () => {
   });
 });
 
-describe('#1253 D5 the document’s trigger', () => {
-  const WRITE = 'Write today’s progress';
-  const REWRITE = 'Rewrite today’s progress';
+describe('#1343 the document’s action slot', () => {
   const props = {
     renderTrackRow, tracks: [track()], areas: [area()], nowMs: NOW,
     launchpadDocument: <p>the day&apos;s report</p>,
   } as const;
+  const ACTION = <button type="button">Reset</button>;
 
   /*
-   * No control at all when the composition offers none — not a disabled one.
+   * #1343 — the empty state is ONE sentence and nothing else.
    *
-   * A disabled button is a promise it will work later. An absent one is the
-   * honest shape for "this composition has no trigger", which is what every
-   * suite in this file passes and what `features/**` alone can ever have: the
-   * endpoint lives in `app/router`.
-   */
-  it('renders nothing when no trigger was supplied', () => {
-    render(<TodayPage {...props} launchpad={{ track_id: 'lp', report_has_noninitial_content: false }} />);
-    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
-    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
-  });
-
-  /*
-   * The control appears whether or not anything happened today.
+   * A `Write` / `Rewrite today’s progress` button used to stand here. It was
+   * removed on owner call: the day’s activity now reaches an agent when a
+   * conversation is started on the launchpad, injected server-side, so the
+   * button was no longer the only route to anything.
    *
-   * This page cannot know — the design gives it no activity read, deliberately
-   * (D4 deleted the layer that would have offered one) — so hiding the button
-   * would be a guess, and the wrong guess makes the feature look broken. The
-   * gate is `POST /api/today/summary`'s, which refuses an empty window without
-   * creating a conversation or sending a message (INV-TODAYDOC-007).
+   * The action slot is not offered in this branch either, and that is the same
+   * ruling rather than an omission: there is nothing to reset when the report
+   * is already canonical.
    */
-  it('offers the trigger in the empty state and a re-run once the report has content', async () => {
-    const pressed: string[] = [];
-    const { rerender } = render(<TodayPage
+  it('shows one sentence and no controls when the report is empty', () => {
+    render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => pressed.push('empty')}
+      documentAction={ACTION}
     />);
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    expect(pressed).toEqual(['empty']);
+    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+    // The deleted control, pinned by absence so it cannot drift back in
+    // without this suite noticing. A label regex, not an exact string: "Write",
+    // "Rewrite" and anything else ending in "today’s progress" are all the same
+    // growth back.
+    expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
+  });
 
-    rerender(<TodayPage
+  /* Beside a written document the slot renders exactly what the composition
+     layer put in it — the control is wired there because it is destructive and
+     needs a confirmation dialog, which is a sibling domain this one may not
+     import. */
+  it('renders the composition’s action beside a written report', () => {
+    render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      onWriteSummary={() => pressed.push('rerun')}
+      documentAction={ACTION}
     />);
-    await userEvent.click(screen.getByRole('button', { name: REWRITE }));
-    expect(pressed).toEqual(['empty', 'rerun']);
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
-  /*
-   * The control is a button in the app's own vocabulary, and it says what it
-   * does before it is pressed.
-   *
-   * Both halves are owner feedback on the 4140 preview, and the tier took two
-   * rounds. It read as a phrase rather than as something pressable while it was
-   * `tertiary` plus the 11px borderless disclosure recipe; `secondary` fixed
-   * that and then read as too heavy a frame beside the report. It is `tertiary`
-   * alone now — §4.1's geometry without `.moreButton`'s shrink — which is
-   * button-shaped at rest and takes its fill on hover and focus.
-   *
-   * Asserted by name, because a button drawn locally in `today.module.css` is
-   * exactly the drift §9's `[data-nc-action]` gate exists to catch, and it
-   * would still look right.
-   */
-  it('is a tertiary action carrying a caption for what it does', () => {
-    render(<TodayPage
-      {...props}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => undefined}
-    />);
-    const button = screen.getByRole('button', { name: WRITE });
-    expect(button.getAttribute('data-nc-action')).toBe('tertiary');
-    expect(screen.getByText('An agent reads today’s activity and writes it up here.')).toBeTruthy();
-  });
-
-  /* The slow half of a first press is `ensure`, not the summary, and the
-     control names the step it is on rather than describing the wrong one for
-     however long a harness takes to come up. */
-  it('names the step in flight while the launchpad is being prepared', () => {
-    render(<TodayPage
-      {...props}
-      launchpad={null}
-      onWriteSummary={() => undefined}
-      summaryPending
-      summaryPhase="preparing"
-    />);
-    expect(screen.getByRole('button', { name: 'Preparing today’s workspace…' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Writing…' })).toBeNull();
-  });
-
-  /* In flight the control says so and cannot fire again — one press, one
-     request, however fast the user is. */
-  it('is inert while a request is in flight', async () => {
-    const pressed: string[] = [];
-    render(<TodayPage
-      {...props}
-      launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
-      onWriteSummary={() => pressed.push('again')}
-      summaryPending
-    />);
-    const button = screen.getByRole('button', { name: 'Writing…' });
-    expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.getAttribute('aria-disabled')).toBe('true');
-    expect(button.getAttribute('data-nc-state')).toBe('busy');
-    expect(button.hasAttribute('disabled')).toBe(false);
-    await userEvent.click(button);
-    expect(pressed).toEqual([]);
-  });
-
-  /* The notice sits beside the button, not in place of the document: a refused
-     or failed trigger changed nothing about the report already on screen. */
-  it('shows the trigger’s answer without replacing the report', () => {
+  /* No slot, no control — not a disabled one. A disabled button is a promise
+     it will work later; an absent one is the honest shape for "this
+     composition has no action", which is what `features/**` alone can have. */
+  it('renders nothing when no action was supplied', () => {
     render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
-      onWriteSummary={() => undefined}
-      summaryNotice={<span>Nothing has happened in this workspace today yet.</span>}
     />);
-    expect(screen.getByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
   });
 
   /* INV-TODAYDOC-002 — a failed resolve shows the failure and nothing else.
-     The trigger would rewrite a document the page could not even read. */
+     An action on a document the page could not even read has no referent. */
   it('is absent when the resolve itself failed', () => {
     render(<TodayPage
       {...props}
       launchpad={undefined}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
-      onWriteSummary={() => undefined}
+      documentAction={ACTION}
     />);
-    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
-    expect(screen.queryByRole('button', { name: REWRITE })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('boom');
   });
 });

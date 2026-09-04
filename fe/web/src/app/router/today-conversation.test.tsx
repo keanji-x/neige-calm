@@ -6,16 +6,16 @@
 // This file exists because the previous rule was a different kind of thing
 // entirely: Today read the tab-local session registry, so its list was "every
 // conversation this browser tab has opened, anywhere". Those two rules agree on
-// nothing except by accident, and the case below is where they visibly parted —
-// the summary conversation the server creates on the launchpad exists the
-// moment `POST /api/today/summary` answers, and no tab has ever opened it.
+// nothing except by accident. A launchpad conversation may exist without this
+// tab ever opening it — including the fixed summary writer created by the
+// still-served `POST /api/today/summary` endpoint — and Today must list it.
 //
 // The whole file drives the real router, the real queries and the real
 // transport port; nothing here stubs `useConversationPanel` or the panel's
 // wiring, because the wiring IS the claim.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -64,21 +64,16 @@ type Case = Readonly<{
   trackRows?: readonly unknown[];
   /** Whether the workspace has a user-visible area/track besides the launchpad. */
   userWorkspace?: boolean;
-  onSummary?: () => void;
 }>;
 
 function renderApp({
   launchpadResolve, launchpadRows = () => [], launchpadConversations,
-  trackRows = [], historyRows = [], userWorkspace = true, onSummary,
+  trackRows = [], historyRows = [], userWorkspace = true,
 }: Case = {}) {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
-      if (request.path === '/api/today/summary') {
-        onSummary?.();
-        return Promise.resolve(ok({ track_id: 'lp', card_id: 'conv-summary' }));
-      }
       /* `report_has_noninitial_content: false` keeps the document region in its
          empty state, which means the track detail is never read — this file is
          about the panel, and a document fixture would only add noise. */
@@ -111,14 +106,26 @@ function renderApp({
 }
 
 /** The same page on a workspace that has no launchpad yet: `200 null`. */
-function renderNoLaunchpad() {
+function renderNoLaunchpad({
+  ensure = () => Promise.resolve({ status: 201, statusText: 'Created', body: { track_id: 'lp' } }),
+}: { ensure?: () => Promise<ApiTransportResponse> } = {}) {
   const requests: ApiRequest[] = [];
+  let launchpadExists = false;
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
-      if (request.path === '/api/today/launchpad') return Promise.resolve(ok(null));
+      if (request.path === '/api/today/launchpad/ensure') {
+        launchpadExists = true;
+        return ensure();
+      }
+      if (request.path === '/api/today/launchpad') {
+        return Promise.resolve(ok(launchpadExists
+          ? { track_id: 'lp', report_has_noninitial_content: false }
+          : null));
+      }
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
+      if (request.path === LAUNCHPAD_CONVERSATIONS) return Promise.resolve(ok([]));
       return Promise.resolve(ok([]));
     },
   };
@@ -135,63 +142,6 @@ function renderNoLaunchpad() {
 
 afterEach(cleanup);
 
-/*
- * The case this inversion was opened on, and the one the old rule could not
- * satisfy at all.
- *
- * `POST /api/today/summary` creates ONE conversation on the launchpad track and
- * that conversation is the thing the user asked for — it is what writes the
- * report. Under the registry rule it was invisible until the reader walked to
- * the launchpad track's own page and opened it by hand, which they have no way
- * to find: the launchpad lives in the system area and appears on no list.
- *
- * The mutation's `onSuccess` invalidates the conversation-list prefix, so the
- * only thing this needs from the frontend is for Today to be *reading* that
- * list. Which is the inversion.
- */
-describe('#1341 the summary conversation lands in Today’s Conversations', () => {
-  const WRITE = 'Write today’s progress';
-
-  it('shows the conversation the summary trigger created, without visiting any track', async () => {
-    let created = false;
-    const { requests } = renderApp({
-      launchpadRows: () => created ? [conversationRow({ title: 'Today’s progress' })] : [],
-      onSummary: () => { created = true; },
-    });
-    await screen.findByText('No conversations yet.', {}, { timeout: 5_000 });
-    await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    await waitFor(() => {
-      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
-    });
-    expect(await screen.findByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
-  });
-
-  it('restarts an older list read after summary creates the conversation', async () => {
-    let created = false;
-    let reads = 0;
-    let releaseOld!: (response: ApiTransportResponse) => void;
-    const oldRead = new Promise<ApiTransportResponse>((resolve) => { releaseOld = resolve; });
-    const { requests } = renderApp({
-      onSummary: () => { created = true; },
-      launchpadConversations: () => {
-        reads += 1;
-        if (reads === 1) return oldRead;
-        return Promise.resolve(ok(created ? [conversationRow({ title: 'Today’s progress' })] : []));
-      },
-    });
-
-    await userEvent.click(await screen.findByRole('button', { name: WRITE }));
-    await waitFor(() => {
-      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
-    });
-    await waitFor(() => expect(reads).toBe(2));
-    expect(await screen.findByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
-
-    await act(async () => { releaseOld(ok([])); await oldRead; });
-    expect(screen.getByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
-  });
-});
-
 describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('does not call an unresolved launchpad an empty conversation list', async () => {
     renderApp({ launchpadResolve: () => new Promise(() => undefined) });
@@ -201,7 +151,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
   it('does not call a pending conversation read an empty list', async () => {
     renderApp({ launchpadConversations: () => new Promise(() => undefined) });
-    await screen.findByRole('button', { name: 'Write today’s progress' });
+    await screen.findByRole('button', { name: 'New conversation' });
     expect(screen.queryByText('No conversations yet.')).toBeNull();
   });
 
@@ -282,13 +232,9 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(screen.queryByRole('complementary', { name: /daily-progress writer/ })).toBeNull();
   });
 
-  /*
-   * The `+`, and the one state it is withheld in.
-   *
-   * Withheld is not "broken": with no launchpad there is no track to post to,
-   * and materializing one is `POST /api/today/launchpad/ensure`, a write that
-   * waits on codex. An action that cannot act is not offered.
-   */
+  /* The `+` always means a conversation with Today. With a launchpad it opens
+     an ordinary scoped draft; without one, its press materialises the track
+     first and remains the only write in that entry flow. */
   it('offers a + once there is a launchpad to attach a conversation to', async () => {
     renderApp();
     await screen.findByText('No conversations yet.');
@@ -298,7 +244,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('offers the + when the hidden launchpad is the workspace’s only track', async () => {
     renderApp({ userWorkspace: false });
     expect(await screen.findByRole('button', { name: 'New conversation' })).toBeTruthy();
-    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
 
   /*
@@ -324,10 +271,52 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(conversation).toEqual(area);
   });
 
-  it('offers no + at all while there is no launchpad', async () => {
-    renderNoLaunchpad();
-    await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: 'New conversation' })).toBeNull();
+  it('offers an explicit Today-assistant entry before a launchpad exists', async () => {
+    const { requests } = renderNoLaunchpad();
+    await screen.findByText('Nothing written today yet.');
+    expect(screen.getByText('Start a conversation with Today.')).toBeTruthy();
+    const start = screen.getByRole('button', { name: 'Start a conversation with Today' });
+    // Merely rendering the entry must remain a pure read; launchpad creation is
+    // attributable to the reader's press, never to opening Today.
+    expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
+
+    await userEvent.click(start);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+        .toEqual(['/api/today/launchpad/ensure']);
+    });
+    expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+  });
+
+  it('keeps a failed ensure visible when its refetch discovers the launchpad, then opens it on retry', async () => {
+    const { requests } = renderNoLaunchpad({
+      /* The server creates the launchpad before starting its harness. A start
+         failure therefore returns 503 while the following resolve truthfully
+         finds the new track. */
+      ensure: () => Promise.resolve({
+        status: 503, statusText: 'Service Unavailable', body: { error: 'harness start failed' },
+      }),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Today assistant could not be started: harness start failed');
+    await waitFor(() => {
+      expect(requests.map((request) => request.path)).toContain(LAUNCHPAD_CONVERSATIONS);
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+    expect(requests.filter((request) => request.path === '/api/today/launchpad/ensure')).toHaveLength(1);
+  });
+
+  it('shows a status rather than a clickable no-op while ensure is pending', async () => {
+    const { requests } = renderNoLaunchpad({ ensure: () => new Promise(() => undefined) });
+    await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
+
+    expect(await screen.findByText('Preparing Today assistant…')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preparing Today assistant' })).toBeNull();
+    expect(requests.filter((request) => request.path === '/api/today/launchpad/ensure')).toHaveLength(1);
   });
 
   /*
@@ -339,7 +328,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
    */
   it('asks for no conversation list at all when there is no launchpad yet', async () => {
     const { requests } = renderNoLaunchpad();
-    await screen.findByText('No conversations yet.');
+    await screen.findByText('Start a conversation with Today.');
     expect(requests.map((request) => request.path).filter((path) => path.endsWith('/conversations')))
       .toEqual([]);
     /* And nothing keyed on the empty card id either, from any layer. */

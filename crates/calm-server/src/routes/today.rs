@@ -39,6 +39,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
         .route("/api/today/launchpad", get(resolve_today_launchpad))
+        .route(
+            "/api/today/launchpad/report/reset",
+            post(reset_today_launchpad_report),
+        )
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -312,6 +316,138 @@ pub(crate) async fn resolve_today_launchpad(
         track_id: track.id.to_string(),
         report_has_noninitial_content: has_noninitial_content,
     })))
+}
+
+/// Is this track Today's launchpad? (#1343)
+///
+/// **One criterion, and every caller uses this one.** Two places now behave
+/// differently on the launchpad — the activity briefing a new conversation
+/// opens with (`routes::track_conversations`) and the identity that
+/// conversation's agent is started under
+/// (`operation::planner_harness_start_adapter`) — and a second spelling of
+/// "is this the launchpad?" would let them disagree about the same track.
+///
+/// Identity against `track_get_launchpad`, not a re-derivation from `purpose`
+/// or from the system area: the launchpad is a single row the repository
+/// already knows how to find, and the partial unique index on
+/// `purpose = 'launchpad'` is what makes that row unique. Matching on the
+/// column here would be a second implementation of the repository's own query.
+///
+/// `false` when there is no launchpad yet, which is the ordinary state of a
+/// fresh workspace. Nothing is ensured from here.
+pub(crate) async fn is_launchpad_track(
+    repo: &(impl crate::db::ServerRepoReadExt + ?Sized),
+    track_id: &str,
+) -> Result<bool> {
+    Ok(repo
+        .track_get_launchpad()
+        .await?
+        .is_some_and(|launchpad| launchpad.id.as_str() == track_id))
+}
+
+/// What a reset answers with.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct TodayLaunchpadReportReset {
+    /// The launchpad track whose report was restored.
+    pub track_id: String,
+    /// The predicate `GET /api/today/launchpad` will now report. Always
+    /// `false` on success — it is returned rather than assumed so a caller can
+    /// see the reset land without a second round trip.
+    pub report_has_noninitial_content: bool,
+}
+
+/// `POST /api/today/launchpad/report/reset` — put today's report back to the
+/// canonical empty document (#1343).
+///
+/// **Why this is a server action and not a client-supplied write.** The
+/// existing route `POST /api/tracks/{id}/report` can express a reset: send the
+/// canonical `summary` and `body` and `report_startup_read_required` flips back
+/// to false. But that predicate is a **byte-for-byte** comparison against
+/// [`TrackReportPayload::initial`], whose body is two `include_str!`-ed
+/// markdown files plus a closing `-->` and four empty H1s — around 2.6 kB that
+/// no client can reproduce without copying kernel-owned text. One byte out and
+/// the predicate stays `true`, so the reset fails *silently*: a 200, an edited
+/// report, and an empty state that never appears. Worse, the two contract
+/// fragments are private and **unclosed** on purpose (`track_report.rs`), so a
+/// client reassembling them wrongly ships an unterminated HTML comment that
+/// swallows the whole document with no diagnostic.
+///
+/// So the kernel calls `TrackReportPayload::initial()` itself. Nothing about
+/// the canonical content crosses the wire in either direction.
+///
+/// **It touches the report and nothing else.** No conversation is created,
+/// none is reset, no harness is started or stopped, and the launchpad is read
+/// rather than ensured — a workspace with no launchpad has no report to reset
+/// and gets a 404.
+///
+/// **Attribution is `EditAuthor::User`**, because `rest_user_replace` is the
+/// entry used and its signature admits nothing else. That is the right record:
+/// a person pressed a button, and the resulting `track.report_edited` is a
+/// human edit. It is also why the same `X-Calm-Actor: user` gate the wholesale
+/// replace uses is applied here — the two write the same thing through the
+/// same door.
+///
+/// **The revision anchor is read here, not supplied by the browser.** A report
+/// edit can still land between this read and the write. The ordinary CRDT CAS
+/// then returns 409 and writes nothing; Reset never silently overwrites an edit
+/// it did not read. Retrying the confirmed action reads the new revision.
+#[utoipa::path(
+    post,
+    path = "/api/today/launchpad/report/reset",
+    tag = "tracks",
+    responses(
+        (status = 200, description = "Today's report is back to the canonical empty document. Conversations are untouched.", body = TodayLaunchpadReportReset),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Non-user actor (worker / plugin / planner) rejected, exactly as on `POST /api/tracks/{id}/report`", body = ErrorBody),
+        (status = 404, description = "There is no launchpad track yet, so there is no report to reset", body = ErrorBody),
+        (status = 409, description = "The report changed after Reset read its revision; nothing was reset and the action may be retried", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn reset_today_launchpad_report(
+    State(s): State<RouteState>,
+    // Extraction asserts the session middleware ran; a missing cookie is a 401
+    // long before this handler. Nothing is read off it — same single-owner
+    // model as `update_track_report`.
+    _principal: crate::auth::Principal,
+    actor: Actor,
+) -> Result<Json<TodayLaunchpadReportReset>> {
+    // The same raw-string gate the wholesale replace uses, and for the same
+    // reason: `Actor::to_actor_id`'s defensive fallback maps unknown `ai:*`
+    // values to `User`, which is right for attribution and wrong for gating.
+    crate::routes::track_report_blocks::require_rest_user_actor(&actor)?;
+
+    let track = s
+        .repo
+        .track_get_launchpad()
+        .await?
+        .ok_or_else(|| CalmError::NotFound("today launchpad".into()))?;
+    let track_id = track.id.to_string();
+    let (_, report_card, _) =
+        crate::track_report::resolve_report_for_track(s.repo.as_ref(), &track_id).await?;
+    let snapshot = crate::track_report_read::load_report_read_snapshot(
+        s.repo.as_ref(),
+        report_card.id.as_str(),
+        s.task_budget_default,
+    )
+    .await?;
+    let target = crate::track_report::ReportEditTarget::resolve(s.repo.as_ref(), &track_id).await?;
+    crate::track_report::write::rest_user_replace(
+        s.repo.as_ref(),
+        &s.events,
+        &s.write,
+        target,
+        // The kernel's own canonical document. Calling it is the point of this
+        // endpoint; a literal here would be the same mirror-code hazard one
+        // layer down.
+        TrackReportPayload::initial(),
+        snapshot.doc_rev,
+    )
+    .await?;
+    Ok(Json(TodayLaunchpadReportReset {
+        track_id,
+        report_has_noninitial_content: false,
+    }))
 }
 
 /// #1147 — the launchpad track's workspace. `Managed`, under the workspace

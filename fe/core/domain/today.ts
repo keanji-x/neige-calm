@@ -26,7 +26,7 @@
 
 import { z } from 'zod';
 
-import type { ApiFailure, ApiOperation } from '../api/types.js';
+import type { ApiOperation } from '../api/types.js';
 import { trackConversationCardId, type Conversation } from './conversation.js';
 
 export const todayLaunchpadSchema = z.object({
@@ -72,19 +72,40 @@ export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire | nul
   };
 }
 
-export const todaySummarySchema = z.object({
-  /** The launchpad track, whose report the agent has been asked to rewrite. */
+export const todayLaunchpadEnsureSchema = z.object({ track_id: z.string() });
+
+export type TodayLaunchpadEnsureWire = z.infer<typeof todayLaunchpadEnsureSchema>;
+
+/**
+ * Materialise the Today launchpad after an explicit user action.
+ *
+ * This operation is deliberately separate from the page-load resolve above:
+ * it starts the launchpad harness and may therefore wait on the agent service.
+ * It sends no client-authored launchpad shape or report body.
+ */
+export function todayLaunchpadEnsureOperation(): ApiOperation<TodayLaunchpadEnsureWire> {
+  return {
+    method: 'POST',
+    path: '/api/today/launchpad/ensure',
+    responseSchema: todayLaunchpadEnsureSchema,
+  };
+}
+
+export const todayReportResetSchema = z.object({
+  /** The launchpad track whose report was restored. */
   track_id: z.string(),
   /**
-   * The summary conversation's card — the same card for the launchpad's whole
-   * lifetime, and openable in Today's Conversations module. It is derived from
-   * a bare constant key server-side, so it does not move when the workspace
-   * does (INV-TODAYDOC-011).
+   * What `GET /api/today/launchpad` will now report — always `false`.
+   *
+   * Returned by the server rather than assumed here so the caller can see the
+   * reset land without a second round trip. It is still the *server's*
+   * predicate, computed by the same byte comparison the resolve uses; nothing
+   * on this side re-derives it.
    */
-  card_id: z.string(),
+  report_has_noninitial_content: z.boolean(),
 });
 
-export type TodaySummaryWire = z.infer<typeof todaySummarySchema>;
+export type TodayReportResetWire = z.infer<typeof todayReportResetSchema>;
 
 /** The server's fixed idempotency key for the launchpad's summary writer. */
 export const TODAY_SUMMARY_CONVERSATION_KEY = 'today-summary';
@@ -104,118 +125,24 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
 }
 
 /**
- * Ask the server to write today's progress into Today's document (#1253 D5).
+ * Put today's report back to its canonical empty state (#1343).
  *
- * **It sends no prompt, and there is no parameter for one.** The endpoint
- * synthesises the whole message server-side, from an activity projection this
- * frontend has no read for. That is not an omission to be filled in later: the
- * design deleted the layer that would have let a client — or an agent — ask for
- * activity, and a prompt parameter here would be the same hole with a nicer
- * name.
+ * **It sends no document, and there must never be a parameter for one.** The
+ * empty-state predicate is a byte-for-byte comparison against the kernel's
+ * `TrackReportPayload::initial()`, whose body is two `include_str!`-ed contract
+ * fragments plus four empty H1s. A client that posted its own copy of those
+ * bytes to `POST /api/tracks/{id}/report` would be mirror code for kernel-owned
+ * text, and one byte out fails *silently*: a 200, a rewritten report, and an
+ * empty state that never appears. So the kernel writes its own canonical
+ * document and nothing about it crosses the wire.
  *
- * A 200 means the request has been enqueued, not that the report has changed.
- * The agent's write arrives later as a `track.report_edited` event, and that is
- * what refreshes the page — see `core/events/invalidation-plan`, where that
- * kind carries `['today-launchpad']` and `['track', id]` precisely so this
- * button visibly does something.
+ * It is destructive — the day's report is discarded — and it touches the report
+ * only: no conversation is created, reset or deleted.
  */
-export function todaySummaryOperation(): ApiOperation<TodaySummaryWire> {
+export function todayReportResetOperation(): ApiOperation<TodayReportResetWire> {
   return {
     method: 'POST',
-    path: '/api/today/summary',
-    responseSchema: todaySummarySchema,
+    path: '/api/today/launchpad/report/reset',
+    responseSchema: todayReportResetSchema,
   };
-}
-
-/**
- * The copy for the one refusal that is not a malfunction.
- *
- * The server counts four permanent event kinds over today's window and refuses
- * when they are all zero, creating no conversation and sending no message
- * (INV-TODAYDOC-007). That is a fact about the day, so it reads as one rather
- * than as an error: nothing is broken and there is nothing to retry.
- */
-export const NOTHING_TO_SUMMARISE = 'Nothing has happened in this workspace today yet.';
-
-export type TodaySummaryFailure = Readonly<{
-  /** `'no-activity'` is data wearing a 409; the other two are failures. */
-  kind: 'no-activity' | 'unavailable' | 'error';
-  message: string;
-}>;
-
-/**
- * Classify a rejected summary trigger.
- *
- * The `code` is matched, not the status and not the message text. All three
- * kinds of 409 this endpoint can answer share a status — `conflict` from the
- * underlying create, `planner_harness_dormant` from a send that could not be
- * recovered, and this one — and only the code tells them apart. Matching the
- * sentence instead would be mirror code for a string the server owns.
- */
-export function todaySummaryFailure(failure: ApiFailure): TodaySummaryFailure {
-  if (failure.kind === 'transport' || failure.kind === 'decode') {
-    return { kind: 'error', message: failure.message };
-  }
-  if (failure.code === 'today_summary_no_activity') {
-    return { kind: 'no-activity', message: NOTHING_TO_SUMMARISE };
-  }
-  /* The agent service is down, which is not "something went wrong": the
-     request was understood and can simply be made again. */
-  if (failure.status === 503) {
-    return { kind: 'unavailable', message: `The agent service is not available: ${failure.message}` };
-  }
-  return { kind: 'error', message: failure.message };
-}
-
-/**
- * `POST /api/today/launchpad/ensure` — materialise the launchpad track.
- *
- * **Not on any page-load path** (INV-TODAYDOC-001). It creates a workspace and
- * then waits on a harness start, so a route that rendered it would fail
- * hard whenever codex is down. Its one caller is the Today trigger, on a press,
- * and the reason that is not the same thing is written out where it is called
- * (`app/providers/queries.ts`).
- *
- * The response is `TodayLaunchpad`, a **different** shape from this module's
- * `todayLaunchpadSchema`: it carries the launchpad's two card ids and no
- * `report_has_noninitial_content`. Only `track_id` is read here — the trigger
- * needs to know the launchpad exists, and the page re-reads its actual state
- * through the resolve — and the rest is left unparsed rather than mirrored.
- */
-export const todayLaunchpadEnsureSchema = z.object({ track_id: z.string() });
-
-export type TodayLaunchpadEnsureWire = z.infer<typeof todayLaunchpadEnsureSchema>;
-
-export function todayLaunchpadEnsureOperation(): ApiOperation<TodayLaunchpadEnsureWire> {
-  return {
-    method: 'POST',
-    path: '/api/today/launchpad/ensure',
-    responseSchema: todayLaunchpadEnsureSchema,
-  };
-}
-
-/**
- * Classify a rejected `ensure`.
- *
- * Its own function rather than a `step` parameter on `todaySummaryFailure`,
- * because the two endpoints answer different things and the difference is the
- * whole point of the wording: `today_summary_no_activity` cannot come from here
- * (`ensure` never looks at the day), and a 503 here means the harness would not
- * start — the launchpad itself may well have been created, which is why the
- * page refetches the resolve even after this failure.
- *
- * There is no `'no-activity'` branch and there must not be one: an empty day is
- * a fact `POST /api/today/summary` alone can establish.
- */
-export function todayLaunchpadEnsureFailure(failure: ApiFailure): TodaySummaryFailure {
-  if (failure.kind === 'transport' || failure.kind === 'decode') {
-    return { kind: 'error', message: failure.message };
-  }
-  if (failure.status === 503) {
-    return {
-      kind: 'unavailable',
-      message: `Today’s workspace could not be started: ${failure.message}`,
-    };
-  }
-  return { kind: 'error', message: `Today’s workspace could not be prepared: ${failure.message}` };
 }

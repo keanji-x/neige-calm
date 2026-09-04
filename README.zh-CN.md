@@ -90,7 +90,8 @@ cp .env.example .env
 ```
 
 - 将 `CALM_EXTRA_MOUNT=/mnt/data2` 改成主机上真实存在的路径；如果不需要额外挂载，可以改成 `/tmp`。
-- 如果 Codex 不在默认的系统级 npm 安装位置，请设置 `CALM_CODEX_HOST_BIN`。
+- `make dev` 会从 `PATH` 自动解析当前 Codex 安装；如果使用非标准包布局，请把
+  `CALM_CODEX_HOST_BIN` 和 `CALM_CODEX_CODE_MODE_HOST_BIN` 都指向同一版本中的可执行文件。
 - 修改 `CALM_AUTH_PASSWORD`；仓库内置的开发默认值是 `dev`。
 - 容器的出站网络目前依赖 `.env.example` 所述的主机代理/转发器配置。如果你不使用主机代理，建议采用上面的宿主机运行路径。
 

@@ -28,9 +28,7 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { TodayPage } from '../../features/today/public.tsx';
-import {
-  nameTodaySummaryConversation, todayLaunchpadEnsureFailure, todaySummaryFailure,
-} from '../../../../core/domain/today.ts';
+import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
@@ -56,16 +54,16 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
-import { DELETE_CARD_COPY, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { DELETE_CARD_COPY, DELETE_TRACK_COPY, RESET_TODAY_REPORT_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
-import { PanelAction } from '../../ui/panel-card/public.tsx';
+import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
-  usePlannerMutations, useTodaySummaryMutation,
+  usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
   useTrackTemplates, useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
@@ -964,11 +962,10 @@ function useConversationPanel(
   }, [open, store]);
 
   /*
-   * The `+` opens a conversation. On a track that is the track's one planner card,
-   * which already exists; on an area it is a draft, because the card is minted
-   * by the first message and there is nothing to open until then. On Today
-   * there is neither a track nor an area to attach one to, so the action is not
-   * offered rather than offered and refused.
+   * The `+` opens a conversation draft scoped to one concrete Track. Today also
+   * satisfies that contract: its route wrapper materialises the launchpad on an
+   * explicit press before it calls this function, so this hook never invents or
+   * accepts an empty scope id.
    */
   const start = () => {
     /*
@@ -1008,12 +1005,9 @@ function useConversationPanel(
    * every current panel source is a server-backed Track row list, so both entry
    * points create or reopen the same scoped draft.
    *
-   * `'elsewhere'` would offer neither entry point: a route that cannot say what a conversation
-   * would attach to does not offer to start one. Strict parity, and it is what
-   * `action:` below already decides. Nothing selects this arm since #1341;
-   * Today, which was its one caller, is a `'rows'` route with the launchpad in
-   * scope, and it withholds the `+` in the one state that still has nothing to
-   * attach to — no launchpad at all — from outside this hook, at the slot.
+   * Every current panel source is a concrete Track row list. Today waits until
+   * its explicit ensure action has returned the launchpad id before invoking
+   * either entry point, so `start` always creates a genuinely scoped draft.
    */
   const startAnother = start;
 
@@ -1434,7 +1428,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * workspace and then submits a `planner-harness-start` operation and waits on
    * it, so putting it on the page-load path would make Today fail hard
    * whenever codex is down — worse than the Today this replaces, which needed
-   * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
+   * nothing to render. `ensure` belongs to an explicit action; the
+   * Conversations `+` below is that action when no launchpad exists yet.
    *
    * "Nothing yet" arrives as `null` in the body and becomes the empty state.
    * Every failure — including a 404, which no longer means anything special
@@ -1443,43 +1438,28 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
   const launchpad = launchpadQuery.data;
   const launchpadTrackId = launchpad?.track_id ?? '';
+  const [preparedLaunchpadTrackId, setPreparedLaunchpadTrackId] = useState<string | null>(null);
+  const [conversationStartRequested, setConversationStartRequested] = useState(false);
+  const conversationTrackId = launchpadTrackId || preparedLaunchpadTrackId || '';
+  const launchpadEnsure = useTodayLaunchpadEnsureMutation(transport, unauthorized);
   /*
-   * #1253 D5 — the trigger. `POST /api/today/summary`, no body and no prompt,
-   * preceded by `POST /api/today/launchpad/ensure` when there is no launchpad
-   * to write into.
+   * #1343 — Reset. `POST /api/today/launchpad/report/reset`, no body.
    *
-   * It is a mutation on an explicit action and nowhere near the page load,
-   * which is the whole of INV-TODAYDOC-001: both requests wait on a
-   * harness start, and what the invariant forbids is that wait being on
-   * the render path, where codex being down would make Today unopenable. The
-   * hook carries the long note on why an explicit press is the "explicit
-   * action" the invariant was reserving `ensure` for, and on what it costs.
+   * It replaces the deleted `Rewrite today's progress` trigger, and it is the
+   * opposite act: that one asked an agent to fill the document, this one
+   * empties it so the owner can watch the flow run again from the empty state.
+   * Today's activity now reaches an agent by a different route entirely —
+   * starting a conversation on the launchpad, where the server injects the
+   * day's window — so nothing on this page asks for a write any more.
    *
-   * A success does not refresh the document here. The agent's write arrives
-   * later as `track.report_edited`, which the event bridge turns into
-   * `['today-launchpad']` and `['track', id]` — refetching the report at 200
-   * would only fetch the OLD one, and it would hide a broken invalidation
-   * chain behind a lucky refresh.
+   * It is destructive and irreversible from the UI, so it goes through
+   * `useDeleteConfirm` + `ConfirmDialog`, the same shape the track delete on
+   * this very route uses. The hook is keyed by an id; the launchpad track id is
+   * what it gets, which is also what makes the control unavailable before the
+   * resolve has answered.
    */
-  const summary = useTodaySummaryMutation(transport, unauthorized, launchpadTrackId !== '');
-  const summaryNotice = useMemo(() => {
-    if (summary.failure === null) return undefined;
-    /* Which endpoint refused decides which vocabulary reads it. Handing an
-       `ensure` failure to `todaySummaryFailure` would word a workspace that
-       could not be started as a summary that could not be written, and the one
-       code that matters there — `today_summary_no_activity` — cannot come from
-       `ensure` at all. */
-    const classified = summary.failedStep === 'prepare'
-      ? todayLaunchpadEnsureFailure(summary.failure)
-      : todaySummaryFailure(summary.failure);
-    /* "Nothing happened today" is data, not a malfunction, so it is not an
-       alert: `role="alert"` interrupts a screen-reader user for something they
-       asked about and got a straight answer to. The other two are failures and
-       are announced. */
-    return classified.kind === 'no-activity'
-      ? <span role="status" data-nc-role="hint">{classified.message}</span>
-      : <span role="alert" data-nc-role="hint">{classified.message}</span>;
-  }, [summary.failure, summary.failedStep]);
+  const reportReset = useTodayReportResetMutation(transport, unauthorized);
+  const resetConfirm = useDeleteConfirm(() => reportReset.reset());
   /*
    * ── The Conversations module (#1341) ─────────────────────────────────────
    *
@@ -1510,25 +1490,25 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * not squeezed back in here.
    */
   const launchpadConversationsQuery = useQuery({
-    ...trackConversationsQueryOptions(transport, launchpadTrackId, unauthorized),
+    ...trackConversationsQueryOptions(transport, conversationTrackId, unauthorized),
     /* No launchpad, no list — and above all no request. A fresh workspace
        resolves to `null`, and an ungated read would ask the server about a
        track named `''` on every first-run page load. */
-    enabled: launchpadTrackId !== '',
+    enabled: conversationTrackId !== '',
   });
   const launchpadConversationMutations = useTrackConversationMutations(
-    transport, launchpadTrackId, unauthorized,
+    transport, conversationTrackId, unauthorized,
   );
   const launchpadRows = useMemo(
     () => (launchpadConversationsQuery.data ?? [])
-      .map((row) => nameTodaySummaryConversation(launchpadTrackId, row)),
-    [launchpadConversationsQuery.data, launchpadTrackId],
+      .map((row) => nameTodaySummaryConversation(conversationTrackId, row)),
+    [conversationTrackId, launchpadConversationsQuery.data],
   );
   const chat = useConversationPanel(
     transport,
     unauthorized,
     {
-      scopeId: launchpadTrackId,
+      scopeId: conversationTrackId,
       rows: launchpadRows,
       /*
        * The launchpad is a real track and these rows are its own, so this route
@@ -1542,8 +1522,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        * twice. A row whose own `trackId` does not match this scope is rejected
        * by that same check.
        */
-      rememberOn: launchpadTrackId,
-      derivedCardId: (idempotencyKey) => trackConversationCardId(launchpadTrackId, idempotencyKey),
+      rememberOn: conversationTrackId,
+      derivedCardId: (idempotencyKey) => trackConversationCardId(conversationTrackId, idempotencyKey),
       scopeOf: (conversationId) => {
         const row = launchpadRows.find((candidate) => candidate.id === conversationId);
         /* `id: row.trackId`, never `launchpadTrackId` — see the same line on the
@@ -1562,15 +1542,46 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        times — the same reason the track route hides it. */
     { showTrack: false },
   );
+
+  const startTodayConversation = () => {
+    if (launchpadEnsure.pending) return;
+    if (conversationTrackId !== '') {
+      /* `ensure` can materialise the launchpad and still return an error when
+         its harness start fails. The resolve then discovers the real track.
+         A retry in that state opens the now-available draft and dismisses the
+         stale mutation error; it must not ask `ensure` to create it again. */
+      launchpadEnsure.clearFailure();
+      chat.startConversation();
+      return;
+    }
+    void launchpadEnsure.ensure().then((prepared) => {
+      /* The ensure response owns the track id, so the draft can be scoped
+         without inventing one while the read-only resolve catches up. */
+      setPreparedLaunchpadTrackId(prepared.track_id);
+      setConversationStartRequested(true);
+    }).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!conversationStartRequested || conversationTrackId === '') return;
+    chat.startConversation();
+    setConversationStartRequested(false);
+  }, [chat, conversationStartRequested, conversationTrackId]);
+
   const conversationList = launchpadQuery.isPending || launchpadQuery.isError
     /* The outer resolve is still unknown or failed; neither answer means an
        empty conversation list. Its own error is already rendered in the
        document region. */
     ? null
-    : launchpad === null
-    /* No launchpad is a settled empty state and there is intentionally no list
-       request. The module still says it has no conversations yet. */
-    ? chat.list
+    : launchpadEnsure.pending
+      ? <PanelEmpty>Preparing Today assistant…</PanelEmpty>
+      : launchpadEnsure.failure !== null
+        ? <ErrorBox
+            message={`Today assistant could not be started: ${launchpadEnsure.failure.message}`}
+            onRetry={startTodayConversation}
+          />
+        : conversationTrackId === ''
+          ? <PanelEmpty>Start a conversation with Today.</PanelEmpty>
     : launchpadConversationsQuery.isPending
       /* Unknown is not empty: do not flash a false empty state while the first
          read is still on the wire. */
@@ -1660,6 +1671,12 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       <span>{deletion.feedback.error}</span>
       <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
     </div>}
+    {/* A failed reset is announced where a failed delete is, and the document
+        behind it is unchanged: the server wrote nothing. */}
+    {resetConfirm.feedback.error !== null && <div role="alert" data-nc-error-box="">
+      <span>{resetConfirm.feedback.error}</span>
+      <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
+    </div>}
     <TodayPage
       tracks={workspace.tracks}
       areas={workspace.areas}
@@ -1684,22 +1701,26 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       /*
        * The `+`, which Today did not have and now does (#1341).
        *
-       * It was withheld for one reason and the reason has gone: a conversation
-       * attaches to a track, and this route had no single track in scope. It
-       * has one — the launchpad, the track whose report is the document above,
-       * and the very track `POST /api/today/summary` starts its conversation
-       * on. Starting another one here is "ask about my day", and it lands
-       * exactly where the day already lives.
+       * A Today conversation attaches to the launchpad, the track whose report
+       * is the document above. Once that track exists this is the ordinary
+       * conversation action; starting one here means "ask about my day", and it
+       * lands exactly where the day already lives.
        *
-       * Withheld in one state, and only one: there is no launchpad yet. Then
-       * there is no track to post to, and materializing one is
-       * `POST /api/today/launchpad/ensure` — a write that waits on codex, which
-       * INV-TODAYDOC-001 keeps off this page's load and which nothing here is
-       * entitled to run behind a `+`. An action that cannot act is not offered
-       * (the same rule the empty state's trigger followed in PR1). The list
-       * below it still renders its empty sentence.
+       * With no launchpad yet the same slot remains visible and says what it
+       * starts. Its press explicitly calls `POST /api/today/launchpad/ensure`,
+       * then opens the draft on the returned track. The page load remains a
+       * pure read; the workspace and harness are attributable to that press.
        */
-      conversationAction={launchpadTrackId === '' ? undefined : chat.action}
+      conversationAction={launchpadQuery.isPending || launchpadQuery.isError
+        ? undefined
+        : launchpadEnsure.pending
+          ? undefined
+          : conversationTrackId === '' || launchpadEnsure.failure !== null
+            ? <PanelAction
+                label="Start a conversation with Today"
+                onClick={startTodayConversation}
+              ><Icon name="plus" size="sm" /></PanelAction>
+            : chat.action}
       /* Undefined while the resolve is in flight, `null` when the server says
          there is no launchpad yet. The page
          decides the empty state from `report_has_noninitial_content` and from
@@ -1712,13 +1733,21 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           onRetry={() => { void launchpadQuery.refetch(); }}
         />
         : undefined}
-      onWriteSummary={summary.write}
-      summaryPending={summary.pending}
-      /* `'prepare'` is `ensure`, which waits on a harness start and is the slow
-         half of a first press; the button says which step it is on rather than
-         "Writing…" for all of it. */
-      summaryPhase={summary.step === 'prepare' ? 'preparing' : summary.step === 'write' ? 'writing' : undefined}
-      summaryNotice={summaryNotice}
+      /* Rendered only beside a written document — `TodayPage` decides that,
+         because it is the same `report_has_noninitial_content` branch the
+         empty state is on and duplicating the condition here would be two
+         readings of one predicate. */
+      documentAction={launchpadTrackId === '' ? undefined : (
+        <button
+          type="button"
+          data-nc-action="destructive"
+          disabled={resetConfirm.pending}
+          aria-busy={resetConfirm.pending}
+          onClick={() => resetConfirm.request(launchpadTrackId)}
+        >
+          {RESET_TODAY_REPORT_COPY.trigger}
+        </button>
+      )}
     />
     <ConfirmDialog
       open={deletion.open}
@@ -1729,6 +1758,16 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       confirmState={deletion.pending ? 'busy' : 'ready'}
       onConfirm={deletion.confirm}
       onCancel={deletion.cancel}
+    />
+    <ConfirmDialog
+      open={resetConfirm.open}
+      title={RESET_TODAY_REPORT_COPY.title}
+      description={RESET_TODAY_REPORT_COPY.description}
+      confirmLabel={RESET_TODAY_REPORT_COPY.confirmLabel}
+      confirmBusyLabel="Resetting…"
+      confirmState={resetConfirm.pending ? 'busy' : 'ready'}
+      onConfirm={resetConfirm.confirm}
+      onCancel={resetConfirm.cancel}
     />
     {chat.drawer}
     </>

@@ -2,20 +2,15 @@
 // from app/router, and navigation leaves through `onOpenTrack` (features must
 // not import app).
 //
-// §8.1 — the user opens this to answer one question: *is anything waiting for
-// me?* That question owns the top of the main column, and it is answered by
-// position plus the only --warn pixels on the page — never by type size. The
-// clock, which used to be 36px, is ambient information and now sits at the
-// header's right edge at --text-base: a page whose job is "what needs me" cannot
-// have a clock as its main emphasis.
+// §8.1 — the header keeps the compact waiting/running summary, while the main
+// column belongs wholly to the durable Today document. The clock, which used to
+// be 36px, is ambient information and sits at the header's right edge at
+// --text-base rather than competing with that document.
 //
-// #1253 D2/D7 — the main column is now **the status bar, then the document**.
-// The status bar is `N waiting · N running` in the header plus the compact
-// waiting rows; it is O(1) in height, so it cannot grow and push the document
-// off the first screen. "The document is the protagonist" is expressed by area
-// and visual weight, and by the document region reading at the prose rank while
-// the rest of the page stays interface-sized. Running moved into the panel: it
-// is ambience, and the reading column belongs to the document.
+// #1253 D2 — "the document is the protagonist" is expressed by area and visual
+// weight, and by the document region reading at the prose rank while the rest of
+// the page stays interface-sized. Running remains ambience in the panel; the
+// former Waiting-on-you list was removed from the reading column by owner call.
 
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -26,7 +21,7 @@ import {
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import type {
-  ScheduledEvent, TodayCompactProps, TodayPageProps, TodaySummaryPhase, TrackRowRenderer,
+  ScheduledEvent, TodayCompactProps, TodayPageProps, TrackRowRenderer,
 } from './page-props.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -40,52 +35,11 @@ import styles from './today.module.css';
 // `page-props.ts`, next to the viewport ledger that has to enumerate every one
 // of `TodayPageProps`' keys, and are re-exported here so this module stays the
 // feature's entry. See that file's header for why the ledger cannot live here.
-export type { ScheduledEvent, TodayPageProps, TodaySummaryPhase, TrackRowRenderer } from './page-props.ts';
+export type { ScheduledEvent, TodayPageProps, TrackRowRenderer } from './page-props.ts';
 
 /** The copy for "the day has no document yet". */
 const NO_PROGRESS_YET = 'Nothing written today yet.';
 
-/**
- * The trigger's two labels.
- *
- * Two, because re-running is the ordinary case rather than a recovery: the
- * report's own contract is "a snapshot of now, REWRITTEN every time", so a day
- * gets summarised again whenever more has happened. A single "Write" label on a
- * page that already shows a report would read as "write a second one".
- *
- * The control is NOT suppressed once a report exists.
- * `report_has_noninitial_content` is a statement about the report's current
- * text and consults no history — restoring the document to its canonical
- * skeleton flips it back to false — so using it to decide "the summary has
- * already run" would be wrong in both directions, and using it to hide the
- * re-run would silently disable the button for anyone who edited by hand.
- */
-const WRITE_SUMMARY = 'Write today\u2019s progress';
-const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
-
-/**
- * One line above the control saying what pressing it does.
- *
- * The button's label is a verb phrase and nothing on the page said who acts or
- * where the result lands, so the control read as a phrase before it read as
- * something to press. This is the caption, not a guarantee: it says what the
- * press asks for, and the answer — including "nothing happened today" — comes
- * back beside the button as the notice.
- */
-const SUMMARY_CAPTION = 'An agent reads today\u2019s activity and writes it up here.';
-
-/**
- * What the control says while a press is in flight.
- *
- * Two, because the two steps take different amounts of time and the slow one is
- * invisible: on a workspace with no launchpad yet the press first materialises
- * one and waits on a harness start, which is seconds to tens of seconds, and a
- * button that said "Writing…" for all of it would be describing the wrong step.
- * These are labels for the step actually running, not a progress estimate —
- * neither one claims to know how far along it is.
- */
-const PREPARING_LABEL = 'Preparing today\u2019s workspace\u2026';
-const WRITING_LABEL = 'Writing\u2026';
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
 /**
@@ -125,26 +79,6 @@ function weekLabel(weekStart: Date, weekEnd: Date): string {
  * unresolvable case is exactly the one worth seeing.
  */
 const UNKNOWN_AREA = 'Unknown area';
-
-/**
- * How many waiting rows the status bar draws before it stops growing.
- *
- * D7 puts the status bar above the document **because it is O(1) in height**,
- * and that is the whole load-bearing reason for the order: a bar that grew with
- * the workspace would push the document off the first screen, which is the one
- * thing the layout exists to prevent. `waiting` has no natural bound — every
- * blocked track in every area lands in it — so without a cap that property is
- * simply false, and a review found it false with 100 blocked tracks.
- *
- * The overflow is not dropped. It sits behind one inert-until-clicked control,
- * so the *loaded* page is bounded while every waiting track stays reachable:
- * these rows are not repeated in the panel's RUNNING module (it excludes
- * anything already counted as waiting), so hiding them outright would make them
- * unreachable from this page. The calendar's agenda does list them, but only
- * for the selected day and without the attention framing, so it is not a
- * substitute for the bar.
- */
-const WAITING_ROW_LIMIT = 5;
 
 function addDays(day: Date, count: number): Date {
   const next = new Date(day);
@@ -290,7 +224,7 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  onWriteSummary, summaryPending, summaryPhase, summaryNotice,
+  documentAction,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
@@ -315,45 +249,6 @@ function TodayDesktop({
       </PanelCard>
     </aside>
   );
-  const firstRun = (
-    <div className={styles.emptyPage}>
-      <p className={styles.hero}>Nothing here yet.</p>
-      <TodayDocument
-        launchpad={launchpad}
-        document={launchpadDocument}
-        error={launchpadError}
-        onWriteSummary={onWriteSummary}
-        pending={summaryPending}
-        phase={summaryPhase}
-        notice={summaryNotice}
-      />
-    </div>
-  );
-
-  /*
-   * A brand-new workspace: one hero line, and *still the document*.
-   *
-   * `areas` is the user-visible list — #175 filters the system area out of
-   * `GET /api/areas`, and the launchpad track lives in the system area. So
-   * "no areas and no tracks" does NOT mean "no Today report": a workspace whose
-   * only content is the day's report lands exactly here, and returning early
-   * with just the hero made that report invisible and swallowed a failed
-   * resolve along with it.
-   */
-  if (tracks.length === 0 && areas.length === 0) {
-    return (
-      <div className={styles.page}>
-        <TodayHeader
-          today={today} waiting={waiting.length} running={running.length}
-          now={now}
-        />
-        {launchpad === null || launchpad === undefined
-          ? firstRun
-          : <div className={styles.content}>{firstRun}{panel}</div>}
-      </div>
-    );
-  }
-
   return (
     <div className={styles.page}>
       <TodayHeader
@@ -361,26 +256,15 @@ function TodayDesktop({
         now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after. Every row follows its content.
-
-            A dashed "Today terminal" placeholder used to close this column and
-            the README carried a whole unbuilt contract for it (INV-TODAYTERM-*).
-            Neither shipped; both are retired rather than left as a promise the
-            page keeps making. Owner call, 2026-09-03. */}
+        {/* The reading column is the document and nothing else. A dashed
+            terminal placeholder and the Waiting-on-you list previously shared
+            it; both are retired by owner call. */}
         <div className={styles.mainColumn}>
-          {/* The status bar. An empty section renders nothing at all — no
-              label, no dashed box. The absence is the message. */}
-          <WaitingSection tracks={waiting} render={renderTrackRow} />
-
-          {/* …and the document immediately after it. */}
           <TodayDocument
             launchpad={launchpad}
             document={launchpadDocument}
             error={launchpadError}
-            onWriteSummary={onWriteSummary}
-            pending={summaryPending}
-            phase={summaryPhase}
-            notice={summaryNotice}
+            action={documentAction}
           />
         </div>
 
@@ -412,55 +296,6 @@ function TodayDesktop({
 }
 
 /**
- * The status bar's waiting rows, bounded.
- *
- * Collapsed it draws at most `WAITING_ROW_LIMIT` rows plus one control, so its
- * height does not depend on how much is waiting — which is what makes D7's
- * "status bar first" ordering safe for the document below it. Expanding is an
- * explicit act by a reader who has decided the list is what they came for.
- *
- * The control is a `<button>`, not a link: this surface emits no `<a href>`
- * anywhere (INV-A11Y-061), and it navigates nowhere — it reveals rows that are
- * already on this page.
- */
-function WaitingSection({ tracks, render }: {
-  tracks: readonly Track[];
-  render: TrackRowRenderer;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const rowsId = 'today-waiting-rows';
-  if (tracks.length === 0) return null;
-  const hidden = tracks.length - WAITING_ROW_LIMIT;
-  const shown = expanded ? tracks : tracks.slice(0, WAITING_ROW_LIMIT);
-  return (
-    <section className={styles.section}>
-      <h2 className={styles.sectionLabel}>Waiting on you</h2>
-      {/* `aria-controls` names what `aria-expanded` is talking about: without
-          it the control announces a state with no referent, and a screen
-          reader cannot jump to what just appeared. Today renders one of these
-          per page, so a constant id is not a collision risk. */}
-      <div className={styles.rows} id={rowsId}>
-        {shown.map((track) => (
-          <span key={track.id}>{render(track, { variant: 'compact' })}</span>
-        ))}
-      </div>
-      {hidden > 0 && (
-        <button
-          type="button"
-          data-nc-action="tertiary"
-          className={styles.moreButton}
-          aria-expanded={expanded}
-          aria-controls={rowsId}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? 'Show fewer' : `+${hidden} more waiting`}
-        </button>
-      )}
-    </section>
-  );
-}
-
-/**
  * The document region: the day's report, or the reason there is none.
  *
  * The order of the three branches is the invariant (§5.2). An error must not
@@ -469,34 +304,18 @@ function WaitingSection({ tracks, render }: {
  * on this page (INV-TODAYDOC-003) — no null-check of the document, no reading
  * of its text.
  */
-function TodayDocument({ launchpad, document, error, onWriteSummary, pending, phase, notice }: {
+function TodayDocument({ launchpad, document, error, action }: {
   launchpad?: TodayLaunchpadWire | null;
   document?: ReactNode;
   error?: ReactNode;
-  onWriteSummary?: () => void;
-  pending?: boolean;
-  phase?: TodaySummaryPhase;
-  notice?: ReactNode;
+  action?: ReactNode;
 }) {
   if (error !== undefined && error !== null) return <>{error}</>;
   // The read is still in flight. Not the empty state: "we do not know yet" and
   // "there is nothing" are different answers, and flashing the second one
   // while the first is true is how a page teaches people to distrust it.
-  //
-  // The trigger is inside this branch too, and not beside it: a control that
-  // rewrites a document nobody has read yet is offered before the page knows
-  // whether there IS a document, and its label would have to guess.
   if (launchpad === undefined) return null;
   const written = launchpad !== null && launchpad.report_has_noninitial_content;
-  const trigger = (
-    <SummaryTrigger
-      label={written ? REWRITE_SUMMARY : WRITE_SUMMARY}
-      onWrite={onWriteSummary}
-      pending={pending}
-      phase={phase}
-      notice={notice}
-    />
-  );
   /*
    * The wrapper is what makes the day's report read as the protagonist.
    *
@@ -507,99 +326,34 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, ph
    */
   if (!written) {
     /*
-     * The empty day is centred and set in the report's own face.
+     * The empty day is one sentence, centred and set in the report's own face.
      *
      * Not a box and not a top-left line of hint text: this sentence stands
      * where the document will stand, so it is the document's typography — serif,
      * one rank up — placed in the middle of the space the document would fill.
      * A dashed frame used to be here; it drew a container around a sentence
      * whose entire content is that there is no container yet.
+     *
+     * Nothing else is in this branch. A `Write today's progress` /
+     * `Rewrite today's progress` button used to be, and it was removed on owner
+     * call (#1343): the day's activity now reaches an agent when a
+     * conversation is started on the launchpad, injected server-side, so the
+     * button was no longer the only route to anything. The action slot is not
+     * offered here either — there is nothing to reset when the report is
+     * already canonical.
      */
     return (
       <div className={`${styles.document} ${styles.documentVacant}`}>
         <p className={styles.documentEmpty}>{NO_PROGRESS_YET}</p>
-        {trigger}
       </div>
     );
   }
-  /*
-   * The trigger comes BEFORE the report, and only in this branch.
-   *
-   * A written report is the long thing on this page — it is the whole main
-   * column and then some — so a control below it is a control the reader has to
-   * scroll past the entire document to find, and its caption is an explanation
-   * that arrives after the thing it was meant to introduce. Above, both land
-   * before the reading starts.
-   *
-   * The vacant branch keeps the other order on purpose: there the sentence
-   * "nothing written today yet" is the headline, and the trigger is the answer
-   * to it.
-   */
-  return <div className={styles.document}>{trigger}{document}</div>;
-}
-
-/**
- * The "write today's progress" control, plus whatever the last attempt said.
- *
- * A `<button>`, like every other control on this surface: it emits no
- * `<a href>` (INV-A11Y-061) and it navigates nowhere.
- *
- * `undefined` `onWrite` renders nothing at all rather than a disabled control.
- * A disabled button is a promise that it will work later; an absent one is the
- * honest shape for "this composition has no trigger", which is what the
- * feature's own suites pass.
- */
-function SummaryTrigger({ label, onWrite, pending, phase, notice }: {
-  label: string;
-  onWrite?: () => void;
-  pending?: boolean;
-  phase?: TodaySummaryPhase;
-  notice?: ReactNode;
-}) {
-  if (onWrite === undefined) return null;
-  const busy = pending === true;
   return (
-    <div className={styles.summaryTrigger}>
-      <p className={styles.summaryCaption}>{SUMMARY_CAPTION}</p>
-      <div className={styles.summaryRow}>
-        {/*
-          `data-nc-action="tertiary"` \u2014 \u00a74.1's quiet tier, on its own.
-
-          Two owner readings shaped this, and the second overturned the first.
-          It began as `tertiary` **plus `.moreButton`**, and read as a phrase
-          rather than as something to press; the fix taken then was `secondary`,
-          which is the framed tier. Owner read that frame as too heavy for a
-          control the report should outrank.
-
-          What that pair of readings locates is the shrink, not the tier.
-          `.moreButton` is the disclosure recipe \u2014 `--text-xs`, `--space-2`
-          padding, no border \u2014 so it overrode \u00a74.1's geometry down to something
-          text-sized. `tertiary` alone keeps that geometry: `--control-h`,
-          `--space-6` padding-inline and `--text-base`, which is button-shaped
-          at rest without drawing a frame around it. Its fill and border are
-          transparent until `:hover`/`:focus-visible`, where \u00a74.1 raises it to
-          `--overlay-hover` and `--text` \u2014 quiet on arrival, and it answers when
-          the pointer or the keyboard reaches it.
-
-          Still a tier and not a button drawn here: \u00a79's gate measures
-          `[data-nc-action]` as one vocabulary, and `.moreButton` is exactly the
-          per-module override that got this wrong the first time.
-        */}
-        <button
-          type="button"
-          data-nc-action="tertiary"
-          // Busy stays focusable and in the action colour ladder; the click
-          // guard prevents a second request. Whether there is anything to
-          // summarise remains the server's answer.
-          aria-busy={busy ? true : undefined}
-          aria-disabled={busy ? true : undefined}
-          data-nc-state={busy ? 'busy' : undefined}
-          onClick={() => { if (!busy) onWrite(); }}
-        >
-          {busy ? (phase === 'preparing' ? PREPARING_LABEL : WRITING_LABEL) : label}
-        </button>
-        {notice !== undefined && notice !== null && <>{notice}</>}
-      </div>
+    <div className={styles.document}>
+      {document}
+      {action !== undefined && action !== null && (
+        <div className={styles.documentAction}>{action}</div>
+      )}
     </div>
   );
 }
