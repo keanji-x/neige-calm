@@ -677,27 +677,16 @@ impl RepoRead for SqlxRepo {
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
     ) -> Result<Vec<super::BlockVerdict>> {
-        // No explicit transaction (#1016) — same trade as `track_detail`, but
-        // this predicate genuinely cannot collapse into one statement: it
-        // loops over each declaration's references issuing a data-dependent
-        // lookup per reference, and it is the SAME function the write path
-        // runs inside its IMMEDIATE transaction. Folding it into one SQL
-        // statement would mean either a giant generated query or forking the
-        // predicate in two — and "one DB-aware schedulability predicate" is
-        // worth more than a snapshot on a diagnostics render.
-        //
-        // What WAS collapsed is the part the verdict is computed from: policy,
-        // ceiling, in-flight occupancy, in-flight keys and the track's area now
-        // come from a single statement, so a displayed capacity /
-        // schedulability can no longer be stitched together from four versions
-        // of the database. Two remain — the frozen-declaration scan and the
-        // per-reference lookups. Not just "stale": a task deleted or driven
-        // terminal between the core snapshot and the frozen scan can yield a
-        // verdict set that contradicts itself (`schedulable = true` for a key
-        // whose slot the same call counted as occupied). That skew predates
-        // #1016 and survives it; `evaluate_schedulability`'s doc comment spells
-        // out the exact interleaving and why this diagnostics-only surface
-        // tolerates it while the write path does not.
+        // No explicit transaction (#1016, #1027). `evaluate_schedulability`
+        // normalizes the declarations' data-dependent references into one JSON
+        // parameter, then one autocommit statement materializes policy,
+        // capacity, in-flight and frozen task rows, read state, source area and
+        // every reference target. Rust still owns the one verdict predicate the
+        // write path runs inside its IMMEDIATE transaction; SQL only supplies a
+        // point-in-time fact set. This closes the local/reference tear from
+        // #1027 without restoring the shared-cache deferred-reader deadlock or
+        // taking the production writer slot. The preceding tree-budget term is
+        // still the separately documented multi-statement boundary.
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
