@@ -235,6 +235,23 @@ describe('track route CARDS panel', () => {
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
+  it('opens a drawable card from a compact cold-start deep link', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
+      matches: media.includes('width'), media, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    })));
+    window.history.replaceState({}, '', `${APP_BASEPATH}/track/w1?card=card-term`);
+
+    setup();
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
+    });
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
+    expect(window.location.search).toBe('?card=card-term');
+  });
+
   it('does not mount the board until a card is opened, then keeps it after close', async () => {
     setup();
     await inventoryLabels();

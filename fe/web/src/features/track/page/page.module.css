@@ -152,6 +152,31 @@
     flex: 1 1 auto;
   }
 
+  /*
+   * Opening a card locks `.page` at the reader's current scroll offset. Keep
+   * the board's containing block in the visible content region at that offset:
+   * the absolute board still fills this viewport-high box, but the box itself
+   * no longer scrolls above the clipped page before the board is painted.
+   *
+   * Sticky is scoped to the open state. The ordinary workspace must stay in
+   * flow while the report scrolls so its overflowing `.content` continues to
+   * provide the panel's full sticky travel. The inset is the workspace's
+   * resting position — the sticky header's height plus the page gap — which
+   * preserves the Track title/back affordance instead of covering it. Because
+   * the containing block remains `.workspace`, the board also remains inside
+   * the shell's main column and cannot cover the navigation rail. Clip only
+   * this open-state box: the report deliberately overflows the ordinary
+   * workspace for panel sticky travel, but underneath an open board that same
+   * overflow would otherwise paint into the page's trailing padding. A paint
+   * clip, rather than `overflow: hidden`, keeps that overflow in `.page`'s
+   * scroll range so opening does not clamp the reader's retained `scrollTop`.
+   */
+  .pageBoard > .workspace {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    clip-path: inset(0);
+  }
+
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
      a page's attention — unlike progress/eta/now, which have no writer at all. */
   .needsInput {
@@ -939,6 +964,12 @@
       gap: var(--space-6);
       padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-10));
       padding-inline: var(--space-8);
+    }
+
+    /* MobileHeader replaces PageHeader here: its top margin, 44px row and the
+       compact page gap are the visible content edge for a cold `?card=` open. */
+    .pageBoard > .workspace {
+      inset-block-start: calc(var(--space-4) + var(--rail-w-collapsed) + var(--space-6));
     }
 
     .page > :first-child {
