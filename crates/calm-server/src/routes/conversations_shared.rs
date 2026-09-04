@@ -185,9 +185,14 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 ///
 /// Both scope columns are bound: `scope_track` is indexed (`0007`), so the scan
 /// is bounded by one track rather than by every conversation in the DB.
-/// `json_valid` gates the `json_extract`, because SQLite *raises* on malformed
-/// JSON and one historical bad row would turn this read into a 500 for every
-/// trigger — the same fail-safe `events_prune.rs` takes over the same column.
+/// The `runtime_id` extract is **CASE-gated** on `json_valid`, not merely
+/// conjoined with it. SQLite *raises* on `json_extract` over malformed JSON, and
+/// one historical bad row would turn this read into a 500 on every trigger;
+/// `events_prune.rs` measured that a bare `AND json_valid(payload)` conjunct is
+/// not a defence, because SQLite does not guarantee AND-term evaluation order —
+/// `CASE` evaluation is the one that is guaranteed lazy. An unparseable row
+/// therefore yields `NULL`, matches nothing, and reads as "no evidence": the
+/// re-send direction, which is the safe one here.
 ///
 /// Durability premise, and it is a premise not a nice-to-have:
 /// `harness.user_message.enqueued` is **not** in `EVENTS_PRUNE_KINDS`
@@ -236,8 +241,8 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
             WHERE kind = 'harness.user_message.enqueued'
               AND scope_track = ?1
               AND scope_card = ?2
-              AND json_valid(payload)
-              AND json_extract(payload, '$.runtime_id') = ?3
+              AND (CASE WHEN json_valid(payload)
+                        THEN json_extract(payload, '$.runtime_id') END) = ?3
             LIMIT 1"#,
     )
     .bind(track_id)
