@@ -1501,29 +1501,30 @@ export interface components {
              *     down to the operation payload, whose `first_message` key is
              *     `skip_serializing_if`-omitted.
              *
-             *     Supplying it also changes what a harness-start failure means. Without
-             *     it, a create whose `planner-harness-start` operation fails still returns
-             *     201 — "the track exists, its planner agent is inert" is a documented,
-             *     recoverable state. With it, that same failure is a 500, because the
-             *     sentence the user typed was only ever going to be written by that
-             *     operation, so a 201 would claim a delivery the create did not make.
+             *     Supplying it also makes `Idempotency-Key` **required** (#1384), and
+             *     changes what a harness-start failure means. Without it, a create whose
+             *     `planner-harness-start` operation fails still returns 201 — "the track
+             *     exists, its planner agent is inert" is a documented, recoverable state.
+             *     With it, that same failure is a 500, because the sentence the user typed
+             *     was only ever going to be written by that operation, so a 201 would
+             *     claim a delivery the create did not make.
              *
              *     The 500 does **not** undo the create: the track and its cards are
              *     already committed and nothing compensates for them. Nor does it say the
              *     message was not delivered — that depends on how far the start got, and
-             *     this endpoint cannot tell. A start that failed before the harness was
-             *     installed handed nothing to any agent; a start that failed *after* it
-             *     (the `Stuck` outcome) has already seeded the observation and fired the
-             *     turn, and nothing recalls it. So the 500 reports an unknown delivery and
-             *     asks the client to look at the track before resending, because resending
-             *     a message that did arrive delivers it twice (see the 500 description on
-             *     `create_track`). Teaching the endpoint to answer what actually happened
-             *     is #1384.
+             *     this endpoint still cannot tell. A start that failed before the harness
+             *     was installed handed nothing to any agent; a start that failed *after*
+             *     it (the `Stuck` outcome) has already seeded the observation and fired
+             *     the turn, and nothing recalls it. #1384 did not close that gap and
+             *     deliberately did not pretend to: `harness.user_message.enqueued` proves
+             *     only an *attempt* (its transaction commits before the step that can
+             *     fail), and there is no other durable record of the turn leaving.
              *
-             *     This slice delivers the message; it does not make the create
-             *     **retryable**. A client that retries a create carrying a
-             *     `first_message` gets a second track, exactly as a client retrying any
-             *     other create always has.
+             *     What #1384 did add is the **retry**: the `Idempotency-Key` is bound to
+             *     the track inside the transaction that mints it, so repeating the
+             *     identical request under the same key creates no second track and
+             *     delivers no second copy. That is the actionable half, and it is all the
+             *     500 claims — it does not promise the track is usable.
              */
             first_message?: string | null;
             /**
@@ -5780,7 +5781,18 @@ export interface operations {
     create_track: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description **Required if and only if the body carries `first_message`**; ignored entirely otherwise, so every existing caller is unaffected — and, as a consequence, a create **without** `first_message` is NOT idempotent: repeating one still mints a second track, exactly as it always has.
+                 *
+                 *     With `first_message`, the key is bound to the track it creates by a row written inside the same transaction that mints the track id, so the binding survives every failure after that commit — including a planner-daemon outage, where the operation row that used to carry it is never written at all.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, the same four-arm contract as `POST /api/tracks/{track_id}/conversations`: (a) same key after a **success** returns the same track and does **not** re-deliver the first message — and it does so *without* re-running the create path's request validation, because it mints nothing, so a replay still succeeds after the workspace it attached was deleted or repointed; two cases it answers differently are a track that has since been **deleted** (500, fail-closed, rather than minting a different track under a key that already names one) and a managed workspace that can no longer be materialized (409 `idempotency_key_exhausted` — retry under a new key, which mints a fresh track at a fresh path); (b) same key after a **terminally failed** attempt genuinely RETRIES against the track that attempt already created, so it may return 201 where the first call returned 500; (c) same key after a **stuck** attempt keeps returning the recorded 500 on purpose (fail-closed), and that retry delivers no second copy of the message; (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted` — use a new key; (e) same key with a **different create** — a different `first_message`, `title`, `template_id` or `recipe_id` — is 409 `conflict`, because all four are bound into the operation payload, except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited request resent after a terminal failure is **not** rejected *for the old hash*; that attempt genuinely re-executes against the track the failed attempt already created, and its final status is whatever the execution produces (201 on success). Arms (b) and (e) are the same rule read from two sides, not a contradiction.
+                 *
+                 *     Not bound into the payload, and therefore silently ignored on a replay: `template_input`, `attach_folder`, `fork_report_from`, `sort`, and `cwd` (which is deliberately frozen to the first attempt's value, because `PATCH /api/tracks/{id}` can move it).
+                 */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5790,7 +5802,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction. */
+            /** @description Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -5799,7 +5811,7 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — an empty or over-long message. Decided before anything is minted. */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — a missing/blank `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5808,7 +5820,25 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back, nothing compensates, and the create is not retryable — read the track back from `GET /api/tracks` and look before resending, because resending a message that did arrive delivers it twice. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it. */
+            /** @description Area not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Folder-claim conflict (structured `FolderConflict` body), or — with `first_message` — `conflict` when this `Idempotency-Key` was already used with a different create (see the header description for the arm-(b) exception), or `idempotency_key_exhausted` when the key used up its 64 retry slots or when the track it names has a workspace that can no longer be materialized. In every case: retry under a new `Idempotency-Key`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it. */
             500: {
                 headers: {
                     [name: string]: unknown;

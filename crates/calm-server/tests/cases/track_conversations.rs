@@ -445,6 +445,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                 }),
                 first_message_sha256: None,
                 first_message: None,
+                create_request_sha256: None,
             })
             .unwrap();
             state

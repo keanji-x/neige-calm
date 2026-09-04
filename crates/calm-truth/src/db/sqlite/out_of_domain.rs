@@ -171,6 +171,15 @@ impl RepoOutOfDomain for SqlxRepo {
         ))
     }
 
+    async fn track_create_idempotency_get(
+        &self,
+        area_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<super::TrackCreateBinding>> {
+        // Read-only, one primary-key hit: the pool, not a transaction.
+        super::track::track_create_idempotency_get_pool(&self.pool, area_id, idempotency_key).await
+    }
+
     async fn track_recipe_delete(&self, id: &str) -> Result<()> {
         let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
         super::track_recipe::track_recipe_delete_tx(&mut tx, id).await?;

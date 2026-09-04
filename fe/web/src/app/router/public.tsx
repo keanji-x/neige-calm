@@ -1629,6 +1629,25 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const recipes = useTrackRecipes(transport, unauthorized);
   const go = useGo();
   const [creating, setCreating] = useState(false);
+  /*
+   * #1384 — the `Idempotency-Key` for this page's create, minted **once for the
+   * draft** rather than per submit.
+   *
+   * A key minted per submit is a different key on the retry, and a different
+   * key mints a second track holding the same sentence — which is the failure
+   * the header exists to stop, reintroduced at the caller. Same rule the
+   * conversation drawer already follows for its own draft.
+   *
+   * Mount-scoped is exactly the draft's lifetime here: a successful create
+   * navigates away and unmounts this route, so the next new-track page gets a
+   * fresh key; a failed one keeps the reader on the page with their sentence,
+   * and pressing Create again is the retry this key makes safe.
+   *
+   * Minted off `getRandomValues` (via `mintIdempotencyKey`) because the app is
+   * served over plain http on the LAN, where `crypto.randomUUID` does not
+   * exist.
+   */
+  const [createKey] = useState(mintIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
   const listDirectory = createDirectoryLister(transport, unauthorized);
   const area = areaId === undefined
@@ -1723,7 +1742,13 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * track in the same repository does not conflict with the first.
        */
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
-    }).then((track) => {
+    /*
+     * #1384 — the key rides only when the sentence does, because that is
+     * exactly when the kernel requires it and exactly when it means anything.
+     * A message-less create is deliberately still not idempotent, and sending
+     * a key there would suggest otherwise.
+     */
+    }, isBlankForKernel(draft.message) ? undefined : createKey).then((track) => {
       /*
        * And only if the reader is still here.
        *

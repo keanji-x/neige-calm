@@ -4899,7 +4899,7 @@
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,490-504,638-659;
-    fe/web/src/app/router/public.tsx:1674-1725
+    fe/web/src/app/router/public.tsx:1693-1744
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:398
   owner_slice: features/track/create
   intentional_omission: false
@@ -4920,7 +4920,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1716-1725
+  source: fe/web/src/app/router/public.tsx:1735-1744
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:517
   owner_slice: features/track/create
   intentional_omission: false

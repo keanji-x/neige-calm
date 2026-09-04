@@ -846,7 +846,13 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
 }
 
 export type TrackMutations = Readonly<{
-  create: (body: NewTrackBody) => Promise<Track>;
+  /**
+   * `idempotencyKey` is required by the kernel whenever `body.first_message` is
+   * present (#1384). Mint it **once per draft** and pass the same value on a
+   * retry — a fresh key on a retry mints a second track holding the same
+   * sentence, which is precisely what the key exists to stop.
+   */
+  create: (body: NewTrackBody, idempotencyKey?: string) => Promise<Track>;
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
   createTerminal: (trackId: string, body: NewTerminalCardBody) => Promise<CardWire>;
@@ -859,8 +865,9 @@ export type TrackMutations = Readonly<{
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewTrackBody) => runOperation(transport, createTrackOperation(body), unauthorized),
-    onSuccess: (track, body) => {
+    mutationFn: ({ body, idempotencyKey }: { body: NewTrackBody; idempotencyKey?: string }) =>
+      runOperation(transport, createTrackOperation(body, idempotencyKey), unauthorized),
+    onSuccess: (track, { body }) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
       // Explicit `attach_folder` still mints a area_folders row. Drop any
       // cached list so a later folders read cannot serve a stale empty array.
@@ -950,7 +957,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
     toTrack(await patch.mutateAsync({ trackId, areaId, body }));
   return {
-    create: async (body) => toTrack(await create.mutateAsync(body)),
+    create: async (body, idempotencyKey) =>
+      toTrack(await create.mutateAsync({ body, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) })),
     patch: patchTrack,
     createTerminal: async (trackId, body) => createTerminal.mutateAsync({ trackId, body }),
     createCodex: async (trackId, body) => createCodex.mutateAsync({ trackId, body }),

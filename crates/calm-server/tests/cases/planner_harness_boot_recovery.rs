@@ -1232,6 +1232,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             create_card: None,
             first_message_sha256: None,
             first_message: None,
+            create_request_sha256: None,
         })
         .unwrap();
         let mut output = TxOutput::new(
