@@ -203,6 +203,25 @@ jobs:
       - name: report-write boundary gate (#1318)
         run: scripts/ci/ratchets/report_write_boundary.sh
 
+      # #1252 S3′ PR-B. Two halves, two different statements — do not merge them
+      # in your head:
+      #
+      #   * the escape-probe step below and the trybuild suite (run by the Rust
+      #     shards) are the COMPILE-TIME half. What they pin is narrow and exact:
+      #     in safe code, no path reaches `SqlxRepo::event_append_in_tx` without a
+      #     gate decision on the very triple it inserts. Not "the events table
+      #     cannot be written".
+      #   * these two steps are a TEXT scan. They are a drift detector with the
+      #     same threat model #1318 declared for itself, plus the one thing no
+      #     type carries: a raw `INSERT INTO events` written elsewhere against
+      #     the bare `Transaction` that `RepoEventWrite::write_in_tx` still
+      #     hands out.
+      - name: append-seam boundary selftest (#1252 S3′)
+        run: scripts/ci/ratchets/append_seam_boundary_selftest.sh
+
+      - name: append-seam boundary gate (#1252 S3′)
+        run: scripts/ci/ratchets/append_seam_boundary.sh
+
       - name: no parallel operation-event entrance (#679 PR4)
         run: |
           set -euo pipefail
@@ -357,6 +376,82 @@ jobs:
             exit 1
           fi
           echo "OK: probe fails with E0616 on Pgid's private field, in calm-proc-supervisor/src/lib.rs"
+
+      - name: append-seam escape probe (#1252 S3′ PR-B)
+        # `mod append_seam_escape_probe` in
+        # crates/calm-truth/src/db/sqlite/events.rs holds four samples, each a
+        # bypass that a review channel wrote and COMPILED against the seam's
+        # first draft. Enabling a feature compiles one sample, and that build
+        # MUST fail with the named diagnostic. Asserting only "it failed" would
+        # be a fake gate — any typo makes a build fail.
+        #
+        # **One `cargo check` per shape, and that is not tidiness.** The first
+        # draft put all four behind a single feature and only TWO diagnostics
+        # came out: `rustc` aborts after type checking, and the struct-expression
+        # privacy check (E0451) runs in a later pass, so the two forging samples
+        # compiled silently while a single-feature step would have reported
+        # success on four. Do not re-merge these.
+        #
+        # What this step proves, exactly: a module INSIDE `calm-truth` and
+        # inside the `events` subtree — one that CAN name `Authorized` and CAN
+        # name the private appender — still cannot forge a capability, cannot
+        # retarget one it earned, and cannot hand the appender a loose triple.
+        # The CROSS-crate statement is a different one and `trybuild` carries it
+        # (crates/calm-truth/tests/append_seam_trybuild.rs, run by the Rust
+        # shards); neither suite can carry the other's statement, because
+        # trybuild compiles its samples as external crates where none of these
+        # paths resolve at all and every case would pass vacuously.
+        #
+        # NOTE: `calm-truth` can therefore never be built with `--all-features`.
+        # That is by design; see crates/calm-truth/Cargo.toml. The other
+        # direction (default build green, probes absent) is covered by the
+        # clippy step below, which builds this crate without these features.
+        run: |
+          set -uo pipefail
+          fail=0
+          check_probe() {
+            local feature="$1" want="$2"
+            local out rc
+            out="$(cargo check -p calm-truth --features "$feature" 2>&1)" && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              printf '%s\n' "$out"
+              echo "::error::$feature compiled successfully — that bypass of the append seam is legal Rust again"
+              fail=1
+              return
+            fi
+            # bash's own substring test, no subprocess: a `printf | grep` in an
+            # assertion path in this repo produced a false RED about once in
+            # forty runs, and a gate that cries wolf is a gate people re-run
+            # until it passes.
+            case "$out" in
+              *"$want"*) ;;
+              *)
+                printf '%s\n' "$out"
+                echo "::error::$feature failed, but not with: $want — the probe is broken, not the invariant. Read the diagnostic above before believing this message."
+                fail=1
+                return
+                ;;
+            esac
+            case "$out" in
+              *"crates/calm-truth/src/db/sqlite/events.rs"*) ;;
+              *)
+                printf '%s\n' "$out"
+                echo "::error::$feature failed with the right code but not at events.rs — it is not the probe's expression that failed"
+                fail=1
+                return
+                ;;
+            esac
+            echo "OK: $feature — $want"
+          }
+          check_probe append-seam-escape-probe-retarget \
+            'error[E0616]: field `event` of struct `Authorized` is private'
+          check_probe append-seam-escape-probe-forge \
+            'error[E0451]: fields `actor`, `scope` and `event` of struct `Authorized` are private'
+          check_probe append-seam-escape-probe-functional-update \
+            'error[E0451]: fields `actor`, `scope` and `event` of struct `Authorized` are private'
+          check_probe append-seam-escape-probe-ungated-append \
+            'error[E0061]: this function takes 3 arguments but 5 arguments were supplied'
+          exit "$fail"
 
       - name: pgid accessor ratchet (#1013 T11 companion)
         # DEFENSE IN DEPTH, NOT A PROOF. Read this before trusting it.
