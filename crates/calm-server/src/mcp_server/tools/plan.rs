@@ -435,7 +435,7 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                 "description": "Stable per-track task key; also the completion correlation id."
                             },
                             "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                            "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
+                            "goal": { "type": "string", "minLength": 1, "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)" },
                             "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
                             "acceptance_criteria": { "type": ["string", "null"] },
                             "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_schema_goal_description_documents_claude_goal_text() {
+    fn upsert_schema_goal_description_distinguishes_agent_goals_from_terminal_commands() {
         let descriptor = plan_upsert_descriptor();
         let description = descriptor
             .input_schema
@@ -1054,8 +1054,9 @@ mod tests {
             .expect("goal description");
 
         assert!(
-            description.contains("codex/claude: goal text")
-                && description.contains("terminal: the command"),
+            description.contains("codex/claude: natural-language objective")
+                && description.contains("terminal: exact Shell command")
+                && description.contains("passed verbatim"),
             "calm.plan.upsert goal description must document claude and terminal semantics: {description}"
         );
     }
