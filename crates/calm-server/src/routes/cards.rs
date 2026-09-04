@@ -998,7 +998,6 @@ pub(crate) async fn send_planner_input_with_context(
                 .await?;
             tracing::info!(
                 card_id = %card.id,
-                runtime_id = %runtime.id,
                 "planner harness system context enqueued with user message"
             );
         }
