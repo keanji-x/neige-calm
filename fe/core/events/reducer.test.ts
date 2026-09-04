@@ -110,7 +110,10 @@ describe('event reducer behavior', () => {
     );
     expect(deleted.effects).toEqual([
       { type: 'persist-cursor', id: 8 },
-      { type: 'invalidate', keys: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range']] },
+      {
+        type: 'invalidate',
+        keys: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report']],
+      },
       { type: 'remove', keys: [['track', 'w1']] },
     ]);
   });
