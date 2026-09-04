@@ -100,8 +100,8 @@ pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 ///     was ACCEPTED INTO THE HARNESS QUEUE of a given runtime, so it proves the
 ///     observation was enqueued, not that the agent has consumed it
 ///     (`calm-server/src/routes/conversations_shared.rs::user_message_enqueued_on_active_runtime`,
-///     which matches the row's `runtime_id` against the card's currently active
-///     runtime). `routes::today_summary` reads it to decide whether the standing
+///     which matches the runtime recorded in that row's payload against the
+///     card's currently active runtime). `routes::today_summary` reads it to decide whether the standing
 ///     bootstrap instruction still has to be delivered to that runtime
 ///     (INV-TODAYDOC-010). Adding it to this allowlist would, after the
 ///     retention horizon, silently make a Today trigger against a long-lived
@@ -951,7 +951,7 @@ mod tests {
     /// `calm-server/src/routes/conversations_shared.rs` answers "has a user
     /// message been enqueued into the harness of this card's *currently active*
     /// runtime?" from the presence of a `harness.user_message.enqueued` row
-    /// whose `runtime_id` is that runtime (enqueued, not consumed by the
+    /// whose payload records that runtime (enqueued, not consumed by the
     /// agent), and `routes::today_summary` is its caller. If that row can be
     /// pruned, then after the retention horizon a Today trigger against a
     /// runtime that outlived the horizon — a launchpad conversation's session

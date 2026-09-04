@@ -398,7 +398,7 @@ impl Boot {
 
     /// This card's ACTIVE runtime id, through the production read rather than a
     /// hand-written state filter.
-    async fn active_runtime_id(&self, card_id: &str) -> Option<String> {
+    async fn active_runtime(&self, card_id: &str) -> Option<String> {
         use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
         self.repo
             .session_projection_active_for_card(&card_id.to_string())
@@ -1846,7 +1846,7 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
         "premise: the mint wrote the bootstrap's and the summary's evidence rows"
     );
     let r1 = b
-        .active_runtime_id(&card_id)
+        .active_runtime(&card_id)
         .await
         .expect("premise: the mint leaves an active runtime behind");
     assert!(
@@ -1867,7 +1867,7 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
         .await;
     assert_eq!(status, StatusCode::OK, "reset={reset}");
     let r2 = b
-        .active_runtime_id(&card_id)
+        .active_runtime(&card_id)
         .await
         .expect("premise: the reset leaves a new active runtime");
     assert_ne!(

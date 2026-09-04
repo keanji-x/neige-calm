@@ -21,7 +21,7 @@ use crate::session_projection_repo::{
     WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError,
 };
 use crate::session_projection_row::{
-    ACTIVE_RUNTIME_ID_FOR_CARD_SQL, WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT,
+    ACTIVE_CARD_RUNTIME_SELECT, WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT,
     card_runtime_from_ws_join_row, projectable_runtimes_for_cards_from_rows,
     projectable_runtimes_for_cards_query, run_status_from_db,
 };
@@ -61,13 +61,13 @@ pub(super) async fn runtime_get_active_for_card_from_pool(
     card_id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     // The active-runtime choice itself is not restated here: it is
-    // `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`, the same statement the
+    // `ACTIVE_CARD_RUNTIME_SELECT`, the same statement the
     // `harness.user_message.enqueued` predicate embeds, so the runtime this read
     // reports and the runtime that predicate scopes its evidence to cannot drift
     // apart (#1314).
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
-           WHERE ws.id = ({ACTIVE_RUNTIME_ID_FOR_CARD_SQL})
+           WHERE ws.id = ({ACTIVE_CARD_RUNTIME_SELECT})
            LIMIT 1"#,
     );
     let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;

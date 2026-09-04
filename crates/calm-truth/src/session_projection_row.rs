@@ -51,7 +51,7 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track
 /// A caller that wants the whole projection row wraps this
 /// (`... WHERE ws.id = (<this>)`); a caller that only needs to compare ids uses
 /// it directly. Either way the state list is written here and nowhere else.
-pub const ACTIVE_RUNTIME_ID_FOR_CARD_SQL: &str = r#"SELECT ws.id
+pub const ACTIVE_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id
              FROM worker_sessions ws
              JOIN cards c ON c.session_id = ws.id
             WHERE c.id = ?1

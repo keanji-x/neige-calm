@@ -6,7 +6,7 @@
 
 use sha2::{Digest, Sha256};
 
-use calm_truth::session_projection_row::ACTIVE_RUNTIME_ID_FOR_CARD_SQL;
+use calm_truth::session_projection_row::ACTIVE_CARD_RUNTIME_SELECT;
 
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
@@ -133,7 +133,7 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// strands the instruction permanently.
 ///
 /// **What "ACTIVE" means is not restated here.** The runtime is picked by
-/// `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`, embedded as a subquery — the same statement
+/// `ACTIVE_CARD_RUNTIME_SELECT`, embedded as a subquery — the same statement
 /// `Repo::session_projection_active_for_card` is built from, which owns the state
 /// filter (`starting | running | idle | turn_pending`) and the newest-first
 /// ordering. That is the pool-side twin of
@@ -196,8 +196,8 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 ///
 /// Both scope columns are bound: `scope_track` is indexed (`0007`), so the scan
 /// is bounded by one track rather than by every conversation in the DB.
-/// The `runtime_id` extract is **CASE-gated** on `json_valid`, not merely
-/// conjoined with it. SQLite *raises* on `json_extract` over malformed JSON, and
+/// The `json_extract` that pulls the enqueued-onto runtime out of `e.payload`
+/// is **CASE-gated** on `json_valid`, not merely conjoined with it. SQLite *raises* on `json_extract` over malformed JSON, and
 /// one historical bad row would turn this read into a 500 on every trigger;
 /// `events_prune.rs` measured that a bare `AND json_valid(payload)` conjunct is
 /// not a defence, because SQLite does not guarantee AND-term evaluation order —
@@ -245,7 +245,7 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
     // single statement is atomic in SQLite by construction — it reads one
     // snapshot — so it needs neither the transaction nor an exemption.
     //
-    // The runtime choice is not restated here: `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`
+    // The runtime choice is not restated here: `ACTIVE_CARD_RUNTIME_SELECT`
     // is the same statement `Repo::session_projection_active_for_card` is built
     // from (`calm-truth/src/session_projection_row.rs`), embedded as a subquery.
     // It owns the state list (`starting | running | idle | turn_pending`) and the
@@ -285,7 +285,7 @@ pub fn user_message_enqueued_on_active_runtime_sql() -> String {
               AND e.scope_track = ?2
               AND (CASE WHEN json_valid(e.payload)
                         THEN json_extract(e.payload, '$.runtime_id') END)
-                  = ({ACTIVE_RUNTIME_ID_FOR_CARD_SQL})
+                  = ({ACTIVE_CARD_RUNTIME_SELECT})
             LIMIT 1"#,
     )
 }
