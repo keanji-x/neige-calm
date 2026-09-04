@@ -243,8 +243,28 @@ impl ConnectorKind {
     }
 }
 
-/// Where the API key rides on an outbound `mcp-http` request. Closed set:
-/// `bearer` or `header:<name>` (§2.2).
+/// Where the API key rides on an outbound `mcp-http` request: `bearer` or
+/// `header:<name>` (§2.2).
+///
+/// **Where that set is actually enforced, stated exactly.** Two different
+/// scopes, and conflating them is an error this file made once already:
+///
+/// * the **retired** spelling `query:*` is refused by [`McpHttpBlock::validate`]
+///   **unconditionally** — with or without an `api_key_secret`;
+/// * the **rest** of the set is enforced only when `api_key_secret` is set. A
+///   keyless manifest may carry `api_key_in: "cookie:k"`, `"body:token"`,
+///   `"api_key"`, `"header:"`, `"header:bad name"` or `""` and parse
+///   successfully; the `(None, _)` arm of that match accepts them.
+///
+/// That is deliberate, not an oversight. Nothing reaches the auth branch in
+/// [`crate::plugin_host::http_mcp::HttpMcpClient::new`] without a credential —
+/// the whole branch is inside `if let Some(key)` — so a keyless connector with
+/// a nonsense `api_key_in` sends no credential anywhere and there is nothing to
+/// close. Tightening `(None, _)` would be a contract change with false-refusal
+/// risk against manifests that parse today, and this chain has opened a false
+/// refusal while closing a hole four times. So: **do not read "closed set" as a
+/// statement about every manifest.** It is a statement about manifests that
+/// name a credential, plus one unconditional refusal.
 ///
 /// **`query:<name>` was retired by #1194** and is now a validation error, not a
 /// third variant. The credential rode in the request URL, which is the one
@@ -288,8 +308,15 @@ pub const RETIRED_QUERY_HINT: &str = "`query:<name>` was retired (#1194): the cr
 
 impl ApiKeyIn {
     /// Parse the manifest's `api_key_in` string. `None` for anything outside
-    /// the closed set — the caller turns that into a validation error, and
-    /// gives the retired `query:` spelling its own message.
+    /// the set.
+    ///
+    /// What the caller does with that `None` depends on whether a credential is
+    /// named: [`McpHttpBlock::validate`] turns it into a validation error only
+    /// when `api_key_secret` is set, and lets it through otherwise — see the
+    /// scope note on [`ApiKeyIn`]. The retired `query:` spelling is the one
+    /// exception, refused unconditionally and with its own message, and this
+    /// function deliberately does not distinguish it: [`Self::is_retired_query`]
+    /// is that judgement, and the validator owns it.
     pub fn parse(s: &str) -> Option<Self> {
         if s == "bearer" {
             return Some(Self::Bearer);
@@ -1313,10 +1340,22 @@ impl McpHttpBlock {
         // and that placement is deliberate. Inside the match it would sit under
         // an `api_key_secret.is_some()` arm, and the `(None, _)` arm would let
         // `{"url": …, "api_key_in": "query:api_key"}` — no secret named —
-        // through: the closed set would then be closed only for manifests that
-        // happen to configure a credential. It is the SET that is closed, not
-        // the set-when-a-key-is-present, so the check is unconditional and the
-        // three doc sentences that say so are true as written.
+        // through, which is what review executed and found parsing.
+        //
+        // **What this buys, and not one word more.** It makes the refusal of
+        // the RETIRED SPELLING unconditional. It does NOT make the set closed
+        // for keyless manifests: the `(None, _)` arm below still accepts
+        // `cookie:k`, `body:token`, `api_key`, `header:`, `header:bad name` and
+        // `""`, all executed and all parsing. An earlier revision of this
+        // comment claimed otherwise ("it is the SET that is closed"), which is
+        // the same over-wide shape the module header was corrected for one
+        // round earlier — recorded because it was written while fixing that
+        // exact class.
+        //
+        // Leaving `(None, _)` open is a decision, not an omission: the auth
+        // branch in `HttpMcpClient::new` is entirely inside `if let Some(key)`,
+        // so a keyless connector sends no credential whatever its `api_key_in`
+        // says, and there is no hole to close — only a contract to break.
         //
         // Fail-closed on purpose: a plugin whose manifest still puts the
         // credential in the URL must not load. Silently downgrading it to "send
@@ -4370,17 +4409,22 @@ mod connector_kind_tests {
         }
     }
 
-    /// E2 — the closed set is closed **unconditionally**, not only for
+    /// E2 — the **retired spelling** is refused unconditionally, not only for
     /// manifests that also name a credential.
     ///
     /// The first cut of this slice put the retirement inside the
     /// `(api_key_secret, api_key_in)` match, under an arm that required
     /// `Some(secret)`. Review executed the counter-example below and it PARSED:
     /// `{"url": …, "api_key_in": "query:api_key"}` with no `api_key_secret`
-    /// went through the `(None, _)` arm untouched. A closed set that is only
-    /// closed when a key happens to be configured is not a closed set, and the
-    /// three doc sentences saying `query:<name>` is rejected would have needed
-    /// a hedge to stay true.
+    /// went through the `(None, _)` arm untouched.
+    ///
+    /// **The scope of what this test proves is exactly its table**: every row
+    /// is a `query*` spelling, so it establishes the unconditional refusal of
+    /// the retired value and nothing about the rest of the set. A keyless
+    /// `cookie:k` still parses, deliberately — see the scope note on
+    /// [`ApiKeyIn`] for why that is left alone. Do not read this test as
+    /// "the closed set is enforced for keyless manifests"; it is not, and an
+    /// earlier revision of this doc comment said so wrongly.
     ///
     /// **Mutation witness** — move the `is_retired_query` check back inside the
     /// match as `(Some(_), Some(x)) if is_retired_query(x)`. This test goes red

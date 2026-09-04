@@ -223,11 +223,18 @@
 //!
 //! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
 //! body is an arbitrary error page with nothing to parse. There the
-//! scrub-before-truncate rule applies and is not pedantry — an upstream that
-//! echoes the request URL back inside a long error body gets truncated to 512
-//! chars, and if that boundary falls inside the key the surviving prefix is no
-//! longer a literal member of `secret_forms`, so a later `replace` misses it
-//! entirely and a partial credential ships.
+//! scrub-before-truncate rule applies and is not pedantry — an error body
+//! containing the credential anywhere in it gets truncated to 512 chars, and if
+//! that boundary falls inside the key the surviving prefix is no longer a
+//! literal member of `secret_forms`, so a later `replace` misses it entirely
+//! and a partial credential ships.
+//!
+//! The example used to be "an upstream that echoes the request URL back", and
+//! after #1194 that is a narrower case than it reads: the request URL carries a
+//! credential only when the operator hand-wrote one into `mcp_http.url` (see
+//! the qualifier above). The rule is unchanged and is load-bearing for ANY echo
+//! of the credential — `{"error":"Invalid API key: sk-…"}` reaches this same
+//! arm — so the example is stated at that width instead.
 
 use std::io::Read as _;
 use std::sync::Arc;
