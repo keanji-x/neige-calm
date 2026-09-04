@@ -16,7 +16,11 @@ tells you nothing about whether the mint is correct. Point `CALM_CODEX_HOST_BIN`
 cargo build --release -p calm-server --bin osc-probe-child
 # in the stack's .env
 CALM_CODEX_HOST_BIN=<repo>/target/release/osc-probe-child
+CALM_CODEX_CODE_MODE_HOST_BIN=/bin/true
 ```
 
-This is what `ci.yml`'s `fe e2e` job does. `CALM_CODEX_HOST_BIN=/bin/true` still brings the stack
-up, but the conversation-create test will fail against it.
+This is what `ci.yml`'s `fe e2e` job does. The probe never invokes deferred
+tools, so `/bin/true` is only an executable placeholder for the companion
+mount required by `make up`. Pointing `CALM_CODEX_HOST_BIN` itself at
+`/bin/true` still brings the stack up, but the conversation-create test will
+fail against it.

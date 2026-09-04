@@ -126,20 +126,19 @@ async fn full_hard_queue_then_incoming_hard_drops_new() {
 }
 
 #[tokio::test]
-async fn durable_user_message_batch_rolls_back_every_message_when_one_cannot_fit() {
+async fn durable_context_and_user_batch_rolls_back_every_message_when_one_cannot_fit() {
     let original = (0..255)
         .map(|i| worker_hook_stop(format!("hook-{i}")))
         .collect::<Vec<_>>();
     let harness = harness_from_snapshot(HarnessSnapshot::initial(0, original.clone())).await;
-    // Four individually legal planner inputs exceed the harness's folded-tail
-    // cap only after earlier members have already been accepted. This creates
-    // the partial-batch window rather than merely failing the first message.
-    let message = "x".repeat(32_768);
+    // One slot remains: the context fits, then the user message cannot. Both
+    // variants are hard-fire, so the second cannot evict the first and turn a
+    // partial batch into a false success.
 
     let error = harness
-        .observe_user_messages_durable(vec![message.clone(); 4])
+        .observe_user_message_with_context_durable("server context".into(), "user words".into())
         .await
-        .expect_err("the fourth message must exceed the full hard queue");
+        .expect_err("the user message must exceed the full hard queue");
     assert!(matches!(
         error,
         calm_server::error::CalmError::ServiceUnavailable(_)
@@ -148,6 +147,27 @@ async fn durable_user_message_batch_rolls_back_every_message_when_one_cannot_fit
         harness.pending_queue_for_test().await,
         original,
         "a rejected durable batch must restore the queue instead of retaining a prefix"
+    );
+}
+
+#[tokio::test]
+async fn durable_context_and_user_batch_keeps_system_attribution_and_order() {
+    let harness = harness_from_snapshot(HarnessSnapshot::initial(0, vec![])).await;
+    harness
+        .observe_user_message_with_context_durable("server context".into(), "user words".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.pending_queue_for_test().await,
+        vec![
+            Observation::SystemContext {
+                text: "server context".into(),
+            },
+            Observation::UserMessage {
+                text: "user words".into(),
+            },
+        ],
+        "the briefing precedes the user without being attributed to them"
     );
 }
 

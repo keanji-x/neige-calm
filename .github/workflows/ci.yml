@@ -1143,6 +1143,10 @@ jobs:
         run: |
           cat > .env <<'EOF'
           CALM_CODEX_HOST_BIN=${{ github.workspace }}/target/release/osc-probe-child
+          # The probe is a complete fake app-server for this suite and never
+          # defers tools; `/bin/true` only supplies the companion mount that
+          # production Codex packages provide beside the real binary.
+          CALM_CODEX_CODE_MODE_HOST_BIN=/bin/true
           CALM_EXTRA_MOUNT=/tmp
           CALM_WEB_DIST=/tmp
           CALM_FE_DIST=/tmp
@@ -1263,6 +1267,7 @@ jobs:
         run: |
           cat > .env <<'EOF'
           CALM_CODEX_HOST_BIN=/bin/true
+          CALM_CODEX_CODE_MODE_HOST_BIN=/bin/true
           CALM_EXTRA_MOUNT=/tmp
           CALM_DEV_AUTOLOGIN=true
           HTTP_PROXY=

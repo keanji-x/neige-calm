@@ -106,7 +106,9 @@ function renderApp({
 }
 
 /** The same page on a workspace that has no launchpad yet: `200 null`. */
-function renderNoLaunchpad() {
+function renderNoLaunchpad({
+  ensure = () => Promise.resolve({ status: 201, statusText: 'Created', body: { track_id: 'lp' } }),
+}: { ensure?: () => Promise<ApiTransportResponse> } = {}) {
   const requests: ApiRequest[] = [];
   let launchpadExists = false;
   const transport: ApiTransportPort = {
@@ -114,7 +116,7 @@ function renderNoLaunchpad() {
       requests.push(request);
       if (request.path === '/api/today/launchpad/ensure') {
         launchpadExists = true;
-        return Promise.resolve({ status: 201, statusText: 'Created', body: { track_id: 'lp' } });
+        return ensure();
       }
       if (request.path === '/api/today/launchpad') {
         return Promise.resolve(ok(launchpadExists
@@ -284,6 +286,37 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
         .toEqual(['/api/today/launchpad/ensure']);
     });
     expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+  });
+
+  it('keeps a failed ensure visible when its refetch discovers the launchpad, then opens it on retry', async () => {
+    const { requests } = renderNoLaunchpad({
+      /* The server creates the launchpad before starting its harness. A start
+         failure therefore returns 503 while the following resolve truthfully
+         finds the new track. */
+      ensure: () => Promise.resolve({
+        status: 503, statusText: 'Service Unavailable', body: { error: 'harness start failed' },
+      }),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Today assistant could not be started: harness start failed');
+    await waitFor(() => {
+      expect(requests.map((request) => request.path)).toContain(LAUNCHPAD_CONVERSATIONS);
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+    expect(requests.filter((request) => request.path === '/api/today/launchpad/ensure')).toHaveLength(1);
+  });
+
+  it('shows a status rather than a clickable no-op while ensure is pending', async () => {
+    const { requests } = renderNoLaunchpad({ ensure: () => new Promise(() => undefined) });
+    await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
+
+    expect(await screen.findByText('Preparing Today assistant…')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preparing Today assistant' })).toBeNull();
+    expect(requests.filter((request) => request.path === '/api/today/launchpad/ensure')).toHaveLength(1);
   });
 
   /*

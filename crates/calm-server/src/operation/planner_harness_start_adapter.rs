@@ -1084,7 +1084,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 developer_instructions,
                 // The assistant needs the same channel-3 MCP credentials as the
                 // planner harness — the block channel is its only write surface,
-                // and `neige` is how it reads the track. WHICH tools that token
+                // and `calm.report.read` is its report read surface. WHICH tools that token
                 // can reach is not decided here: `tools/list` filters on
                 // `ToolDescriptor::visible_to_roles` and every write handler
                 // re-checks `require_role*`, both resolved from the card's

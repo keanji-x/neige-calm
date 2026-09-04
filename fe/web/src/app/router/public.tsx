@@ -1544,11 +1544,16 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   );
 
   const startTodayConversation = () => {
+    if (launchpadEnsure.pending) return;
     if (conversationTrackId !== '') {
+      /* `ensure` can materialise the launchpad and still return an error when
+         its harness start fails. The resolve then discovers the real track.
+         A retry in that state opens the now-available draft and dismisses the
+         stale mutation error; it must not ask `ensure` to create it again. */
+      launchpadEnsure.clearFailure();
       chat.startConversation();
       return;
     }
-    if (launchpadEnsure.pending) return;
     void launchpadEnsure.ensure().then((prepared) => {
       /* The ensure response owns the track id, so the draft can be scoped
          without inventing one while the read-only resolve catches up. */
@@ -1568,15 +1573,15 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        empty conversation list. Its own error is already rendered in the
        document region. */
     ? null
-    : conversationTrackId === ''
-    ? launchpadEnsure.pending
+    : launchpadEnsure.pending
       ? <PanelEmpty>Preparing Today assistant…</PanelEmpty>
       : launchpadEnsure.failure !== null
         ? <ErrorBox
             message={`Today assistant could not be started: ${launchpadEnsure.failure.message}`}
             onRetry={startTodayConversation}
           />
-        : <PanelEmpty>Start a conversation with Today.</PanelEmpty>
+        : conversationTrackId === ''
+          ? <PanelEmpty>Start a conversation with Today.</PanelEmpty>
     : launchpadConversationsQuery.isPending
       /* Unknown is not empty: do not flash a false empty state while the first
          read is still on the wire. */
@@ -1708,14 +1713,14 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        */
       conversationAction={launchpadQuery.isPending || launchpadQuery.isError
         ? undefined
-        : conversationTrackId === ''
-          ? <PanelAction
-              label={launchpadEnsure.pending
-                ? 'Preparing Today assistant'
-                : 'Start a conversation with Today'}
-              onClick={startTodayConversation}
-            ><Icon name="plus" size="sm" /></PanelAction>
-          : chat.action}
+        : launchpadEnsure.pending
+          ? undefined
+          : conversationTrackId === '' || launchpadEnsure.failure !== null
+            ? <PanelAction
+                label="Start a conversation with Today"
+                onClick={startTodayConversation}
+              ><Icon name="plus" size="sm" /></PanelAction>
+            : chat.action}
       /* Undefined while the resolve is in flight, `null` when the server says
          there is no launchpad yet. The page
          decides the empty state from `report_has_noninitial_content` and from

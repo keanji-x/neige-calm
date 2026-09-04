@@ -906,13 +906,10 @@ export interface paths {
          *     replace uses is applied here — the two write the same thing through the
          *     same door.
          *
-         *     **The revision anchor is read here, not supplied.** `if_doc_rev` comes from
-         *     the current snapshot, so this is last-write-wins against a concurrent edit
-         *     rather than a 409. That is deliberate for a destructive action the user has
-         *     already confirmed: "reset it" means the report as it stands is being
-         *     discarded, so racing with an edit that is also being discarded has no
-         *     outcome worth reporting. It is not a claim that no edit can interleave —
-         *     one can, between the read and the write, and it would be overwritten.
+         *     **The revision anchor is read here, not supplied by the browser.** A report
+         *     edit can still land between this read and the write. The ordinary CRDT CAS
+         *     then returns 409 and writes nothing; Reset never silently overwrites an edit
+         *     it did not read. Retrying the confirmed action reads the new revision.
          */
         post: operations["reset_today_launchpad_report"];
         delete?: never;
@@ -5565,6 +5562,15 @@ export interface operations {
             };
             /** @description There is no launchpad track yet, so there is no report to reset */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The report changed after Reset read its revision; nothing was reset and the action may be retried */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

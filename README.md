@@ -90,7 +90,9 @@ cp .env.example .env
 ```
 
 - Change `CALM_EXTRA_MOUNT=/mnt/data2` to a path that exists on your host, or use `/tmp` if no extra mount is needed.
-- Set `CALM_CODEX_HOST_BIN` if Codex is not installed in the default system npm location.
+- `make dev` resolves the active Codex installation from `PATH`. For a
+  nonstandard package layout, set both `CALM_CODEX_HOST_BIN` and
+  `CALM_CODEX_CODE_MODE_HOST_BIN` to executable files from the same release.
 - Change `CALM_AUTH_PASSWORD`; the checked-in development default is `dev`.
 - Container outbound networking currently expects the host proxy/forwarder settings described in `.env.example`. If you do not use a host proxy, prefer the host-local path above.
 

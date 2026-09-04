@@ -41,7 +41,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::send_planner_inputs;
+use crate::routes::cards::send_planner_input_with_context;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
     user_message_already_enqueued, validate_first_message,
@@ -312,28 +312,26 @@ pub(crate) async fn create_track_conversation_inner(
         // message into `payload_hash`; the counts change through the day, so a
         // briefing folded in there would make every retry under one
         // `Idempotency-Key` a permanent 409 (`operations` has no pruner). It
-        // travels the ordinary message channel instead, which carries nothing
-        // into the key.
+        // travels the harness observation channel instead, as typed system
+        // context paired with the user's message; neither enters the key.
         let opening = match briefing {
             OpeningBriefing::TodaysActivityOnTheLaunchpad => {
                 launchpad_opening_briefing(&s, &w, track.id.as_str()).await?
             }
             OpeningBriefing::CallerSuppliesItsOwn => None,
         };
-        let mut first_inputs = Vec::with_capacity(2);
-        if let Some(briefing) = opening {
-            first_inputs.push(briefing);
-        }
-        first_inputs.push(text);
-        // The public one-message handler and this batch share validation,
-        // harness recovery, durable persistence and audit in one implementation.
-        let _queued = send_planner_inputs(
+        // The public one-message handler and this context-aware path share
+        // validation, harness recovery, durable persistence and audit in one
+        // implementation. The context is deliberately not audited or rendered
+        // as a user message; it is kernel material paired atomically with one.
+        let _queued = send_planner_input_with_context(
             s.clone(),
             w.clone(),
             cs,
             actor,
             derived.card_id.clone(),
-            first_inputs,
+            opening,
+            text,
         )
         .await?;
     }

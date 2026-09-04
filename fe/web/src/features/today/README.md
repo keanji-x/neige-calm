@@ -294,7 +294,14 @@ Consequences worth knowing before "fixing" one of them:
   `POST /api/today/launchpad/ensure`, uses the returned track id as the draft's
   scope, and opens the same composer. Creation is therefore attributable to the
   press, never hidden on page load, and the reader never has to choose or guess
-  which assistant owns Today.
+  which assistant owns Today. `ensure` can create the track and still return a
+  harness-start failure; that failure remains visible after the resolve finds
+  the track, and Retry opens the now-existing draft instead of silently doing
+  nothing or ensuring it again.
+- **The opening activity briefing is system context, not a user turn.** The
+  kernel pairs it atomically with the reader's first message so either both are
+  durable or neither is. Its typed input-segment presentation keeps the
+  transcript from attributing server-supplied counts to the reader.
 - **A cross-track index is gone from here, and is not lost.** Owner's plan is a
   card of its own holding everything about one track; it has its own issue. Do
   not squeeze it back into this module.

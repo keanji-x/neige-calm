@@ -499,6 +499,7 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
 
 export type TodayLaunchpadEnsureMutation = Readonly<{
   ensure: () => Promise<TodayLaunchpadEnsureWire>;
+  clearFailure: () => void;
   pending: boolean;
   failure: ApiFailure | null;
 }>;
@@ -522,6 +523,7 @@ export function useTodayLaunchpadEnsureMutation(
   });
   return {
     ensure: () => mutation.mutateAsync(),
+    clearFailure: () => mutation.reset(),
     pending: mutation.isPending,
     failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
   };

@@ -61,6 +61,12 @@ pub enum Observation {
         #[serde(default)]
         idempotency_key: String,
     },
+    /// Context supplied by the kernel for an assistant turn, not words the
+    /// user typed. It is a distinct variant so the persisted input-segment
+    /// presentation cannot render it back to the user as their message.
+    SystemContext {
+        text: String,
+    },
     /// Review fold-in (#609): forwarded to the LLM as a user message.
     /// Hard-fired so the new turn issues immediately after the current
     /// turn completes (no debounce idle wait) and so the queue cannot
@@ -181,7 +187,8 @@ impl Observation {
             Observation::WorkerHookStop { .. } => {
                 HarnessInputPresentation::SystemWorkerTurnFinished
             }
-            Observation::TaskGateResult { .. }
+            Observation::SystemContext { .. }
+            | Observation::TaskGateResult { .. }
             | Observation::WorkspaceLeased { .. }
             | Observation::WorkspaceReleased { .. }
             | Observation::ForgePrMerged { .. }
@@ -202,6 +209,7 @@ impl Observation {
             Observation::TaskCompleted { .. }
             | Observation::TaskFailed { .. }
             | Observation::WorkerHookStop { .. }
+            | Observation::SystemContext { .. }
             | Observation::UserMessage { .. }
             | Observation::TaskGateResult { .. }
             | Observation::ForgePrMerged { .. }
@@ -231,6 +239,7 @@ impl Observation {
     pub fn to_turn_text(&self) -> String {
         match self {
             Observation::TrackGoal { text } => text.clone(),
+            Observation::SystemContext { text } => text.clone(),
             Observation::UserMessage { text } => format!("User says:\n{text}"),
             // #1252 S0 R1/F2. `None` is only reachable for observations
             // queued before the `author` field existed; it must render the
@@ -440,6 +449,15 @@ mod tests {
         assert_eq!(
             Observation::input_segments_for(&[generic])[0].presentation,
             HarnessInputPresentation::System
+        );
+
+        let context = Observation::SystemContext {
+            text: "Today is empty".into(),
+        };
+        assert_eq!(
+            Observation::input_segments_for(&[context])[0].presentation,
+            HarnessInputPresentation::System,
+            "kernel context must never be attributed to the user"
         );
     }
 

@@ -480,11 +480,14 @@ the report tools unavailable merely because they are deferred.
    document's `docRev` and every block's `{id, kind, rev}`.
 2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
    the block's own `rev` as `if_rev` together with its `id`.
-3. `calm.report.write_markdown` needs the SAME marker read first, and you must \
+3. A prose block's `markdown` is the WHOLE block, not only the new paragraph. \
+   When replacing a headed section, keep its `#` / `##` heading and trailing \
+   newline; omitting them destroys the block boundary and can join the next section.
+4. `calm.report.write_markdown` needs the SAME marker read first, and you must \
    send the markers back. Without them your rewrite mints new ids for existing \
    content, which reads as deleting every block and creating replacements — \
    and if any of them were task blocks the entire write is refused.
-4. Another session may be writing at the same time. A revision conflict means \
+5. Another session may be writing at the same time. A revision conflict means \
    somebody else moved first: re-read and reapply, do not retry blindly.
 "
     };

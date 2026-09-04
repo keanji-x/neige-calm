@@ -822,7 +822,9 @@ const EMPTY_DAY_MARKER: &str = "nothing has been recorded in this workspace toda
 /// * it carries the *real* counts, so it is the projection and not a template —
 ///   the report edit below is one `track.report_edited` on one track;
 /// * it precedes the user's message, which is the whole point of calling it
-///   opening material.
+///   opening material;
+/// * only the user's words produce a `harness.user_message.enqueued` audit row:
+///   kernel context must not masquerade as something the user typed.
 #[tokio::test]
 async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_message() {
     let b = boot().await;
@@ -835,6 +837,12 @@ async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_me
         .await;
     assert_eq!(status, StatusCode::CREATED, "created={created}");
     let card_id = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        b.enqueued_char_counts(&card_id).await,
+        vec!["What happened today?".chars().count() as i64],
+        "the server briefing is typed system context, not a second user message"
+    );
 
     assert_eq!(
         b.delivered(

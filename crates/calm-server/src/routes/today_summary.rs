@@ -523,12 +523,12 @@ pub(crate) async fn write_today_summary(
     // `send_planner_input` enqueues the observation and *then* writes the
     // `harness.user_message.enqueued` row (`routes/cards.rs`), so a send whose
     // audit write fails leaves the agent holding the message with no row, and
-    // the next trigger sends it again. And the row is written per enqueue, not
-    // per delivery, so it says "queued", not "the model saw it" — the run loop
-    // can still drop an observation on a full queue. Both are properties of
-    // shared production code this slice does not touch; what would be wrong is
-    // claiming an exactly-once guarantee on top of them, so: at-least-once,
-    // deduplicated by a permanent row in the ordinary case.
+    // the next trigger sends it again. And the row is written per durable
+    // enqueue, not per model delivery, so it says "queued", not "the model saw
+    // it" — the agent process can still fail before consuming the persisted
+    // observation. Both are properties of shared production code; what would
+    // be wrong is claiming an exactly-once guarantee on top of them, so:
+    // at-least-once, deduplicated by a permanent row in the ordinary case.
     //
     // **Under the per-card first-message claim, and that is not optional.**
     // This is the same read-then-send `create_track_conversation` performs, and
