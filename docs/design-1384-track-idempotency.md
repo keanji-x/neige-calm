@@ -22,7 +22,7 @@ sequence is:
 | pre-tx 4xx: template admission `:720`, `template_input` binding `:750`, `cwd` shape `:762-767`, attached workspace `:782-787`, area 404 `:801-806` | — | none |
 | **the create transaction** (`BEGIN IMMEDIATE`) | `routes/tracks.rs:1464` → `create_track_structure` | folder claim (`:1475`), recipe read + 400 (`:1502-1506`), **`track_create_tx` (`:1515`) mints the id**, planner + report cards, overlays, report |
 | `materialize_workspace` | `routes/tracks.rs:1792-1804` | filesystem |
-| `start_planner_harness` | `routes/tracks.rs:1810` | submits `planner-harness-start` |
+| `start_planner_harness` | `routes/tracks.rs:1420-1428` | submits `planner-harness-start` |
 
 The track id is minted by `track_create_tx` — `let id = new_id();`
 (`crates/calm-truth/src/db/sqlite/track.rs:192`). It is **not** a function of
@@ -98,7 +98,7 @@ transaction and having `submit` advance it. Three independent findings kill it:
 3. **The blast radius is 13 production adapters**, all submitting through the
    same `Driver::submit`. `rg 'impl ProviderAdapter' crates/calm-server/src/`
    returns 14 impls; 13 are production, the 14th is `TestParkingAdapter`
-   (`operation/tests.rs:1763`). The thirteen:
+   (`operation/tests.rs:1762`). The thirteen:
    `child-track` (`child_track_adapter.rs:166`), `claude-create`
    (`claude_adapter/mod.rs:382`), `claude-worker` (`claude_adapter/mod.rs:720`),
    `claude-restart` (`claude_restart_adapter.rs:101`), `codex-create`
@@ -121,10 +121,12 @@ it needs a bigger one.
 ### 2.2 Why (A) wins
 
 The binding becomes a row written in the same `BEGIN IMMEDIATE` transaction as
-the id (`routes/tracks.rs:1464`). There is then **no interval** in which the
-track id exists and the binding does not — the exact property the operation row
-cannot have, because it is written by a later statement on a different
-connection. And it touches the operation subsystem's generic contract not at
+the id (`routes/tracks.rs:1464`). **On the arm that writes it — `Mint`, i.e. a
+create carrying a `first_message` and therefore an `Idempotency-Key` (§4.0) —
+there is then no interval in which the track id exists and the binding does
+not.** That is the exact property the operation row cannot have, because it is
+written by a later statement on a different connection. On the `Legacy` arm no
+binding is written at all and the property is not claimed; §9.1 is that gap. And it touches the operation subsystem's generic contract not at
 all: no new phase, no new repo method, no change to `submit`, no adapter
 affected.
 
@@ -175,14 +177,18 @@ CREATE TABLE track_create_idempotency (
   area is the scope every neighbouring idempotent write mouth uses — the
   reference branch's own derivation is `sha256("track-create:{area_id}:{key}")`
   — and `area_id` is a required body field (`routes/tracks.rs:801-806`). It is
-  also **immutable in production**: a sweep of every `UPDATE tracks` statement
-  outside test modules (`track.rs:383-398`, `:426`, `:433`, `:440`, `:447`,
-  `:479`; `session_row.rs:31`, `:43`, `:87`; `session_mirror.rs:371`;
-  `track_workspace.rs:46`, `:134`; `child_track_adapter.rs:308`;
-  `scheduler/mod.rs:832`; `routes/today.rs:393`; `replay.rs:368`) shows none
-  sets `area_id`. The only writer of that column after insert is a test
-  (`db/sqlite/task_projection_snapshot_tests.rs:235`). So a binding row cannot
-  be orphaned by a track moving areas.
+  also **immutable in production**: a sweep of the 17 `UPDATE tracks`
+  statements outside `#[cfg(test)]` modules (`track.rs:383-398`, `:426`,
+  `:433`, `:440`, `:447`, `:479`; `session_row.rs:31`, `:43`, `:87`;
+  `session_mirror.rs:371`; `track_workspace.rs:46`, `:134`;
+  `child_track_adapter.rs:308`; `scheduler/mod.rs:832`; `routes/today.rs:393`;
+  `replay.rs:368`; `calm-truth/src/test_helpers.rs:19`) shows none sets
+  `area_id`. The claim is exactly "**no production writer** sets it" — the
+  writers of that column after insert are tests:
+  `db/sqlite/task_projection_snapshot_tests.rs:235` and
+  `crates/calm-server/tests/cases/track_workspace_recycle.rs:688`, the latter
+  deliberately moving a track to a user area (`:685-692`). So no production
+  path can orphan a binding row by moving a track between areas.
 - **Pre-existing rows.** None. The table is new and empty; no backfill, no
   `ALTER TABLE`, and no existing track can be selected by a lookup.
 - **`.sqlx/` offline metadata: not applicable.** No `.sqlx` directory exists
@@ -227,7 +233,7 @@ Two lookups, in this order:
 1. `track_create_idempotency_get(area_id, idempotency_key)` — new, one
    primary-key hit. **The new authority for "does a track exist for this key".**
 2. `find_by_kind_and_idempotency(PLANNER_HARNESS_START, chosen_key)` — existing
-   (`operation/driver.rs:148-162`), via `retryable_operation_key`
+   (`operation/driver.rs:156-171`), via `retryable_operation_key`
    (`routes/conversations_shared.rs:73-97`). Unchanged in role: it decides
    *which harness-start attempt* this request joins, and whether a `Failed`
    predecessor is stepped over with `#N`.
@@ -330,19 +336,67 @@ It is safe because that function is *designed* to be re-run:
   anything else** (`:365-371`, *"claim it before writing anything else, so a
   crash at any later point leaves a directory we can prove is ours and repair,
   instead of an unmarked non-empty brick"*), and `clear_our_stale_git_locks`
-  (`:381-397`) removes a `config.lock` left by a killed process.
+  (called at `:399`) removes a `config.lock` left by a killed process.
 
-**The permanently un-materializable case, and what happens on it.** The
-`None if dir_has_entries(path)?` arm returns `Internal` "not empty and carries
-no neige ownership marker … refusing to reuse it"
-(`workspace_materialize.rs:353-364`). Reaching it requires an *unmarked,
-non-empty* directory at the managed path. A create crash cannot produce one —
-the empty-dir window between `create_dir_all` and `write_owner_marker` leaves an
-**empty** directory, which the next call claims. The comment at `:296-303`
-describing that brick is past tense (*"used to leave"*), naming the pre-#1147-S3
-behaviour this ordering fixed. So the residue is external interference at the
-managed path, and the answer is a 500 — not a 201 for a broken track. That is
-the honest outcome and it is what this design ships. §9.5 records it.
+**The permanently un-materializable state IS reachable from a create crash.**
+Round 2 of this document claimed it was not, on the grounds that the window
+between `create_dir_all` and `write_owner_marker` leaves an *empty* directory.
+Reading `write_owner_marker` itself refutes that, and the refutation is recorded
+here rather than argued away:
+
+- The marker is `<path>/.git/<OWNER_MARKER>` (`workspace_materialize.rs:531-533`).
+- `write_owner_marker` first `create_dir_all`s the marker's **parent**, i.e.
+  `<path>/.git` (`:547-555`), and only then `std::fs::write`s the marker
+  (`:556-561`).
+- Process death between those two syscalls leaves `<path>` containing `.git/`.
+  `dir_has_entries` counts any `read_dir` entry (`:564-579`), so it is true, and
+  `read_owner_marker` returns `None` (`:535-545`). That is exactly the
+  `None if dir_has_entries(path)?` arm (`:353-364`) ⇒ permanent `Internal`.
+- The window is *inside* the function round 2 cited as closing it, and FP4 puts
+  process death during materialization in scope.
+- The codebase already treats this state as real rather than theoretical:
+  `:413-416` re-asserts the marker after `git init` precisely to cover "the case
+  where the marker was lost along with a partially wiped `.git`".
+- A second, weaker construction: `std::fs::write` is not crash-atomic, so a torn
+  marker yields `Some(owner) != track_id` and lands on the foreign-owner arm
+  (`:346-352`) — the same permanent `Internal`.
+
+**The fence is not relaxed.** An unmarked non-empty directory stays refused.
+Allowlisting "the only entry is `.git/`" would be a marker-absence heuristic —
+the shape this repository has been burned by — and no positive fingerprint is
+available that a user's own bare or partially-initialised repository could not
+also match. The refusal stands and `Resume` inherits it.
+
+**The trade, in both directions.** Today that window produces a *second track at
+a fresh path* and the user gets a **working** one. Under this design the key is
+poisoned: every retry under it re-materializes the same dead path and answers an
+error, forever. **That is a liveness regression in a narrow window, bought for a
+correctness fix** — one key can no longer silently become two tracks, and the
+price is that this one key can no longer become any track.
+
+**The escape, verified: the poisoning is per-key, and a new `Idempotency-Key` is
+a complete recovery needing no new machinery.** A new key misses lookup 1 ⇒
+`Mint` ⇒ `track_create_tx` mints a fresh id
+(`crates/calm-truth/src/db/sqlite/track.rs:192`) ⇒ the managed path is
+`root/<area_id>/<track_id>` built from *that* id (`track.rs:256-264`), so it is
+a **different directory** and the poisoned one is never revisited. Nothing pulls
+the new attempt back onto the old path: a managed workspace is the `cwd_omitted`
+branch, which takes `FolderClaim::Skip` (`routes/tracks.rs:829-831`), so no
+`area_folders` row contends on it either. The only residue is a dead directory
+on disk (§9.5).
+
+**So `Resume` maps a materialization failure to
+`CalmError::IdempotencyKeyExhausted`, not to a generic `Internal`.** That
+variant is already 409 (`error.rs:272-283`) with its own code
+`idempotency_key_exhausted` (`:246`), and its existing meaning — "this key is
+used up; retry under a new `Idempotency-Key`" (`conversations_shared.rs:95-99`)
+— is precisely the actionable instruction here. Reusing it widens the code from
+"64 terminally failed attempts" to "this key can no longer produce a working
+track"; that widening is deliberate and is the one behavioural change this arm
+makes. An operator distinguishes it from a generic 500 by status **and** code,
+and the underlying `materialize_workspace` message is carried in the body
+verbatim so the dead path is named. Pinned by T-BRICK-1; the escape by
+T-BRICK-2 (§8).
 
 **What `Resume` still does NOT re-check, deliberately:**
 `validate_attached_workspace` (`routes/tracks.rs:782-787`). Re-running it is
@@ -429,7 +483,7 @@ none is faked.
 **Today.** `payload_hash` is `stable_payload_hash({"actor": actor.as_str(),
 "request": &request})` (`routes/tracks.rs:1850-1853`) over
 `PlannerHarnessStartOperationPayload`
-(`planner_harness_start_adapter.rs:240-310`): `actor`, `track_id`,
+(`planner_harness_start_adapter.rs:240-320`): `actor`, `track_id`,
 `planner_card_id`, `report_card_id`, `sort`, **`cwd`**, `goal`,
 `reset_harness_items`, `force_new_thread`, `profile`, `create_card`, and (when
 set) `first_message_sha256` / `first_message`. It covers **none** of the create
@@ -587,14 +641,15 @@ verbatim — the thing that did not converge.
 | # | goal | files | prod Δ (est.) | acceptance tests |
 |---|---|---|---|---|
 | 1 | the durable binding | `crates/calm-truth/migrations/0087_track_create_idempotency.sql` (new); `crates/calm-truth/src/db/sqlite/track.rs` (`track_create_idempotency_claim_tx` + `_get`) | ~90 | T-BIND-1, T-BIND-2 |
-| 2 | plan/arm dispatch + resume | `crates/calm-server/src/routes/tracks/create.rs` (new, ported from the reference branch minus the preflight, with lookup 1 as the authority, the fail-closed `miss+occupied` arm, and `materialize_workspace` on `Resume`); `routes/tracks.rs` (handler takes `HeaderMap`, dispatches `CreatePlan`, writes the binding inside the create closure at `:1464`, maps a primary-key unique violation to a fail-closed `Internal`) | ~560 | T-V1…T-V4, T-ARM-1, T-ARM-2, T-MAT-1, T-MAT-2, T-LEGACY-1 |
+| 2 | plan/arm dispatch + resume | `crates/calm-server/src/routes/tracks/create.rs` (new, ported from the reference branch minus the preflight, with lookup 1 as the authority, the fail-closed `miss+occupied` arm, and `materialize_workspace` on `Resume`); `routes/tracks.rs` (handler takes `HeaderMap`, dispatches `CreatePlan`, writes the binding inside the create closure at `:1464` **on the `Mint` arm only** — `create_track_structure` is reached by both arms, since `create_track_with_planner_harness` (`routes/tracks.rs:1406-1428`) calls it with `first_message: None` too, so the write is conditioned on the plan rather than on reaching the closure; maps a primary-key unique violation to a fail-closed `Internal`) | ~560 | T-V1…T-V4, T-ARM-1, T-ARM-2, T-MAT-1, T-MAT-2, T-LEGACY-1 |
 | 3 | payload-hash binding + the split outcome arm | `operation/planner_harness_start_adapter.rs` (`create_request_sha256`); `routes/tracks/create.rs` (digest in `plan_first_message`, carried on `FirstMessagePlan`; `response_for`) | ~100 | T-HASH-1, T-HASH-2, T-COLL-1 |
 | 4 | contract prose + the 500's wording | `routes/tracks.rs` utoipa block (`:617-627`), `routes/tracks/create.rs` module docs, regenerated `fe/core/api/generated/openapi.json`, `web/src/api/openapi.json`, `web/src/api/generated.ts` | ~60 + generated | T-500-1 |
 
-Estimated production delta ≈ **810 lines** (up from 760: the `Resume`
-materialization, the fail-closed arm, and the digest carrier). Test delta ≈
-**1300 lines**, mostly ported from the reference branch's 1666-line suite.
-**Slice count unchanged: one PR.**
+Estimated production delta ≈ **830 lines** (round 2: +50 for the `Resume`
+materialization, the fail-closed arm and the digest carrier; round 3: +20 for
+the `IdempotencyKeyExhausted` mapping and the `Mint`-only conditioning of the
+binding write). Test delta ≈ **1400 lines**, mostly ported from the reference
+branch's 1666-line suite. **Slice count unchanged: one PR.**
 
 ---
 
@@ -621,13 +676,15 @@ parameter.
 | T-V3 | `a_replay_survives_the_attached_directory_being_deleted` | variant 3 (arm decided before validation) | move `validate_attached_workspace` (`routes/tracks.rs:782-787`) ahead of the `CreatePlan` dispatch | same |
 | **T-V4** | `a_daemon_outage_adopts_the_track_it_already_minted_under_one_key` | **variant 4**: daemon down, same key twice ⇒ `tracks == 1`, `cards == 2`, two 500s, no second delivery | delete the `track_create_idempotency` INSERT from the create closure (`routes/tracks.rs:1464` block) — the retry then mints and `track_count` reads 2 | same; fixture `boot_without_daemon()` via `SharedCodexAppServer::new_stub_with_pending` (`shared_codex_appserver.rs:832`), because `is_running()` short-circuits to `true` with a fake installed (`:1286-1289`) |
 | T-V4b | `a_create_without_a_first_message_still_succeeds_during_a_daemon_outage` | control: the message-less path keeps `warn!` + 201 | make any daemon check reachable from the `Legacy` arm | same |
-| T-LEGACY-1 | `a_message_less_create_writes_no_binding_row_even_with_the_header` | §4.0: `Legacy` reads no header and writes no binding, so a message-less same-key retry still 201s (and still mints a second track) | write the binding row unconditionally in the create closure — the second create then fails on the primary key with no `Resume` arm to catch it | same |
-| T-MAT-1 | `a_resume_after_a_materialize_failure_materializes_the_workspace` | §4.4 / FP5: `Resume` re-materializes; the returned track's managed directory has a resolvable `HEAD` | delete the `materialize_workspace` call from `resume_prior_attempt` | same |
-| T-MAT-2 | `a_resume_on_a_healthy_managed_workspace_is_a_no_op` | §4.4's idempotence premise: re-running on a fully materialized workspace succeeds and leaves the owner marker and `HEAD` unchanged | make `resume_prior_attempt` call `materialize_managed_workspace` with a foreign `track_id` — the owner-marker arm (`workspace_materialize.rs:345-352`) then 500s | same |
+| T-LEGACY-1 | `a_message_less_create_writes_no_binding_row` | §4.0: the binding is written on the `Mint` arm only. Asserts `SELECT count(*) FROM track_create_idempotency == 0` after a message-less create sent **with** an `Idempotency-Key` header | remove the `Mint`-arm condition on the binding write in `create_track_structure`'s closure, so it also fires for `Legacy` — the count then reads 1 | same |
+| T-MAT-1 | `a_resume_after_a_materialize_failure_materializes_the_workspace` | §4.4 / FP5: `Resume` re-materializes; the returned track's managed directory has a resolvable `HEAD` | delete the `materialize_workspace` call from `resume_prior_attempt` | same. **Construction:** create successfully with key K, then `std::fs::remove_dir_all` the managed directory (available in-process; `InitCommit::Skip` is private to `workspace_materialize` and unreachable from `tests/`), then replay K. Without the fix the replay 201s onto a directory that does not exist |
+| T-MAT-2 | `a_resume_on_a_healthy_managed_workspace_is_a_no_op` | §4.4's idempotence premise: a replay leaves the owner marker byte-identical and the `HEAD` commit id unchanged | in `materialize_managed_workspace_inner`, drop the `if !git_head_resolves(path)` guard (`workspace_materialize.rs:384`) so `git init` + the initial commit re-run on every call — every other `Resume` test still passes (the directory stays valid) while this one sees a moved `HEAD` | same |
+| T-BRICK-1 | `a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted` | §4.4: the fence is not relaxed, and the answer is 409 `idempotency_key_exhausted`, not a generic 500 and not a 201 | map the materialization failure back to `CalmError::Internal` — the test's status/code assertion then fires | `track_create_first_message.rs`. **Construction:** create with key K, then `remove_dir_all` the managed directory and recreate it containing only an empty `.git/` (the exact residue of the `:547-561` window), then replay K |
+| T-BRICK-2 | `a_new_idempotency_key_recovers_from_a_poisoned_workspace` | §4.4's escape: the poisoning is per-key. After T-BRICK-1's state, a create under a **new** key 201s with a working track at a different path | derive the managed path from `(area_id, idempotency_key)` instead of the minted track id (`track.rs:256-264`) — the new key then lands on the poisoned directory and this test 409s | same |
 | T-BIND-1 | `the_binding_and_the_track_commit_together` | FP3: an in-transaction failure leaves neither | write the binding on a second connection instead of `tx` | unit test beside `track_create_tx` (`calm-truth/src/db/sqlite/track.rs:168`) |
 | T-BIND-2 | `the_database_refuses_two_tracks_under_one_area_and_key` | the primary key is the cross-process wall | **widen** the PK to `(area_id, idempotency_key, track_id)` — keeps the `WITHOUT ROWID` DDL valid, so exactly this test reddens rather than every test that boots a DB | same |
 | T-ARM-1 | `the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key` | §4.2's table, as a pure unit test | swap any row of the table | `#[cfg(test)]` in `routes/tracks/create.rs` |
-| T-ARM-2 | `a_binding_miss_with_an_occupied_key_fails_closed` | §4.2's last row: `Internal`, never `Mint` | return `PriorSelection::FreshKey` for that cell — the test then observes a minted track behind a 409 | same unit module |
+| T-ARM-2 | `a_binding_miss_with_an_occupied_key_mints_nothing` | §4.2's last row: `Internal`, never `Mint` | make the `(miss, occupied)` cell resolve to `Mint` — the test then observes `track_count == 1` behind the 409 instead of `0` | `track_create_first_message.rs`, **not** the pure unit module: the claim is about what is written, so it is constructed by inserting an occupied operation row under the derived key with no binding row, then POSTing that key |
 | T-HASH-1 | `the_same_key_with_a_different_title_is_a_conflict` | §6.2's binding of `title`/`template_id`/`recipe_id` | drop `create_request_sha256` from the payload struct | `track_create_first_message.rs` |
 | T-HASH-2 | `a_message_less_create_writes_byte_identical_payload_json` | `skip_serializing_if` keeps old callers' `payload_hash` stable | remove `skip_serializing_if` from `create_request_sha256` | same (companion of `a_create_without_a_first_message_is_unchanged`, `:437`) |
 | T-COLL-1 | `a_collision_outcome_is_a_success_only_on_a_resume_arm` | §6.1's split | fold `SucceededViaCollision` back into `Succeeded` in `response_for` | `#[cfg(test)]` in `routes/tracks/create.rs`; constructs the `OperationOutcome` directly — §9.2 says why there is no integration construction |
@@ -667,10 +724,18 @@ test went red, not how many.
    binding row survives, `track_get` misses, and the key answers 500 forever.
    Deliberate — fail-closed beats minting a different track for a byte-identical
    request — but there is no operator affordance to clear it.
-5. **An unmarked non-empty directory at a managed workspace path is a permanent
-   500** (`workspace_materialize.rs:353-364`). Unreachable from a create crash
-   (§4.4), so the residue is external interference; recorded because §4.4's
-   safety argument depends on it staying unreachable.
+5. **A crash inside `write_owner_marker` poisons one `Idempotency-Key`
+   permanently.** Reachable, not theoretical (§4.4): death between
+   `create_dir_all(<path>/.git)` (`workspace_materialize.rs:547-555`) and the
+   marker write (`:556-561`) leaves an unmarked non-empty directory that the
+   fence refuses forever (`:353-364`). Every retry under that key answers 409
+   `idempotency_key_exhausted`; the client recovers with a new key, at a fresh
+   path. The residue is a dead directory under the workspace root that nothing
+   reaps, and the liveness cost is stated in §4.4 rather than softened.
+   Follow-up: *"make the workspace ownership marker crash-atomic"* (write to a
+   temp file and rename, or claim the path with a marker that does not require
+   creating `.git` first) — that closes the window rather than working around
+   it, and is out of scope here.
 6. **A replay does not repair an attached workspace.** `Resume` deliberately
    does not re-run `validate_attached_workspace` (variant 3), and
    `materialize_workspace` is a no-op for `Attached`
@@ -703,7 +768,8 @@ test went red, not how many.
 
 None. Both forks the issue left open resolved from code: (A) vs (B) in §2, and
 the `SucceededViaCollision` arm in §6.1 (ground 2 survives this issue, which
-changes what the split can be based on). The review round's blocker resolved
-from code as well: `materialize_workspace` is documented and used as a
-repeatable repair (`workspace_materialize.rs:339-342`, `:374-380`), so `Resume`
-can call it.
+changes what the split can be based on). Round 2's blocker resolved from code
+(`materialize_workspace` is documented and used as a repeatable repair,
+`workspace_materialize.rs:339-342`, `:374-380`, so `Resume` can call it), and
+round 3's from code plus a construction (§4.4): the poisoned-key window is real,
+the fence stays closed, and the escape is a new `Idempotency-Key`.
