@@ -560,6 +560,21 @@ mod tests {
         "entrypoint": { "command": "bin/run" }
     }"#;
 
+    /// Same id as [`VALID`], different everything else. A takeover fixture whose
+    /// manifest were byte-identical to the victim's could not tell "the canonical
+    /// entry won" apart from "the impostor won but happens to look the same":
+    /// with identical content, dropping the winner's `manifests.insert`
+    /// altogether is unobservable through `get`.
+    const IMPOSTOR: &str = r#"{
+        "manifest_version": 1,
+        "id": "test.valid",
+        "version": "9.9.9",
+        "min_kernel_version": "0.1.0",
+        "display_name": "Impostor",
+        "entrypoint": { "command": "bin/pwn" },
+        "views": [{ "view_id": "main", "title": "Main", "scope": "card" }]
+    }"#;
+
     const BROKEN: &str = r#"{ "manifest_version": 1, "id": "BAD ID", "version": "0.1.0" }"#;
 
     fn write_plugin(root: &Path, id: &str, contents: &str) -> PathBuf {
@@ -775,7 +790,7 @@ mod tests {
         // The impostor tree is outside `plugins_dir` and claims the victim's id.
         let outside = tmp.path().join("evil");
         fs::create_dir_all(&outside).unwrap();
-        fs::write(outside.join("manifest.json"), VALID).unwrap();
+        fs::write(outside.join("manifest.json"), IMPOSTOR).unwrap();
         // ".takeover" sorts before "test.valid" ('.' = 0x2e < 't'), and is
         // created first so `read_dir` order cannot be what saves us either.
         let impostor = plugins_dir.join(".takeover");
@@ -802,6 +817,21 @@ mod tests {
             ),
             "the reason must name the id and the path the impostor lost to"
         );
+        // `install_path` alone does not settle it: the manifest served under
+        // this id must be the *winner's*, not the impostor's left behind by the
+        // losing entry's earlier insert. `entrypoint.command` is what the
+        // supervisor would go on to execute.
+        let served = reg.get("test.valid").expect("winner must be retrievable");
+        assert_eq!(
+            served.version, "0.1.0",
+            "impostor manifest served under the victim's id"
+        );
+        assert_eq!(served.display_name, "Valid");
+        assert_eq!(
+            served.entrypoint.as_ref().map(|e| e.command.as_str()),
+            Some("bin/run"),
+            "the supervisor would spawn the impostor's entrypoint"
+        );
     }
 
     /// Same takeover, uppercase-initial name instead of a leading dot: `T` =
@@ -818,7 +848,7 @@ mod tests {
         let plugins_dir = tmp.path().join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
 
-        let impostor = write_plugin(&plugins_dir, "Test.valid", VALID);
+        let impostor = write_plugin(&plugins_dir, "Test.valid", IMPOSTOR);
         let real = write_plugin(&plugins_dir, "test.valid", VALID);
 
         let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir)
@@ -839,6 +869,21 @@ mod tests {
                 real.display()
             ),
             "the reason must name the id and the path the impostor lost to"
+        );
+        // `install_path` alone does not settle it: the manifest served under
+        // this id must be the *winner's*, not the impostor's left behind by the
+        // losing entry's earlier insert. `entrypoint.command` is what the
+        // supervisor would go on to execute.
+        let served = reg.get("test.valid").expect("winner must be retrievable");
+        assert_eq!(
+            served.version, "0.1.0",
+            "impostor manifest served under the victim's id"
+        );
+        assert_eq!(served.display_name, "Valid");
+        assert_eq!(
+            served.entrypoint.as_ref().map(|e| e.command.as_str()),
+            Some("bin/run"),
+            "the supervisor would spawn the impostor's entrypoint"
         );
     }
 
