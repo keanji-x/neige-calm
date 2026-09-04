@@ -26,6 +26,12 @@ inside the harness-start transaction; a blank draft omits the key rather than
 sending an empty string the kernel would reject. The route still opens that
 conversation on arrival — now for the reply.
 
+Blank is `isBlankForKernel` (`core/domain/track.ts`) — the kernel's Unicode
+`White_Space` criterion, not JS `trim()`, which disagrees about `U+0085` — and
+both the composer's submit gate and the route's spread ask that one function.
+What is *sent* is never trimmed: the kernel forwards the text to the agent
+verbatim, so the whitespace around the sentence is the reader's.
+
 With no folder, the request omits both `cwd` and `attach_folder` and the kernel
 creates a managed workspace. Choosing a folder sends `{ cwd, attach_folder:
 true }` and attaches the Track to a directory the kernel does not own.
