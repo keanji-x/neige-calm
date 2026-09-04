@@ -5,9 +5,13 @@
 //! properties this file owns:
 //!
 //!   * a title-only create (the #1131 shape the new FE sends) allocates a
-//!     managed workspace under the configured root and leaves a real git
-//!     repository there — without it, every codex task on that track dies in
-//!     `git rev-parse --show-toplevel`, which is #1147;
+//!     managed workspace under the configured root and leaves a repository
+//!     there that the **first worker can actually use** — without it, every
+//!     codex task on that track dies in `git rev-parse --show-toplevel` or in
+//!     `git worktree add`, which is #1147. "Usable" is measured by running the
+//!     production provisioning, not by predicates on the directory: see
+//!     `assert_workspace_is_usable_by_the_first_worker` and the escape
+//!     construction it is written against (#1318 item 4);
 //!   * the same holds for a create that carries a `template_id` and no `cwd`,
 //!     which is a distinct branch of the request shape and, since #1300 removed
 //!     template seeding, a branch nothing else in the suite drives;
