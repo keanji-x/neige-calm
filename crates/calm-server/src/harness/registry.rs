@@ -238,11 +238,11 @@ impl HarnessRegistry {
     ) -> crate::error::Result<Vec<String>> {
         let handles = self.live_for_track(track_id);
         let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(daemon);
-        for (runtime_id, handle) in handles {
+        for (worker_session_id, handle) in handles {
             if let Some(thread_id) = handle.shutdown_for_deletion().await? {
                 seals.seal(thread_id);
             }
-            let _ = self.remove(&runtime_id);
+            let _ = self.remove(&worker_session_id);
         }
         Ok(seals.retain())
     }

@@ -835,7 +835,7 @@ async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     let (root_id, _) = managed_track(&b, &area_id, "root").await;
     let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
     let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
-    let runtime_id = install_live_harness(&b, &victim_id).await;
+    let worker_session_id = install_live_harness(&b, &victim_id).await;
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
         .bind(&root_id)
         .bind(&victim_id)
@@ -857,7 +857,7 @@ async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     let (status, body) = delete_track(&b, &victim_id).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     assert!(b.repo.track_get(&victim_id).await.unwrap().is_some());
-    assert!(b.harness.get(&runtime_id).is_some());
+    assert!(b.harness.get(&worker_session_id).is_some());
     assert!(victim_path.exists());
     assert!(diff(&before, &fingerprint(&victim_path)).is_empty());
     assert!(trash_entry_for(&b.workspace_root, &victim_id).is_none());
@@ -977,7 +977,7 @@ async fn panicking_track_commit_restores_the_owned_workspace_and_cache() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "panic-safe").await;
-    let runtime_id: String = sqlx::query_scalar(
+    let worker_session_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
     )
     .bind(&track_id)
@@ -1002,7 +1002,7 @@ async fn panicking_track_commit_restores_the_owned_workspace_and_cache() {
         Some(area_id.into())
     );
     assert!(
-        b.harness.get(&runtime_id).is_some(),
+        b.harness.get(&worker_session_id).is_some(),
         "aborted track deletion did not recover its planner harness"
     );
 }
@@ -1015,9 +1015,9 @@ async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "one lifecycle").await;
-    let runtime_id = install_live_harness(&b, &track_id).await;
+    let worker_session_id = install_live_harness(&b, &track_id).await;
     let card_id: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
-        .bind(&runtime_id)
+        .bind(&worker_session_id)
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
@@ -1083,17 +1083,17 @@ async fn deletion_shuts_down_a_live_harness_even_when_its_session_is_failed() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, _) = managed_track(&b, &area_id, "failed but live").await;
-    let runtime_id = install_live_harness(&b, &track_id).await;
+    let worker_session_id = install_live_harness(&b, &track_id).await;
     sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
-        .bind(&runtime_id)
+        .bind(&worker_session_id)
         .execute(b.repo.pool())
         .await
         .unwrap();
-    assert!(b.harness.get(&runtime_id).is_some());
+    assert!(b.harness.get(&worker_session_id).is_some());
 
     let (status, body) = delete_track(&b, &track_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
-    assert!(b.harness.get(&runtime_id).is_none());
+    assert!(b.harness.get(&worker_session_id).is_none());
 }
 
 /// A turn/start RPC can be accepted before its id is returned. Deletion seals
@@ -1104,7 +1104,7 @@ async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, _) = managed_track(&b, &area_id, "late turn").await;
-    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+    let (worker_session_id, thread_id): (String, String) = sqlx::query_as(
         "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 \
          AND thread_id IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1",
     )
@@ -1114,7 +1114,7 @@ async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
     .unwrap();
     let harness = b
         .harness
-        .get(&runtime_id)
+        .get(&worker_session_id)
         .expect("create must install the planner harness");
     let hook = calm_server::shared_codex_appserver::TurnStartReturnHook {
         entered: Arc::new(tokio::sync::Notify::new()),
@@ -1163,7 +1163,7 @@ async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
             .active_turn_id_for_thread(&thread_id)
             .is_none()
     );
-    assert!(b.harness.get(&runtime_id).is_none());
+    assert!(b.harness.get(&worker_session_id).is_none());
 }
 
 /// A failed interrupt must keep the late turn id available for retry and roll
@@ -1174,7 +1174,7 @@ async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "late turn failure").await;
-    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+    let (worker_session_id, thread_id): (String, String) = sqlx::query_as(
         "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 \
          AND thread_id IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1",
     )
@@ -1182,7 +1182,7 @@ async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    let harness = b.harness.get(&runtime_id).expect("planner harness");
+    let harness = b.harness.get(&worker_session_id).expect("planner harness");
     let hook = calm_server::shared_codex_appserver::TurnStartReturnHook {
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
@@ -1472,7 +1472,7 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, path) = managed_track(&b, &area_id, "restore blocked").await;
-    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+    let (worker_session_id, thread_id): (String, String) = sqlx::query_as(
         "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 AND thread_id IS NOT NULL LIMIT 1",
     )
     .bind(&track_id)
@@ -1515,7 +1515,7 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
     // common boot/lazy recovery boundary abstain.
     let runtime = b
         .repo
-        .session_projection_by_id(&runtime_id)
+        .session_projection_by_id(&worker_session_id)
         .await
         .unwrap()
         .unwrap();
@@ -1758,14 +1758,14 @@ async fn deleting_a_track_takes_its_live_harness_out_of_the_registry() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let (track, path) = managed_track(&b, &area, "w").await;
-    let runtime_id = install_live_harness(&b, &track).await;
+    let worker_session_id = install_live_harness(&b, &track).await;
 
     let (status, body) = delete_track(&b, &track).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
     assert!(
-        b.harness.get(&runtime_id).is_none(),
-        "runtime {runtime_id} is still live in the registry after the track was \
+        b.harness.get(&worker_session_id).is_none(),
+        "runtime {worker_session_id} is still live in the registry after the track was \
          deleted; its run loop keeps writing into the directory that just moved \
          to the trash"
     );

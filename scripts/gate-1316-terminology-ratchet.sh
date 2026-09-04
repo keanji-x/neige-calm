@@ -30,6 +30,18 @@
 # brings in was already gated at the moment it landed. The one tree where that
 # is not yet true is this PR itself, which introduces the gate.
 #
+# THAT ORDERING FACT IS FALSE AS STATED, AND #1448 IS THE PROOF. A PR's CI runs
+# against a merge ref built BEFORE it lands. If two PRs are in flight and the
+# second adds vocabulary the first's baseline did not count, both go green
+# separately and `main` rises the moment the second one merges. #1393 rode
+# through exactly that window: it added 20 `runtime_id`, 1 `spec` and 1 `wave`
+# occurrences without touching the baseline, `main` went red on itself, and
+# every subsequent PR inherited the failure through its own merge ref. So the
+# honest statement is narrower: `main` can rise, and when it does, the gate
+# reports it on `main` and on every PR at once. The repair is a commit ON
+# `main` that renames what can be renamed and argues the rest line by line —
+# never a silent `--update-baseline` on a branch that happens to be red.
+#
 #   actual > baseline  => FAIL. New retiring vocabulary entered the tree.
 #   actual < baseline  => FAIL. The ratchet must be tightened; run
 #                         `--update-baseline` and commit the new numbers.
@@ -67,6 +79,24 @@
 #   from filtering `[a-z]*wave[a-z]*` through an exclusion regex ending
 #   `wave[a-z_]*$`. That trailing clause swallows `waved`, so the filter
 #   excluded exactly the English forms it existed to surface.
+#
+#   ONE RAISE, TAKEN ONCE BY #1448, AND WRITTEN AS AN ENUMERATION. `wave` has
+#   no raise CLASS and this note does not open one: it admits exactly one
+#   line, the count below is what it buys, and the list is closed.
+#
+#     crates/calm-server/tests/cases/task_projection_acceptance.rs  6 ->   7
+#                                                        net     749 -> 750
+#
+#   The added occurrence is `neige://wave/{track_id}#{block_id}` — the report
+#   link SCHEME, i.e. a wire literal. It is not our noun in prose and it is not
+#   an identifier, and it has no synonym: `track_report_blocks/contracts.rs`
+#   pins `"pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$"` into the MCP tool's
+#   JSON schema, and `0081_wave_to_track.sql` records that this one scheme was
+#   deliberately left un-renamed when everything else moved to `track`. Writing
+#   `neige://track/` in a fixture is not a rewording, it is a value the schema
+#   rejects. Retiring the scheme is a wire break with a migration — its own
+#   slice, not a slice that happens to add one fixture. A NEW `wave`
+#   identifier, or a new sentence of prose, does not inherit this raise.
 #
 # HOW THE TWO PATTERNS ARE ANCHORED, AND WHY THEY DIFFER
 #

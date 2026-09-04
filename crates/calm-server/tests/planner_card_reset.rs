@@ -854,7 +854,7 @@ async fn planner_harness_user_message_folds_at_saturation() {
 #[tokio::test]
 async fn send_planner_input_reports_backpressure_when_the_persisted_queue_rejects_it() {
     let boot = boot().await;
-    let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
+    let (card, worker_session_id, harness) = seed_live_planner_harness(&boot).await;
     harness.pause_issuance_for_dev();
     for i in 0..255 {
         harness
@@ -887,7 +887,7 @@ async fn send_planner_input_reports_backpressure_when_the_persisted_queue_reject
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
     assert_eq!(harness.pending_len_for_test().await, 256);
 
-    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+    shutdown_seeded_harness(&boot, &worker_session_id, harness).await;
 }
 
 #[tokio::test]
