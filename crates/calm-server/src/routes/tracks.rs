@@ -34,9 +34,10 @@ use crate::auth::Principal;
 use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
     TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
-    card_create_with_id_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
-    overlay_upsert_tx, terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx,
-    track_delete_tx, track_recipe_get_tx, track_tree_term, track_update_tx,
+    begin_immediate_tx, card_create_with_id_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, terminal_delete_tx,
+    track_create_idempotency_claim_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
+    track_tree_term, track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -127,8 +128,21 @@ pub struct TrackDeleteTeardownHook {
 }
 
 #[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct TrackDeleteCommitHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
 fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteTeardownHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteTeardownHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+fn track_delete_commit_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteCommitHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteCommitHook>>> = OnceLock::new();
     HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
@@ -141,12 +155,37 @@ pub fn install_track_delete_teardown_hook_for_test(track_id: &str, hook: TrackDe
         .insert(track_id.to_string(), hook);
 }
 
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_track_delete_commit_hook_for_test(track_id: &str, hook: TrackDeleteCommitHook) {
+    track_delete_commit_hooks()
+        .lock()
+        .expect("track delete commit hook mutex")
+        .insert(track_id.to_string(), hook);
+}
+
 async fn wait_at_track_delete_teardown_hook(track_id: &str) {
     #[cfg(feature = "fixtures")]
     {
         let hook = track_delete_teardown_hooks()
             .lock()
             .expect("track delete hook mutex")
+            .remove(track_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = track_id;
+}
+
+async fn wait_at_track_delete_commit_hook(track_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = track_delete_commit_hooks()
+            .lock()
+            .expect("track delete commit hook mutex")
             .remove(track_id);
         if let Some(hook) = hook {
             hook.entered.notify_one();
@@ -3597,7 +3636,11 @@ async fn preflight_track_deletion_reprojection(
     pool: &sqlx::SqlitePool,
     track_id: &TrackId,
 ) -> Result<()> {
-    let mut tx = pool.begin().await?;
+    // Use the repository's one transaction entry point even though this phase
+    // is read-only. It prevents a writer from changing the tree between the
+    // root lookup and survivor validation, and keeps this future compatible
+    // with a later preflight assertion that needs to write.
+    let mut tx = begin_immediate_tx(pool).await?;
     if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await? {
         let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
             .bind(&root_id)
@@ -3760,6 +3803,7 @@ impl RecycledTrackDeletion {
     async fn commit(self, route: &RouteState, actor: ActorId) -> Result<()> {
         let Self { prepared, decision } = self;
         let track = &prepared.track;
+        wait_at_track_delete_commit_hook(track.id.as_str()).await;
         let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
             Ok(sweeps) => sweeps,
             Err(error) => {
@@ -3798,6 +3842,32 @@ impl RecycledTrackDeletion {
     }
 }
 
+/// The workspace move is an external side effect that cannot be rolled back by
+/// dropping SQLite's transaction future. Once that move succeeds, transfer the
+/// remaining saga state and its per-track lock to an owned task before the next
+/// await. Axum may cancel a request future when the client disconnects; a Tokio
+/// task spawned here is detached when its `JoinHandle` is dropped and therefore
+/// still commits or runs `RecycledTrackDeletion::commit`'s compensation path.
+async fn finish_recycled_track_deletion_owned(
+    route: RouteState,
+    actor: ActorId,
+    delete_guard: crate::per_card_lock::KeyedLockGuard,
+    deletion: RecycledTrackDeletion,
+) -> Result<()> {
+    let track_id = deletion.prepared.track.id.clone();
+    tokio::spawn(async move {
+        let _delete_guard = delete_guard;
+        deletion.commit(&route, actor).await
+    })
+    .await
+    .map_err(|error| {
+        CalmError::Internal(format!(
+            "owned deletion task for track {} failed: {error}",
+            track_id.as_str()
+        ))
+    })?
+}
+
 #[utoipa::path(
     delete,
     path = "/api/tracks/{id}",
@@ -3822,7 +3892,7 @@ pub(crate) async fn delete_track(
     // One process owns this track's move + transaction + compensation at a
     // time. The deployment contract is one calm-server per data directory;
     // multi-process deletion would require a durable database lease instead.
-    let _delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
+    let delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
     // Issue #197 — eager teardown for every terminal under the track.
     //
     // `terminals.card_id` is now `ON DELETE RESTRICT` (migration 0011)
@@ -3939,12 +4009,8 @@ pub(crate) async fn delete_track(
         track,
         area_kind: owning_area.map(|area| area.kind),
     };
-    prepared
-        .quiesce(&s, &w, &cs)
-        .await?
-        .recycle(&s)?
-        .commit(&s, actor.to_actor_id())
-        .await?;
+    let recycled = prepared.quiesce(&s, &w, &cs).await?.recycle(&s)?;
+    finish_recycled_track_deletion_owned(s, actor.to_actor_id(), delete_guard, recycled).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -927,6 +927,50 @@ async fn concurrent_deletes_cannot_resurrect_the_winners_workspace_or_cache_entr
     );
 }
 
+/// Once the managed workspace has moved, dropping the HTTP request must not
+/// drop the only owner of the remaining database commit and compensation.
+#[tokio::test]
+async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "cancel-safe").await;
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track_id, hook.clone());
+
+    let app = b.app.clone();
+    let id = track_id.clone();
+    let request_task =
+        tokio::spawn(
+            async move { request(app, "DELETE", &format!("/api/tracks/{id}"), None).await },
+        );
+    hook.entered.notified().await;
+    assert!(!path.exists(), "the workspace must already be recycled");
+
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    hook.release.notify_one();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if b.repo.track_get(&track_id).await.unwrap().is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the detached delete saga must finish after request cancellation");
+    assert!(!path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
+        None
+    );
+}
+
 /// Drive the production child-track creation path. Copied in shape from
 /// `today_launchpad.rs`: the parent task row is seeded directly because the
 /// adapter only reads frozen task fields from it, while every decision about
