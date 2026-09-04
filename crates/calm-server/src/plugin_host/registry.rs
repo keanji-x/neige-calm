@@ -39,14 +39,6 @@ pub struct LoadReport {
 pub enum RegistryError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// We refuse to load if two manifests claim the same id — they'd race for
-    /// the same `plugins` row, the same token, the same kv namespace.
-    #[error("duplicate plugin id `{id}` between {first:?} and {second:?}")]
-    DuplicateId {
-        id: String,
-        first: PathBuf,
-        second: PathBuf,
-    },
 }
 
 #[derive(Default)]
@@ -123,6 +115,13 @@ impl PluginRegistry {
     /// stat, and any symlink not resolving to a directory, goes into
     /// [`LoadReport::skipped`] with a reason.
     ///
+    /// Entries are visited in sorted file-name order (`OsString` ordering,
+    /// i.e. raw byte order on unix) rather than in the order `std::fs::read_dir`
+    /// happens to yield. When two entries carry manifests with the same id, the
+    /// first one in that order is loaded and every later one goes into
+    /// [`LoadReport::skipped`] with a reason naming the id and the path it lost
+    /// to; a duplicate id does not abort the load.
+    ///
     /// If `dir` doesn't exist, returns an empty registry without erroring.
     /// Fresh installs hit this path; creating the directory is the caller's
     /// (state.rs's) job.
@@ -138,15 +137,22 @@ impl PluginRegistry {
             return Ok((registry, report));
         }
 
-        let entries = std::fs::read_dir(dir)?;
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
+        // Collect before walking: the duplicate-id arm below keeps the first
+        // entry it sees, and `std::fs::read_dir` yields entries in an order the
+        // filesystem chooses. Sorting by file name makes "which duplicate wins"
+        // a property of the names on disk instead of of the filesystem.
+        let mut entries: Vec<std::fs::DirEntry> = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            match entry {
+                Ok(e) => entries.push(e),
                 Err(e) => {
                     tracing::warn!(error = %e, "skipping unreadable plugin dir entry");
-                    continue;
                 }
-            };
+            }
+        }
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
             let path = entry.path();
             // `DirEntry::file_type()` does NOT follow symlinks, so it is used
             // here only to tell "this entry is a symlink" apart from "this
@@ -212,12 +218,26 @@ impl PluginRegistry {
                 Ok(manifest) => {
                     let id = manifest.id.clone();
                     let mut inner = registry.inner.write().unwrap();
-                    if let Some(prev) = inner.install_paths.get(&id) {
-                        return Err(RegistryError::DuplicateId {
-                            id,
-                            first: prev.clone(),
-                            second: path.clone(),
-                        });
+                    // Two manifests claiming one id would race for the same
+                    // `plugins` row, token and kv namespace, so only one may
+                    // load. Refusing to boot is not an option: an operator's
+                    // `ln -s plugins/foo plugins/foo.bak` now resolves to a
+                    // directory and would take the whole server down. The first
+                    // entry in sorted name order wins; the rest are reported.
+                    if let Some(prev) = inner.install_paths.get(&id).cloned() {
+                        drop(inner);
+                        tracing::warn!(
+                            path = %path.display(),
+                            plugin_id = %id,
+                            first = %prev.display(),
+                            "duplicate plugin id — keeping the first entry in name order"
+                        );
+                        let reason = format!(
+                            "duplicate plugin id `{id}` — already loaded from {}",
+                            prev.display()
+                        );
+                        report.skipped.push((path, reason));
+                        continue;
                     }
                     inner.install_paths.insert(id.clone(), path.clone());
                     inner.manifests.insert(id, manifest);
@@ -587,6 +607,15 @@ mod tests {
             "broken symlink must be reported, not silently dropped; report = {report:?}"
         );
         assert_eq!(report.skipped[0].0, dangling);
+        // The reason, not just the count: without this the test also passes
+        // when the loader stats with `symlink_metadata`, i.e. under exactly the
+        // defect #1168 removes — the dangling link then falls through the
+        // `!is_dir() && is_symlink()` arm and still lands in `skipped`.
+        assert!(
+            report.skipped[0].1.starts_with("stat failed: "),
+            "must ride the metadata-failure arm, got {:?}",
+            report.skipped[0].1
+        );
     }
 
     /// The arm the previous test does *not* reach: a symlink that resolves
@@ -617,16 +646,62 @@ mod tests {
             "exactly the symlink is reported, the stray file stays silent; report = {report:?}"
         );
         assert_eq!(report.skipped[0].0, link);
+        assert_eq!(
+            report.skipped[0].1, "symlink does not resolve to a directory",
+            "must ride the `!is_dir()` + `is_symlink()` arm, not the stat-failure one"
+        );
     }
 
+    /// A duplicate id must not abort the load. `AppState::new` propagates this
+    /// `Result` with `?`, so returning `Err` here means the server does not
+    /// boot — and once the loader follows symlinks (#1168), an operator's
+    /// ordinary `ln -s plugins/test.valid plugins/test.valid.bak` manufactures
+    /// a duplicate. The real directory wins because its name sorts first; the
+    /// backup link is reported.
+    #[cfg(unix)]
     #[test]
-    fn duplicate_id_errors() {
+    fn duplicate_id_via_backup_symlink_is_reported_not_fatal() {
         let tmp = tempfile::tempdir().unwrap();
-        // Two subdirs both claiming id="test.valid".
-        write_plugin(tmp.path(), "a", VALID);
-        write_plugin(tmp.path(), "b", VALID);
-        let err = PluginRegistry::load_from_dir(tmp.path()).unwrap_err();
-        assert!(matches!(err, RegistryError::DuplicateId { .. }));
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let real = write_plugin(&plugins_dir, "test.valid", VALID);
+        // "test.valid" < "test.valid.bak" in byte order, so the real dir wins.
+        let backup = plugins_dir.join("test.valid.bak");
+        std::os::unix::fs::symlink(&real, &backup).unwrap();
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir)
+            .expect("a duplicate id must not abort the load (AppState::new uses `?`)");
+        assert_eq!(reg.install_path("test.valid"), Some(real.clone()));
+        assert_eq!(report.loaded, vec![real.clone()]);
+        assert_eq!(report.skipped.len(), 1, "report = {report:?}");
+        assert_eq!(report.skipped[0].0, backup);
+        let reason = &report.skipped[0].1;
+        assert!(
+            reason.contains("test.valid") && reason.contains(&real.display().to_string()),
+            "reason must name the id and the path it lost to, got {reason:?}"
+        );
+    }
+
+    /// Which of two same-id entries wins is decided by sorted file-name order,
+    /// not by whatever order `read_dir` yields. The loser is created *first* on
+    /// disk, so a `read_dir`-order loader could plausibly keep it instead.
+    #[test]
+    fn duplicate_id_winner_is_decided_by_sorted_name_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Both manifests claim id="test.valid"; only the directory names differ.
+        let loser = write_plugin(tmp.path(), "zzz-later", VALID);
+        let winner = write_plugin(tmp.path(), "aaa-earlier", VALID);
+
+        let (reg, report) = PluginRegistry::load_from_dir(tmp.path()).unwrap();
+        assert_eq!(
+            reg.install_path("test.valid"),
+            Some(winner.clone()),
+            "the first entry in sorted name order must win; report = {report:?}"
+        );
+        assert_eq!(report.loaded, vec![winner]);
+        assert_eq!(report.skipped.len(), 1, "report = {report:?}");
+        assert_eq!(report.skipped[0].0, loser);
     }
 
     #[test]
