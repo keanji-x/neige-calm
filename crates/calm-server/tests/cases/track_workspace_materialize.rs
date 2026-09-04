@@ -136,6 +136,67 @@ fn head_resolves(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The materialization bar this file asserts (#1318 item 4).
+///
+/// It used to be `.git` exists + `HEAD` resolves, and those two are necessary
+/// but nowhere near sufficient: `git branch -m neige` inside a freshly
+/// materialized workspace satisfies both and still leaves every codex task on
+/// the track dying in `git worktree add`, which is #1147 verbatim — see
+/// `a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker`,
+/// which pins that construction. Any bar phrased as properties of the directory
+/// is a guess at what provisioning needs; the only bar that cannot be escaped
+/// that way is provisioning itself, so this drives the real thing:
+/// `prepare_workspace_lease_target_tx` → commit → `provision_workspace_worktree`,
+/// the order `operation::codex_adapter` takes when the first worker starts.
+///
+/// Do not weaken this back to directory predicates.
+async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str) {
+    let (_, path, _) = workspace_row(&b.repo, track_id).await;
+    let path = PathBuf::from(path);
+    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
+    assert!(
+        head_resolves(&path),
+        "no init commit — `git worktree add` fails with `not a valid object \
+         name: 'HEAD'` and the first codex worker never starts"
+    );
+
+    let worktree = calm_server::test_seams::provision_workspace_lease_for_test(
+        b.repo.pool(),
+        track_id,
+        CARD_ID,
+        &b.workspace_root,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "the materialized workspace at {path:?} is not usable by the first \
+             worker: taking a lease and provisioning its worktree failed with \
+             {e}. A track in this state serves nothing but `spawn-failed` — \
+             bug #1147."
+        )
+    });
+    assert!(
+        worktree.is_dir(),
+        "provisioning reported success but there is no worktree at {worktree:?}"
+    );
+    let branch = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        branch.trim(),
+        format!("neige/{track_id}/{CARD_ID}"),
+        "the worker's worktree must be checked out on its own slice branch; a \
+         worktree sharing the workspace's branch is a different bug"
+    );
+}
+
 async fn workspace_row(repo: &SqlxRepo, track_id: &str) -> (String, String, Option<i64>) {
     sqlx::query_as(
         "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
@@ -202,17 +263,14 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
     );
 
     let path = PathBuf::from(path);
-    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
-    assert!(
-        head_resolves(&path),
-        "no init commit — `git worktree add` fails with `not a valid object \
-         name: 'HEAD'` and the first codex worker never starts"
-    );
     // D3 step 4: the exclusion lives in `.git/info/exclude`, and the fresh
-    // workspace must look empty to design D4's predicate.
+    // workspace must look empty to design D4's predicate. Read before the bar
+    // below provisions a worktree into `.claude/worktrees/`.
     let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
     assert!(exclude.lines().any(|l| l.trim() == ".claude/worktrees/"));
     assert!(!path.join(".gitignore").exists());
+
+    assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
 }
 
 /// Entry point 1, template branch: a `template_id` create that omits `cwd` gets
@@ -290,14 +348,7 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
          §2.3 / D4); a template create is not work"
     );
 
-    let path = PathBuf::from(path);
-    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
-    assert!(
-        head_resolves(&path),
-        "no init commit — `git worktree add` fails with `not a valid object \
-         name: 'HEAD'` and the first codex worker on this template track never \
-         starts"
-    );
+    assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
 }
 
 /// An explicit `cwd` is the attached branch: the user pointed at that
@@ -536,7 +587,7 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     let repo_root = calm_server::test_seams::prepare_workspace_lease_target_for_test(
         &mut tx,
         &track_id,
-        "card0000000000000000000000000001",
+        CARD_ID,
         &b.workspace_root,
     )
     .await
@@ -547,8 +598,9 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     tx.commit().await.unwrap();
 
     assert_eq!(repo_root, std::fs::canonicalize(&path).unwrap());
-    assert!(
-        head_resolves(std::path::Path::new(&path)),
-        "the lease path recreated the directory but not a usable repository"
-    );
+    // "Usable repository" measured by use, not by predicate (#1318 item 4):
+    // healing that produces a directory the first worker cannot provision a
+    // worktree in has healed nothing. `prepare_…` is idempotent, so re-running
+    // it inside the bar is the same repair a second worker would drive.
+    assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
 }
