@@ -295,14 +295,25 @@ describe('#1253 D7 the status bar is O(1) in height', () => {
   });
 });
 
-describe('#1253 the first-run page still owns a document', () => {
+describe('#1253 the first-run page keeps the full Today layout', () => {
   /*
    * `areas` is the USER-visible list: #175 filters the system area out of
    * `GET /api/areas`, and the launchpad track lives in the system area. So
    * "no tracks and no areas" is a perfectly ordinary state for a workspace
-   * whose only content is the day's report — and the early return for it used
-   * to drop the document and the resolve failure alike.
+   * whose only content is the day's report. It must use the normal two-column
+   * layout: an empty data set is not a reason to remove the calendar.
    */
+  it('keeps the calendar and one specific empty state before a launchpad exists', () => {
+    render(<TodayPage
+      renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
+      launchpad={null}
+      conversationList={<p>No conversations yet.</p>}
+    />);
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
+  });
+
   it('renders the report on a workspace with no user areas', () => {
     render(<TodayPage
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
@@ -311,7 +322,8 @@ describe('#1253 the first-run page still owns a document', () => {
       conversationList={<p>Launchpad conversations</p>}
       conversationAction={<button type="button">New conversation</button>}
     />);
-    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
     expect(screen.getByText("the day's report")).toBeTruthy();
     expect(screen.getByText('Launchpad conversations')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeTruthy();

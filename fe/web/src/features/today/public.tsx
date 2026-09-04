@@ -274,42 +274,6 @@ function TodayDesktop({
       </PanelCard>
     </aside>
   );
-  const firstRun = (
-    <div className={styles.emptyPage}>
-      <p className={styles.hero}>Nothing here yet.</p>
-      <TodayDocument
-        launchpad={launchpad}
-        document={launchpadDocument}
-        error={launchpadError}
-        action={documentAction}
-      />
-    </div>
-  );
-
-  /*
-   * A brand-new workspace: one hero line, and *still the document*.
-   *
-   * `areas` is the user-visible list — #175 filters the system area out of
-   * `GET /api/areas`, and the launchpad track lives in the system area. So
-   * "no areas and no tracks" does NOT mean "no Today report": a workspace whose
-   * only content is the day's report lands exactly here, and returning early
-   * with just the hero made that report invisible and swallowed a failed
-   * resolve along with it.
-   */
-  if (tracks.length === 0 && areas.length === 0) {
-    return (
-      <div className={styles.page}>
-        <TodayHeader
-          today={today} waiting={waiting.length} running={running.length}
-          now={now}
-        />
-        {launchpad === null || launchpad === undefined
-          ? firstRun
-          : <div className={styles.content}>{firstRun}{panel}</div>}
-      </div>
-    );
-  }
-
   return (
     <div className={styles.page}>
       <TodayHeader

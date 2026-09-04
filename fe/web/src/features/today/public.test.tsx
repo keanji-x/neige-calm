@@ -187,8 +187,6 @@ describe('Today agenda', () => {
     expect(screen.getByText('Tuesday, Aug 11')).toBeTruthy();
   });
 
-  // A workspace with an area, not an empty one: with no tracks *and* no areas
-  // Today renders the first-run hero instead, and there is no calendar to move.
   it('moves the week window with the previous/next controls', async () => {
     render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
     await userEvent.click(screen.getByRole('button', { name: 'Previous week' }));

@@ -236,7 +236,8 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
   it('offers the + when the hidden launchpad is the workspace’s only track', async () => {
     renderApp({ userWorkspace: false });
     expect(await screen.findByRole('button', { name: 'New conversation' })).toBeTruthy();
-    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
+    expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
 
   /*

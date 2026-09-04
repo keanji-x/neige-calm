@@ -230,11 +230,13 @@ around it stays interface-sized. Running is ambience and lives in the panel.
   cosmetic problem — it would falsify the layout's justification. The overflow
   sits behind one disclosure control rather than being dropped: RUNNING
   excludes anything already counted as waiting.
-- **The first-run page owns a document too.** `areas` is the *user-visible*
-  list — #175 filters the system area out of `GET /api/areas` and the launchpad
-  lives there — so "no tracks, no areas" is an ordinary state for a workspace
-  whose only content is the day's report. Once that hidden launchpad exists, the
-  same first-run layout also keeps the Conversations panel and its `+` reachable.
+- **The first-run page uses the full Today layout.** `areas` is the
+  *user-visible* list — #175 filters the system area out of `GET /api/areas` and
+  the launchpad lives there — so "no tracks, no areas" is an ordinary state,
+  not a reason to replace the page with a second generic empty sentence. The
+  Calendar and Conversations panel remain visible; the document region alone
+  says `Nothing written today yet.`. The conversation `+` still appears only
+  once a launchpad exists, because it needs a real track to post to.
 
 ### The refresh chain, and why nothing generated protects it
 

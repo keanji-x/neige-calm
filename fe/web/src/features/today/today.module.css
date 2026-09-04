@@ -180,9 +180,9 @@
    * recomputes it against its actual grid column, including a classic scrollbar
    * gutter that the outer container's `100cqi` cannot see.
    *
-   * `inline-size: 100%` rather than a stretch: the first-run branch places this
-   * region in a `place-items: center` grid, where a flex/grid item is sized to
-   * fit-content, and a document sized to its own content is not a document.
+   * `inline-size: 100%` makes the region own the full main column explicitly:
+   * the empty sentence is centred in the same space the report will occupy,
+   * and the document gutter variables below are resolved against that space.
    *
    * The type rank stays. `--text-lg` is the prose rank and `--measure-prose` is
    * measured for it (tokens.css); `ReportDocument` already reads at that rank,
@@ -281,21 +281,6 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);
-  }
-
-  .emptyPage {
-    display: grid;
-    place-items: center;
-    min-block-size: 0;
-    container-type: inline-size;
-  }
-
-  /* The only 22px in the app, and only on a whole-page empty state. */
-  .hero {
-    font-size: var(--text-xl);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
   }
 
   /*
