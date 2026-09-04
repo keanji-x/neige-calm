@@ -2,8 +2,8 @@
 // what it is carried out on.
 //
 // Presentational + local form state — it never calls an API. The caller owns
-// `POST /api/tracks`, `submitting`, `error`, and the template list itself. It
-// does **not** yet own a first message: see "Where the sentence goes" below.
+// `POST /api/tracks`, `submitting`, `error`, and the template list itself —
+// including putting the sentence on that create: see "Where the sentence goes".
 //
 // `area_id` is not a field. The page is `/area/{id}/new`; the route already
 // knows which area and sends it.
@@ -43,21 +43,29 @@
 // "Back" but does not update history. And there is no separate "Create track"
 // step: the send button *is* the create, and Enter reaches it.
 //
-// ## Where the sentence goes — and where it does not, yet (#1299)
+// ## Where the sentence goes (#1299)
 //
 // **Not** into `title`: the draft carries it as `message`, and the caller
 // creates the track with no title at all.
 //
-// Its destination is the new track's planner card, as the first message. That
-// delivery is **not implemented yet** — two review rounds showed the three-write
-// sequence it needs cannot be made sound from a component (see `NewTrackRoute`),
-// and #1299 moves it into the create request where the kernel can do it
-// atomically. Until then the track is created and the reader says it again in
-// the planner conversation, which the route opens for them on arrival.
+// Its destination is the new track's planner agent, as the first message, and
+// it gets there on the create itself — `first_message` on `POST /api/tracks`,
+// seeded inside the same transaction that starts the harness. This form does
+// not deliver it and must not learn to: two review rounds showed the three-write
+// sequence a component would need cannot be made sound (see `NewTrackRoute`),
+// which is why the kernel took the write. All this form does is hand the
+// sentence to its caller — **verbatim**, exactly as it was typed.
 //
-// The form says so, on screen, above the send button. A field whose contents
-// are quietly dropped is worse than no field; a field that tells you what it
-// will and will not do is a smaller product than intended but an honest one.
+// Whitespace is load-bearing here in two different ways, and the two must not
+// be confused. Whether the draft is blank decides whether Create is live at
+// all, and that question is asked with `isBlankForKernel` — the kernel's own
+// Unicode criterion, so this form never enables a send the server is bound to
+// answer 400. What is *submitted* is the untouched string: the kernel stores
+// and forwards it untrimmed, so stripping the reader's indentation on the way
+// out would deliver something they did not write.
+//
+// There is nothing on screen about repeating yourself: the sentence arrives in
+// the track's planner conversation on its own.
 //
 // ## The folder picker needs a `Dialog` above it
 //
@@ -224,7 +232,7 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
-import type { TrackRecipe, TrackTemplate } from '../../../../../core/domain/track.ts';
+import { isBlankForKernel, type TrackRecipe, type TrackTemplate } from '../../../../../core/domain/track.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -265,10 +273,13 @@ export type NewTrackDraft = Readonly<{
    *
    * The caller creates the track with no `title` — the kernel stores the empty
    * string and the planner agent names it later (#1211). This text's destination
-   * is the new track's planner card as its first message, but **that delivery is
-   * not implemented yet** (#1299); today the caller creates the track and the
-   * reader says it again in the conversation the track page opens. Always
-   * non-empty and already trimmed: the composer will not submit otherwise.
+   * is the new track's planner agent as its first message, which the caller puts
+   * on the create as `first_message` (#1299).
+   *
+   * **Verbatim, and never blank.** It is the reader's own string — leading and
+   * trailing whitespace included, because the kernel delivers what it is given
+   * — and the composer refuses to submit one the kernel would read as blank
+   * (`isBlankForKernel`), which would be a 400 nobody asked for.
    */
   message: string;
   /**
@@ -402,17 +413,6 @@ export function greetingFor(now: Date): string {
  */
 const TASK_LABEL = 'What this track should do';
 
-/**
- * What the composer says about where the sentence goes, until #1299 lands.
- *
- * It states the cost plainly, because the cost is real: this slice does not
- * carry the sentence, so the reader will retype it in the conversation the track
- * page opens for them. Saying so *before* they type is the difference between a
- * known limitation and a field that silently eats input — and it is why this
- * string exists rather than the page quietly discarding the text. It goes when
- * #1299 lands, along with the retyping.
- */
-const PENDING_DELIVERY_NOTICE = "You'll say this again in the track's chat";
 const TASK_PLACEHOLDER = 'What should this track do?';
 
 /**
@@ -479,7 +479,6 @@ export function NewTrackForm({
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   const folderId = `${fieldId}-folder`;
-  const noticeId = `${fieldId}-pending-delivery`;
   const triggerId = `${fieldId}-start-from-trigger`;
 
   /*
@@ -498,24 +497,8 @@ export function NewTrackForm({
    */
   useEffect(() => {
     const field = composerHostRef.current?.querySelector<HTMLElement>('[contenteditable="true"]');
-    /*
-     * The notice is the field's accessible *description*, not a second label:
-     * it states what will happen to what you type, and a reader who cannot see
-     * it needs it more than one who can — this page puts the caret straight
-     * into the field, so there is no moment on the way in where unassociated
-     * text nearby would be read out.
-     *
-     * Set on the element imperatively because `ChatComposerInput` spreads its
-     * rest props onto the *wrapper* around the editable, not the editable
-     * itself (`ChatComposerInput.tsx` — `ref`/`mergeProps` at the outer node,
-     * a separate prop set on the `contenteditable`), so `aria-describedby`
-     * passed as a prop lands on a node with no role and describes nothing.
-     * Measured: the assertion in `public.test.tsx` read `null` off the field
-     * until this moved here.
-     */
-    field?.setAttribute('aria-describedby', noticeId);
     field?.focus();
-  }, [noticeId]);
+  }, []);
 
   /*
    * A starting point that vanished between renders (the list refetched without
@@ -563,7 +546,12 @@ export function NewTrackForm({
   const issueUrlTouched = issueUrl.trim() !== '';
   const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
   const inputBlocker = unsupportedInput || (issueDev && parsedIssue === null);
-  const valid = message.trim() !== '' && !inputBlocker;
+  /* Blank by the *kernel's* rule, not JS's: `isBlankForKernel` is the one
+     place that criterion is written (`core/domain/track.ts`), and `submit`
+     below asks it the same question. A gate that used `trim()` here would
+     light up Create for a draft the server refuses — see that function for the
+     code point the two disagree about. */
+  const valid = !isBlankForKernel(message) && !inputBlocker;
   /* The folder control's accessible name *and* its hover string — one value,
      because they answer the same question and must not drift apart. Neither is
      the chip's text: unset that text is the default's name, and set it is a
@@ -583,14 +571,21 @@ export function NewTrackForm({
       : undefined;
 
   function submit(text: string): void {
-    const trimmed = text.trim();
-    if (trimmed === '' || inputBlocker || submitting) return;
+    /* Blank refuses the submit; it does not *rewrite* it. `text` goes on to
+       the caller exactly as typed — the draft is what the reader said, and the
+       kernel forwards it to the agent untrimmed. An earlier cut passed
+       `text.trim()` on, and `"  keep indentation  "` reached the agent with
+       the indentation gone. */
+    if (isBlankForKernel(text) || inputBlocker || submitting) return;
     /* Spread, not `cwd: folder || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
-       inspects the draft before it is serialized — including the tests. */
+       inspects the draft before it is serialized — including the tests.
+
+       The trim here is the path's, not the sentence's: a `cwd` is a filesystem
+       path chosen in the picker, where surrounding space is never meant. */
     const folder = cwd.trim();
-    const base = { message: trimmed, ...(folder === '' ? {} : { cwd: folder }) };
+    const base = { message: text, ...(folder === '' ? {} : { cwd: folder }) };
     if (effectiveSelection.kind === 'none') { onSubmit(base); return; }
     /* A recipe carries `recipe_id` and stops here. It can never also carry
        `template_id`: the union has one arm at a time, so the exclusivity the
@@ -652,6 +647,10 @@ export function NewTrackForm({
            * internal path is unused either) — so nothing clears the field
            * behind our back. Nothing needs to: a successful submit navigates
            * away and unmounts this component.
+           *
+           * It is also what keeps the sentence verbatim (#1299): the `trimmed`
+           * in astryx's handler is astryx's own, and both of this page's
+           * submit paths pass `message` — the field's value — instead.
            *
            * **Only when the field itself is the target**, and `matches` rather
            * than `closest` for a reason that is not pedantry. This handler sits
@@ -841,11 +840,6 @@ export function NewTrackForm({
                 )}
               </HStack>
             )}
-            /* #1299 — said where it is read, not in a tooltip and not after the
-             fact: the sentence starts the track off but is not delivered to the
-             agent yet, so the reader knows before they type that they will be
-             repeating it. Removed in the same change that lands delivery. */
-          headerContext={<span id={noticeId} className={styles.notice}>{PENDING_DELIVERY_NOTICE}</span>}
           /* Astryx's own `ChatSendButton` is named "Send", which is true of
                every other composer in the app and false of this one: pressing it
                creates a track. The name is the only thing overridden — the shape,

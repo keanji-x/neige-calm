@@ -17,7 +17,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import {
-  toTrack, trackActivityFrom, trackDisplayTitle,
+  isBlankForKernel, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import type {
@@ -1297,8 +1297,9 @@ function useConversationPanel(
                  composer mounts when the drawer opens on a row, and the flag
                  is dropped when it closes (the effect beside
                  `composerFocusFor`). #1211 S2 — a track created from the `+`
-                 lands with its planner conversation open and the caret in it,
-                 because the reader's first sentence is the track's intent. */
+                 lands with its planner conversation open and the caret in it:
+                 that thread is where the intent was delivered (#1299) and
+                 where the next thing the reader says goes. */
               focusOnMount={composerFocusFor === open.id}
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
@@ -1579,15 +1580,16 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  * navigates here, and one route owning one operation is the shape every other
  * write in this file already has.
  *
- * ## What it does NOT do yet: deliver the first message (#1299)
+ * ## How the first message is delivered: on the create itself (#1299)
  *
  * The composer's sentence is the track's *intent*, and its destination is the
- * track's planner card as the first message. That is deliberately **not** done
- * here, and the reason is worth stating so nobody adds it back casually.
+ * track's planner agent as the first message. It travels as `first_message` on
+ * this one POST, and the reason it travels there and nowhere else is worth
+ * stating so nobody moves it back into this component.
  *
- * Doing it from this page takes three writes — create, read the detail to find
- * the planner card, post the message — and two review rounds established that the
- * sequence cannot be made sound from a component:
+ * Doing it from this page took three writes — create, read the detail to find
+ * the planner card, post the message — and two review rounds established that
+ * the sequence cannot be made sound from a component:
  *
  *  * the reader can navigate away mid-flight; the requests are not cancelled,
  *    the route unmounts, and the track exists with the sentence lost and nothing
@@ -1596,19 +1598,24 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  *    server enqueues *before* it writes audit and responds — so a lost response
  *    or a 500-after-enqueue makes any retry deliver the same sentence twice.
  *
- * Neither is a defect in this file; both are what running a distributed
- * transaction in a component costs. The kernel already has the right shape —
- * `POST /api/tracks/{id}/conversations` takes a first message with a required
- * `Idempotency-Key` and validates it *before* anything is minted — and #1299
- * gives `POST /api/tracks` the same treatment. When it lands this becomes one
- * write and both failure classes stop existing rather than being defended
- * against.
+ * Neither was a defect in this file; both are what running a distributed
+ * transaction in a component costs. So the kernel took the write: `POST
+ * /api/tracks` validates the sentence before anything is minted and seeds it as
+ * an `Observation::UserMessage` inside the same `planner-harness-start`
+ * transaction that installs the harness — one write, delivered exactly once,
+ * attributed to the human. Both failure classes stopped existing rather than
+ * being defended against.
  *
- * Until then the sentence is not sent, the form says so where the reader can
- * see it before pressing anything, and this route lands them on the track with
- * the planner conversation **already open and holding the caret** so saying it
- * again is one keystroke. That landing is stated on the navigation itself
- * (`openPlanner`), and its only effect is a drawer.
+ * What this route still owes the reader is the landing: it puts them on the
+ * track with the planner conversation **already open and holding the caret**,
+ * which is now where the agent's answer arrives and where the next thing they
+ * say goes. That landing is stated on the navigation itself (`openPlanner`),
+ * and its only effect is a drawer.
+ *
+ * The create is **not** retryable, and this route does not retry it: a repeated
+ * create makes a second track, and on a 500 the kernel cannot say whether the
+ * sentence was delivered. The failure is reported and the composer keeps its
+ * text (#1384 owns teaching the endpoint to answer what happened).
  *
  * The create posts **no title** — the kernel stores the empty string and the
  * planner agent names the track through `calm.track.rename` once it knows what the
@@ -1657,9 +1664,9 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
    * `openPlanner` puts the intent on the history entry this navigation creates, so
    * it is scoped to exactly one landing, is redeemed by the track route body
    * against its own cards, and cannot be seen — or cleared — by any other
-   * route. `focusComposer` comes with it: the track is unnamed and empty, and
-   * the reader's first sentence is its intent, so the caret has to be where
-   * they can type it.
+   * route. `focusComposer` comes with it: the sentence has already been
+   * delivered into that conversation, so the caret belongs where its answer
+   * lands and where the next thing the reader says goes.
    */
   const submit = (draft: NewTrackDraft) => {
     if (areaId === undefined) return;
@@ -1668,9 +1675,30 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
     void trackMutations.create({
       area_id: areaId,
       /* No `title` (#1211): the sentence the reader typed is the track's intent,
-         not its name. It is not put on the wire at all yet — see the #1299 note
-         on this route — which is why the landing opens the planner composer. */
+         not its name. It rides on `first_message` below, and the landing still
+         opens the planner composer — now for the *reply*, not for a retype. */
       theme: readHostThemeRgb(),
+      /*
+       * #1299 — the sentence, on the create that makes the track.
+       *
+       * Two separate decisions, and only the first one touches whitespace.
+       *
+       * *Whether* the key rides at all is spread on blankness, for the same
+       * reason `cwd` is spread: "the reader said nothing" is the **absent
+       * key**, not `''`. The kernel validates this field before it mints
+       * anything and 400s a blank one, so posting an empty string would turn
+       * "opened the page and pressed nothing" into a failed create. Blank is
+       * `isBlankForKernel` — the kernel's own criterion, written once in
+       * `core/domain/track.ts` and asked here and in `NewTrackForm` alike, so
+       * the enabled Create and the sent request can never disagree about what
+       * counts as empty.
+       *
+       * *What* rides is `draft.message` untouched. The kernel forwards the
+       * text to the agent verbatim and hashes it verbatim, so a trim here
+       * would deliver a sentence the reader did not type — and it would do it
+       * invisibly, since the composer still shows theirs.
+       */
+      ...(isBlankForKernel(draft.message) ? {} : { first_message: draft.message }),
       // Spread, not two optional fields: no template leaves both keys absent,
       // and `template_id: undefined` is not the same request as no
       // `template_id` for anything that inspects the object before it is
@@ -1943,9 +1971,9 @@ function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: 
    * nothing to open, and an intent left armed on this entry would fire on the
    * next visit to it (the Back button reaches one).
    *
-   * `focusComposer` is what makes the landing complete: the track is unnamed
-   * and empty, and the reader's first sentence *is* the intent, so the caret
-   * has to be where they can type it.
+   * `focusComposer` is what makes the landing complete: the sentence that made
+   * this track was delivered into that conversation (#1299), so the caret
+   * belongs where the reply to it will be read and answered.
    */
   const plannerOpenIntent = usePlannerOpenIntent(track.id);
   useEffect(() => {

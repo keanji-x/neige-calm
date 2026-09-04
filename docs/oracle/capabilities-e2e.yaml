@@ -4898,7 +4898,7 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/tracks.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/area/new-track/public.tsx:262-281; fe/web/src/app/router/public.tsx:1940,1986-2011
+  source: fe/web/src/features/area/new-track/public.tsx:270-292; fe/web/src/app/router/public.tsx:1968,2014-2039
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:322
   owner_slice: features/track/create
   intentional_omission: false
@@ -4919,7 +4919,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1687-1696
+  source: fe/web/src/app/router/public.tsx:1713-1722
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:366
   owner_slice: features/track/create
   intentional_omission: false
@@ -4956,8 +4956,8 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-track/public.tsx:906-921
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:860
+  source: fe/web/src/features/area/new-track/public.tsx:900-915
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:901
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -5023,8 +5023,8 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:2034-2041
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:430
+  source: fe/core/domain/area.ts:159-196; fe/web/src/app/router/public.tsx:2062-2069
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:462
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -5056,8 +5056,8 @@
     the statement had to move from "collects nothing" to "collects the intent and not a name" —
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
-  source: fe/web/src/features/area/new-track/public.tsx:262-273,585-593
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:191;
+  source: fe/web/src/features/area/new-track/public.tsx:270-284,573-588
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:205;
     fe/web/src/app/router/new-track-route.test.tsx:295
   owner_slice: features/track/create
   intentional_omission: false
@@ -5082,7 +5082,7 @@
     `ChatComposerInput` forwards its DOM ref to the *wrapper*, which is not focusable, so a ref
     would silently focus nothing. Asserted as behaviour — type, then read the field back — because
     that is what the reader notices; an `activeElement` check alone passes on a focused wrapper.
-  source: fe/web/src/features/area/new-track/public.tsx:485-518
+  source: fe/web/src/features/area/new-track/public.tsx:484-501
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:265
   owner_slice: features/track/create
   intentional_omission: false
@@ -5107,7 +5107,7 @@
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
   source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/track/page/public.tsx:293-300
-  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:385
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:386
   owner_slice: ui/editable-title
   intentional_omission: false
   runtime_layer: ui
@@ -5151,8 +5151,9 @@
     displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
     again, while any fresh navigation to the track is a new entry and carries no mark.
   why: >
-    The track arrives with no name and nothing said in it, so a shut drawer is a blank page with no
-    visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
+    The track arrives with no name, and the sentence that created it was delivered into that
+    conversation by the create itself (#1299), so a shut drawer hides both the thread the reader's
+    intent is in and the place its answer arrives. It cannot be stated as a
     card id — `POST /api/tracks` answers with a Track and the planner card's id only exists once the
     detail has landed, and widening the create response to carry it would tie the create contract
     to what a planner card looks like, which #1189 is still moving. It is carried by the navigation
@@ -5167,13 +5168,13 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:35,74,161-167,243-266;
-    fe/web/src/app/router/public.tsx:1566,1966-1985,2032-2033,2324-2330;
+    fe/web/src/app/router/public.tsx:1567,1994-2013,2060-2061,2352-2358;
     fe/web/src/features/chat/thread/public.tsx:1869
-  # One line per clause of the statement, because no single case covers it: 207 the landing and the
-  # caret, 263 that a fresh navigation carries no mark, 300 that returning by Back to the entry whose
-  # landing failed arms it again, 329 that redeeming is one-shot, 357 that the mark is struck off even
+  # One line per clause of the statement, because no single case covers it: 208 the landing and the
+  # caret, 264 that a fresh navigation carries no mark, 301 that returning by Back to the entry whose
+  # landing failed arms it again, 330 that redeeming is one-shot, 358 that the mark is struck off even
   # when there was no card to open.
-  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:207,263,300,329,357
+  authoritative_test: fe/web/src/app/router/track-untitled.test.tsx:208,264,301,330,358
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -5244,7 +5245,7 @@
     stale-selection fallback beside it silently promoted a deleted recipe to the identically-keyed
     template — creating a track from something the reader never picked. The tag makes exclusivity a
     property of the submit function's shape rather than a rule it has to remember.
-  source: fe/web/src/features/area/new-track/public.tsx:347-351,528-545,597-609
+  source: fe/web/src/features/area/new-track/public.tsx:358-362,511-528,592-604
   authoritative_test: fe/web/src/features/area/new-track/recipe-picker.test.tsx:127,147;
     fe/web/src/app/router/recipes-route.test.tsx:384
   owner_slice: features/track/create

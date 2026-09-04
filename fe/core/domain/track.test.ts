@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
-  deleteCardOperation, isRunning, isWaitingForUser, lifecycleLabel, toTrack,
+  deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser, lifecycleLabel, toTrack,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
   userVisibleTracks,
   type Track,
@@ -194,5 +194,43 @@ describe('userVisibleTracks', () => {
   it('drops archived tracks and tracks whose area is absent from the list', () => {
     expect(userVisibleTracks([mine, archived], [userArea]).map((w) => w.id)).toEqual(['w1']);
     expect(userVisibleTracks([mine], [])).toEqual([]);
+  });
+});
+
+/*
+ * #1299 — the frontend's copy of the kernel's blank rule.
+ *
+ * The kernel refuses a first message whose `str::trim()` is empty, and Rust
+ * trims on the Unicode `White_Space` property. This suite pins the two code
+ * points where JS `trim()` and that property are known to differ in kind, and
+ * pins the divergence itself rather than only the predicate: the second
+ * assertion of the `U+0085` case is what says *why* this function exists, and
+ * it is a live check of the platform, not a comment.
+ */
+describe('isBlankForKernel', () => {
+  it('is true for the empty string and for ordinary JS whitespace', () => {
+    expect(isBlankForKernel('')).toBe(true);
+    expect(isBlankForKernel('   ')).toBe(true);
+    expect(isBlankForKernel('\t\n\r ')).toBe(true);
+  });
+
+  it('is true for U+00A0 NO-BREAK SPACE, which both sides call whitespace', () => {
+    expect(isBlankForKernel('\u00A0')).toBe(true);
+  });
+
+  it('is true for U+0085 NEXT LINE, which JS trim() leaves standing', () => {
+    expect(isBlankForKernel('\u0085')).toBe(true);
+    // The reason this predicate is not `text.trim() === ''`. A gate written
+    // that way calls this string non-blank, enables the send, and posts a body
+    // the kernel answers 400.
+    expect('\u0085'.trim()).not.toBe('');
+  });
+
+  it('is false as soon as there is anything to say', () => {
+    expect(isBlankForKernel('hi')).toBe(false);
+    expect(isBlankForKernel('  keep indentation  ')).toBe(false);
+    // Whitespace *around* content is content's neighbour, not blankness — and
+    // the caller sends the string with it intact.
+    expect(isBlankForKernel('\u0085x\u0085')).toBe(false);
   });
 });

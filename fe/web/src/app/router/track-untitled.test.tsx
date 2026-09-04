@@ -152,8 +152,9 @@ function messageField(): HTMLElement {
    dialog, so a create waits for the page's own field rather than
    `role="dialog"`, and Create stays disabled until that field says something.
    What is typed is the track's **intent**, not its name: no title is collected
-   (#1211 S2) and the sentence is not delivered from here yet (#1299) — which is
-   exactly why the landing below has to open the planner composer. */
+   (#1211 S2) and the sentence goes out on the create as `first_message` (#1299)
+   — which is why the landing below has to open the planner conversation, where
+   it has just been delivered. */
 async function composerOnScreen() {
   await userEvent.type(await screen.findByLabelText('What this track should do'), 'Read it');
 }
@@ -192,10 +193,10 @@ afterEach(() => {
 
 describe('creating a track lands in its planner conversation', () => {
   /*
-   * The landing, end to end. Nothing is typed into the composer — the sentence
-   * is not delivered from it yet (#1299) — and what the reader gets is the planner
-   * conversation open with the caret in the composer, because their first
-   * sentence is the track's intent.
+   * The landing, end to end. The sentence typed on the create page went with
+   * the create (#1299), and what the reader gets is the planner conversation
+   * open with the caret in the composer — the thread their intent was just
+   * delivered into, ready for whatever they say next.
    *
    * Red when: the create route stops stating the intent, `TrackRouteBody` stops
    * redeeming it, the panel drops the `focusComposer` flag on the way to the

@@ -143,6 +143,34 @@ export type TrackDetailWire = z.infer<typeof trackDetailSchema>;
 /** `{ fg, bg }` RGB the kernel stamps onto a spawning daemon's argv (#177). */
 export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: readonly [number, number, number] }>;
 
+/**
+ * "The kernel will read this text as blank" — the one place that question is
+ * answered in the frontend (#1299).
+ *
+ * The kernel's blank check is `str::trim().is_empty()`
+ * (`crates/calm-server/src/routes/conversations_shared.rs`,
+ * `validate_first_message`), and Rust's `char::is_whitespace` is the Unicode
+ * `White_Space` property. JavaScript's `String.prototype.trim` is not: its
+ * `WhiteSpace` production is the `Zs` category plus a fixed list, and
+ * **`U+0085 NEXT LINE` is in neither**. A string of nothing but `U+0085` is
+ * therefore non-blank to JS and blank to the kernel — and a caller that gated
+ * on `trim()` would enable the send, post that string, and collect a 400
+ * nobody asked for.
+ *
+ * `\p{White_Space}` (with the `u` flag) *is* that Unicode property, so this
+ * predicate and the kernel's agree by construction rather than by a hand-kept
+ * code-point table, which would be wrong the next time Unicode adds one.
+ *
+ * It answers only "is this blank". It never returns a *value*: the text the
+ * kernel stores, hashes (`first_message_digest` is verbatim, no trim) and
+ * forwards to the agent is the reader's own string, indentation and trailing
+ * spaces included, so trimming on the way to the wire would silently rewrite
+ * what they typed.
+ */
+export function isBlankForKernel(text: string): boolean {
+  return /^\p{White_Space}*$/u.test(text);
+}
+
 export type NewTrackBody = Readonly<{
   area_id: string;
   /**
@@ -208,6 +236,42 @@ export type NewTrackBody = Readonly<{
    * Absent, never `''`: same rule as `template_id`.
    */
   recipe_id?: string;
+  /**
+   * Issue #1299 — the sentence the reader typed on the new-track page,
+   * delivered to the track's planner agent **by this create** instead of
+   * having to be retyped after landing on the track.
+   *
+   * The kernel seeds it as an `Observation::UserMessage` inside the same
+   * `planner-harness-start` transaction, so it is delivered exactly once and
+   * attributed to the human. It is **not** the track's `title` and not a
+   * `TrackGoal`: those are different slots, and this one is "what the user
+   * said first".
+   *
+   * **Blank omits the key entirely**, and blank is `isBlankForKernel` above —
+   * the kernel's own criterion, not JS `trim()`. It validates this field
+   * exactly like `POST /api/cards/{id}/planner/input` — non-blank after trim,
+   * at most 32768 **characters** — and rejects the create with a 400 before
+   * anything is minted, so posting a string it reads as blank would turn an
+   * ordinary empty composer into a failed create. Absence is the only spelling
+   * of "no first message" this layer uses.
+   *
+   * A value that *is* sent goes **verbatim**: the kernel forwards it to the
+   * agent untrimmed and hashes it untrimmed, so whatever whitespace the reader
+   * typed around their sentence is part of what they said.
+   *
+   * Typed `string` rather than `string | null` even though OpenAPI says
+   * `string | null`: `null` is the wire's *second* spelling of the same
+   * omitted branch (`#[serde(default)] Option<String>`), and offering it here
+   * would let a caller send a key that means exactly what sending no key
+   * means.
+   *
+   * Supplying it also changes what a failed harness start means: without it
+   * that failure is still a 201 (an inert planner agent is recoverable), with
+   * it the create answers 500 because the delivery it promised may or may not
+   * have happened. The create is **not** retryable either way — resending
+   * makes a second track, and a message that did arrive arrives twice (#1384).
+   */
+  first_message?: string;
 }>;
 
 /**

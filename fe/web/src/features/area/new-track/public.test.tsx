@@ -188,11 +188,50 @@ describe('NewTrackForm asks only what the track starts from', () => {
     expect(submitButton().disabled).toBe(false);
   });
 
-  it('calls onSubmit with the trimmed sentence', async () => {
+  /*
+   * #1299 — the sentence leaves this form **verbatim**.
+   *
+   * The composer's text is delivered to the planner agent by the create, and
+   * the kernel forwards it untrimmed (`send_planner_input`) and hashes it
+   * untrimmed (`first_message_digest`), so the whitespace around what the
+   * reader typed is part of what they said. This form trims to decide whether
+   * it may submit at all and for nothing else.
+   *
+   * The version of this case that shipped first asserted the *trimmed* string
+   * and so certified the defect: the form trimmed, the route trimmed again,
+   * and a deliberately indented instruction arrived flattened with every suite
+   * green.
+   */
+  it('calls onSubmit with the sentence exactly as typed, whitespace and all', async () => {
     const { props } = renderForm();
-    await fillMessage('  Ship the thing  ');
+    await fillMessage('  keep indentation  ');
     await userEvent.click(submitButton());
-    expect(props.onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+    expect(props.onSubmit).toHaveBeenCalledWith({ message: '  keep indentation  ' });
+  });
+
+  /*
+   * Blank is the **kernel's** question, and this form must answer it the same
+   * way (`isBlankForKernel`).
+   *
+   * The kernel refuses `text.trim().is_empty()` with Rust's `char::is_whitespace`
+   * — the Unicode `White_Space` property — and JS `trim()` is a different set:
+   * `U+0085 NEXT LINE` is whitespace to Rust and an ordinary character to JS.
+   * A form gated on `trim()` therefore lights up Create for a `U+0085`-only
+   * draft, posts it, and collects a 400 the reader cannot act on. Both gates
+   * are asserted, because they are two call sites: the button's `disabled`
+   * (`valid`) and the Enter path (`submit`'s own guard).
+   */
+  const BLANK_TO_THE_KERNEL: readonly (readonly [string, string])[] = [
+    ['an ordinary space', ' '],
+    ['a no-break space, U+00A0', '\u00A0'],
+    ['a next line, U+0085 — whitespace to Rust, not to JS trim()', '\u0085'],
+  ];
+  it.each(BLANK_TO_THE_KERNEL)('refuses a draft of nothing but %s', async (_name, blank) => {
+    const { props } = renderForm();
+    await fillMessage(blank);
+    expect(submitButton().disabled).toBe(true);
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), '{Enter}');
+    expect(props.onSubmit).not.toHaveBeenCalled();
   });
 
   /*
@@ -438,23 +477,22 @@ describe('NewTrackForm asks only what the track starts from', () => {
   });
 
   /*
-   * #1299 — the notice is the entire justification for shipping a composer that
-   * does not deliver what you type, so it is asserted rather than trusted.
-   * Without this, deleting the `headerContext` prop leaves every suite green
-   * and the field silently eats the sentence.
+   * #1299 — the composer no longer warns that the sentence will have to be
+   * repeated, because it no longer will be: the route delivers it on the create
+   * (`first_message`). The warning went, and so did the `aria-describedby` that
+   * pointed at it — a description is a promise about what happens to what you
+   * type, and there is no longer one to make that the label does not already.
+   *
+   * Asserted as an absence in both channels, because the two failed
+   * differently: the visible string could come back on its own, and the
+   * attribute could be left behind pointing at an id nothing renders, which is
+   * a dangling IDREF a sighted reviewer cannot see.
    */
-  it('says the sentence will have to be repeated, before it is typed', () => {
+  it('promises no repetition, and leaves no description pointing at nothing', () => {
     renderForm();
-    const notice = screen.getByText("You'll say this again in the track's chat");
-    expect(notice).toBeTruthy();
-    /* And says it to a screen reader too. The page puts the caret straight into
-       this field, so a reader who cannot see the notice would otherwise land
-       *inside* the control with no way to have been told — the silent-loss the
-       notice exists to prevent, for exactly the audience least able to recover
-       from it. Asserted as the field's description, not merely as text on the
-       page, because unassociated text near a focused field is not announced. */
-    expect(screen.getByLabelText(TASK_LABEL).getAttribute('aria-describedby'))
-      .toBe(notice.getAttribute('id'));
+    expect(screen.queryByText("You'll say this again in the track's chat")).toBeNull();
+    const describedBy = screen.getByLabelText(TASK_LABEL).getAttribute('aria-describedby');
+    expect(describedBy === null || document.getElementById(describedBy) !== null).toBe(true);
   });
 
   /*
@@ -838,7 +876,10 @@ describe('The folder is optional, and its absence is the managed default', () =>
     await fillMessage('  Ship the thing  ');
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ message: 'Ship the thing' });
+    /* Padded on purpose, and the padding survives: this case is about the
+       absent `cwd`, but it types whitespace, so it would silently re-certify
+       a trimming `message` if it asserted the trimmed string. */
+    expect(draft).toEqual({ message: '  Ship the thing  ' });
     expect(Object.hasOwn(draft, 'cwd')).toBe(false);
   });
 

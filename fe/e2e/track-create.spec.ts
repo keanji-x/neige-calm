@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Request } from '@playwright/test';
 import { createArea } from './helpers/seed.js';
 
 const createdAreaIds: string[] = [];
@@ -37,11 +37,57 @@ test.afterEach(async ({ request }) => {
  * and the whole point is that it did not.
  *
  * What the reader does type is the track's *intent*, into the composer this page
- * became (S3). It is not delivered yet — the absence is asserted at the end of
- * this case, under #1299.
+ * became (S3). It travels as `first_message` on this same create (#1299), which
+ * is asserted on the request and counted at the end of this case.
  */
 test('creates a track from an Area group with no title, and persists it', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
+  /* Every create this page emits, not just the one `waitForRequest` returns.
+     The sentence rides on the create and the create carries no idempotency key
+     (#1384), so a second POST is a second track *and* a second delivery of the
+     same sentence — countable here and nowhere else in this file. */
+  const creates: Request[] = [];
+  page.on('request', (pending) => {
+    if (pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/tracks') {
+      creates.push(pending);
+    }
+  });
+  /*
+   * The kernel's own account of the delivery, over the socket the app is
+   * already on (#1299).
+   *
+   * `harness.user_message.enqueued` is emitted where the message is queued onto
+   * the harness — not by this page, and not by the HTTP response — so it is the
+   * one signal at this tier that says the *server* did the thing rather than
+   * that the browser asked for it. It carries `track_id` and `char_count` and
+   * no text, which is exactly enough: the track it names is the one just
+   * created, and the count is the length of what was typed.
+   *
+   * It does **not** replace the in-process assertion in
+   * `crates/calm-server/tests/cases/track_create_first_message.rs`: enqueued is
+   * not "reached the agent's turn input", and only that suite can see the turn.
+   * What this adds is that the browser's create really produced the kernel-side
+   * enqueue, once, for this track.
+   *
+   * Registered before `goto` because the app opens the socket on first paint,
+   * and it subscribes to `['*']` with a replay cursor, so an event emitted
+   * during the create arrives here even though the page did not know the track
+   * id when it subscribed.
+   */
+  const frames: Record<string, unknown>[] = [];
+  page.on('websocket', (socket) => {
+    if (new URL(socket.url()).pathname !== '/api/events') return;
+    socket.on('framereceived', (frame) => {
+      if (typeof frame.payload !== 'string') return;
+      try {
+        const parsed: unknown = JSON.parse(frame.payload);
+        if (typeof parsed === 'object' && parsed !== null) frames.push(parsed as Record<string, unknown>);
+      } catch {
+        /* Not JSON — a keepalive or a partial frame. The assertion below counts
+           what did parse, so junk cannot make it pass. */
+      }
+    });
+  });
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   await page.goto('/next/');
@@ -92,6 +138,16 @@ test('creates a track from an Area group with no title, and persists it', async 
   /* #1211 — the sentence is the track's intent, not its name. The kernel stores
      the empty string and the planner agent renames later via `calm.track.rename`. */
   expect(body).not.toHaveProperty('title');
+  /* #1299 — and it is on this create, under the key the kernel seeds into the
+     `planner-harness-start` transaction. Asserted against the *typed* string,
+     so a create that posted some other text (or a trimmed-to-nothing one) is
+     not confused with delivery. */
+  expect(body).toMatchObject({ first_message: message });
+  /* The real kernel accepted it. 201 and not merely "some 2xx": `first_message`
+     is validated before anything is minted, so a rejected sentence is a 400
+     here — this is the assertion that separates "the browser sent the key" from
+     "the server took it". */
+  expect((await createRequest.response())?.status(), 'the create carrying the sentence must be accepted').toBe(201);
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
   // `toMatchObject` above would not notice these, and no-template must not send
@@ -118,11 +174,25 @@ test('creates a track from an Area group with no title, and persists it', async 
     expect.arrayContaining([expect.objectContaining({ id: trackId, title: '' })]),
   );
   /*
-   * #1299 — the sentence is deliberately NOT delivered from this page yet, so
-   * this asserts the *absence*: the track carries a planner card and that card has
-   * no user message on it. Written as an assertion rather than left out, because
-   * "we do not do this yet" is a property worth failing on if someone re-adds
-   * the three-write sequence here instead of moving it into the create.
+   * #1299 — the agent the sentence was delivered to exists on the track.
+   *
+   * This is as far as *this* tier can go, and the limit is worth writing down
+   * rather than papering over. The sentence lands in the harness as a queued
+   * `Observation::UserMessage`; nothing over HTTP exposes that queue, and
+   * `harness/items` only fills once the app-server echoes the turn's
+   * `userMessage` back as an `item/completed`. CI runs this stack against the
+   * `osc-probe-child` fixture, which answers `initialize` / `thread/start` /
+   * `turn/start` and emits no items at all (see `e2e/README.md`) — so an
+   * assertion that the text appears in `harness/items` would fail in CI for a
+   * working delivery, and the `not.toContain` this replaces passed against an
+   * empty list no matter what the kernel did. Both directions are vacuous.
+   *
+   * What proves the delivery reaches the agent exactly once is in-process,
+   * against a harness this tier cannot reach:
+   * `crates/calm-server/tests/cases/track_create_first_message.rs`
+   * (`the_first_message_reaches_the_agent_exactly_once`). What this case owns is
+   * the browser half — the sentence is on the create, the kernel took it, and
+   * the create happened once.
    */
   const detail = await request.get(`/api/tracks/${trackId ?? ''}`);
   expect(detail.ok()).toBe(true);
@@ -131,11 +201,36 @@ test('creates a track from an Area group with no title, and persists it', async 
     && typeof card.payload === 'object' && card.payload !== null
     && (card.payload as { planner_harness?: unknown }).planner_harness === true);
   expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
-  const items = await request.get(`/api/cards/${plannerCard?.id ?? ''}/harness/items?after_id=0&limit=50&direction=asc`);
-  expect(items.ok()).toBe(true);
-  const params = (await items.json() as { params?: unknown }[])
-    .map((item) => (typeof item.params === 'string' ? item.params : '')).join('\n');
-  expect(params).not.toContain(message);
+
+  /*
+   * Once, and still once after the interaction settles.
+   *
+   * `waitForRequest` returned on the *first* create, so the count taken at that
+   * moment cannot see a second one emitted a tick later — which is exactly the
+   * shape a retry-on-settle bug has, and with the sentence on the body it
+   * double-delivers rather than merely double-creating. So: give the page a
+   * bounded moment to finish misbehaving, then count. Same two-step as
+   * `track-conversation-create.spec.ts`.
+   */
+  await page.waitForTimeout(1_000);
+  expect(creates, 'the create carrying the sentence must happen exactly once').toHaveLength(1);
+  expect((creates[0]?.postDataJSON() as { first_message?: unknown }).first_message).toBe(message);
+
+  /*
+   * And the kernel enqueued it onto the harness — exactly once, for this track.
+   *
+   * Counted after the same settle window as the creates above, and for the same
+   * reason: a second create would show up here as a second enqueue. `char_count`
+   * is asserted too, because a delivery of some *other* text would otherwise be
+   * indistinguishable from this one (the event carries no message body).
+   */
+  const enqueued = frames.filter((frame) => frame.ev === 'harness.user_message.enqueued'
+    && (frame.data as { track_id?: unknown } | undefined)?.track_id === trackId);
+  expect(
+    enqueued,
+    'the kernel must enqueue the sentence onto the new track\'s harness exactly once',
+  ).toHaveLength(1);
+  expect((enqueued[0]?.data as { char_count?: unknown }).char_count).toBe([...message].length);
 
   const foldersResponse = await request.get(`/api/areas/${area.id}/folders`);
   expect(foldersResponse.ok()).toBe(true);
@@ -212,7 +307,10 @@ test('creates a track from a template and seeds its report', async ({ page, requ
     page.getByRole('button', { name: 'Create track' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ area_id: area.id, template_id: 'small-change' });
+  /* #1299 — a template create carries the sentence too. The kernel runs the
+     same harness start for both, so a create path that dropped the key only
+     when a template was chosen would leave the case above green. */
+  expect(body).toMatchObject({ area_id: area.id, template_id: 'small-change', first_message: message });
   expect(body).not.toHaveProperty('title');
   // Unbound template: the kernel rejects `template_input` against it.
   expect(body).not.toHaveProperty('template_input');

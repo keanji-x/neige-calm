@@ -145,8 +145,8 @@ function harness(options: {
       /* The track page reads the detail on arrival, and that read is where the
          planner card — the one the landing opens — comes from. Served here rather
          than left to fall through to `[]`, because a decode failure would look
-         identical to "the feature did not run". No first message rides on it —
-         that is #1299. */
+         identical to "the feature did not run". The first message does not ride
+         on this read: it went out on the create (#1299). */
       if (request.method === 'GET' && request.path === '/api/tracks/w-new') {
         if (options.trackDetail) return Promise.resolve(options.trackDetail);
         const detail = {
@@ -366,11 +366,16 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(body).toHaveProperty('theme');
     /* #1211 — the sentence is the track's *intent*, not its name. No `title` on
        the wire at all: the kernel stores the empty string and the planner agent
-       renames later through `calm.track.rename`. The sentence itself is not on
-       the wire either yet (#1299, asserted just below) — a create that quietly
-       went back to posting it as the title would satisfy neither. */
+       renames later through `calm.track.rename`. The sentence rides on
+       `first_message` instead (#1299, asserted just below) — a create that
+       quietly went back to posting it as the title would satisfy neither. */
     expect(body).not.toHaveProperty('title');
-    /* #1299 — nothing is delivered from this page yet. */
+    /* #1299 — and the sentence itself is on the create, under the key the
+       kernel seeds into the harness-start transaction. Two halves, because they
+       fail differently: posting it as something other than `first_message` is a
+       400 the reader never asked for, and delivering it with a second write is
+       the unsound three-write sequence this slice exists to have removed. */
+    expect(body).toMatchObject({ first_message: 'Read it' });
     expect(plannerInputTexts(sent)).toEqual([]);
     // The managed-workspace branch is keyed on *absence*, not on a value:
     // `cwd: null` and `attach_folder: false` are both a different kernel path.
@@ -381,6 +386,33 @@ describe('the new-track page is a route reached from Area groups', () => {
     // at all. `template_id: null` or `''` is a 400 from the kernel.
     expect(body).not.toHaveProperty('template_id');
     expect(body).not.toHaveProperty('template_input');
+  });
+
+  /*
+   * #1299 — what the reader typed is what the agent is sent, byte for byte.
+   *
+   * The kernel forwards `first_message` to the agent untrimmed and hashes it
+   * untrimmed, so the whitespace around the sentence is content, and this
+   * route's only business with it is deciding whether the key rides at all.
+   * Both layers used to trim — the form on the way out and this route on the
+   * way to the wire — and a deliberately indented instruction went out
+   * flattened with every suite green, because the form's own case asserted the
+   * trimmed string.
+   *
+   * The assertion is on the *request body*, which is the only place the whole
+   * path (composer → draft → POST) is visible at once: a trim reintroduced in
+   * either layer fails here.
+   */
+  it('posts the sentence exactly as typed, whitespace and all', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    const padded = '  keep indentation  ';
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), padded);
+    await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+    expect(createdTrackBodies(sent)[0]).toMatchObject({ first_message: padded });
   });
 
   /*
@@ -514,7 +546,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     const body = createdTrackBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ template_id: 'small-change' });
+    expect(body).toMatchObject({ template_id: 'small-change', first_message: 'Tiny fix' });
     expect(body).not.toHaveProperty('title');
     expect(plannerInputTexts(sent)).toEqual([]);
     expect(body).not.toHaveProperty('template_input');
@@ -541,7 +573,9 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
-    expect(createdTrackBodies(sent)[0]).toMatchObject({ area_id: 'c2' });
+    expect(createdTrackBodies(sent)[0]).toMatchObject({
+      area_id: 'c2', first_message: 'Read it anyway',
+    });
     expect(createdTrackBodies(sent)[0]).not.toHaveProperty('title');
     expect(plannerInputTexts(sent)).toEqual([]);
   });
@@ -672,20 +706,20 @@ describe('the route refuses an area id that no longer exists', () => {
 });
 
 /*
- * Delivery is not this page's job yet (#1299) — see `NewTrackRoute`'s doc.
+ * Delivery rides on the create (#1299) — see `NewTrackRoute`'s doc.
  *
- * The failure matrix that used to live here drove the three-write sequence.
- * Both review channels showed the sequence cannot be made sound from a
- * component (an unmount mid-flight loses the sentence silently, and
- * `/planner/input` has no idempotency key so any retry can double-send), so the
- * write moves into `POST /api/tracks` under #1299 and the tests move with it.
+ * The failure matrix that used to live here drove a three-write sequence. Both
+ * review channels showed the sequence cannot be made sound from a component (an
+ * unmount mid-flight loses the sentence silently, and `/planner/input` has no
+ * idempotency key so any retry can double-send), so the write moved into
+ * `POST /api/tracks` and the tests moved with it.
  *
- * What is left is the property this slice does promise, and its counterpart:
- * the track is created, nothing is sent, and the reader lands with the planner
- * conversation open so they can say it there.
+ * What is asserted here is that shape and its counterpart: the sentence goes
+ * out once, on the create, by no other route — and the reader still lands with
+ * the planner conversation open, which is now where the answer arrives.
  */
-describe('the sentence is not delivered yet, and the track opens ready for it', () => {
-  it('creates the track and sends no first message', async () => {
+describe('the sentence is delivered by the create, and the track opens on it', () => {
+  it('sends the sentence once, on the create, and by no second write', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
@@ -695,17 +729,31 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
 
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
-    /* The assertion that keeps this slice honest in both directions: no
-       `/planner/input` went out, so nothing can be half-delivered — and if someone
-       re-adds delivery here without moving it into the create, this fails and
-       sends them to #1299. */
+    expect(createdTrackBodies(sent)[0]).toMatchObject({ first_message: 'Read it' });
+    /*
+     * Exactly once, and written so it says that rather than "at least once".
+     *
+     * The `waitFor` above returns the instant the first create is seen, so a
+     * second one emitted a tick later would still be in flight when it
+     * resolved. The landing that follows is the settle window: by the time the
+     * track page has mounted, every continuation this create started has run,
+     * and *then* the count is read. The create carries no `Idempotency-Key`
+     * (deliberately — #1384), so a second POST is a second track AND a second
+     * delivery of the same sentence, which is the failure this counts.
+     */
+    await findTrackPage();
+    expect(createdTrackBodies(sent)).toHaveLength(1);
+    /* And by no other route: no `/planner/input` went out, so nothing can be
+       half-delivered — if someone re-adds the three-write sequence here on top
+       of the create, this fails and sends them back to `NewTrackRoute`'s doc. */
     expect(plannerInputTexts(sent)).toEqual([]);
   });
 
   /*
-   * The positive half: the create states `openPlanner` on the navigation it makes
-   * and the track route body redeems it against its own cards, so the reader
-   * lands ready to say the sentence again.
+   * The other half of the landing: the create states `openPlanner` on the
+   * navigation it makes and the track route body redeems it against its own
+   * cards, so the reader arrives looking at the conversation their sentence was
+   * just delivered into — and with the caret where the reply is answered.
    *
    * Asserted through the drawer the track page opens, not by spying on the
    * router state: the marker is an implementation detail and the drawer is the
@@ -816,7 +864,8 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
   }, 10_000);
 
   /* A track detail that will not load costs a closed drawer and nothing else, so
-     it must not block the navigation — there is no message riding on it. */
+     it must not block the navigation — the sentence went out on the create, and
+     nothing about its delivery rides on this read. */
   it('still lands on the track when the track detail read fails', async () => {
     const { sent } = harness({
       trackDetail: { status: 500, statusText: 'Server Error', body: { error: 'boom' } },
@@ -831,7 +880,12 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
   });
 
-  it('reports a create that failed, and creates nothing', async () => {
+  /* Not "and creates nothing": a failed create is not a create that did not
+     happen. `first_message` makes a failed harness start answer 500 *after*
+     the track is minted (#1299), so what this route owes the reader on a
+     failure is the report, their text back, and no retry — the state of the
+     server is the kernel's to say, not this test's. */
+  it('reports a create that failed, keeps the sentence, and does not retry', async () => {
     const { sent } = harness({
       trackCreate: { status: 500, statusText: 'Server Error', body: { error: 'boom' } },
     });
@@ -844,6 +898,10 @@ describe('the sentence is not delivered yet, and the track opens ready for it', 
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
+    /* One attempt, and no second one on the reader's behalf. The create carries
+       no idempotency key, so an automatic retry would be a second track and a
+       second delivery of the same sentence (#1384). */
+    expect(createdTrackBodies(sent)).toHaveLength(1);
     expect(plannerInputTexts(sent)).toEqual([]);
   });
 });

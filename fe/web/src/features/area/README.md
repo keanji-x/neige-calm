@@ -20,9 +20,17 @@ The surface is `/area/{id}/new`; `area_id` comes from the URL, not from a form
 field. Submit is enabled iff the composer is non-empty. Template and folder are
 optional and default to nothing.
 
-`NewTrackDraft.message` is the Track's intent, not its title. Its eventual
-destination is the new Track's planner conversation, but atomic delivery is
-still tracked by #1299; until then the route opens that conversation on arrival.
+`NewTrackDraft.message` is the Track's intent, not its title. The route puts it
+on the create as `first_message` (#1299), which delivers it to the planner agent
+inside the harness-start transaction; a blank draft omits the key rather than
+sending an empty string the kernel would reject. The route still opens that
+conversation on arrival — now for the reply.
+
+Blank is `isBlankForKernel` (`core/domain/track.ts`) — the kernel's Unicode
+`White_Space` criterion, not JS `trim()`, which disagrees about `U+0085` — and
+both the composer's submit gate and the route's spread ask that one function.
+What is *sent* is never trimmed: the kernel forwards the text to the agent
+verbatim, so the whitespace around the sentence is the reader's.
 
 With no folder, the request omits both `cwd` and `attach_folder` and the kernel
 creates a managed workspace. Choosing a folder sends `{ cwd, attach_folder:
