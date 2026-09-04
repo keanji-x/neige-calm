@@ -111,10 +111,17 @@ impl PluginRegistry {
         b.build()
     }
 
-    /// Walk `dir` one level deep, treating each subdirectory as a candidate
-    /// plugin. Loads `<subdir>/manifest.json` for each; on parse or validation
-    /// failure, logs a warning via `tracing::warn!` and skips that plugin —
-    /// the rest of the directory still loads.
+    /// Walk `dir` one level deep, treating each entry that **resolves** to a
+    /// directory as a candidate plugin — symlinks included, because an install
+    /// from a source outside `plugins_dir` is materialized as one. Loads
+    /// `<subdir>/manifest.json` for each; on parse or validation failure, logs
+    /// a warning via `tracing::warn!` and skips that plugin — the rest of the
+    /// directory still loads.
+    ///
+    /// Entries that are not directories: a plain file at the root (a stray
+    /// README, a leftover tarball) is ignored silently; anything that fails to
+    /// stat, and any symlink not resolving to a directory, goes into
+    /// [`LoadReport::skipped`] with a reason.
     ///
     /// If `dir` doesn't exist, returns an empty registry without erroring.
     /// Fresh installs hit this path; creating the directory is the caller's
@@ -141,7 +148,10 @@ impl PluginRegistry {
                 }
             };
             let path = entry.path();
-            let file_type = match entry.file_type() {
+            // `DirEntry::file_type()` does NOT follow symlinks, so it is used
+            // here only to tell "this entry is a symlink" apart from "this
+            // entry is a plain file" — never to decide directory-ness.
+            let entry_type = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "stat failed");
@@ -151,9 +161,40 @@ impl PluginRegistry {
                     continue;
                 }
             };
-            if !file_type.is_dir() {
-                // Stray files at the root (a stray README, a leftover tarball)
-                // are silently ignored — they don't claim to be plugins.
+            // #1168 — installs whose source lives outside `plugins_dir` are
+            // materialized as a symlink (see
+            // `plugin_host::lifecycle::materialize_install_tree`). `fs::metadata`
+            // follows, so the symlinked tree is seen as the directory it is.
+            // It fails on a broken symlink; that is a report, not a silent drop.
+            let metadata = match std::fs::metadata(&path) {
+                Ok(md) => md,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "stat failed (unresolvable entry, e.g. a broken symlink)"
+                    );
+                    report
+                        .skipped
+                        .push((path.clone(), format!("stat failed: {e}")));
+                    continue;
+                }
+            };
+            if !metadata.is_dir() {
+                // A plain file at the root (a stray README, a leftover tarball)
+                // is silently ignored — it never claimed to be a plugin. A
+                // symlink that resolves to something other than a directory is
+                // an install artifact, so it is reported instead of dropped.
+                if entry_type.is_symlink() {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "plugin root symlink does not resolve to a directory — skipping"
+                    );
+                    report.skipped.push((
+                        path.clone(),
+                        "symlink does not resolve to a directory".to_string(),
+                    ));
+                }
                 continue;
             }
             let manifest_path = path.join(MANIFEST_FILENAME);
@@ -494,6 +535,88 @@ mod tests {
         // Both broken and no-manifest should appear in `skipped`.
         assert_eq!(report.loaded.len(), 2);
         assert_eq!(report.skipped.len(), 2);
+    }
+
+    /// #1168 regression — a plugin installed from a source **outside**
+    /// `plugins_dir` is materialized as a symlink (see
+    /// `plugin_host::lifecycle::materialize_install_tree`). `DirEntry::file_type()`
+    /// does not follow symlinks, so the loader used to see `is_dir() == false`
+    /// and silently `continue`, dropping the plugin on every restart.
+    #[cfg(unix)]
+    #[test]
+    fn loads_a_symlinked_plugin_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        // The real tree lives outside plugins_dir — the `cargo build` +
+        // `curl install` shape.
+        let outside = tmp.path().join("outside");
+        let real = write_plugin(&outside, "test.valid", VALID);
+
+        std::os::unix::fs::symlink(&real, plugins_dir.join("test.valid")).unwrap();
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+        assert!(
+            reg.get("test.valid").is_some(),
+            "symlinked plugin dir must load; report = {report:?}"
+        );
+    }
+
+    /// The other half of #1168: a symlink at the plugin root that does not
+    /// resolve to a directory is an install artifact, not stray litter — it
+    /// must be reported, never silently dropped. (A plain stray file still is
+    /// silently ignored; that is pinned by
+    /// `loads_two_skips_one_broken_and_one_no_manifest`.)
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_lands_in_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let dangling = plugins_dir.join("test.gone");
+        std::os::unix::fs::symlink(tmp.path().join("no-such-target"), &dangling).unwrap();
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+        assert!(reg.is_empty());
+        assert!(report.loaded.is_empty());
+        assert_eq!(
+            report.skipped.len(),
+            1,
+            "broken symlink must be reported, not silently dropped; report = {report:?}"
+        );
+        assert_eq!(report.skipped[0].0, dangling);
+    }
+
+    /// The arm the previous test does *not* reach: a symlink that resolves
+    /// fine, but to a regular file. `fs::metadata` succeeds here, so this is
+    /// the `!metadata.is_dir()` + `entry_type.is_symlink()` branch — still an
+    /// install artifact, still reported rather than dropped.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_a_file_lands_in_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let target = tmp.path().join("not-a-plugin.tar.gz");
+        fs::write(&target, "tarball").unwrap();
+        let link = plugins_dir.join("test.file");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // A genuinely stray plain file next to it stays silent — that is the
+        // half of the old behaviour the fix must preserve.
+        fs::write(plugins_dir.join("README.txt"), "ignore me").unwrap();
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+        assert!(reg.is_empty());
+        assert_eq!(
+            report.skipped.len(),
+            1,
+            "exactly the symlink is reported, the stray file stays silent; report = {report:?}"
+        );
+        assert_eq!(report.skipped[0].0, link);
     }
 
     #[test]
