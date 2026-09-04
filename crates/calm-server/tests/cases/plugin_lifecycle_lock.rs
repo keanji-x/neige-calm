@@ -3046,3 +3046,59 @@ async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
         "the branch still stopped the plugin before it tried the delete"
     );
 }
+
+/// D1. The disabled branch's post-stop guard refuses on `Running` and **only**
+/// on `Running`, so a plugin with a live entry that has no live process behind
+/// it still gets its token cleared.
+///
+/// `PluginHost::status` is a snapshot of the runtime table, not a liveness
+/// check: it answers `Some` for `Crashed` (which may still carry a stale cached
+/// pid), `Unavailable` (no pid) and `Spawning` (no pid) just as readily as for
+/// `Running`. A guard written as "any `Some` means still alive" locks the token
+/// row out permanently on the first three.
+///
+/// **This is coverage, not a mutation witness, and the difference matters.**
+/// Widening the guard back to `is_some()` leaves this test green, because
+/// `stop_under`'s success path removes the live entry before the guard reads
+/// it — so `status` is `None` here whatever the guard says. The state that
+/// distinguishes the two guards is a live entry that *survives* the stop, which
+/// means `stopping = true`, which needs `process.stop` to fail; see the comment
+/// on the guard for why no test in this repo can produce that. What this test
+/// does pin is that the disabled branch handles a crashed plugin at all —
+/// nothing exercised that input before.
+#[tokio::test]
+async fn the_disabled_branch_clears_the_token_of_a_crashed_plugin() {
+    let fx = boot_with(BootOpts {
+        stub: CRASH_BIN,
+        ..Default::default()
+    })
+    .await;
+    let _ = fx.host.spawn(ID).await;
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().any(|s| s == "crashed"),
+        Duration::from_secs(15),
+    )
+    .await;
+
+    fx.repo
+        .plugin_update_enabled(ID, false)
+        .await
+        .expect("bypass write");
+
+    fx.host.rotate_plugin_token(ID).await.expect(
+        "a crashed plugin is not a running one — the rotation must not \
+                 be refused, and refusing would lock the token row out for good",
+    );
+    assert!(
+        fx.repo.plugin_token_get(ID).await.unwrap().is_none(),
+        "the token row must actually be cleared"
+    );
+    assert!(
+        !matches!(
+            fx.host.status(ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ),
+        "and nothing may have been started"
+    );
+}

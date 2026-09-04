@@ -1570,8 +1570,10 @@ impl PluginHost {
     /// * `enabled` (or no row at all) — delete, then restart, so the plugin
     ///   picks up a fresh token on the spawn that follows. The delete is
     ///   best-effort here: the restart's `ensure_plugin_token` writes through
-    ///   `plugin_token_set`, an UPSERT, so it overwrites the hash whether or
-    ///   not the DELETE landed;
+    ///   `plugin_token_set`, an UPSERT, so a restart that gets that far
+    ///   overwrites the hash whether or not the DELETE landed. A restart that
+    ///   fails earlier returns its own error, with the old hash still in the
+    ///   row;
     /// * `enabled = false` — stop, then delete, and return `Ok` **without**
     ///   restarting. Rotation's request is "give me a new token"; the restart
     ///   is a side effect, and on a plugin the operator turned off that side
@@ -1772,13 +1774,31 @@ impl PluginHost {
                 Ok(()) | Err(HostError::NotFound(_)) => {}
                 Err(e) => return Err(e),
             }
-            if let Some(still) = self.status(id).await {
+            //
+            // **`Running` and only `Running`** (review D1). The first cut of
+            // this guard refused on any `Some`, and that is a lockout:
+            // `status` is a snapshot of the table, not a liveness check, and it
+            // answers `Some` for three states with no live process behind them
+            // — `Crashed` (possibly carrying a stale cached pid), `Unavailable`
+            // (no pid) and `Spawning` (no pid). A `Crashed` entry left with
+            // `stopping = true` and no process at all therefore went
+            // `NotFound → Some(Crashed) → BadState` on every retry, so the
+            // token could never be deleted at all. Refusing to delete is only
+            // the safer answer against the hazard C2 named — clearing the token
+            // out from under a process that keeps running — and none of those
+            // three is that hazard.
+            //
+            // `Spawning` is worth saying out loud: it cannot be a real
+            // in-flight spawn here, because such a spawn holds this very
+            // lifecycle guard and we are inside it. It can only be stale
+            // residue, which is not a live process either.
+            if let Some(PluginRuntimeStatus::Running) = self.status(id).await.map(|s| s.status) {
                 return Err(HostError::BadState(format!(
-                    "rotate `{id}`: the plugin is disabled but could not be \
-                     stopped (still {:?}); the token was NOT deleted, because \
-                     clearing it while the process runs on would leave a live \
-                     plugin the kernel can no longer account for",
-                    still.status
+                    "rotate `{id}`: the plugin is disabled but is still \
+                     `Running` after the stop; the token was NOT deleted, \
+                     because clearing it while that process keeps running \
+                     would leave a live plugin the kernel can no longer \
+                     account for"
                 )));
             }
             // Review B2 — on THIS branch a failed delete may not be reported as
@@ -1790,9 +1810,12 @@ impl PluginHost {
             //
             // That is the difference from the enabled branch below, and review
             // C1 is the record of getting it wrong in the other direction:
-            // there, `ensure_plugin_token`'s UPSERT completes the rotation
-            // regardless, so propagating would be a false refusal. Same call,
-            // opposite disposition, because of what does or does not follow it.
+            // there a restart follows, and *if it reaches* `ensure_plugin_token`
+            // the UPSERT completes the rotation without the delete — so
+            // propagating would refuse a rotation that was going to happen.
+            // (The restart can also fail before reaching it; see that branch.)
+            // Same call, opposite disposition, because of what does or does not
+            // follow it.
             //
             // Propagating here cannot break a plugin that was never spawned:
             // `plugin_token_delete` is a bare `DELETE ... WHERE plugin_id = ?1`
@@ -1820,26 +1843,32 @@ impl PluginHost {
         // **Best-effort, and deliberately NOT the disabled branch's `?`**
         // (review C1). Round 2 propagated the error here on the reasoning that
         // "a delete that failed is not a rotation that happened". That is true
-        // one branch up and false here, because of what follows this line:
-        // `restart_under` → `spawn_under` → `ensure_plugin_token`, which writes
-        // through `plugin_token_set` — an `INSERT … ON CONFLICT DO UPDATE`
+        // one branch up, and here it is only true when the restart also fails:
+        // what follows this line is `restart_under` → `spawn_under` →
+        // `ensure_plugin_token`, which writes through `plugin_token_set` — an
+        // `INSERT … ON CONFLICT DO UPDATE`
         // (`calm-truth/src/db/sqlite/out_of_domain.rs:630`). It never DELETEs,
-        // so it overwrites the hash whether or not this DELETE landed. Measured
-        // on a running plugin against a store that refuses DELETEs: propagating
-        // gave `Err` with the hash unchanged and the pid unchanged, while
-        // continuing gave `Ok` with both changed. Refusing here would convert a
-        // rotation that genuinely happens into a 500 that does nothing.
+        // so **a restart that reaches it** overwrites the hash whether or not
+        // this DELETE landed. Measured on a running plugin against a store that
+        // refuses DELETEs, with the restart succeeding: propagating gave `Err`
+        // with the hash unchanged and the pid unchanged, while continuing gave
+        // `Ok` with both changed. So refusing here would refuse a rotation that
+        // was going to happen — which is what the `?` did.
         //
-        // The failure is still worth saying out loud: the row is left holding a
-        // hash that the restart is about to replace, and if the restart then
-        // fails the stale row outlives it.
+        // What it does NOT claim (review D3): that the rotation happens
+        // regardless. If the restart fails before the mint, this branch returns
+        // the restart's error with the old hash still in the row — the delete
+        // failure and the restart failure compound, and nothing rewrote the
+        // token. That case is reported as the restart's error, which is the
+        // honest one; the `warn!` below is what records the delete half.
         if let Err(e) = self.repo.plugin_token_delete(id).await {
             tracing::warn!(
                 plugin_id = %id,
                 error = %e,
                 "could not delete the plugin's token row; continuing to the \
-                 restart, whose `ensure_plugin_token` overwrites the hash \
-                 through an UPSERT and so completes the rotation anyway"
+                 restart — if it reaches `ensure_plugin_token` the UPSERT \
+                 overwrites the hash and the rotation completes without this \
+                 delete, and if it does not, the old hash outlives it"
             );
         }
         self.restart_under(guard).await
