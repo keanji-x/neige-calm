@@ -22,6 +22,11 @@ permissions:
   contents: read
 
 env:
+  # `npm ci` audits by default, but that advisory request is not a gate and a
+  # retired audit endpoint stalled fe-unit for five minutes in #1394. Keep all
+  # installs independent of that service; vulnerability policy belongs in an
+  # explicit, separately bounded audit job.
+  NPM_CONFIG_AUDIT: "false"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"

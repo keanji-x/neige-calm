@@ -10,6 +10,11 @@ permissions:
   contents: read
   pull-requests: read
 
+env:
+  # The implicit advisory request is not part of this gate and can consume its
+  # entire five-minute timeout when the audit endpoint stalls (#1394).
+  NPM_CONFIG_AUDIT: "false"
+
 jobs:
   squash-trailer-transfer:
     name: ownership trailers preserved in squash body
