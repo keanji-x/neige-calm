@@ -16,6 +16,14 @@ module.exports = {
     { name: 'no-shared-directory', severity: 'error', from: {}, to: { path: '(^|/)shared(/|$)' } },
     { name: 'styles-no-runtime-layers', severity: 'error', from: { path: '^web/src/styles/', pathNot: '\\.(?:test|spec)\\.[cm]?[jt]sx?$' }, to: { path: '^(core/|web/src/(app|features|systems|ui)/|web/src/main\\.tsx$)' } },
     { name: 'runtime-no-verification-domains', severity: 'error', from: { path: '^(core/|web/src/)', pathNot: '\\.(?:test|spec)\\.[cm]?[jt]sx?$' }, to: { path: '^(mock|tools|e2e|web/e2e)/' } },
+    // Modules carrying a final `.test.`/`.spec.` suffix live beside production code rather than
+    // in a verification domain, so the rule above cannot see them. A production-reachable test
+    // module ships fixtures and mocks in the bundle, and — because eslint `architecture/*` and the
+    // checkers exclude `*.test.*` by path — becomes a hole in every gate scoped to production
+    // files. The scope is exactly that suffix and it is case-sensitive: test helpers named without
+    // it (`web/src/features/track/page/test-fixtures.tsx`) and `__tests__/` directory layouts are
+    // out of range by design; widening to catch them would risk false positives on ordinary names.
+    { name: 'runtime-no-test-modules', severity: 'error', from: { path: '^(core/|web/src/)', pathNot: '\\.(?:test|spec)\\.[cm]?[jt]sx?$' }, to: { path: '\\.(?:test|spec)\\.[cm]?[jt]sx?$' } },
     /*
      * #1234 — Today declares, per prop, what its compact viewport renders
      * (`features/today/page-props.ts`), and the declaration is only worth
