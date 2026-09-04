@@ -15,7 +15,7 @@
             "description": "Stable per-track task key; also the completion correlation id."
           },
           "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-          "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
+          "goal": { "type": "string", "minLength": 1, "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)" },
           "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
           "acceptance_criteria": { "type": ["string", "null"] },
           "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
