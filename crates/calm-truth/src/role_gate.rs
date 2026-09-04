@@ -173,11 +173,15 @@ pub enum RoleViolation {
     )]
     UnknownCard { card: CardId },
 
-    /// A role/track/area lookup the gate needs could not be read at all
-    /// (transaction-backed lookup only — see
-    /// `decision_gate::hydrate_role_caches_from_tx`). "Cannot prove" is a
-    /// denial: the in-memory caches have no failure mode, so this variant is
-    /// unreachable on the cached path.
+    /// A role/track/area lookup the gate needs could not be read, or read
+    /// nothing. "Cannot prove" is a denial.
+    ///
+    /// Two shapes reach it. A transaction-backed read that *errors*
+    /// (`decision_gate::hydrate_role_caches_from_tx`) — the in-memory caches
+    /// have no failure mode, so that shape is cached-path-unreachable. And a
+    /// track→area lookup that comes back empty in `enforce_card_scope`, which
+    /// both substrates can produce; see the comment there for what a miss
+    /// means in each.
     #[error("role lookup failed for {subject}; denying by default")]
     RoleLookupFailed { subject: String },
 }
@@ -773,15 +777,34 @@ fn enforce_card_scope(
         ));
     }
     // #234 — cross-check `scope.area` against the home track's persisted
-    // area. The track→area cache is write-through-populated in
-    // `track_create_tx`, so a missing entry under a known track id is a
-    // hard invariant break worth failing loudly on (rather than the
-    // silent "deny by default" of the role cache miss, which has its
-    // own race-with-delete semantics covered elsewhere).
-    let home_area = track_area_cache.area_of(&home_track).expect(
-        "track_area_cache must be populated for any track with a known card — \
-         track_create_tx writes through unconditionally",
-    );
+    // area. Fail closed on a miss, for the same reason the `track_of`
+    // lookup above does: a miss means we cannot prove the scope names the
+    // card's own home, and "cannot prove" is a denial.
+    //
+    // The lookup has two substrates and a miss means something different
+    // in each — which is why the denial is stated in terms of what they
+    // share rather than in terms of either one's invariants:
+    //
+    //   * write-through (`WriteContext`): `track_create_tx` populates and
+    //     `track_delete_tx` removes. A deleted track cascades its `cards`
+    //     rows away in SQL but does *not* clear `CardRoleCache` (only
+    //     `card_delete_tx` does), so a card the role cache still knows can
+    //     outlive its track's area entry.
+    //   * transaction-hydrated
+    //     (`decision_gate::hydrate_role_caches_from_tx`): the entry exists
+    //     iff `SELECT area_id FROM tracks WHERE id = ?1` returned a row, so
+    //     a miss is just "no row read", carrying no invariant claim at all.
+    //
+    // Under the second substrate the gate runs *inside* the caller's write
+    // transaction, so panicking here would abort a write mid-transaction
+    // instead of refusing it. `RoleLookupFailed` keeps the two substrates
+    // agreeing on the verdict (see the equivalence matrix in
+    // `decision_gate`).
+    let Some(home_area) = track_area_cache.area_of(&home_track) else {
+        return Err(RoleViolation::RoleLookupFailed {
+            subject: format!("tracks.area_id({home_track})"),
+        });
+    };
     if scope_area != &home_area {
         return Err(violation(
             card_id.clone(),
@@ -1112,6 +1135,37 @@ mod tests {
                     if scope.contains("scope.area mismatch")
             ),
             "Worker forging scope.area must be refused: {res:?}",
+        );
+    }
+
+    #[test]
+    fn missing_home_track_area_denies_instead_of_panicking() {
+        // #1381 — the track→area lookup used to `expect(..)` on the claim
+        // that `track_create_tx` write-populates it unconditionally. A
+        // known card can still outlive its track's entry (a track delete
+        // cascades the `cards` rows in SQL but does not clear
+        // `CardRoleCache`), and under the transaction-hydrated substrate a
+        // miss carries no invariant claim at all. Either way the gate runs
+        // inside the caller's write transaction, so the miss must be a
+        // denial, not a panic.
+        let cache = CardRoleCache::new();
+        let wcc = TrackAreaCache::new();
+        let id = CardId::from("worker-1");
+        cache.insert(id.clone(), CardRole::Worker, TrackId::from("home-track"));
+        let res = enforce_role(
+            &ActorId::AiCodex(id.clone()),
+            &area_updated(),
+            &card_scope(id.as_str(), "home-track", "home-area"),
+            &cache,
+            &wcc,
+        );
+        assert!(
+            matches!(
+                res,
+                Err(RoleViolation::RoleLookupFailed { ref subject })
+                    if subject == "tracks.area_id(home-track)"
+            ),
+            "missing track→area entry must deny with RoleLookupFailed: {res:?}",
         );
     }
 
