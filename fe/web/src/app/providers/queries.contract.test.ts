@@ -282,6 +282,46 @@ describe('delete mutation wiring', () => {
       .toEqual([expect.objectContaining({ id: 'c-new', name: 'Reading' })]);
   });
 
+  it('does not let a delayed Area POST response overwrite a newer event row', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.areas(), []);
+    const responseWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      default_template_id: null,
+      default_cwd: null,
+      updated_at: 2,
+    };
+    let releaseResponse!: () => void;
+    const responseHeld = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    const send = vi.fn(async () => {
+      await responseHeld;
+      return ok(responseWire);
+    });
+    const transport: ApiTransportPort = { send };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    let pending!: ReturnType<typeof result.current.create>;
+    act(() => { pending = result.current.create({ name: 'Reading', color: '#5B8DEF' }); });
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+    const newerEvent = {
+      ...toArea(areaWireSchema.parse(responseWire)),
+      name: 'Reading list',
+      defaultTemplateId: 'small-change',
+      defaultCwd: '/srv/reading',
+      updatedAt: 3,
+    };
+    act(() => { client.setQueryData(queryKeys.areas(), [newerEvent]); });
+    releaseResponse();
+    await act(async () => { await pending; });
+
+    expect(client.getQueryData(queryKeys.areas())).toEqual([newerEvent]);
+  });
+
   it('does not promote one created Area into a complete list when the cache is uninitialized', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const createdWire = {

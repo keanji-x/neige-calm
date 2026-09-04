@@ -955,7 +955,7 @@
       "oracle:INV-APP-031"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -101,9 +101,12 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n           : area));\n       }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -101,9 +101,13 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) continue;\n+        if (!existing.some((area) => area.id === write.value.id)) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n           : area));\n       }\n",
     "expected_red": [
       "query invalidation adapter write-through never creates a phantom area when the row is absent"
     ],
@@ -963,6 +963,36 @@
       "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "T-G2b starts with an unrelated cached row and rejects insertion of the event payload."
+  },
+  {
+    "mutation_id": "app-adapter-write-through-creates-phantom-without-area-cache",
+    "defends": [
+      "oracle:INV-APP-031"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -101,9 +101,13 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n+        if (!existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n           : area));\n       }\n",
+    "expected_red": [
+      "query invalidation adapter write-through leaves an uninitialized area cache absent"
+    ],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "The undefined-cache witness isolates the first arm from the initialized-list missing-row arm."
+  },
+  {
+    "mutation_id": "app-area-create-response-drops-newer-version",
+    "defends": [
+      "oracle:INV-APP-115"
+    ],
+    "target": "web/src/app/providers/queries.ts",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -797,7 +797,7 @@\n         const existing = current.find((area) => area.id === created.id);\n         return sortedAreas([\n           ...current.filter((area) => area.id !== created.id),\n-          existing === undefined ? created : newestArea(existing, created),\n+          existing === undefined ? created : created,\n         ]);\n       });\n       void client.invalidateQueries({ queryKey: queryKeys.areas() });\n",
+    "expected_red": [
+      "delete mutation wiring does not let a delayed Area POST response overwrite a newer event row"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/queries.contract.test.ts"
+    ],
+    "why_more_than_one": "The held-response witness isolates the same-id create-response reconciliation branch."
   },
   {
     "mutation_id": "events-derived-kind-list-drops-gate-result",

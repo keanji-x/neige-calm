@@ -21,7 +21,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import type { WireEvent } from '../api/wire';
+import type { KernelArea, WireEvent } from '../api/wire';
 import type { EventMeta } from '../api/events';
 
 // --- fake event stream -------------------------------------------------
@@ -275,18 +275,18 @@ describe('EventBridge', () => {
         color: '#c97',
         sort: 1,
         kind: 'user',
-        default_template_id: null,
-        default_cwd: null,
+        default_template_id: 'small-change',
+        default_cwd: '/srv/work',
         created_at: 1,
         updated_at: 99,
       },
     });
-    const cached = client.getQueryData<
-      Array<{ id: string; name: string }>
-    >(['areas']);
+    const cached = client.getQueryData<KernelArea[]>(['areas']);
     expect(cached).toBeDefined();
     expect(cached!.find((c) => c.id === 'area_1')?.name).toBe('KeepMe');
-    expect(cached!.find((c) => c.id === 'area_2')?.name).toBe('NewName');
+    expect(cached!.find((c) => c.id === 'area_2')).toMatchObject({
+      name: 'NewName', default_template_id: 'small-change', default_cwd: '/srv/work',
+    });
     cleanup();
   });
 

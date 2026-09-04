@@ -227,6 +227,19 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([]);
   });
 
+  it('write-through leaves an uninitialized area cache absent', () => {
+    const { calls, client, areas } = recordingClient();
+    applyEventEffects(client, [{ type: 'write-through', writes: [{
+      key: ['areas'], mode: 'replace-existing-area',
+      value: {
+        id: 'missing', name: 'phantom', color: '#abc', sort: 3, kind: 'user',
+        default_template_id: null, default_cwd: null, created_at: 10, updated_at: 30,
+      },
+    }] }]);
+    expect(areas()).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
   it('preserves effect order across a snapshot-required style batch', () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [

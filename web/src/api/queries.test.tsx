@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import type { KernelArea } from './wire';
 
 // Hoisted mock for the api client. Each function returns a Promise stub so
 // React Query treats them as proper async resolutions.
@@ -92,18 +93,20 @@ describe('queryKeys / query option factories', () => {
 
 describe('useAreasQuery', () => {
   it('starts in pending state and resolves to the mocked list', async () => {
-    const fakeAreas = [
+    const fakeAreas: KernelArea[] = [
       {
         id: 'c1',
         name: 'Atlas',
         color: '#abc',
         sort: 0,
-        kind: 'user' as const,
+        kind: 'user',
+        default_template_id: null,
+        default_cwd: null,
         created_at: 1,
         updated_at: 2,
       },
     ];
-    (api.listAreas as ReturnType<typeof vi.fn>).mockResolvedValue(fakeAreas);
+    vi.mocked(api.listAreas).mockResolvedValue(fakeAreas);
 
     const client = makeClient();
     const { result } = renderHook(() => useAreasQuery(), {
@@ -225,15 +228,18 @@ describe('useTrackDetailQuery', () => {
 
 describe('useCreateAreaMutation', () => {
   it('calls api.createArea and invalidates the areas query on success', async () => {
-    const newArea = {
+    const newArea: KernelArea = {
       id: 'c2',
       name: 'New',
       color: '#fff',
       sort: 1,
+      kind: 'user',
+      default_template_id: null,
+      default_cwd: null,
       created_at: 1,
       updated_at: 2,
     };
-    (api.createArea as ReturnType<typeof vi.fn>).mockResolvedValue(newArea);
+    vi.mocked(api.createArea).mockResolvedValue(newArea);
 
     const client = makeClient();
     const invalidateSpy = vi.spyOn(client, 'invalidateQueries');

@@ -792,12 +792,14 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     mutationFn: (body: NewAreaBody) => runOperation(transport, createAreaOperation(body), unauthorized),
     onSuccess: (wire) => {
       const created = toArea(wire);
-      client.setQueryData<Area[]>(queryKeys.areas(), (current) => current === undefined
-        ? current
-        : sortedAreas([
+      client.setQueryData<Area[]>(queryKeys.areas(), (current) => {
+        if (current === undefined) return current;
+        const existing = current.find((area) => area.id === created.id);
+        return sortedAreas([
           ...current.filter((area) => area.id !== created.id),
-          created,
-        ]));
+          existing === undefined ? created : newestArea(existing, created),
+        ]);
+      });
       void client.invalidateQueries({ queryKey: queryKeys.areas() });
     },
   });

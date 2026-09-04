@@ -1427,7 +1427,7 @@
     每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
   source: web/src/api/schemas.ts:31-215; fe/core/api/schemas.ts:31-39
   authoritative_test: web/src/api/schemas.test.ts:49-68,128-155,698-729,746-762;
-    fe/core/api/schemas.contract.test.ts:237-250
+    fe/core/api/schemas.contract.test.ts:241-254
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core

@@ -577,14 +577,15 @@
   family: app-invalidation-policy
   statement: >
     `area.updated` 必须把事件 payload **同步 write-through** 写进 `['areas']` cache，
-    并且必须保留列表中其他未受影响的行。
+    必须保留列表中其他未受影响的行，并且低 `updatedAt` 的 payload 不得覆盖更高版本。
   why: >
     生产 sidebar 陈旧 bug 的回归锁（issue #288）：仅 invalidate 依赖一次 refetch 往返，
     实测有时 refetch 成功但 Sidebar 不刷新。write-through 让观察者
     （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
-    朴素的 `setQueryData([updated])` 会静默丢掉其他 area，所以"保留其他行"必须一起锁。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:69-79
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:100
+    朴素的 `setQueryData([updated])` 会静默丢掉其他 area；事件与 HTTP 的到达顺序也不稳定，
+    所以"保留其他行"和"保留更高版本"必须一起锁。
+  source: fe/core/domain/area.ts:60-70; fe/web/src/app/events/query-invalidation-adapter.ts:98-108
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:151-210
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -596,13 +597,14 @@
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    `area.updated` 命中一个 cache 中不存在的 area 时必须是 no-op —— **不得凭事件造出 phantom area**。
+    `replace-existing-area` write-through 命中未初始化的 `['areas']` cache，或已初始化列表中
+    不存在的 area 时，都必须是 no-op —— **不得凭事件造出 phantom area**。
   why: >
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:74-76
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:120
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:98-105
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:213-241
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -1212,7 +1214,7 @@
   test_tier: jsdom
   migration: migrated
 
-- id: INV-APP-114
+- id: INV-APP-115
   kind: invariant
   family: app-session-auth
   statement: >
@@ -2114,5 +2116,23 @@
   runtime_layer: app
   verification_owner: unit
   test_tier: static
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-114
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    Area 的 POST/PATCH 响应和 `area.updated` 事件写入同一 cache row 时，必须按 `updatedAt`
+    合并：低版本不能覆盖高版本；相等版本接受后到 carrier，以保留历史同毫秒事件的回放顺序。
+  why: >
+    HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
+    若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
+  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:791-820
+  authoritative_test: fe/core/domain/area.test.ts:78-84; fe/web/src/app/providers/queries.contract.test.ts:285-323
+  owner_slice: app/providers
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
   intentional_omission: false
   migration: migrated

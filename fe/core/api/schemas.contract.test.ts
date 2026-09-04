@@ -32,6 +32,8 @@ describe('wireEventSchema', () => {
         color: '#abc',
         sort: 0,
         kind: 'user',
+        default_template_id: null,
+        default_cwd: null,
         created_at: 1000,
         updated_at: 2000,
       },
@@ -62,7 +64,9 @@ describe('wireEventSchema', () => {
     };
     const parsed = wireEventSchema.parse(payload);
     if (parsed.ev === 'area.updated') {
-      expect(parsed.data.kind).toBe('user');
+      expect(parsed.data).toMatchObject({
+        kind: 'user', default_template_id: null, default_cwd: null,
+      });
     }
   });
 
