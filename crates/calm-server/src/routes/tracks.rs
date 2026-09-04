@@ -1949,36 +1949,14 @@ async fn start_planner_harness(
     // keep that promise, and a 201 would claim it did. Report the failure
     // instead.
     //
-    // What this 5xx does NOT say: it does not say the message was not
-    // delivered. The four bindings of `harness_start_failed` above do not agree
-    // on that, and this function cannot tell them apart from here:
-    //
-    // * submit failed, and `Failed` (`spawn_side_effect` itself errored, so
-    //   `fail_with_compensation` ran) — nothing was handed to any agent;
-    // * `Stuck` — the phase write failed *after* `spawn_side_effect` installed
-    //   a live harness, so the seeded observation is already in it and the turn
-    //   is already out. Compensation does not run on this path and could not
-    //   recall the turn if it did. Pinned by
-    //   `a_stuck_start_after_spawn_has_already_delivered_the_message`;
-    // * the `wait()` error — the operation is still in flight and will very
-    //   likely go on to deliver.
-    //
-    // So the text says what is actually known: the start did not complete, the
-    // outcome of the delivery is unknown, check the track before resending.
-    // Making the endpoint able to answer what really happened means reading the
-    // runtime back / persisting a delivery marker, which is #1384's shape, not
-    // this slice's.
-    //
-    // What this 5xx also does NOT say: it does not say nothing happened. The track,
+    // What this 5xx does NOT say: it does not say nothing happened. The track,
     // its two cards, its folder claim and (on the managed path) its
     // materialized workspace are all already committed by the time this
     // function runs — `create_track_structure` returned before it was called.
     // "non-201 ⇒ no side effect" is not a property of this handler and this
     // branch does not make it one; there is deliberately no compensating
-    // delete here. The client's recourse is to look at the track it can see in
-    // the list and retype the message, not to assume the create was undone.
-    // Making the create *retryable* — an idempotency key that survives the id
-    // mint — is #1384, not this slice.
+    // delete here. Making the create *retryable* — an idempotency key that
+    // survives the id mint — is #1384, not this slice.
     //
     // Without a `first_message` this is unreachable: the pre-#1299 semantics
     // stay byte-for-byte, `warn!` + 201, i.e. "the track exists and its planner
@@ -2778,9 +2756,7 @@ fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Resu
 
 /// Re-open the track's planner harness thread at `cwd`.
 ///
-/// Best effort, and deliberately so: it mirrors `start_planner_harness`, whose
-/// failures are warnings ("the track exists but the planner agent is inert")
-/// rather than a failed request. Turning a harness hiccup into a 500 here
+/// Best effort, and deliberately so: turning a harness hiccup into a 500 here
 /// would be worse than useless — the workspace has already moved and the row
 /// already says so, so the caller must not be told the whole operation failed.
 ///
