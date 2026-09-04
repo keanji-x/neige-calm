@@ -556,6 +556,47 @@ async fn planner_must_not_adopt_a_successor_owner_after_the_original_stops() {
     boot.host.stop(OWNER_B).await.expect("stop B");
 }
 
+/// Acceptance ① with the schema check taken **out of play**: A and B declare
+/// the *same* `input_schema`, so the persisted input is perfectly valid under
+/// the successor. Nothing but "the owner column is the owner" can reject B
+/// here — which is exactly why this test exists next to the differing-schema
+/// one. A mutation that reverts the owner lookup to a `template_id` scan
+/// leaves the differing-schema repro green (the re-validation catches it) and
+/// turns this one red.
+#[tokio::test]
+async fn planner_must_not_adopt_a_successor_owner_that_shares_the_original_schema() {
+    let _trust = TrustGuard::trust(&format!("{OWNER_A},{OWNER_B}")).await;
+    let boot = boot(&[
+        owner(OWNER_A, &[SHARED_TEMPLATE_ID], Some(owner_a_input_schema())),
+        // Same contract as A — the input stays valid across the takeover.
+        owner(OWNER_B, &[SHARED_TEMPLATE_ID], Some(owner_a_input_schema())),
+    ])
+    .await;
+    spawn_on(&boot.host, OWNER_A).await;
+    let track_id = boot.create_bound_track(Some(owner_a_input())).await;
+    assert_eq!(
+        boot.stored_plugin_scope(&track_id).await.as_deref(),
+        Some(OWNER_A)
+    );
+
+    boot.host.stop(OWNER_A).await.expect("stop A");
+    spawn_on(&boot.host, OWNER_B).await;
+    _trust.check();
+
+    // The input would sail through B's schema — the *only* reason to refuse
+    // is that B does not own this track.
+    assert!(
+        crate::plugin_host::template_input::validate_template_input(
+            &owner_a_input_schema(),
+            &owner_a_input()
+        )
+        .is_ok(),
+        "this test is only meaningful while the successor accepts the input"
+    );
+    assert_owner_agreement(&boot, &boot.host, &track_id, None, &_trust).await;
+    boot.host.stop(OWNER_B).await.expect("stop B");
+}
+
 /// Acceptance ② stated as the invariant rather than as two separate values:
 /// the two readers must never disagree about whether the track has a usable
 /// owner. Runs the whole A→stop→B lifecycle and cross-checks at every step.
