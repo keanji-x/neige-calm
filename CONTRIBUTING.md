@@ -70,13 +70,17 @@ Never claim a check was run when it was not.
 
 ### Verification
 
-Run the smallest relevant checks while iterating, then the appropriate project
-gates before requesting review:
+Run only the smallest relevant checks while iterating and before requesting
+review. Workspace-wide Rust tests run in CI and are not a routine local step:
 
 ```bash
-# Rust: fast feedback, then the broad local gate when appropriate
+# Rust: select the affected package and test-name filter
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  cargo nextest run --locked \
+  -p <package> <test-name-filter> --test-threads 8
+
+# When the Rust change also needs the compile, lint, and OpenAPI preflight
 scripts/local-rust-gates.sh --quick
-scripts/local-rust-gates.sh
 
 # Next-generation frontend
 (cd fe && npm ci && npm run lint && npm run build && npm test)
@@ -87,6 +91,12 @@ scripts/local-rust-gates.sh
 # Default stack end-to-end tier when an integrated flow changes
 ./e2e/run.sh
 ```
+
+Add `--features calm-server/codex-e2e` only when the affected Rust test requires
+it. Narrow further with `--lib` or `--test <test-target>` when useful. Do not run
+the full `scripts/local-rust-gates.sh` unless explicitly requested or changing
+the gate/nextest configuration itself; CI is authoritative for the broad
+workspace suite.
 
 When an API schema or generated binding changes, run the relevant generation
 command and commit every generated artifact it updates. Tests for a defect or
