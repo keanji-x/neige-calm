@@ -117,10 +117,15 @@ impl PluginRegistry {
     ///
     /// Entries are visited in sorted file-name order (`OsString` ordering,
     /// i.e. raw byte order on unix) rather than in the order `std::fs::read_dir`
-    /// happens to yield. When two entries carry manifests with the same id, the
-    /// first one in that order is loaded and every later one goes into
-    /// [`LoadReport::skipped`] with a reason naming the id and the path it lost
-    /// to; a duplicate id does not abort the load.
+    /// happens to yield. When two entries carry manifests with the same id, only
+    /// one is loaded and the other goes into [`LoadReport::skipped`] with a
+    /// reason naming the id and the path it lost to; a duplicate id does not
+    /// abort the load. The winner is the entry whose directory name equals the
+    /// manifest id — the shape every install produces — and, when neither entry
+    /// has that shape, the first one in sorted name order. The directory name
+    /// alone does not decide it: names are attacker-chosen and the id is read
+    /// out of the manifest afterwards, so a low-sorting name would otherwise be
+    /// loaded under another plugin's id.
     ///
     /// If `dir` doesn't exist, returns an empty registry without erroring.
     /// Fresh installs hit this path; creating the directory is the caller's
@@ -217,26 +222,52 @@ impl PluginRegistry {
             match load_one(&manifest_path) {
                 Ok(manifest) => {
                     let id = manifest.id.clone();
+                    let path_is_canonical = dir_name_is_id(&path, &id);
                     let mut inner = registry.inner.write().unwrap();
                     // Two manifests claiming one id would race for the same
                     // `plugins` row, token and kv namespace, so only one may
                     // load. Refusing to boot is not an option: an operator's
                     // `ln -s plugins/foo plugins/foo.bak` now resolves to a
-                    // directory and would take the whole server down. The first
-                    // entry in sorted name order wins; the rest are reported.
+                    // directory and would take the whole server down.
+                    //
+                    // Which one wins may not be decided by the directory name
+                    // alone: the name is attacker-chosen and the id is read out
+                    // of the manifest afterwards, so a name that sorts early
+                    // (`.takeover`, `Zed`: `.` and every uppercase letter sort
+                    // below the `[a-z0-9]` a legal id must start with) would
+                    // otherwise be loaded *under the victim's id* and push the
+                    // real install into `skipped`. So the canonical entry —
+                    // the one whose directory name equals the manifest id,
+                    // which is the shape every install produces — wins over any
+                    // entry that does not have that shape. At most one entry in
+                    // a directory can bear a given name, so a canonical entry
+                    // is never displaced; among entries that are all
+                    // non-canonical the sorted-name order decides, and the
+                    // loser is reported either way.
                     if let Some(prev) = inner.install_paths.get(&id).cloned() {
-                        drop(inner);
+                        let prev_is_canonical = dir_name_is_id(&prev, &id);
+                        let (winner, loser) = if path_is_canonical && !prev_is_canonical {
+                            inner.install_paths.insert(id.clone(), path.clone());
+                            inner.manifests.insert(id.clone(), manifest);
+                            drop(inner);
+                            report.loaded.retain(|loaded| loaded != &prev);
+                            report.loaded.push(path.clone());
+                            (path, prev)
+                        } else {
+                            drop(inner);
+                            (prev, path)
+                        };
                         tracing::warn!(
-                            path = %path.display(),
                             plugin_id = %id,
-                            first = %prev.display(),
-                            "duplicate plugin id — keeping the first entry in name order"
+                            winner = %winner.display(),
+                            loser = %loser.display(),
+                            "duplicate plugin id — one entry is loaded, the other is skipped"
                         );
                         let reason = format!(
                             "duplicate plugin id `{id}` — already loaded from {}",
-                            prev.display()
+                            winner.display()
                         );
-                        report.skipped.push((path, reason));
+                        report.skipped.push((loser, reason));
                         continue;
                     }
                     inner.install_paths.insert(id.clone(), path.clone());
@@ -475,6 +506,19 @@ enum LoadOneError {
     Manifest(#[from] ManifestError),
 }
 
+/// Does this entry have the canonical shape an install produces — a directory
+/// whose own name *is* the manifest id (`plugins_dir/<id>`, see
+/// `plugin_host::lifecycle::materialize_install_tree`)?
+///
+/// The comparison is on the raw `OsStr`, so it is byte-exact: a legal id is
+/// `^[a-z0-9][a-z0-9.-]{1,63}$` (`manifest::ID_RE`), and an entry named with a
+/// different case (`Test.valid` against id `test.valid`) is a *different*
+/// directory that merely resembles the canonical one — treating it as canonical
+/// would hand it the win, because uppercase sorts below lowercase.
+fn dir_name_is_id(path: &Path, id: &str) -> bool {
+    path.file_name() == Some(std::ffi::OsStr::new(id))
+}
+
 fn load_one(manifest_path: &Path) -> Result<Manifest, LoadOneError> {
     let text = std::fs::read_to_string(manifest_path)?;
     let m = Manifest::parse(&text)?;
@@ -702,6 +746,100 @@ mod tests {
         assert_eq!(report.loaded, vec![winner]);
         assert_eq!(report.skipped.len(), 1, "report = {report:?}");
         assert_eq!(report.skipped[0].0, loser);
+    }
+
+    /// The sort key is the *directory name*; the id comes out of
+    /// `manifest.json`, read afterwards. So "first in sorted name order wins"
+    /// on its own is a plugin-takeover primitive: `.` and every uppercase
+    /// letter sort below the `[a-z0-9]` a legal id must start with
+    /// (`manifest::ID_RE`), so an entry an operator never installed sorts ahead
+    /// of every legitimately-installed plugin and would be loaded **under the
+    /// victim's id**, pushing the real install into `skipped`. The canonical
+    /// entry — directory name == manifest id, the shape
+    /// `materialize_install_tree` always produces — must win instead.
+    ///
+    /// This case is the symlink-to-an-outside-tree construction: the impostor
+    /// tree lives outside `plugins_dir` entirely, which #1168's symlink
+    /// following is what makes loadable at all.
+    ///
+    /// Mutation witness: drop the `path_is_canonical && !prev_is_canonical`
+    /// displacement arm (leaving plain first-in-sorted-order) and this test
+    /// goes red on `install_path("test.valid") == Some(real)`.
+    #[cfg(unix)]
+    #[test]
+    fn canonical_dir_beats_a_low_sorting_impostor_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        // The impostor tree is outside `plugins_dir` and claims the victim's id.
+        let outside = tmp.path().join("evil");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("manifest.json"), VALID).unwrap();
+        // ".takeover" sorts before "test.valid" ('.' = 0x2e < 't'), and is
+        // created first so `read_dir` order cannot be what saves us either.
+        let impostor = plugins_dir.join(".takeover");
+        std::os::unix::fs::symlink(&outside, &impostor).unwrap();
+
+        let real = write_plugin(&plugins_dir, "test.valid", VALID);
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir)
+            .expect("a duplicate id must not abort the load (AppState::new uses `?`)");
+        assert_eq!(
+            reg.install_path("test.valid"),
+            Some(real.clone()),
+            "the canonical `plugins_dir/<id>` entry must win over a lower-sorting \
+             impostor claiming the same id; report = {report:?}"
+        );
+        assert_eq!(report.loaded, vec![real.clone()], "report = {report:?}");
+        assert_eq!(report.skipped.len(), 1, "report = {report:?}");
+        assert_eq!(report.skipped[0].0, impostor);
+        assert_eq!(
+            report.skipped[0].1,
+            format!(
+                "duplicate plugin id `test.valid` — already loaded from {}",
+                real.display()
+            ),
+            "the reason must name the id and the path the impostor lost to"
+        );
+    }
+
+    /// Same takeover, uppercase-initial name instead of a leading dot: `T` =
+    /// 0x54 sorts below every lowercase letter, so `Test.valid` also precedes
+    /// the canonical `test.valid`.
+    ///
+    /// This case additionally pins that the name==id comparison is
+    /// case-*sensitive*: under a case-insensitive comparator both entries would
+    /// count as canonical, neither would displace the other, and the
+    /// first-in-sorted-order tiebreak would hand the win to `Test.valid`.
+    #[test]
+    fn canonical_dir_beats_an_uppercase_impostor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let impostor = write_plugin(&plugins_dir, "Test.valid", VALID);
+        let real = write_plugin(&plugins_dir, "test.valid", VALID);
+
+        let (reg, report) = PluginRegistry::load_from_dir(&plugins_dir)
+            .expect("a duplicate id must not abort the load (AppState::new uses `?`)");
+        assert_eq!(
+            reg.install_path("test.valid"),
+            Some(real.clone()),
+            "the canonical `plugins_dir/<id>` entry must win over an \
+             uppercase-initial impostor claiming the same id; report = {report:?}"
+        );
+        assert_eq!(report.loaded, vec![real.clone()], "report = {report:?}");
+        assert_eq!(report.skipped.len(), 1, "report = {report:?}");
+        assert_eq!(report.skipped[0].0, impostor);
+        assert_eq!(
+            report.skipped[0].1,
+            format!(
+                "duplicate plugin id `test.valid` — already loaded from {}",
+                real.display()
+            ),
+            "the reason must name the id and the path the impostor lost to"
+        );
     }
 
     #[test]
