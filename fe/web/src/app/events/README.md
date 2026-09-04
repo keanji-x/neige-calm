@@ -84,14 +84,14 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `area.updated` | invalidate areas | area list is live |
 | `area.deleted` | invalidate areas + track overlays | |
 | `track.updated` | invalidate that area's track list + track detail + all active task verdicts | a root budget/policy change can alter descendant admission; `track-files`/`tracks-range` parts drop (stubs) |
-| `track.lifecycle_changed` | same as `track.updated` | |
+| `track.lifecycle_changed` | invalidate that area's track list + track detail | the route normally pairs it with `track.updated`, but this event alone does not claim a task-policy change; `track-files`/`tracks-range` parts drop (stubs) |
 | `track.deleted` | invalidate area's track list + track overlays + all active task verdicts; **remove** track detail | the detail can never resolve again, while deleting a tree member changes the survivors' B/N shares |
 | `card.added` / `card.updated` | invalidate track detail + both conversation lists | |
 | `card.deleted` | invalidate track detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
 | `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
 | `track.report_edited` | invalidate that track's task verdicts | `track-files` and `track-backlinks` are still stubs |
-| `plan.updated` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | pending-task cancellation emits this event and pending rows do not poll |
+| `plan.updated` with string `agent_message` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | standalone pending-task cancellation carries the message and pending rows do not poll; projection companion events omit it and are no-ops here because their paired event already refreshes |
 | `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
 | `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
 | `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |

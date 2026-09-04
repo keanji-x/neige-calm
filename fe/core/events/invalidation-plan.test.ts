@@ -69,6 +69,18 @@ describe('invalidation plan behavior', () => {
     });
   });
 
+  it('keeps a lifecycle event to the base track projections on its own', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'track.lifecycle_changed', data: { id: 'w1', area_id: 'c1' },
+    }))).toEqual({
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range'],
+      ],
+      remove: [],
+      writeThrough: [],
+    });
+  });
+
   it('removes deleted track detail after invalidating its remaining projections', () => {
     expect(invalidationPlanFor(event({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
       invalidate: [
