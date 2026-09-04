@@ -1,0 +1,13 @@
+error[E0603]: module `events` is private
+ --> tests/ui/name_authorized_capability.rs:8:49
+  |
+ 8 |     let _forged: Option<calm_truth::db::sqlite::events::gated::Authorized<'_>> = None;
+   |                                                 ^^^^^^         ---------- struct `Authorized` is not publicly re-exported
+   |                                                 |
+   |                                                 private module
+   |
+note: the module `events` is defined here
+  --> src/db/sqlite/mod.rs
+   |
+   | mod events;
+   | ^^^^^^^^^^

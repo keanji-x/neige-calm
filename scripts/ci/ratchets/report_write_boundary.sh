@@ -190,58 +190,11 @@ fail() {
 # the KNOWN GAPS section below.
 CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_FILE")"
 
-# attrs_above <awk-ERE> — print the block of `#[…]` attribute lines *directly
-# above* the first line matching the pattern, and nothing else.
-#
-# "Directly above" is the whole point, and it is what a `grep -B N` window got
-# wrong. With a window, this passes:
-#
-#     #[cfg(any(test, feature = "fixtures"))]
-#     const CFG_MARKER: () = ();
-#     #[allow(clippy::too_many_arguments)]
-#     pub async fn persist_report(          // unconditionally public
-#
-# — the cfg is attached to a const, the function is public in every build, and
-# the string is still inside the window. Here any non-attribute line resets the
-# block, so the const breaks adjacency and the cfg is not reported.
-#
-# A blank line does NOT break the block, and that is not laxity: doc comments and
-# `//` rationale lines between an attribute and its item are blanked to empty
-# lines by the stripper above, so treating a blank as a break made R4 go RED on
-# the perfectly ordinary
-#
-#     #[cfg(any(test, feature = "fixtures"))]
-#     /// Test-only direct access to the boundary.
-#     pub async fn persist_report(
-#
-# and made R1b go GREEN when a `// rationale` line sat between the writer's cfg
-# and the writer. Rust does not detach an attribute from its item across blank
-# lines or comments; neither does this. A non-empty, non-attribute line still
-# breaks the block, which is what keeps the decoy-`const` above caught.
-#
-# A multi-line attribute is one attribute. rustfmt emits them — a long
-# `#[cfg(all(\n    feature = "fixtures",\n    unix\n))]` is three lines, only the
-# first of which starts with `#[`. Treating the continuation as "some other
-# line" cleared the block, which made R1b go GREEN on a cfg'd writer. So the
-# block stays open until brackets balance.
-attrs_above() {
-  printf '%s' "$CODE" | awk -v pat="$1" '
-    function depth(s,   i, c, d) {
-      d = 0
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (c == "[") d++
-        else if (c == "]") d--
-      }
-      return d
-    }
-    open > 0          { block = block $0 "\n"; open += depth($0); next }
-    $0 ~ pat          { print block; exit }
-    /^#\[/            { block = block $0 "\n"; open = depth($0); next }
-    /^[[:space:]]*$/  { next }
-                      { block = "" }
-  '
-}
+# Adjacency for the cfg rules below is `attrs_above` in lib.sh — see its
+# comment there for the three constructions that shaped it (a decoy `const`
+# between the cfg and the item, a blank/doc line that must NOT break the block,
+# and a rustfmt-wrapped multi-line `#[cfg(all(…))]`). Callers pass CODE.
+
 if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
   fail "R0: $BOUNDARY_FILE contains a block comment. This gate strips only whole-line \`//\` comments, so a \`/* */\` can hide a declaration from every rule below. Use \`//\`."
 fi
@@ -313,7 +266,7 @@ fi
 # either a decoy (see the raw-identifier note above) or a boundary that exists
 # in some builds and not others, and "which builds" is precisely what this gate
 # cannot evaluate.
-if [ -n "$writer_decl" ] && attrs_above '^[a-zA-Z_ ()]*fn persist[(]' | rg -q '#\[[[:space:]]*cfg'; then
+if [ -n "$writer_decl" ] && attrs_above "$CODE" '^[a-zA-Z_ ()]*fn persist[(]' | rg -q '#\[[[:space:]]*cfg'; then
   fail "R1b: the writer carries a \`#[cfg]\` attribute. The boundary must exist in every build, and a cfg'd \`persist\` lets a second, differently-gated one sit beside it."
 fi
 
@@ -368,7 +321,7 @@ fi
 # somewhere nearby — see `attrs_above` for the decoy that "nearby" admits.
 if ! printf '%s' "$CODE" | rg -q '^pub async fn persist_report\('; then
   fail "R4: no \`pub async fn persist_report(\` found — if the test entry was renamed or removed, update R4 and EXPECTED_ENTRIES together"
-elif ! attrs_above '^pub async fn persist_report[(]' | rg -q '^#\[cfg\(any\(test, feature = "fixtures"\)\)\]$'; then
+elif ! attrs_above "$CODE" '^pub async fn persist_report[(]' | rg -q '^#\[cfg\(any\(test, feature = "fixtures"\)\)\]$'; then
   fail "R4: the test-only \`persist_report\` entry does not carry \`#[cfg(any(test, feature = \"fixtures\"))]\` in its own attribute block — without it, production builds get a \`pub\` writer that takes a caller-chosen EditAuthor"
 fi
 

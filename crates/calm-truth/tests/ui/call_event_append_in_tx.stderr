@@ -1,0 +1,14 @@
+error[E0624]: associated function `event_append_in_tx` is private
+ --> tests/ui/call_event_append_in_tx.rs:10:31
+  |
+ 10 |       let _appender = SqlxRepo::event_append_in_tx;
+    |                                 ^^^^^^^^^^^^^^^^^^ private associated function
+    |
+   ::: src/db/sqlite/events.rs
+    |
+    | /     async fn event_append_in_tx(
+    | |         tx: &mut Transaction<'_, Sqlite>,
+    | |         authorized: &gated::Authorized<'_>,
+    | |         correlation: Option<&str>,
+    | |     ) -> Result<i64> {
+    | |____________________- private associated function defined here

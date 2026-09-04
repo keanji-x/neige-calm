@@ -18,6 +18,29 @@ path = "tests/integration_suite.rs"
 default = []
 test-helpers = []
 
+# #1252 S3′ PR-B — the append-seam escape probe.
+#
+# Enabling this feature compiles `mod append_seam_escape_probe` in
+# `src/db/sqlite/events.rs`, whose four functions are deliberate bypasses of the
+# `gated::Authorized` capability. Each one MUST fail to compile, with the exact
+# diagnostic the CI step asserts.
+#
+# Consequence, stated plainly: **this crate can never be built with
+# `--all-features`**, because that turns these on. The workspace gate commands
+# name features explicitly for exactly this reason; `calm-proc-supervisor`'s
+# `pgid-escape-probe` has the same shape and the same cost.
+#
+# **One feature per shape, and that is not tidiness.** The first draft put all
+# four behind one feature and only two diagnostics came out: `rustc` aborts
+# after type checking, and the struct-expression privacy check (E0451) lives in
+# a *later* pass, so the two forging samples compiled silently and a
+# single-feature gate would have asserted two codes while believing it asserted
+# four. Each shape therefore gets its own feature and its own `cargo check`.
+append-seam-escape-probe-retarget = []
+append-seam-escape-probe-forge = []
+append-seam-escape-probe-functional-update = []
+append-seam-escape-probe-ungated-append = []
+
 [dependencies]
 calm-types = { path = "../calm-types" }
 calm-exec = { path = "../calm-exec" }
@@ -49,3 +72,4 @@ syn = { version = "2", features = ["full"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 toml = "0.8"
+trybuild = "1"
