@@ -104,6 +104,131 @@ async fn spawn_neige(socket_path: &Path, args: &[&str]) -> tokio::process::Child
         .expect("spawn neige")
 }
 
+async fn run_neige_without_mcp(args: &[&str]) -> std::process::Output {
+    timeout(
+        TEST_BUDGET,
+        Command::new(NEIGE_BIN)
+            .args(args)
+            .env_remove("NEIGE_MCP_SOCKET")
+            .env_remove("NEIGE_MCP_DAEMON_TOKEN")
+            .env_remove("NEIGE_MCP_TOKEN")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await
+    .expect("child exited")
+    .expect("wait ok")
+}
+
+#[tokio::test]
+async fn global_help_forms_list_every_command_without_mcp_environment() {
+    for args in [&["--help"][..], &["-h"][..], &["help"][..]] {
+        let out = run_neige_without_mcp(args).await;
+        assert!(
+            out.status.success(),
+            "args = {args:?}, stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stderr.is_empty(), "args = {args:?}");
+
+        let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+        assert!(stdout.contains("Usage:"), "stdout = {stdout:?}");
+        assert!(stdout.contains("Commands:"), "stdout = {stdout:?}");
+        for command in [
+            "ls",
+            "cat",
+            "state",
+            "diff",
+            "cat-at",
+            "log",
+            "task-completed",
+            "task-failed",
+            "track-gc",
+            "vacuum",
+        ] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(command)),
+                "help does not list {command:?}: {stdout:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_command_has_local_help() {
+    for (command, expected_usage) in [
+        ("ls", "Usage: neige ls [path]"),
+        ("cat", "Usage: neige cat <path>"),
+        ("state", "Usage: neige state"),
+        ("diff", "Usage: neige diff <from>"),
+        ("cat-at", "Usage: neige cat-at <commit> <path>"),
+        ("log", "Usage: neige log [path]"),
+        (
+            "task-completed",
+            "Usage: neige task-completed --idempotency-key <key>",
+        ),
+        (
+            "task-failed",
+            "Usage: neige task-failed --idempotency-key <key> --reason <text>",
+        ),
+        ("track-gc", "Usage: neige track-gc --track-id <id>"),
+        ("vacuum", "Usage: neige vacuum --force"),
+    ] {
+        let out = run_neige_without_mcp(&[command, "--help"]).await;
+        assert!(
+            out.status.success(),
+            "command = {command}, stderr = {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stderr.is_empty(), "command = {command}");
+        let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+        assert!(
+            stdout.contains(expected_usage),
+            "command = {command}, stdout = {stdout:?}"
+        );
+        assert!(stdout.contains("Options:"), "stdout = {stdout:?}");
+    }
+}
+
+#[tokio::test]
+async fn help_subcommand_accepts_a_command_name() {
+    let out = run_neige_without_mcp(&["help", "diff"]).await;
+    assert!(
+        out.status.success(),
+        "stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stderr.is_empty());
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("Usage: neige diff <from>"),
+        "stdout = {stdout:?}"
+    );
+}
+
+#[tokio::test]
+async fn unknown_command_reports_available_commands_and_help_hint() {
+    let out = run_neige_without_mcp(&["snow"]).await;
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("unknown command `snow`"),
+        "stderr = {stderr:?}"
+    );
+    assert!(
+        stderr.contains("Available commands:"),
+        "stderr = {stderr:?}"
+    );
+    assert!(stderr.contains("ls") && stderr.contains("vacuum"));
+    assert!(stderr.contains("neige --help"), "stderr = {stderr:?}");
+}
+
 #[tokio::test]
 async fn ls_root_lists_top_level_entries() {
     let tmp = tempfile::tempdir().expect("tempdir");
