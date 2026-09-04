@@ -102,6 +102,22 @@ pub enum HostError {
     #[error("plugin `{0}` is disabled by config")]
     Disabled(String),
 
+    /// #1226 — the plugin's **DB row** says `enabled = false`: an operator
+    /// turned this plugin off. The spawn admission path refuses.
+    ///
+    /// Deliberately NOT [`Self::Disabled`], which is the *config* kill switch
+    /// (`config.plugins_disabled`, an operator edit to a file the running
+    /// kernel cannot change). These are two different stores with two different
+    /// remedies — `POST /api/plugins/{id}/enable` for this one, editing the
+    /// config for that one — and collapsing them would make the enable endpoint
+    /// look like the fix for something it cannot fix.
+    ///
+    /// Raised before any process spawn or token mint, so a refusal leaves
+    /// nothing half-started. **An absent row is not this error**: a row that
+    /// does not exist cannot say "disabled", so the spawn proceeds.
+    #[error("plugin `{0}` is disabled: its row says `enabled = false`")]
+    OperatorDisabled(String),
+
     /// Process-level failure (spawn/wait/kill). The wrapped `ProcessError`
     /// carries the syscall detail.
     #[error(transparent)]

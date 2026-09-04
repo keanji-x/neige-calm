@@ -1309,17 +1309,26 @@ impl PluginHost {
     /// never been enabled), so the error has to be *handled* at the call site,
     /// not merely propagated. A type that cannot be `?`-ed into `HostError` is
     /// what makes that non-optional.
+    ///
+    /// #1226 — it also hands back the row's `enabled` bit (`None` = no row),
+    /// because that bit lives in the very row this read already fetches.
+    /// Answering both questions from ONE read is the whole point: a second,
+    /// separate read of `plugins` earlier on the spawn path would have to
+    /// classify its own failure, and it would classify the *same* store outage
+    /// this one reports as `ConfigUnreadable` under a different name — which is
+    /// how one failure class comes to have two types (the S3a review P1-1
+    /// divergence, one layer up).
     async fn effective_config_for_spawn(
         &self,
         id: &str,
         manifest: &Manifest,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let user_config = match self.repo.plugin_get_by_id(id).await {
-            Ok(Some(row)) => row.user_config,
-            Ok(None) => serde_json::Value::Object(Default::default()),
+    ) -> Result<(Option<bool>, serde_json::Map<String, serde_json::Value>), String> {
+        let (enabled, user_config) = match self.repo.plugin_get_by_id(id).await {
+            Ok(Some(row)) => (Some(row.enabled), row.user_config),
+            Ok(None) => (None, serde_json::Value::Object(Default::default())),
             Err(e) => return Err(e.to_string()),
         };
-        Ok(config::effective_config(manifest, &user_config))
+        Ok((enabled, config::effective_config(manifest, &user_config)))
     }
 
     /// #1284 §2.3 + §2.4 — **the** spawn-time configuration gate, for every
@@ -1405,8 +1414,8 @@ impl PluginHost {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.to_string());
-        let effective = match self.effective_config_for_spawn(id, manifest).await {
-            Ok(effective) => effective,
+        let (enabled, effective) = match self.effective_config_for_spawn(id, manifest).await {
+            Ok(pair) => pair,
             Err(detail) => {
                 // S2 review P2-1. This branch used to be a `?` on the `app`
                 // path and still was one on the `cli-query` path when the two
@@ -1426,6 +1435,68 @@ impl PluginHost {
                 });
             }
         };
+
+        // #1226 — the operator's `enabled` bit is spawn admission, and it is
+        // enforced HERE rather than by each caller remembering to ask.
+        //
+        // The defect: `PluginHost::spawn` consulted only the *config* kill
+        // switch (`spawn_admission_check` / `config.plugins_disabled`) and
+        // never the DB row. `enable`, `reload`, `autospawn_enabled` and the
+        // crash supervisor each checked `enabled` for themselves;
+        // `rotate_plugin_token` — whose request is "give me a new token", the
+        // restart being only a side effect — did not, so rotating a disabled
+        // plugin's token STARTED it. Nothing reconciled the result: the next
+        // boot's autospawn skips the plugin precisely BECAUSE the row says
+        // `enabled = false`, so `DB disabled + runtime Running` is terminal.
+        //
+        // **Why this function and not `spawn_under`.** Two reasons, and the
+        // first is the load-bearing one:
+        //
+        // * it is the single door every spawn of every kind goes through, and
+        //   unlike a check further up that is not a claim about today's call
+        //   sites — §4.7's witness (`spawn_admitted` clears it, this function
+        //   stamps it, `assert_config_gate_ran` fires on any spawn that reached
+        //   `Running` without the stamp) plus
+        //   `every_connector_kind_spawns_through_the_shared_config_gate` make
+        //   it structural. A caller cannot skip this and reach `Running`;
+        // * the `enabled` bit and `user_config` are two columns of ONE row, so
+        //   asking here costs no extra read and — decisively — gives the
+        //   question a single failure classification. A separate earlier read
+        //   would have to say something of its own when the store is down, and
+        //   the something it would say is not `ConfigUnreadable`, splitting one
+        //   store outage across two error types and two live-entry
+        //   dispositions. `a_cli_connector_whose_config_store_is_unreadable_lands_unavailable`
+        //   and `an_unreadable_config_store_refuses_the_spawn_and_says_so` are
+        //   the two tests that say so out loud.
+        //
+        // **The boundary, stated exactly.** A row that says `enabled = false`
+        // refuses. **No row at all proceeds, unchanged** — deliberately, and it
+        // is not a weakening: a row that does not exist cannot say "disabled".
+        // It is also load-bearing, because
+        // `a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults`
+        // spawns a registry-only `app` on purpose and the `Ok(None)` arm above
+        // is only reachable through here.
+        //
+        // **No `Unavailable` entry, unlike the two arms around it.** Those two
+        // publish one because the plugin is trying to run and cannot, and
+        // `reason` is the operator's only diagnostic. This one is not trying:
+        // the operator turned it off, `GET /api/plugins/{id}` already renders
+        // the row's `enabled = false`, and a live entry would make a plugin the
+        // operator deliberately stopped read as broken. Dropping `guard`
+        // releases the admission reservation, so `status` answers `None` —
+        // which is the truthful rendering of "not running".
+        //
+        // Known, registered wart: the connector paths call this gate *after*
+        // `emit_state(Spawning)` (see this function's doc), so a refusal here
+        // leaves a trailing `spawning` event with no terminal after it. The app
+        // path, which is the one #1226 was reported on, calls the gate before
+        // any event or token mint and so refuses silently. Straightening the
+        // two call orders is a behaviour change with its own review, exactly as
+        // the doc above says.
+        if enabled == Some(false) {
+            drop(guard);
+            return Err(HostError::OperatorDisabled(id.to_string()));
+        }
 
         let missing = config::missing_required(manifest, &effective);
         if !missing.is_empty() {
@@ -1588,6 +1659,56 @@ impl PluginHost {
         // next spawn will mint fresh. Old (raw) token in any plugin's hands is
         // already worthless once the process is killed below.
         let _ = self.repo.plugin_token_delete(id).await;
+
+        // #1226 — the restart is rotation's *side effect*, not its request.
+        //
+        // Rotation's purpose is "give me a new token". On a plugin whose row
+        // says `enabled = false` the restart would start something the
+        // operator explicitly turned off, and nothing reconciles the result:
+        // the next boot's `autospawn_enabled` skips the plugin precisely
+        // BECAUSE it is disabled, so `DB enabled = false` + runtime `Running`
+        // is terminal. That is #1169 race 3 / `reload`'s P0-1 one endpoint
+        // over, reached without any concurrency at all.
+        //
+        // Skipping the restart serves the caller's actual request in full: the
+        // token row is already deleted above, and `enable` mints a fresh one on
+        // its next spawn (`ensure_plugin_token`).
+        //
+        // **Read inside the guard, never before it.** A value read outside the
+        // guard is stale the instant the guard is taken — that exact defect is
+        // documented on `reload` one file over. We hold `guard` here.
+        //
+        // **An absent row is not a disabled row** and proceeds, matching the
+        // rule the shared configuration gate
+        // ([`Self::config_for_spawn_or_unavailable`]) enforces; a row that does
+        // not exist cannot say "disabled". (The HTTP route 404s before it gets
+        // here anyway.)
+        //
+        // **A read failure fails closed**: we must not guess "probably still
+        // enabled" and resurrect a disabled plugin, for the same reason the
+        // supervisor's third segment does not. The token is already gone, so
+        // the honest answer is an error the operator can retry. This read is
+        // not a second copy of the gate's: the gate answers "may this spawn
+        // proceed", which is a question rotation reaches only by performing the
+        // restart it is trying to decide about.
+        let enabled = match self.repo.plugin_get_by_id(id).await {
+            Ok(Some(row)) => row.enabled,
+            Ok(None) => true,
+            Err(e) => {
+                return Err(HostError::BadState(format!(
+                    "rotate `{id}`: the token was deleted but the plugin row \
+                     could not be read, so the restart was not attempted: {e}"
+                )));
+            }
+        };
+        if !enabled {
+            tracing::info!(
+                plugin_id = %id,
+                "token rotated for a disabled plugin; not restarting it — \
+                 `enable` will mint a fresh token on its next spawn"
+            );
+            return Ok(());
+        }
         self.restart_under(guard).await
     }
 
