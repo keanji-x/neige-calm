@@ -49,10 +49,11 @@
 
 use crate::db::RouteRepo;
 use crate::db::sqlite::{
-    MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TaskProjectionOutcome,
-    TrackTreeTerm, TreeShare, card_body_crdt_get_tx, card_update_with_crdt_tx, deterministic_share,
-    project_tasks_tx, project_tasks_with_tree_term_tx, track_tree_budget,
-    track_tree_planner_inventory_by_member,
+    MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL,
+    TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL, TaskProjectionOutcome, TrackTreeTerm, TreeShare,
+    card_body_crdt_get_tx, card_update_with_crdt_tx, deterministic_share, project_tasks_tx,
+    project_tasks_with_tree_term_tx, track_tree_budget, track_tree_planner_inventory_by_member,
+    tree_share_from_member_inventory,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -166,28 +167,67 @@ async fn tasks_rebuild_with_tree_term_tx(
     })
 }
 
-/// Reproject every member after either input to the deterministic quota split
-/// changes: the root budget `B` or the member count `N`.
+/// Strictly reproject every member after the root budget `B` is edited or a
+/// member is added, increasing `N`.
 ///
 /// The recursive member set and budget are read once, then the precomputed
 /// [`TrackTreeTerm`] is supplied to each projection. Production admission plus
 /// [`MAX_TREE_TASK_BUDGET`] bounds this loop to 64 members. The final grouped
 /// inventory check is the transaction's postcondition: pending overage has
-/// been culled, and any remaining in-flight overage rejects the B/N change.
+/// been culled, and any remaining in-flight overage rejects that tightening.
+/// Member removal uses [`tasks_rebuild_tree_after_member_removal_tx`] because a
+/// pre-existing frozen overage must not make an otherwise safe deletion fail.
 pub async fn tasks_rebuild_tree_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     root_id: &str,
 ) -> crate::error::Result<Vec<(Track, TaskProjectionOutcome)>> {
-    let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
-        .bind(root_id)
-        .bind(MAX_TRACK_TREE_DEPTH + 1)
-        .fetch_all(&mut **tx)
-        .await?;
+    tasks_rebuild_tree_with_policy_tx(tx, root_id, TreeRebuildPolicy::Strict).await
+}
+
+/// Reproject a tree after one member has already been removed in this
+/// transaction. Unlike an operator-requested budget/member addition, deletion
+/// may safely preserve an existing in-flight overage: N only fell, no fixed
+/// work was added, and admission remains frozen until that work terminates.
+pub async fn tasks_rebuild_tree_after_member_removal_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    root_id: &str,
+) -> crate::error::Result<Vec<(Track, TaskProjectionOutcome)>> {
+    tasks_rebuild_tree_with_policy_tx(tx, root_id, TreeRebuildPolicy::PreserveExistingFreeze).await
+}
+
+#[derive(Clone, Copy)]
+enum TreeRebuildPolicy {
+    Strict,
+    PreserveExistingFreeze,
+}
+
+async fn tasks_rebuild_tree_with_policy_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    root_id: &str,
+    policy: TreeRebuildPolicy,
+) -> crate::error::Result<Vec<(Track, TaskProjectionOutcome)>> {
+    let members: Vec<(String, i64, i64)> = match policy {
+        TreeRebuildPolicy::Strict => sqlx::query_as::<_, (String, i64)>(TRACK_TREE_MEMBERS_SQL)
+            .bind(root_id)
+            .bind(MAX_TRACK_TREE_DEPTH + 1)
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .map(|(member_id, depth)| (member_id, depth, 0))
+            .collect(),
+        TreeRebuildPolicy::PreserveExistingFreeze => {
+            sqlx::query_as(TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL)
+                .bind(root_id)
+                .bind(MAX_TRACK_TREE_DEPTH + 1)
+                .fetch_all(&mut **tx)
+                .await?
+        }
+    };
     if members.is_empty()
         || members.len() > MAX_TREE_TASK_BUDGET as usize
         || members
             .iter()
-            .any(|(_, depth)| *depth > MAX_TRACK_TREE_DEPTH)
+            .any(|(_, depth, _)| *depth > MAX_TRACK_TREE_DEPTH)
     {
         return Err(CalmError::Conflict(format!(
             "track tree rooted at {root_id} is unresolved or exceeds the {MAX_TREE_TASK_BUDGET}-member reprojection bound"
@@ -200,26 +240,57 @@ pub async fn tasks_rebuild_tree_tx(
     // One member walk above and one grouped postcondition walk below. Member
     // projections must contribute zero because their terms are precomputed.
     let mut tree_cte_queries = 2u32;
-    for (index, (member_id, _)) in members.into_iter().enumerate() {
+    let mut admission_frozen = false;
+    for (index, (member_id, _, _)) in members.iter().enumerate() {
         let share = deterministic_share(budget, member_count, index as i64);
         shares.insert(member_id.clone(), share);
-        let tree_term = TrackTreeTerm::Share(TreeShare {
-            root_id: root_id.to_owned(),
-            budget,
-            members: member_count,
-            member_index: index as i64,
-            share,
-            admission_frozen: false,
-            minimum_budget_to_unfreeze: None,
-        });
+        let tree_term = match policy {
+            TreeRebuildPolicy::Strict => TrackTreeTerm::Share(TreeShare {
+                root_id: root_id.to_owned(),
+                budget,
+                members: member_count,
+                member_index: index as i64,
+                share,
+                admission_frozen: false,
+                minimum_budget_to_unfreeze: None,
+            }),
+            TreeRebuildPolicy::PreserveExistingFreeze => {
+                tree_share_from_member_inventory(root_id.to_owned(), member_id, budget, &members)
+            }
+        };
+        admission_frozen |= matches!(
+            &tree_term,
+            TrackTreeTerm::Share(TreeShare {
+                admission_frozen: true,
+                ..
+            })
+        );
         let track = track_get_tx(tx, &crate::ids::TrackId::from(member_id.clone())).await?;
-        let projection = tasks_rebuild_with_tree_term_tx(tx, &member_id, Some(tree_term)).await?;
+        let projection = tasks_rebuild_with_tree_term_tx(tx, member_id, Some(tree_term)).await?;
         tree_cte_queries = tree_cte_queries.saturating_add(projection.tree_cte_queries);
         projections.push((track, projection));
     }
 
     let inventories = track_tree_planner_inventory_by_member(tx, root_id).await?;
-    require_tree_budget_postcondition(root_id, budget, &shares, &inventories)?;
+    if matches!(policy, TreeRebuildPolicy::PreserveExistingFreeze) && admission_frozen {
+        let fixed_by_member: std::collections::BTreeMap<_, _> = members
+            .iter()
+            .map(|(member_id, _, fixed_live)| (member_id.as_str(), *fixed_live))
+            .collect();
+        if let Some((member_id, live)) = inventories.iter().find(|(member_id, live)| {
+            fixed_by_member.get(member_id.as_str()).copied() != Some(*live)
+        }) {
+            return Err(CalmError::Internal(format!(
+                "member-removal reprojection left {live} unfinished planner task(s) on {member_id}, but only {} fixed task(s) may survive admission freeze",
+                fixed_by_member
+                    .get(member_id.as_str())
+                    .copied()
+                    .unwrap_or(0)
+            )));
+        }
+    } else {
+        require_tree_budget_postcondition(root_id, budget, &shares, &inventories)?;
+    }
     if tree_cte_queries != 2 {
         return Err(CalmError::Internal(format!(
             "whole-tree reprojection executed {tree_cte_queries} recursive tree queries; expected exactly 2 independent of member count"

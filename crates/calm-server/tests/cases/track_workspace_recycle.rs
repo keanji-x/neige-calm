@@ -770,6 +770,61 @@ async fn deleting_a_child_of_a_managed_parent_leaves_the_parent_repository() {
     assert_eq!(head(&parent_path).as_deref(), Some(parent_head.as_str()));
 }
 
+/// A deletion only reduces tree membership and must remain possible when an
+/// upgraded tree was already admission-frozen. The survivor's immutable work
+/// remains, new admission stays frozen, and no fallible postcondition may run
+/// after the victim's workspace has been recycled.
+#[tokio::test]
+async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspace() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (root_id, _) = managed_track(&b, &area_id, "root").await;
+    let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
+    let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
+    sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=1 WHERE id=?1")
+        .bind(&root_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
+        .bind(&root_id)
+        .bind(&victim_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
+        .bind(&root_id)
+        .bind(&survivor_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) \
+         VALUES('survivor:fixed',?1,'fixed','codex','fixed','{}','[]',0,'running','spec',0,0)",
+    )
+    .bind(&survivor_id)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, body) = delete_track(&b, &victim_id).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.track_get(&victim_id).await.unwrap().is_none());
+    assert!(!victim_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_some());
+    assert_eq!(
+        b.tracks
+            .area_of(&calm_server::ids::TrackId::from(victim_id.clone())),
+        None
+    );
+    let survivor_status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE id='survivor:fixed'")
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(survivor_status, "running");
+}
+
 /// Drive the production child-track creation path. Copied in shape from
 /// `today_launchpad.rs`: the parent task row is seeded directly because the
 /// adapter only reads frozen task fields from it, while every decision about

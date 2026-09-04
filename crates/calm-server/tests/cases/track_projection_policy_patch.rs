@@ -334,6 +334,16 @@ async fn write_report_task(
     track_id: &str,
     key: &str,
 ) -> String {
+    write_report_block(state, repo, track_id, report_task_block(key)).await
+}
+
+async fn write_report_block(
+    state: &AppState,
+    repo: &Arc<dyn Repo>,
+    track_id: &str,
+    block: calm_types::track_report::ReportBlock,
+) -> String {
+    let key = block.payload["key"].as_str().unwrap().to_owned();
     let track = repo.track_get(track_id).await.unwrap().unwrap();
     let report = if let Some(report) = repo
         .cards_by_track(track_id)
@@ -356,7 +366,7 @@ async fn write_report_task(
     };
     let current: TrackReportPayload = serde_json::from_value(report.payload.clone()).unwrap();
     let mut blocks = current.blocks.clone().unwrap_or_default();
-    blocks.push(report_task_block(key));
+    blocks.push(block);
     let body = blocks
         .iter()
         .map(calm_types::report_blocks::flat_text)
@@ -689,6 +699,83 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
             .await
             .unwrap();
     assert_eq!(plan_events, 1);
+}
+
+/// Gate policy is an admission input just like the planner ceiling. Tightening
+/// it must remove an already-pending ungated row before the scheduler poke can
+/// claim it, announce the changed projection, and leave the read verdict with
+/// the server-owned NotAdmitted explanation.
+#[tokio::test]
+async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeup() {
+    let (state, track_id, repo) = boot().await;
+    let response = patch(
+        state.clone(),
+        &track_id,
+        None,
+        json!({"require_task_gates": false}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut block = report_task_block("needs-gate");
+    block
+        .payload
+        .as_object_mut()
+        .unwrap()
+        .remove("no_gate_reason");
+    let task_id = write_report_block(&state, &repo, &track_id, block).await;
+    let before_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(before_status, "pending");
+    let before_events = event_count(&repo).await;
+
+    let response = patch(state, &track_id, None, json!({"require_task_gates": true})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "the newly forbidden pending row remained claimable"
+    );
+    let plan_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE id>?1 AND kind='plan.updated' \
+         AND json_extract(payload,'$.track_id')=?2",
+    )
+    .bind(before_events)
+    .bind(&track_id)
+    .fetch_one(&repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(plan_events, 1);
+
+    let report_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(&track_id)
+            .fetch_one(&repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let snapshot = calm_server::track_report_read::load_report_read_snapshot(
+        repo.as_ref(),
+        &report_id,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    )
+    .await
+    .unwrap();
+    assert!(snapshot.task_diagnostics.iter().any(|verdict| {
+        verdict.key == "needs-gate"
+            && matches!(
+                verdict.pending_reason.as_ref(),
+                Some(calm_server::db::sqlite::TaskPendingReason::NotAdmitted {
+                    diagnostic_codes,
+                    ..
+                }) if diagnostic_codes.iter().any(|code| code == "gate_required")
+            )
+    }));
 }
 
 /// The root budget determines every descendant's share. The PATCH transaction

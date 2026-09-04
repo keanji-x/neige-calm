@@ -440,9 +440,28 @@ fn attach_task_pending_reasons(
                 .cloned()
                 .collect();
             if !dependencies.is_empty() {
-                let message = match dependencies.as_slice() {
-                    [dependency] => format!("Waiting for `{dependency}`"),
-                    many => format!("Waiting for {} dependencies", many.len()),
+                let terminal_dependencies: Vec<_> = dependencies
+                    .iter()
+                    .filter_map(|dependency| {
+                        let status = by_key.get(dependency.as_str())?.status.as_str();
+                        matches!(status, "failed" | "canceled")
+                            .then_some((dependency.as_str(), status))
+                    })
+                    .collect();
+                let message = match terminal_dependencies.as_slice() {
+                    [] => match dependencies.as_slice() {
+                        [dependency] => format!("Waiting for `{dependency}`"),
+                        many => format!("Waiting for {} dependencies", many.len()),
+                    },
+                    [(dependency, status)] => {
+                        format!("Blocked by `{dependency}` ({status}); revise dependencies")
+                    }
+                    many => {
+                        format!(
+                            "Blocked by {} terminal dependencies; revise dependencies",
+                            many.len()
+                        )
+                    }
                 };
                 verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
                     message,

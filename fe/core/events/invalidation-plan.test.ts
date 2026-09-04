@@ -82,12 +82,18 @@ describe('invalidation plan behavior', () => {
   it('refreshes pending diagnostics after a task plan mutation', () => {
     expect(invalidationPlanFor(event({
       ev: 'plan.updated',
-      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: null },
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: 'canceled' },
     }))).toEqual({
       invalidate: [['track-report', 'w1']],
       remove: [],
       writeThrough: [],
     });
+  });
+
+  it('does not duplicate the companion event that already invalidates a projection change', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'plan.updated', data: { track_id: 'w1', changed_keys: ['task-1'] },
+    })).invalidate).toEqual([]);
   });
 
   it('invalidates card mutations immediately without suppression or debounce state', () => {

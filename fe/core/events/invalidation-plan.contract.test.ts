@@ -66,7 +66,9 @@ describe('invalidation plan contract', () => {
   });
 
   it('refreshes diagnostics after pending-task cancellation and tree membership changes', () => {
-    const planUpdated = { ev: 'plan.updated', data: { track_id: 'track-7' } } as Extract<
+    const planUpdated = {
+      ev: 'plan.updated', data: { track_id: 'track-7', agent_message: 'canceled' },
+    } as Extract<
       WireEvent,
       { ev: 'plan.updated' }
     >;
@@ -81,7 +83,10 @@ describe('invalidation plan contract', () => {
   it('pins track-report invalidation to exactly the task-verdict invalidating kinds', () => {
     const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
-      { ev: kind, data: {} } as WireEvent,
+      {
+        ev: kind,
+        data: kind === 'plan.updated' ? { track_id: 'track-7', agent_message: 'canceled' } : {},
+      } as WireEvent,
     ).invalidate.some((key) => key[0] === 'track-report')));
     expect(actual).toEqual(new Set(taskVerdictInvalidatingKinds()));
     expectTypeOf<typeof TRACK_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<TrackFilesDerivedKind>();

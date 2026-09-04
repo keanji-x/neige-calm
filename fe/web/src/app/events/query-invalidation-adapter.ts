@@ -19,11 +19,26 @@ import { queryKeys } from '../providers/queries.ts';
  * an event frame readable.
  */
 export interface QueryCachePort {
+  cancelQueries(filters: { queryKey: readonly unknown[] }): Promise<unknown>;
   invalidateQueries(filters?: { queryKey?: readonly unknown[] }): unknown;
   removeQueries(filters: { queryKey: readonly unknown[] }): unknown;
   getQueryData<T>(queryKey: readonly unknown[]): T | undefined;
   setQueryData<T>(queryKey: readonly unknown[], value: T): unknown;
   clear(): void;
+}
+
+/**
+ * TanStack reuses an in-flight initial fetch when its cache has no data, even
+ * after `invalidateQueries`; the stale response then clears `isInvalidated`.
+ * Task verdicts do not all poll, so that race can be permanent. Cancel the
+ * matching report fetch first, then invalidate to guarantee a fresh request.
+ */
+function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
+  if (queryKey[0] !== 'track-report') {
+    void client.invalidateQueries({ queryKey });
+    return;
+  }
+  void client.cancelQueries({ queryKey }).then(() => client.invalidateQueries({ queryKey }));
 }
 
 /**
@@ -91,7 +106,7 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
       }
       for (const key of effect.keys) {
         const mapped = mapPlannedQueryKey(key);
-        if (mapped !== null) void client.invalidateQueries({ queryKey: mapped });
+        if (mapped !== null) invalidateMappedQuery(client, mapped);
       }
       continue;
     }

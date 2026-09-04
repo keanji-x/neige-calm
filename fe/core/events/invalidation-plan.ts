@@ -142,8 +142,9 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
  * task budget, planner ceiling, and root tree budget changes. `track.deleted`
  * changes the surviving tree's membership and therefore its effective budget.
  * Both use the broad report prefix because their effect can reach child or
- * sibling tracks. `plan.updated` carries task-plan mutations such as canceling
- * a pending task and can use its explicit track id.
+ * sibling tracks. A `plan.updated` carrying `agent_message` is the standalone
+ * pending-task cancellation path and can use its explicit track id; projection
+ * events omit that field and ride with one of the broader events above.
  *
  * Invalidation is not free here. `['track-report', …]` resolves to a live query
  * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
@@ -287,7 +288,9 @@ function policies(): PolicyMap {
   'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'plan.updated': plan((event) => result([['track-report', event.data.track_id]])),
+  'plan.updated': plan((event) => result(
+    typeof event.data.agent_message === 'string' ? [['track-report', event.data.track_id]] : [],
+  )),
   'task.dispatched': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.context_frozen': noop('Frozen task context has no query consumer.'),
   'task.context_advanced': noop('Context advancement has no query consumer.'),

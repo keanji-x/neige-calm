@@ -146,10 +146,16 @@ function taskBadge(badge: RowBadge): ReactNode {
  *
  * `RowStatus.phrase` is not this file's to word — `core/view/track-page.ts` owns
  * it, and that is the whole reason the mobile surface stopped re-wording state.
+ * A pending reason is the one title exception: it lives on the row root, so the
+ * nested status word omits its own title and cannot replace the reason on hover.
  */
-function statusWord(status: RowStatus): ReactNode {
+function statusWord(status: RowStatus, ownsTitle: boolean): ReactNode {
   return (
-    <span key="status" {...mark(MARKER.status, status.token)} title={status.phrase}>
+    <span
+      key="status"
+      {...mark(MARKER.status, status.token)}
+      {...(ownsTitle ? { title: status.phrase } : {})}
+    >
       {status.token}
     </span>
   );
@@ -218,7 +224,10 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
   const action = reveal(row);
   const meta: readonly ReactNode[] = [
     ...row.badges.map(taskBadge),
-    ...(row.status === null ? [] : [statusWord(row.status)]),
+    ...(row.status === null ? [] : [statusWord(
+      row.status,
+      row.status.token !== 'pending' || action === null || action.hint === null,
+    )]),
     ...(row.kind === null
       ? []
       : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),

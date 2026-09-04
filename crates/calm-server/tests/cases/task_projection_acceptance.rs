@@ -422,6 +422,33 @@ async fn pending_reasons_distinguish_dependency_budget_and_admission() {
 }
 
 #[tokio::test]
+async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
+    let boot = new_boot().await;
+    upsert(&boot, None, task("failed-first")).await;
+    let mut blocked = task("blocked-next");
+    blocked["depends_on"] = json!(["failed-first"]);
+    upsert(&boot, None, blocked).await;
+    sqlx::query("UPDATE tasks SET status='failed' WHERE track_id=?1 AND key='failed-first'")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let reason = &task_verdict(&response, "blocked-next")["pendingReason"];
+        assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
+        assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
+        let message = reason["message"].as_str().unwrap();
+        assert!(message.contains("failed"), "{surface}: {message}");
+        assert!(
+            message.contains("revise dependencies"),
+            "{surface}: {message}"
+        );
+        assert!(!message.starts_with("Waiting"), "{surface}: {message}");
+    }
+}
+
+#[tokio::test]
 async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
     for require_gates in [false, true] {
         let boot = new_boot().await;

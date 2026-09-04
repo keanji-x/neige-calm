@@ -156,8 +156,13 @@ describe('a TASKS row, laid out', () => {
     expect(reveal.title).toBe(message);
     expect(reveal.title).not.toContain('Show');
     expect(row.querySelector('[popover]')).toBeNull();
+    expect(Array.from(row.querySelectorAll('[title]'))).toEqual([reveal]);
     const box = reveal.getBoundingClientRect();
     expect(tooltipAt(box.left + box.width / 2, box.top + box.height / 2).text).toBe(message);
+    const dot = row.querySelector<HTMLElement>('[data-nc-status="pending"]')!;
+    const dotBox = dot.getBoundingClientRect();
+    expect(tooltipAt(dotBox.left + dotBox.width / 2, dotBox.top + dotBox.height / 2).text)
+      .toBe(message);
   });
 
   it('gives the row, its open middle and its dot to the reveal control, and only the kind to the card', async () => {

@@ -127,7 +127,9 @@ function wording(action: Control): Readonly<Record<string, string>> {
  *
  * Three carriers, unchanged. `data-nc-status` holds the **bare token**, which is
  * what the stylesheet keys colour off — folding the kernel's reason into it
- * would leave a failed row uncoloured. `title` holds the phrase a pointer gets.
+ * would leave a failed row uncoloured. `title` holds the phrase a pointer gets,
+ * except when a pending reason already gives the enclosing reveal its one
+ * native title; then the dot inherits that tooltip instead of replacing it.
  * `aria-label` holds `Status: ${phrase}`, and that prefix is **painter chrome**:
  * it is deliberately not part of `RowStatus.phrase` (see `core/view/panel.ts`),
  * and the projection reads the other two carriers only, which is what leaves the
@@ -137,7 +139,7 @@ function wording(action: Control): Readonly<Record<string, string>> {
  * reveal the block, and being a DOM child is what makes the click bubble, so the
  * dot owns its hover without owning the click. Its trailing position is CSS.
  */
-function statusDot(status: RowStatus): ReactNode {
+function statusDot(status: RowStatus, ownsTitle: boolean): ReactNode {
   return (
     <span
       key="status"
@@ -145,7 +147,7 @@ function statusDot(status: RowStatus): ReactNode {
       {...mark(MARKER.status, status.token)}
       role="img"
       aria-label={`Status: ${status.phrase}`}
-      title={status.phrase}
+      {...(ownsTitle ? { title: status.phrase } : {})}
     />
   );
 }
@@ -265,7 +267,10 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           {...mark(MARKER.badge, badge.id)}
         >{badge.text}</span>
       ))}
-      {row.status !== null && statusDot(row.status)}
+      {row.status !== null && statusDot(
+        row.status,
+        row.status.token !== 'pending' || reveal === null || reveal.hint === null,
+      )}
     </button>
   );
   return (

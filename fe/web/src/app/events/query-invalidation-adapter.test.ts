@@ -14,6 +14,7 @@ function recordingClient(initialAreas?: readonly ReturnType<typeof import('../..
   const calls: Call[] = [];
   let areas = initialAreas;
   const client: QueryCachePort = {
+    cancelQueries: () => Promise.resolve(),
     invalidateQueries: (filters?: { queryKey?: readonly unknown[] }) => {
       calls.push({ op: 'invalidate', queryKey: filters?.queryKey });
     },
@@ -325,7 +326,7 @@ describe('query invalidation adapter', () => {
    * "the key is in there somewhere" is what let the seam open in the first
    * place.
    */
-  it('drives the conversation-list keys all the way onto the query client', () => {
+  it('drives the conversation-list keys all the way onto the query client', async () => {
     const event = wireEventSchema.parse({
       ev: 'runtime.started',
       data: {
@@ -336,11 +337,12 @@ describe('query invalidation adapter', () => {
     const plan = invalidationPlanFor(event, { findTrackOwningCard: () => 'track-1' });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    await Promise.resolve();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.trackDetail('track-1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
       { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
     ]);
   });
 
@@ -350,7 +352,7 @@ describe('query invalidation adapter', () => {
    * prefix, and that arity must reach the client too — dropping it would leave
    * an open list stale for exactly the transitions that move a row's `state`.
    */
-  it('drives the bare track-conversations prefix onto the client when no track resolves', () => {
+  it('drives the bare track-conversations prefix onto the client when no track resolves', async () => {
     const event = wireEventSchema.parse({
       ev: 'runtime.status_changed',
       data: { runtime_id: 'r-1', card_id: 'card-1', old_status: 'starting', new_status: 'running' },
@@ -358,14 +360,15 @@ describe('query invalidation adapter', () => {
     const plan = invalidationPlanFor(event, { findTrackOwningCard: () => null });
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    await Promise.resolve();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
       { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
     ]);
   });
 
-  it('turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup', () => {
+  it('turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup', async () => {
     const plan = invalidationPlanFor({
       ev: 'track.deleted',
       data: { id: 'w1', area_id: 'c1' },
@@ -375,11 +378,12 @@ describe('query invalidation adapter', () => {
       { type: 'invalidate', keys: plan.invalidate },
       { type: 'remove', keys: plan.remove },
     ]);
+    await Promise.resolve();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
-      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
       { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
+      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
     ]);
   });
 });

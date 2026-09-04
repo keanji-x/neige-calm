@@ -67,7 +67,7 @@ use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{track_get_tx, validate_transition};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
-    tasks_rebuild_tree_tx, tasks_rebuild_tx,
+    tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
@@ -3442,12 +3442,14 @@ pub(crate) async fn update_track(
     // row shape. Both share scope + actor; both land or neither does.
     let area_id_for_event = existing.area_id.clone();
     let track_id_for_event = existing.id.clone();
-    // `tree_task_budget` feeds every member's deterministic share, so changing
-    // it invalidates every member's projection. Rebuild the bounded member set
-    // in this same write transaction: after PATCH returns, no descendant can
-    // retain a pending row admitted by the old budget and race a later claim.
+    // Every admission policy below rebuilds its affected projection before the
+    // scheduler sees TrackUpdated. `tree_task_budget` feeds every member's
+    // deterministic share, so it rebuilds the bounded member set; the other
+    // policies are track-local. After PATCH returns, no pending row admitted by
+    // the old ceiling/gate policy can race a later claim.
     let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
+        || p.require_task_gates.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
     let p_for_tx = p.clone();
@@ -3622,7 +3624,9 @@ async fn finish_track_deletion(
                     },
                 ));
                 if let Some(root_id) = surviving_root {
-                    for (projected_track, projection) in tasks_rebuild_tree_tx(tx, &root_id).await? {
+                    for (projected_track, projection) in
+                        tasks_rebuild_tree_after_member_removal_tx(tx, &root_id).await?
+                    {
                         if !projection.changed_keys.is_empty() {
                             events.push((
                                 actor.clone(),

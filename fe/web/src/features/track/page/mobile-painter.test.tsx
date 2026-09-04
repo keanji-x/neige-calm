@@ -213,6 +213,17 @@ const emptyToken: PanelRow = {
   actions: [{ kind: 'reveal-block', blockId: 'block-9', label: null, hint: 'Show iota-probe in the report' }],
 };
 
+/** A pending status plus the server-owned reason on the row action. The status
+ * stays visible and described, but must not introduce a second native title. */
+const pendingReason: PanelRow = {
+  id: 'block-10',
+  title: 'kappa-queued',
+  kind: 'codex',
+  badges: [],
+  status: { token: 'pending', phrase: 'pending' },
+  actions: [{ kind: 'reveal-block', blockId: 'block-10', label: null, hint: 'Queued 1/1' }],
+};
+
 const boundaryTasks: RowModuleView = {
   ...tasksModule,
   rows: [bareStatus, declaredAndRunning, emptyToken],
@@ -367,6 +378,17 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
     expect(status?.getAttribute('data-nc-status')).toBe('');
     expect(status?.getAttribute('title')).toBe('the kernel has not named this state');
   });
+
+  it('uses only the row reason title when a pending task has one', () => {
+    const container = paint({ ...tasksModule, rows: [pendingReason] });
+    const row = container.querySelector('[data-nc-row="block-10"]')!;
+    const status = row.querySelector('[data-nc-status="pending"]')!;
+    expect(status.textContent).toBe('pending');
+    expect(status.hasAttribute('title')).toBe(false);
+    expect(Array.from(row.querySelectorAll('[title]'))).toEqual([]);
+    expect(row.getAttribute('title')).toBe('Queued 1/1');
+    expect(Array.from(container.querySelectorAll('[title]'))).toEqual([row]);
+  });
 });
 
 /*
@@ -470,10 +492,11 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(text).toContain('Not ready');
   });
 
-  /* The status carriers the projection reads, spelled out: the attribute holds
-     the bare token, so the projection can compare it by exact equality, and
-     `title` holds the phrase, which is strictly more — the kernel's reason is
-     appended, never substituted. (Colour is a desktop-only affair: the
+  /* The ordinary status carriers the projection reads, spelled out: the
+     attribute holds the bare token, so the projection can compare it by exact
+     equality, and `title` holds the phrase, which is strictly more — the
+     kernel's reason is appended, never substituted. Pending reasons are tested
+     separately above because their row root owns the single title. (Colour is a desktop-only affair: the
      stylesheet keys `.taskDot[data-nc-status=…]`, and this surface prints the
      word instead.) */
   it('writes the bare token into the marker and the whole phrase into the title', () => {
