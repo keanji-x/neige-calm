@@ -11,13 +11,13 @@
  *
  * `POST /api/tracks/{id}/conversations` mints the card AND starts its codex
  * harness in one operation (`track_conversations.rs`), so a 201 requires a live
- * shared codex app-server. This planner previously accepted `201 | 500` because
+ * shared codex app-server. This test previously accepted `201 | 500` because
  * the job had none — and that made it prove far less than it looked like it
  * did: the 500 is raised by the adapter's daemon preflight, which runs
  * *before* `prepare_tx` mints the card, the session and the MCP token. A
  * kernel that minted the card with the wrong role, without the
  * `harness_profile` marker, or with no token at all would have returned the
- * same 500 and this planner would still have been green. It pinned the browser's
+ * same 500 and this test would still have been green. It pinned the browser's
  * request contract and nothing about the thing the request asks for.
  *
  * So the job now runs a codex app-server: `ci.yml` points

@@ -62,7 +62,7 @@ interface FocusInfo {
 // Tab forward until `predicate(activeElement)` matches, then return.
 // Bounded at `maxSteps` to fail fast on a stuck cycle rather than hanging
 // the whole run on the Playwright default timeout. We use this whenever
-// the planner needs to land on a specific control without depending on the
+// the test needs to land on a specific control without depending on the
 // exact tab-stop count — that count changes when components are added or
 // reordered, but the focused element's role/name doesn't.
 //
@@ -188,7 +188,7 @@ test.describe('a11y · keyboard-only navigation', () => {
   test.beforeEach(async ({ page, request }) => {
     // Reset the replay binary's in-memory repo + event log first, so the
     // page navigation below mounts against a hermetic starting state
-    // regardless of what an earlier planner did. The endpoint is mounted
+    // regardless of what an earlier test did. The endpoint is mounted
     // only by `replay --serve` (see `crates/calm-server/src/bin/replay.rs`).
     // Without this hook, accumulating area/track/card mutations across
     // tests cause flakes — see issue #56 followup.
@@ -205,7 +205,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // new rows without a reload.
     const atlas = await createUserArea(request, 'Atlas');
     await createTrackInArea(request, atlas.id, 'Today');
-    // Every planner opens the app with the trace ring buffer enabled so that
+    // Every test opens the app with the trace ring buffer enabled so that
     // event assertions can read `window.__neigeEvents__`. baseURL is set
     // by the `a11y` project, so we just append the param.
     await page.goto('/?trace=1');
@@ -303,7 +303,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // the area_folders UNIQUE(path) backstop.
     //
     // #1147 S3 — the keyboard contract under test is "Enter on the cwd
-    // input submits", so this planner cannot drop the cwd and take the
+    // input submits", so this test cannot drop the cwd and take the
     // managed branch: it has to type a path the submit accepts, which
     // since S3 means a real directory inside a Git work tree. The
     // `a11y` project runs the `replay` binary natively on this machine
@@ -471,7 +471,7 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // Tab to the AddPanel trigger (glyph-only since #594; accessible
     // name "Add card" while closed) and capture it for the focus-restore
-    // assertion at the end of the planner. The name-based locator resolves
+    // assertion at the end of the test. The name-based locator resolves
     // at every point we assert on it — the menu is closed there, so the
     // aria-label has flipped back from "Close add menu" to "Add card".
     await tabUntil(page, (info) => /add card/i.test(info.name ?? ''));
@@ -714,7 +714,7 @@ test.describe('a11y · keyboard-only navigation', () => {
 
   // Slice 9 — list-view alternative to the TrackGrid. The header now exposes
   // a single Grid / List / Report cycle button backed by the same
-  // per-track view-mode overlay row that this planner seeds via REST.
+  // per-track view-mode overlay row that this test seeds via REST.
   // List view replaces the RGL grid with a semantic `<ul>` whose `<li>`
   // items use roving tabindex; Alt+ArrowUp / Alt+ArrowDown reorder the
   // focused card by swapping `card.sort` via the existing optimistic
@@ -754,7 +754,7 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // Add two renderer-free worker cards so the reorder test has two
     // list items to swap. Card creation itself is covered by the
-    // AddPanel tests above; this planner's contract is the list surface +
+    // AddPanel tests above; this test's contract is the list surface +
     // Alt+Arrow reorder. Use direct iframe cards here so the replay
     // harness does not depend on a terminal/codex daemon being available.
     const trackId = trackUrl.match(/\/calm\/track\/([^/?#]+)/)?.[1];

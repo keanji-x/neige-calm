@@ -196,7 +196,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
   // production users never carry the side effect. A real mount bumps
   // `window.__xtermMounts__` by 1; unmount decrements. The e2e
-  // regression planner (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
+  // regression test (`web/e2e/a11y-177-theme-toggle-no-remount.spec.ts`)
   // reads this between theme-toggle steps to pin "no remount on theme
   // toggle" as a contract.
   useEffect(() => {
@@ -425,11 +425,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // OSC-echo regression instrumentation. Gated on `?testMounts=1` (so
     // production never carries it) exactly like `__xtermMounts__` above.
     // Registers a per-terminal buffer serializer keyed by `terminalId`,
-    // so the e2e planner (`web/e2e/new-terminal-osc-echo.spec.ts`) can dump
+    // so the e2e test (`web/e2e/new-terminal-osc-echo.spec.ts`) can dump
     // the rendered grid of a SPECIFIC card (a track can have several
     // xterm-backed cards — e.g. the auto-minted codex planner card plus an
     // AddPanel New-terminal card — and only the cooked-shell terminal
-    // can manifest the echo bug). The planner asserts no OSC 10/11 reply
+    // can manifest the echo bug). The test asserts no OSC 10/11 reply
     // bytes land in the grid as literal caret text (`]10;rgb:` /
     // `]11;rgb:`). We read the buffer rather than the DOM
     // because xterm's canvas/webgl renderer doesn't mirror glyphs into

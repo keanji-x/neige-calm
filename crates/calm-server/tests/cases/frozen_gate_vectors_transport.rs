@@ -532,7 +532,7 @@ async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch(
 #[serde(deny_unknown_fields)]
 struct PrincipalDeltaVector {
     description: String,
-    principal: PrincipalPlanner,
+    principal: PrincipalSpec,
     actor: Value,
     event: Value,
     scope: Value,
@@ -542,7 +542,7 @@ struct PrincipalDeltaVector {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PrincipalPlanner {
+struct PrincipalSpec {
     session_id: String,
     track_id: String,
     area_id: String,

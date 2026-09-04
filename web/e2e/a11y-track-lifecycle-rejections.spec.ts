@@ -41,7 +41,7 @@
 //      "everyone-allowed" `draft → planning` kickoff comes back 403
 //      under a Worker actor.
 //
-// Rationale for a separate planner file (vs extending
+// Rationale for a separate test file (vs extending
 // `a11y-track-lifecycle.spec.ts`):
 //   * The happy-path suite already pushes 360 lines and threads a
 //     shared `runTransition` helper that asserts on the WS event
@@ -83,7 +83,7 @@ test.describe('track lifecycle · rejections', () => {
   test.beforeEach(async ({ request }) => {
     // Hermetic state — see `helpers/reset.ts`. Without this the
     // rejection-status assertions below could be poisoned by tracks
-    // an earlier planner parked in some unexpected lifecycle state.
+    // an earlier test parked in some unexpected lifecycle state.
     await resetReplayServer(request);
 
     // Mint a fresh area + track. The track starts in `draft`; each

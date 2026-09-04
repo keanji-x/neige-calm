@@ -971,12 +971,12 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
     if payload.idem_key.trim().is_empty() {
         return Err(malformed_forge_payload());
     }
-    if let Some(planner) = payload.event_spec.as_ref()
-        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&planner.event_kind.as_str())
+    if let Some(event_spec) = payload.event_spec.as_ref()
+        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&event_spec.event_kind.as_str())
     {
         return Err(RpcError::invalid_params(format!(
             "forge-action event_kind `{}` is not supported",
-            planner.event_kind
+            event_spec.event_kind
         )));
     }
     Ok(())

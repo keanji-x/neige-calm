@@ -9,7 +9,7 @@
 // running locally; the `a11y` project bootstraps everything from
 // scratch via `_setup/replay-server.setup.ts`.
 //
-// What this planner pins
+// What this test pins
 // -------------------
 // The user's DevTools console captured an XtermView remount on every
 // theme toggle:
@@ -50,9 +50,9 @@
 // --------------
 //   * Test FAILS with `expected N, got N+1` (or higher) → reproduced
 //     the user-reported regression. Hand-off to the fix PR with this
-//     planner as the regression anchor.
+//     test as the regression anchor.
 //   * Test PASSES → Playwright + the replay binary + Vite-dev together
-//     do not reproduce the production remount. The planner still pins
+//     do not reproduce the production remount. The test still pins
 //     the contract "an app theme toggle MUST NOT remount any visible
 //     XtermView", so any future regression that re-introduces a
 //     remount in *any* env trips this assertion.
@@ -69,10 +69,10 @@ import { CODEX_BIN_FILE, CODEX_MISSING_SENTINEL } from './_setup/replay-server.s
 
 // Synchronous module-load probe so `test.skip` can run at the right
 // time (before the test body). The marker file is written by
-// `replay-server.setup.ts`; by the time this planner module evaluates it
+// `replay-server.setup.ts`; by the time this test module evaluates it
 // MUST exist (Playwright wouldn't have reached the a11y project
 // otherwise). A missing file is treated as "skip" rather than throw —
-// running this planner standalone (without the setup project) self-skips
+// running this test standalone (without the setup project) self-skips
 // with a useful message.
 const codexResolution = readCodexResolution();
 const codexAvailable =
@@ -91,7 +91,7 @@ test.setTimeout(60_000);
 test('#177 XtermView does not remount on app theme toggle', async ({
   page,
 }) => {
-  // The planner is most diagnostic with real PTY output flowing into
+  // The test is most diagnostic with real PTY output flowing into
   // XtermView (so the theme toggle interacts with a non-degenerate
   // render path), and that means we need a real codex on disk for the
   // planner card's daemon. Skip cleanly when it isn't available — CI

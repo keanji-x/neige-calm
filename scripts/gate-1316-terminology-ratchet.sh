@@ -139,6 +139,56 @@
 #       re-deriving the delta.
 #   A raise that cannot produce that list is not this case; it is drift.
 #
+#   A SECOND raise, taken ONCE by the S3 follow-up. It is not a class, and
+#   it is deliberately written as an ENUMERATION rather than a criterion: a
+#   criterion phrased as "identifiers that name a specification" would let any
+#   future `_spec` name buy a raise by asserting pre-S3 provenance, which is a
+#   wider contract than the repair needed. So the admitted set is listed, and
+#   the list is closed.
+#
+#   WHY THE REPAIR EXISTS. `spec` is the planner agent here, but it is also
+#   the ordinary word for a written specification. S3's mechanical pass hit
+#   both, so bindings of the FROZEN plugin field `event_spec` came back named
+#   `planner` — a name that disagrees with the wire field it carries, which is
+#   precisely what made this class hard to review in the first place.
+#
+#   AND THE REPAIR ITSELF IS DANGEROUS IN THE SAME WAY. Repairing `event.rs`
+#   by line range also rewrote the `EditAuthor` tests, where `"planner"` is
+#   the PERSISTED `track.report_edited` author literal and S3's rename was
+#   correct. Three tests went red. Repair by binding, never by line range.
+#
+#   THE ADMITTED SET, as PER-FILE COUNTS rather than a description. A
+#   description ("bindings whose value is a `ForgeEventSpec`") reads as a
+#   standing permission — a later commit adding three more such bindings
+#   satisfies it word for word. Counts cannot be re-spent:
+#
+#     crates/calm-server/src/operation/forge_action_adapter/mod.rs   17 ->  58
+#     crates/calm-server/src/mcp_server/transport.rs                  9 ->  12
+#     crates/calm-types/src/event.rs                                  7 ->  17
+#     crates/calm-server/tests/fixtures/stub-plugin-forge-action/…    5 ->   6
+#     crates/calm-server/tests/mcp_plugin_forge_action.rs             2 ->   3
+#                                                          net      446 -> 502
+#
+#   Reproduce with the combined pattern this script builds, occurrence-counted
+#   per file, against `origin/main`. If a later commit needs any of these cells
+#   higher, that is a NEW raise needing its own argument; it does not inherit
+#   this one. A NEW `_spec` identifier is the thing this ratchet exists to stop
+#   and does not become admissible by resembling something above.
+#
+#   WHAT DID *NOT* MOVE THE CELL, stated because getting this wrong once
+#   already made this file misreport its own numbers: `GateSpec`,
+#   `FixtureSpec` and `PrincipalSpec` were repaired in the same commit and
+#   contribute ZERO — the lowercase-branch lookbehind `(?<![a-z])` excludes a
+#   `Spec` preceded by a letter, and no other branch matches them. Every
+#   rewording that had a good alternative was taken instead and cost nothing:
+#   prose went to "test" or "specification", `anchorSpecs` to `anchors`,
+#   JSON-schema property bindings to `schema`, a fixture parameter to
+#   `fixture`.
+#
+#   The per-line evidence rule from the first class applies unchanged, and the
+#   list must be regenerated against the FINAL diff — a list produced before a
+#   later commit or a merge is expired evidence, not an audit trail.
+#
 # `runtime_id` — the RETIRED-ID sense ONLY (#1316 B class, narrowed at S0)
 #   `runtime` matches 7307 lines in scope; only 1496 are this. The umbrella
 #   issue originally said "Runtime 退役", which was too wide for its carrier and

@@ -226,7 +226,7 @@ async fn real_planner_agent_autonomously_plans_from_bound_template() {
     let goal =
         "Plan the smallest issue-development template for adding one marker file.".to_string();
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -312,7 +312,7 @@ async fn real_planner_agent_autonomously_emits_design_review_round_from_descript
                 then drive design-review convergence."
         .to_string();
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -395,7 +395,7 @@ async fn real_planner_gives_up_at_review_cap_from_descriptor() {
                 derived variant)."
     );
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -551,7 +551,7 @@ async fn real_planner_requests_ratification_at_cap_and_resumes_on_grant() {
                 phase qualifier, or derived variant)."
     );
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: Some(goal.clone()),
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -851,10 +851,10 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     // never as pre-chewed tool args. The goal needs the fixture's origin
     // path, which only exists post-boot, so it flows through the
     // planner-harness start op (the planner's actual TrackGoal source,
-    // `initial_snapshot_with_goal`); `FixturePlanner.goal` only mirrors into
+    // `initial_snapshot_with_goal`); `FixtureSpec.goal` only mirrors into
     // the card payload `prompt`, which the planner-harness path never reads.
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -1319,7 +1319,7 @@ async fn real_planner_extends_cap_after_grant_converges_and_merges() {
         .await;
 
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,
@@ -2035,7 +2035,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
         .await;
 
     let fx = match boot_forge_e2e_fixture(
-        FixturePlanner {
+        FixtureSpec {
             goal: None,
             template_id: Some("issue-development".into()),
             plan_source: PlanSource::RealPlannerTurn,

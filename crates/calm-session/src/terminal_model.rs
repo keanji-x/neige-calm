@@ -611,7 +611,7 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
             // DA2 (`CSI > c`) and DA3 (`CSI = c`) carry the same
             // final byte but live behind their own intermediates
             // — gate on empty intermediates so we only answer DA1.
-            // Param defaults to 0 when omitted (per VT100 planner) so
+            // Param defaults to 0 when omitted (per VT100 specification) so
             // both `CSI c` and `CSI 0 c` route here; non-zero params
             // fall through to the noop arm.
             'c' if intermediates.is_empty() && Self::first_param_or(params, 0) == 0 => {

@@ -11,7 +11,7 @@
 // they typed a path that another area already owns.
 //
 // Implementation notes:
-//   * Area A + its folder are seeded via REST so the planner doesn't
+//   * Area A + its folder are seeded via REST so the test doesn't
 //     depend on the sidebar's NewArea flow having a color picker.
 //   * Area B is minted via the sidebar (the standard happy-path) so
 //     the page-navigation half of the scenario uses the real router
@@ -66,7 +66,7 @@ test('NewTaskForm auto-matches cwd to claiming area (not surrounding area)', asy
   // to exist and be inside a Git work tree the kernel can see.
   // `folderPath` is the work-tree root and area A's claim; `cwd` is a
   // real directory beneath it, which is precisely the descendant shape
-  // this planner is about (the claim covers the cwd, so the track-create tx
+  // this test is about (the claim covers the cwd, so the track-create tx
   // must NOT mint a second claim). See `helpers/attached-workspace.ts`
   // for why these live under `$HOME`.
   const folderPath = createGitWorkTree(
@@ -98,7 +98,7 @@ test('NewTaskForm auto-matches cwd to claiming area (not surrounding area)', asy
   // Step 2 — mint area B via REST (not via the sidebar). The sidebar
   // has no `overflow: auto` (body { overflow: hidden }), so once enough
   // areas accumulate from prior runs the "+ New area" row gets pushed
-  // outside the document and Playwright cannot scroll to it. This planner
+  // outside the document and Playwright cannot scroll to it. This test
   // doesn't exercise the sidebar-create flow (`track-create.spec.ts`
   // owns that contract); it only needs area B to exist so we can land
   // on its page with `defaultAreaId === B.id`. REST + direct goto

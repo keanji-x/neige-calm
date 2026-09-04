@@ -251,7 +251,7 @@ pub struct ToolDescriptor {
     pub name: String,
     pub description: String,
     /// Pre-built JSON schema for the tool's `arguments` object. We
-    /// store a `Value` (rather than a struct) because the MCP planner
+    /// store a `Value` (rather than a struct) because the MCP specification
     /// accepts the schema verbatim — no need to round-trip through a
     /// typed schema crate for three small handlers.
     pub input_schema: Value,

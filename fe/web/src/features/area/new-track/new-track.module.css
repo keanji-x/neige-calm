@@ -105,7 +105,7 @@
   /*
    * Serif, at the page rank.
    *
-   * Both halves are the token planner's own vocabulary rather than a choice made
+   * Both halves are the token specification's own vocabulary rather than a choice made
    * here. `--text-xl` is documented in `tokens.css` as "the one title a route
    * gets — §3.3 allows exactly one P0 per surface; this is it", and on this
    * route it is: there is no other title, and the line it replaced was sitting

@@ -186,7 +186,7 @@
    * tone with two-class specificity, so waiting and selected have to match that
    * specificity and come after it — otherwise the variant's rest rule silently
    * wins and the waiting rows render as ordinary rows, which is exactly the
-   * "everything is the same weight" failure this planner exists to fix.
+   * "everything is the same weight" failure this specification exists to fix.
    */
 
   /*

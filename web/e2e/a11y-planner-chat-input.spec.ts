@@ -31,7 +31,7 @@ test.describe('planner chat input path', () => {
   }) => {
     // A live (idle) harness must exist or the route answers the typed
     // `planner_harness_dormant` 409 — the dormant path is unit-tested; this
-    // planner pins the happy path.
+    // test pins the happy path.
     await forcePlannerPhase(request, plannerCardId, 'idle');
 
     await page.goto(`/calm/track/${trackId}?trace=1`);

@@ -57,7 +57,7 @@ async function createTrack(
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This planner is about the report view, not working directories. See
+      // This test is about the report view, not working directories. See
       // `helpers/reset.ts::createTrackInArea` for why the invented
       // `/tmp/playwright-report-view-<ts>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },

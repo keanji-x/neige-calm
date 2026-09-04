@@ -8,7 +8,7 @@
 // until its 15s timeout. Whether it landed on 60 or >=61 depended on font
 // metrics / layout timing, which is what made it a flake rather than a hard red.
 //
-// This planner deliberately owns no logic: the decisive check is a Python harness
+// This test deliberately owns no logic: the decisive check is a Python harness
 // that drives the REAL fixture through a REAL pty, because the failure only
 // exists at the pty/winsize seam. Living here means it rides the existing
 // `chromium` e2e job with no extra CI wiring, and it needs no browser, no

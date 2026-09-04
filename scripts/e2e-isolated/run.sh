@@ -294,7 +294,7 @@ ensure_forwarder() {
                 # using the existing forwarder; cutting it would strand that
                 # run's egress mid-suite. Human decides.
                 log "FATAL: forwarder '$E2E_PROXY_FORWARDER_NAME' exists with a DIFFERENT config:"
-                log "  existing: ${existing:-<no planner label>}"
+                log "  existing: ${existing:-<no proxy label>}"
                 log "  wanted:   $spec"
                 log "refusing to recreate (a concurrent run may depend on it)."
                 log "if no isolated e2e run is live, run: make e2e-proxy-forwarder-down   (or scripts/e2e-isolated/run.sh --forwarder-down), then retry."

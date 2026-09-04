@@ -3,7 +3,7 @@
 // Prerequisite: Playwright's `a11y` project must be active (so the
 // `_setup/replay-server.ts` globalSetup spawned the replay binary with
 // the track-grid-layout fixture preloaded — see `playwright.config.ts`).
-// Running this planner from the default `chromium` project will fail with a
+// Running this test from the default `chromium` project will fail with a
 // connection-refused error because that project still targets the
 // developer `make dev` stack on :4041.
 //
@@ -27,7 +27,7 @@ import { getEventTrace, waitForEvent } from './helpers/trace';
 test.beforeEach(async ({ request }) => {
   // Hermetic per-test state — see `helpers/reset.ts` for the rationale.
   // The smoke assertion below pins the exact fixture event sequence, so
-  // any accumulated mutations from an earlier planner would break it.
+  // any accumulated mutations from an earlier test would break it.
   await resetReplayServer(request);
 });
 

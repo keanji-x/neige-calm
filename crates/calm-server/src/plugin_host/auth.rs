@@ -16,7 +16,7 @@
 //!     hands the **raw** token to the child process via `NEIGE_PLUGIN_TOKEN` on
 //!     spawn; the plugin echoes it back inside the `initialize` request's
 //!     `params._meta["dev.neige/auth"].expected_echo` slot (M1 wire shape,
-//!     post the planner-blessed-`_meta` migration), and the kernel verifies via
+//!     post the specification-blessed-`_meta` migration), and the kernel verifies via
 //!     `verify_token`. Mismatch → kill + Crashed, no respawn (see
 //!     `plugin_host::mod::spawn`).
 //!

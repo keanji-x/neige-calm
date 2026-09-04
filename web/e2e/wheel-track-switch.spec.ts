@@ -26,7 +26,7 @@ async function createTrackInArea(
       area_id: areaId,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This planner is about wheel track-switching, not working
+      // This test is about wheel track-switching, not working
       // directories. See `helpers/reset.ts::createTrackInArea` for why
       // the invented `/tmp/playwright-track-switch-<id>` attached path
       // was never valid. (The per-suffix cwd namespace it needed to

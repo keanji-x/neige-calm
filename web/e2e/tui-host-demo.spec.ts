@@ -5,7 +5,7 @@
 //   cd web && npx playwright test e2e/tui-host-demo.spec.ts --project=chromium --headed
 //
 // The fixture is a grok-shaped two-pane TUI, not grok itself. After this
-// planner is green, the human 验收 is: open a terminal card, run `grok`,
+// test is green, the human 验收 is: open a terminal card, run `grok`,
 // hover the content pane and scroll, then `y` to copy a block.
 
 import * as path from 'node:path';
@@ -66,7 +66,7 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
       area_id: area.id,
       title,
       // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
-      // This planner is about the TUI host renderer, not working
+      // This test is about the TUI host renderer, not working
       // directories (the terminal card below still passes its own
       // `cwd: '/tmp'`, which is a real directory inside the kernel).
       // See `helpers/reset.ts::createTrackInArea` for why the invented

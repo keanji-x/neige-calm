@@ -326,9 +326,9 @@ async fn run_serve(
 // per-test mutations (new tracks, new cards, rename edits, view-mode
 // toggles, …) accumulate across tests in the same run, which makes
 // previously-green specs flake when their predicates collide with
-// state seeded by an earlier planner. The endpoint reseeds the in-memory
+// state seeded by an earlier test. The endpoint reseeds the in-memory
 // repo from the same `Fixture` the binary booted with, restoring the
-// "fresh boot" starting state. Each `a11y` planner calls it from
+// "fresh boot" starting state. Each `a11y` test calls it from
 // `beforeEach`.
 //
 // Scope: this binary is itself dev-only (design doc §6.3 — it has

@@ -145,14 +145,14 @@ export type ServerVersionInfo = {
    */
   syncEventVersion: number;
   /**
-   * Diagnostic-only MCP planner date for the kernel-as-MCP-server surface.
+   * Diagnostic-only MCP specification date for the kernel-as-MCP-server surface.
    * PR 1 of #396 moved the plugin-host MCP date to
    * `pluginMcpProtocolVersion`; do NOT use either MCP date as a frontend
    * hard gate.
    */
   mcpProtocolVersion: string;
   /**
-   * Diagnostic-only MCP planner date advertised by the plugin host to plugin
+   * Diagnostic-only MCP specification date advertised by the plugin host to plugin
    * processes. Split from `mcpProtocolVersion` in #396 PR 1.
    */
   pluginMcpProtocolVersion: string;

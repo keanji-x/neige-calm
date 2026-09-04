@@ -99,7 +99,7 @@ pub fn public_router() -> Router<AppState> {
     Router::new()
         .merge(version::router())
         // OpenAPI document — the source-of-truth for web-calm's generated
-        // TypeScript types. No swagger-ui — just the planner, served as JSON
+        // TypeScript types. No swagger-ui — just the document, served as JSON
         // so the frontend toolchain can hit it during build.
         .route("/api/openapi.json", get(openapi_spec))
 }

@@ -643,7 +643,7 @@ pub struct View {
 
     /// MCP Apps `_meta.ui.permissions` mirror. Today only the `tools` slot is
     /// populated (list of tool-name globs the iframe may call); the closed
-    /// camera/microphone/etc. set in the upstream planner will land alongside
+    /// camera/microphone/etc. set in the upstream specification will land alongside
     /// AppBridge integration in M5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<UiPermissions>,
@@ -652,7 +652,7 @@ pub struct View {
 /// `_meta.ui.csp` mirror — kept open-shape so we can pass unmodeled directives
 /// straight through to AppBridge without bumping the manifest schema.
 ///
-/// The five named fields are the ones the planner calls out explicitly
+/// The five named fields are the ones the specification calls out explicitly
 /// (default_src, script_src, style_src, connect_src, img_src); everything
 /// else flows through `extras` via `#[serde(flatten)]`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -1276,7 +1276,7 @@ impl McpHttpBlock {
                     "required whenever `api_key_secret` is set",
                 ));
             }
-            (Some(_), Some(planner)) => match ApiKeyIn::parse(planner) {
+            (Some(_), Some(api_key_in)) => match ApiKeyIn::parse(api_key_in) {
                 None => {
                     return Err(ManifestError::invalid(
                         "mcp_http.api_key_in",

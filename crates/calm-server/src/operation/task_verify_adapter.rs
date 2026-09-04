@@ -117,7 +117,7 @@ pub struct TaskVerifyOperationPayload {
 /// Wire-compatible mirror of plan.rs's validated `gate` shape (stored
 /// verbatim in `tasks.gate_json`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GatePlanner {
+pub struct GateSpec {
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -131,7 +131,7 @@ pub struct GateStep {
     pub cmd: String,
 }
 
-impl GatePlanner {
+impl GateSpec {
     pub fn timeout_secs_clamped(&self) -> i64 {
         self.timeout_secs
             .unwrap_or(GATE_TIMEOUT_DEFAULT_SECS)
@@ -472,7 +472,7 @@ pub(crate) struct FrozenVerify {
     pub key: String,
     pub attempt: i64,
     pub cwd: String,
-    pub gate: GatePlanner,
+    pub gate: GateSpec,
 }
 
 impl FrozenVerify {
@@ -654,7 +654,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .gate_json
             .as_deref()
             .ok_or_else(|| CalmError::Conflict(format!("task {} declares no gate", task.id)))?;
-        let gate: GatePlanner = serde_json::from_str(gate_json)
+        let gate: GateSpec = serde_json::from_str(gate_json)
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
         // §6.4 cwd chain: gate.cwd → task.cwd → the track's workspace path.
@@ -1448,7 +1448,7 @@ mod tests {
 
     #[test]
     fn gate_timeout_clamps() {
-        let mut gate = GatePlanner {
+        let mut gate = GateSpec {
             cwd: None,
             timeout_secs: None,
             steps: vec![],
