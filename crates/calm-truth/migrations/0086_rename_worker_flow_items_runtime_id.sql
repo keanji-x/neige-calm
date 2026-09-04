@@ -1,0 +1,66 @@
+-- #1316 S4a — rename `worker_flow_items.runtime_id` to `captured_session_id`.
+--
+-- THIS SLICE WAS ORIGINALLY A DROP. TWO REVIEW CHANNELS FALSIFIED THE PREMISE.
+--
+-- The drop rested on "this column is a dead duplicate of `worker_session_id`,
+-- and the session id also lives in the row's payload, so nothing is lost".
+-- The first half is true for every row the CURRENT sink writes. The second
+-- half is false for rows written before #695 PR5, and both channels
+-- constructed the same counter-example by replaying the real migration chain:
+--
+--   * Pre-PR5, `session_from_runtime` derived the session id as
+--     `runtime.session_id || thread_id || runtime.id`, so for a codex runtime
+--     the flow row's `payload.session_id` holds the PROVIDER's agent session
+--     string — not the worker-session id. Ending that three-way confusion is
+--     exactly what PR5 was for.
+--   * `0049` then backfilled this column with the resolved RUNTIME id (looked
+--     up in `runtimes` by `thread_id`/`session_id`) and set
+--     `worker_session_id` only where a `worker_sessions` mirror existed —
+--     per `0055`'s header, only active runtimes had one.
+--   * `0055` dropped `runtimes`. Its step-1 bridge first copies every
+--     mirror-less runtime into `worker_sessions` carrying `r.session_id` as
+--     `agent_session_id`, so the mapping is not gone — but it does NOT re-link
+--     the flow row, whose `worker_session_id` stays NULL.
+--
+-- So for a pre-PR5 row with no session mirror, this column holds an id the
+-- payload does not, and the payload holds a DIFFERENT one. Recovering it means
+-- joining `payload.session_id` to `worker_sessions.agent_session_id`, which is
+-- ambiguous (`ws_provider_thread_idx` is not unique) and only works for a
+-- runtime that lived until 0055 ran. That is what a drop would have cost: not
+-- "irrecoverable" — the first draft of this comment said that, and a review
+-- channel executed the chain and disproved it — but a cheap column read turned
+-- into an ambiguous join that can come back empty.
+--
+-- The guard that shipped with the drop attempt did not cover this and could
+-- not: it compared the two columns, and no writer in the repo's history can
+-- make them disagree (the PR5 sink binds one variable to both; `0049` uses one
+-- expression for both; there is no `UPDATE` of this table anywhere). It was a
+-- proposition true by construction — it would have passed on every database in
+-- existence while the rows it was supposed to protect were deleted.
+--
+-- WHAT THIS MIGRATION DOES INSTEAD
+--
+-- Renames. S4's goal is to retire the `runtime_id` SPELLING, and a rename
+-- achieves that with no claim to defend: SQLite's `RENAME COLUMN` is
+-- value-preserving, so every row keeps exactly what it had.
+--
+-- The two columns are not redundant and the new names say why:
+--   `worker_session_id`  — the live FK. `ON DELETE SET NULL`, so it answers
+--                          "which session, of the ones that still exist".
+--   `captured_session_id` — no FK. What the writer observed at capture time
+--                          (or what `0049` resolved for it), so it survives
+--                          session deletion and pre-dates the FK entirely.
+--
+-- The index goes rather than being recreated: its name encodes the retiring
+-- word, SQLite has no `ALTER INDEX RENAME`, and nothing queries this column —
+-- the only production reader of this table is
+-- `track_fs_view::worker_flow_rows_all`, which selects by `card_id`. Keeping
+-- a renamed copy would be maintaining an index no query can use.
+--
+-- Dropping the index BEFORE the rename is not required (`RENAME COLUMN`
+-- rewrites index definitions), but doing it first keeps the two statements
+-- independent of that behaviour.
+
+DROP INDEX IF EXISTS idx_worker_flow_items_runtime;
+
+ALTER TABLE worker_flow_items RENAME COLUMN runtime_id TO captured_session_id;

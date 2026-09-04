@@ -312,17 +312,34 @@ impl TryFrom<HarnessItemRow> for HarnessItem {
 /// `card_id` is `Option<String>` because the table's FK is
 /// `REFERENCES cards(id) ON DELETE SET NULL` — a row must survive the
 /// deletion of its worker card (#695), so this column goes NULL rather
-/// than cascading away. `worker_session_id` is required by migration 0049,
-/// and `runtime_id` is populated with the same value by the PR5 sink; the
-/// row type keeps these as `Option<String>` so older fixture rows can still
-/// decode in tests that exercise migration boundaries. Plain `String` ids
+/// than cascading away.
+///
+/// `worker_session_id` and `captured_session_id` hold the same value on every
+/// insert the PR5 sink makes, and are still NOT redundant — which is why
+/// #1316 S4a renamed the second rather than deleting it. `worker_session_id`
+/// is the live FK (`ON DELETE SET NULL` per 0049, so it is nullable on
+/// purpose) and goes NULL when the session is deleted. `captured_session_id`
+/// has no FK, so nothing un-links it when the session goes — it outlives it.
+/// Where its value comes from depends on the row's age: the sink has written
+/// it since #695 PR5, and `0049` synthesized it for older rows, which the PR3
+/// sink had left NULL. "Captured" is about when the value stops changing, not
+/// about which writer put it there.
+///
+/// For rows written before #695 PR5, `captured_session_id` can also disagree
+/// with `payload.session_id` — not with the column beside it, which no writer
+/// in this repo's history can make it disagree with: `0049` backfilled the
+/// column with the resolved runtime id while the payload still holds the
+/// provider's agent session string.
+///
+/// Both stay `Option<String>` so older fixture rows can still decode in tests
+/// that exercise migration boundaries. Plain `String` ids
 /// (not the typed `CardId` / `TrackId`) keep the row decode total even for
 /// orphaned (`card_id = NULL`) rows.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct WorkerFlowItemRow {
     pub id: i64,
     pub card_id: Option<String>,
-    pub runtime_id: Option<String>,
+    pub captured_session_id: Option<String>,
     pub track_id: Option<String>,
     pub worker_session_id: Option<String>,
     pub kind: String,

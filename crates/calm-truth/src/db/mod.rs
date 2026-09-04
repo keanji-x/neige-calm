@@ -1002,7 +1002,7 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn worker_flow_item_insert(
         &self,
         card_id: Option<&str>,
-        runtime_id: Option<&str>,
+        captured_session_id: Option<&str>,
         track_id: Option<&str>,
         worker_session_id: Option<&str>,
         kind: &str,

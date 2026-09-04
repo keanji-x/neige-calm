@@ -7,15 +7,15 @@ use calm_server::db::sqlite::{SqlxRepo, card_delete_tx, worker_flow_item_insert_
 use support::worker_flow as wf;
 
 #[tokio::test]
-async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
+async fn worker_flow_items_key_worker_session_id_not_agent_session_or_thread() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let thread_id = "thread-ws-keying";
     let seed = wf::seed_card_and_runtime(&repo, "card-ws-keying", Some(thread_id)).await;
     let card_id = seed.card.id.to_string();
-    let runtime_id = seed.runtime.id.clone();
+    let session_id = seed.runtime.id.clone();
     let agent_session_id = seed.runtime.session_id.clone().unwrap();
-    assert_ne!(runtime_id, agent_session_id);
-    assert_ne!(runtime_id, thread_id);
+    assert_ne!(session_id, agent_session_id);
+    assert_ne!(session_id, thread_id);
 
     let codex_home = tempfile::tempdir().unwrap();
     let path = wf::rollout_path(codex_home.path(), thread_id);
@@ -40,7 +40,7 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     handle.await.unwrap().unwrap();
 
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT worker_session_id, runtime_id
+        "SELECT worker_session_id, captured_session_id
          FROM worker_flow_items
          WHERE card_id = ?1
          ORDER BY id",
@@ -50,9 +50,9 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     .await
     .unwrap();
     assert_eq!(rows.len(), 2);
-    for (worker_session_id, row_runtime_id) in &rows {
-        assert_eq!(worker_session_id, &runtime_id);
-        assert_eq!(row_runtime_id, &runtime_id);
+    for (worker_session_id, row_captured) in &rows {
+        assert_eq!(worker_session_id, &session_id);
+        assert_eq!(row_captured, &session_id);
         assert_ne!(worker_session_id, &agent_session_id);
         assert_ne!(worker_session_id, thread_id);
     }
@@ -70,7 +70,7 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     .unwrap();
     assert_eq!(joined.len(), 2);
     for (joined_id, joined_agent_session_id, joined_thread_id) in joined {
-        assert_eq!(joined_id, runtime_id);
+        assert_eq!(joined_id, session_id);
         assert_eq!(
             joined_agent_session_id.as_deref(),
             Some(agent_session_id.as_str())
@@ -79,12 +79,12 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     }
 
     sqlx::query("DELETE FROM worker_sessions WHERE id = ?1")
-        .bind(&runtime_id)
+        .bind(&session_id)
         .execute(repo.pool())
         .await
         .unwrap();
     let rows_after_session_delete: Vec<(Option<String>, String)> = sqlx::query_as(
-        "SELECT worker_session_id, runtime_id
+        "SELECT worker_session_id, captured_session_id
          FROM worker_flow_items
          WHERE card_id = ?1
          ORDER BY id",
@@ -94,9 +94,9 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
     .await
     .unwrap();
     assert_eq!(rows_after_session_delete.len(), 2);
-    for (worker_session_id, row_runtime_id) in rows_after_session_delete {
+    for (worker_session_id, row_captured) in rows_after_session_delete {
         assert_eq!(worker_session_id.as_deref(), None);
-        assert_eq!(row_runtime_id, runtime_id);
+        assert_eq!(row_captured, session_id);
     }
 }
 
@@ -106,7 +106,7 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
     let seed =
         wf::seed_card_and_runtime(&repo, "card-delete-preserves-flow", Some("thread-delete")).await;
     let card_id = seed.card.id.to_string();
-    let runtime_id = seed.runtime.id.clone();
+    let session_id = seed.runtime.id.clone();
     let track_id = seed.card.track_id.as_str().to_string();
 
     let rows = [
@@ -118,9 +118,9 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
         worker_flow_item_insert_tx(
             &mut tx,
             Some(&card_id),
-            Some(&runtime_id),
+            Some(&session_id),
             Some(&track_id),
-            Some(&runtime_id),
+            Some(&session_id),
             kind,
             payload,
             created_at_ms,
@@ -145,7 +145,7 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
 
     let session_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE id = ?1")
-            .bind(&runtime_id)
+            .bind(&session_id)
             .fetch_one(repo.pool())
             .await
             .unwrap();

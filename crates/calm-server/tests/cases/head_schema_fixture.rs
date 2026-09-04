@@ -23,6 +23,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0083_spec_to_planner.sql",
     "0084_harness_input_segments.sql",
     "0085_track_recipe_provenance.sql",
+    "0086_rename_worker_flow_items_runtime_id.sql",
 ];
 
 #[test]

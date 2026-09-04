@@ -750,7 +750,7 @@ impl RepoRead for SqlxRepo {
         let limit = limit.clamp(1, 500);
         let (sql, cursor) = if descending {
             (
-                r#"SELECT id, card_id, runtime_id, track_id, worker_session_id,
+                r#"SELECT id, card_id, captured_session_id, track_id, worker_session_id,
                           kind, payload, created_at_ms
                    FROM worker_flow_items
                    WHERE card_id = ?1 AND id < ?2
@@ -760,7 +760,7 @@ impl RepoRead for SqlxRepo {
             )
         } else {
             (
-                r#"SELECT id, card_id, runtime_id, track_id, worker_session_id,
+                r#"SELECT id, card_id, captured_session_id, track_id, worker_session_id,
                           kind, payload, created_at_ms
                    FROM worker_flow_items
                    WHERE card_id = ?1 AND id > ?2
