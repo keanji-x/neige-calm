@@ -1236,6 +1236,16 @@ export interface components {
             color: string;
             /** Format: int64 */
             created_at: number;
+            /**
+             * @description Exact attached Git working directory preselected for a new Track.
+             *     `None` keeps the server-managed Neige workspace default.
+             */
+            default_cwd: string | null;
+            /**
+             * @description Built-in Track template preselected by the official New Track surface.
+             *     `None` keeps "No template" as the Area's creation default.
+             */
+            default_template_id: string | null;
             id: string;
             kind?: components["schemas"]["AreaKind"];
             name: string;
@@ -1267,6 +1277,16 @@ export interface components {
         AreaKind: "user" | "system";
         AreaPatch: {
             color?: string | null;
+            /**
+             * @description Missing leaves the preference alone, null restores managed workspaces,
+             *     and a string sets the exact attached working directory to preselect.
+             */
+            default_cwd?: string | null;
+            /**
+             * @description Missing leaves the preference alone, null clears it, and a string sets
+             *     the built-in template preselected by the New Track surface.
+             */
+            default_template_id?: string | null;
             name?: string | null;
             /** Format: double */
             sort?: number | null;
@@ -1396,6 +1416,26 @@ export interface components {
             thread_status?: string | null;
         };
         /**
+         * @description User-facing Area creation. The raw sync-domain `NewArea` stays narrow for
+         *     internal callers; these two preferences belong to the REST product surface
+         *     and are applied inside the same audited transaction as the Area row.
+         *
+         *     Deliberately permissive about unknown JSON keys, matching the historical
+         *     `NewArea` contract: in particular a caller-supplied `kind` must continue to
+         *     be ignored rather than gaining a path to create a system Area.
+         */
+        CreateAreaRequest: {
+            color: string;
+            default_cwd?: string | null;
+            default_template_id?: string | null;
+            name: string;
+            /**
+             * Format: double
+             * @description If absent, server appends to end.
+             */
+            sort?: number | null;
+        };
+        /**
          * @description Body payload accepted by `POST /api/tracks/:track_id/cards`.
          *
          *     Two mutually-exclusive paths:
@@ -1490,6 +1530,13 @@ export interface components {
             /**
              * @description One-time creation instruction: copy this track's report snapshot into
              *     the new report inside the track-create transaction.
+             *
+             *     #1321 S2 — a third starting point, mutually exclusive with the two
+             *     above. It used to *win* over both: a create naming a `template_id` and
+             *     a fork source silently took the fork while the row still recorded the
+             *     template id and its plugin owner, so `tracks.template_id` claimed a
+             *     provenance the report did not have (#1321 「已观察事实」§3). It is now a
+             *     400 naming both fields.
              */
             fork_report_from?: string | null;
             /**
@@ -1504,11 +1551,23 @@ export interface components {
              *     normal situation.
              *
              *     Supplying both is a 400: two starting points is not a preference to
-             *     resolve, it is a request that does not name one thing.
+             *     resolve, it is a request that does not name one thing. #1321 S2 extends
+             *     that from this one pair to every pair.
              */
             recipe_id?: string | null;
             /** Format: double */
             sort?: number | null;
+            /**
+             * @description A built-in roster template (#1209) to instantiate the new track's report
+             *     from — the caller's spelling, admitted against the roster before
+             *     anything is minted; `tracks.template_id` then stores the roster's own
+             *     key. It is also what binds the track to a plugin (`plugin_scope`) and
+             *     what makes `template_input` acceptable.
+             *
+             *     One of the three mutually exclusive starting points (`template_id`,
+             *     `recipe_id`, `fork_report_from`); naming two of them is a 400 that names
+             *     both. Naming none is the ordinary blank create.
+             */
             template_id?: string | null;
             template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
@@ -3207,7 +3266,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NewArea"];
+                "application/json": components["schemas"]["CreateAreaRequest"];
             };
         };
         responses: {
@@ -3218,6 +3277,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Unknown default template or invalid attached default folder */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */
@@ -3545,6 +3613,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Unknown default template or invalid attached default folder */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Area not found */
@@ -5734,7 +5811,7 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — a missing/blank `Idempotency-Key` or an empty/over-long message. Decided before anything is minted. */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — a missing/blank `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing. */
             400: {
                 headers: {
                     [name: string]: unknown;
