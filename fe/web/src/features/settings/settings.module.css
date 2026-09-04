@@ -163,10 +163,31 @@
   }
 
 
-  /* `ListItem`'s description slot holds up to three lines for a plugin — id
-     and version, the manifest's own sentence, and the failure that explains a
-     red badge. They stack; only the identity line is monospaced, because it is
-     the one the reader copies. */
+  /* A row's title line when it carries a second mark — a plugin's version
+     beside its name. Baseline-aligned rather than centred: the two are one
+     line of text, and centring a smaller mark against a larger one puts it
+     visibly off the line it belongs to. */
+  .rowTitle {
+    display: inline-flex;
+    gap: var(--space-3);
+    align-items: baseline;
+  }
+
+  /* The mark itself: the description's size and colour, so it reads as an
+     annotation on the name rather than as part of it. Monospaced, because a
+     version is a string you compare character by character. */
+  .rowTitleSuffix {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* `ListItem`'s description slot stacks a plugin's remaining lines — the
+     manifest's own sentence, the failure that explains a red chip, and the id
+     last. Only the identity line is monospaced, because it is the one the
+     reader copies. */
   .pluginMeta {
     display: flex;
     flex-direction: column;
@@ -181,9 +202,9 @@
     color: var(--text-3);
   }
 
-  /* A plugin row's trailing edge holds two controls — walk into the
-     configuration, and turn the plugin on — so they need a gap between them
-     and the row's own edge stays where every other pane's is. */
+  /* A plugin row's trailing edge holds the drill-in, the runtime-state chip
+     and the switch the chip annotates, so they need a gap between them and the
+     row's own edge stays where every other pane's is. */
   .pluginControls {
     display: flex;
     align-items: center;
