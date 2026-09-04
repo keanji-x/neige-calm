@@ -163,7 +163,6 @@ impl PlannerHarnessStartAdapter {
             }
         };
         let binding = resolve_track_owner_binding(&track, Some(self.plugin.as_ref())).await;
-        let scoped_plugin_id = binding.scoped_plugin_id().unwrap_or("<none>").to_string();
         match binding {
             TrackOwnerBinding::Owned {
                 contract: TemplateContract::Honored { template, input },
@@ -186,14 +185,14 @@ impl PlannerHarnessStartAdapter {
             // checked contract behind them. The prompt degrades, the track
             // does not lose its plugin.
             TrackOwnerBinding::Owned {
+                plugin,
                 contract: TemplateContract::Broken(failure),
-                ..
             } => {
                 tracing::error!(
                     target: "planner_harness::template_binding",
                     track_id,
                     template_id = track.template_id.as_deref().unwrap_or("<none>"),
-                    plugin_id = %scoped_plugin_id,
+                    plugin_id = %plugin.id,
                     failure = %failure,
                     "the track's owner is live but its template contract no longer holds; using vanilla planner prompt (tool scope is unaffected)"
                 );

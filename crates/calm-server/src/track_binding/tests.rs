@@ -942,7 +942,7 @@ async fn absent_input_under_a_newly_required_schema_breaks_the_contract() {
         .expect("upgraded A is registered");
     assert!(
         crate::plugin_host::template_input::validate_template_input_binding(
-            Some(&upgraded_manifest),
+            crate::plugin_host::template_input::TemplateInputOwner::Plugin(&upgraded_manifest),
             None,
         )
         .is_err(),
@@ -1032,6 +1032,25 @@ async fn create_time_and_run_time_binding_agree_for_a_stopped_owner() {
         status,
         StatusCode::BAD_REQUEST,
         "create must refuse template_input with no bound owner: {body}"
+    );
+    // 第二轮评审 NIT-3 — this is the *reachable* end of the `NoBoundPlugin`
+    // cell: the caller did send a `template_id`, and the roster does admit it;
+    // only the owner is stopped. The body used to read "`template_input`
+    // requires `template_id`", telling the caller to supply what they had
+    // already supplied. Pinned here at the HTTP boundary, not just at the
+    // function, because the body is what a user sees.
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("track create: "),
+        "the 400 must keep the route prefix: {rendered}"
+    );
+    assert!(
+        rendered.contains("running and trusted"),
+        "the 400 must name the stopped owner as the cause: {rendered}"
+    );
+    assert!(
+        !rendered.contains("requires `template_id`"),
+        "the 400 must not ask for a template_id that was supplied: {rendered}"
     );
     assert!(
         crate::routes::tracks::admit_template(&boot.route_state(), SHARED_TEMPLATE_ID)

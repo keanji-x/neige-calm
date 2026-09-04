@@ -354,12 +354,39 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
     validate_instance("template_input", schema, input)
 }
 
-/// #891 / #1110 S2 — the **whole** `(Manifest.input_schema, template_input)`
-/// matrix, fail-closed: input is only accepted when the bound plugin Manifest
-/// declares an `input_schema`, and a schema with required fields makes input
-/// mandatory. The kernel never applies schema `default`s — the value persists
-/// exactly as the caller sent it. Descriptor-level `input_schema` is never
-/// consulted.
+/// Why a `template_input` has no owning plugin Manifest to be checked against
+/// — or the Manifest itself.
+///
+/// # #1321 S1 第二轮评审 NIT-3
+///
+/// This used to be a bare `Option<&Manifest>`, and the `None` arm answered
+/// "``template_input`` requires ``template_id``" for **both** of its causes.
+/// The second cause makes that message a lie, and it is reachable: `create_track`
+/// derives its Manifest from `admit_template(..).binding`, which is `None`
+/// whenever the roster admits the `template_id` but no *running ∧ trusted*
+/// plugin currently declares it (`routes::tracks::resolve_template_binding`).
+/// A caller who sent a perfectly good `template_id` while the owning plugin was
+/// stopped was told to supply the field they had already supplied.
+///
+/// Splitting the `None` lets each cause say what actually went wrong, and makes
+/// the "whole matrix" claim on [`validate_template_input_binding`] true of the
+/// owner axis as well as the input axis.
+pub enum TemplateInputOwner<'a> {
+    /// No `template_id` was given at all, so there is no plugin to bind to.
+    NoTemplateId,
+    /// A `template_id` was given and the roster admits it, but no running ∧
+    /// trusted plugin declares it right now, so there is no `input_schema` to
+    /// check the input against.
+    NoBoundPlugin,
+    /// The owning plugin's current Manifest.
+    Plugin(&'a crate::plugin_host::manifest::Manifest),
+}
+
+/// #891 / #1110 S2 — the **whole** `(owner, template_input)` matrix,
+/// fail-closed: input is only accepted when a bound plugin Manifest declares an
+/// `input_schema`, and a schema with required fields makes input mandatory. The
+/// kernel never applies schema `default`s — the value persists exactly as the
+/// caller sent it. Descriptor-level `input_schema` is never consulted.
 ///
 /// # #1321 S1 — why this lives here and not in `routes::tracks`
 ///
@@ -378,14 +405,28 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
 /// pre-existing 400 body byte-identical) and the binding resolver reports it
 /// as a contract failure.
 pub fn validate_template_input_binding(
-    plugin: Option<&crate::plugin_host::manifest::Manifest>,
+    owner: TemplateInputOwner<'_>,
     input: Option<&Value>,
 ) -> Result<(), String> {
-    let Some(plugin) = plugin else {
-        if input.is_some() {
-            return Err("`template_input` requires `template_id`".into());
+    let plugin = match owner {
+        TemplateInputOwner::Plugin(plugin) => plugin,
+        TemplateInputOwner::NoTemplateId => {
+            if input.is_some() {
+                return Err("`template_input` requires `template_id`".into());
+            }
+            return Ok(());
         }
-        return Ok(());
+        TemplateInputOwner::NoBoundPlugin => {
+            if input.is_some() {
+                return Err(
+                    "`template_input` requires a `template_id` whose owning plugin is \
+                     currently running and trusted; no plugin declares this template right \
+                     now, so there is no input_schema to validate against"
+                        .into(),
+                );
+            }
+            return Ok(());
+        }
     };
     let plugin_id = &plugin.id;
     match (plugin.input_schema.as_ref(), input) {

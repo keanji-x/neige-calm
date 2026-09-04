@@ -98,16 +98,39 @@
 //! pinned across time. `operation::planner_harness_start_adapter` resolves
 //! once, at planner thread start, and freezes the descriptor into the
 //! developer instructions, while `mcp_server::tool_visibility` re-resolves on
-//! every `tools/list` / `tools/call`. An owner that stops *after* the planner
-//! started therefore leaves a durable mismatch: A's descriptor is still in the
-//! prompt while the tool scope has already gone to `None`.
+//! every `tools/list` / `tools/call`. That asymmetry has **two** instances,
+//! and this PR's relationship to them is not the same:
 //!
-//! That is the same *shape* as the bug this slice fixes, but not the same
-//! cause: it comes from **when** each reader asks, not from which column it
-//! reads, it predates this PR and this PR does not change it. Closing it means
-//! either re-rendering developer instructions on owner transitions or pinning
-//! a resolution snapshot for the life of a thread — both are prompt-lifecycle
-//! work well outside a binding-resolution slice. Registered here, not fixed.
+//! 1. **The owner stops while the thread lives.** A's descriptor is still in
+//!    the prompt while the tool scope has already gone to `None`. Same *shape*
+//!    as the bug this slice fixes, different cause: it comes from **when** each
+//!    reader asks, not from which column it reads. It predates this PR and this
+//!    PR does not change it — the old `tool_visibility` failed closed on a
+//!    stopped owner too, and the old `bound_template` was likewise called once.
+//! 2. **The contract breaks while the thread lives** (owner still running ∧
+//!    trusted; only its `input_schema` or its template list moved). This one is
+//!    **new with this slice**, and nothing observes it. `bound_template` runs
+//!    exactly once per *newly minted* thread — it sits in the `else` branch of
+//!    the reusable-thread check in
+//!    `operation::planner_harness_start_adapter`'s `app_server_interact`, so a
+//!    reused thread never re-resolves — hence the `error!` on the `Broken` row fires at
+//!    start and never again. The tool scope *does* re-resolve on every
+//!    `tools/list`, but it projects `Owned { .. } => Only(plugin.id)` **without
+//!    reading `contract`**. So for the rest of that thread's life the prompt
+//!    keeps a frozen descriptor plus a `template_input` that no current schema
+//!    accepts, the scope keeps saying `Only(owner)`, and **no reader can
+//!    discover that the contract broke**. Before the split, the run-time check
+//!    was a single verdict, so the next `tools/list` drove the scope to `None`
+//!    — crude, but the one signal a live system could observe.
+//!
+//! The narrower claim, then: "this PR does not change it" is true of (1) and
+//! false of (2). (2) is a deliberate price of the split, not an oversight — the
+//! alternative is exactly the unrepairable degradation the section above
+//! rejects, since `TrackPatch` cannot rewrite the three columns a withdrawn
+//! scope would strand. Closing either instance means re-rendering developer
+//! instructions on owner/contract transitions, or pinning a resolution
+//! snapshot for the life of a thread — both are prompt-lifecycle work well
+//! outside a binding-resolution slice. Registered here, not fixed.
 
 use std::collections::BTreeSet;
 
@@ -116,7 +139,7 @@ use serde_json::Value;
 use crate::forge_trust::trusted_forge_plugin;
 use crate::model::Track;
 use crate::plugin_host::manifest::TemplateDescriptor;
-use crate::plugin_host::template_input::validate_template_input_binding;
+use crate::plugin_host::template_input::{TemplateInputOwner, validate_template_input_binding};
 use crate::plugin_host::{Manifest, PluginHost};
 
 #[cfg(test)]
@@ -141,10 +164,17 @@ pub(crate) enum TrackOwnerBinding {
     ///
     /// It is a *terminal* answer, not a "look harder" one. A running plugin
     /// that happens to declare the row's `template_id` does **not** adopt the
-    /// track: no code path in `crates/calm-server` writes a non-NULL
-    /// `plugin_scope` onto an existing row (the sweep behind the module doc's
-    /// writer list), so an unbound track cannot be promoted into a plugin's
-    /// scope by anything a reader might observe.
+    /// track: no **runtime** code path in `crates/calm-server` writes a
+    /// non-NULL `plugin_scope` onto an existing row (the sweep behind the
+    /// module doc's writer list — the three runtime writers there either
+    /// `INSERT` a fresh row or clear the column).
+    ///
+    /// Scope of that negative, exactly: it covers the running server, not the
+    /// column's whole history. Migration 0076 — entry 4 on the same list — does
+    /// promote existing rows into a plugin's scope; it just does so once, at
+    /// migration time, before any reader in this process runs. So an `Unbound`
+    /// answer stays `Unbound` for as long as this server is the only writer,
+    /// which is the property the two readers actually need.
     Unbound,
     /// `plugin_scope` names a plugin that is running ∧ trusted and present in
     /// the registry. This is the *whole* owner judgement: the tool scope is
@@ -163,17 +193,13 @@ pub(crate) enum TrackOwnerBinding {
     OwnerUnavailable { plugin_id: String },
 }
 
-impl TrackOwnerBinding {
-    /// The plugin id the track is scoped to, whatever became of it — for log
-    /// fields on both readers.
-    pub(crate) fn scoped_plugin_id(&self) -> Option<&str> {
-        match self {
-            Self::Unbound => None,
-            Self::Owned { plugin, .. } => Some(plugin.id.as_str()),
-            Self::OwnerUnavailable { plugin_id } => Some(plugin_id.as_str()),
-        }
-    }
-}
+// 第二轮评审 NIT-4 — there used to be a `scoped_plugin_id(&self) -> Option<&str>`
+// accessor here, documented as "for log fields on both readers". Its only
+// caller allocated it unconditionally (`.unwrap_or("<none>").to_string()`) and
+// then used it in a single `error!` arm, where the arm's own `plugin` binding
+// already carries the id; `tool_visibility` never called it at all. Both the
+// allocation and the "both readers" claim are gone rather than narrowed —
+// every arm that logs an id has one in scope.
 
 /// The state of a track's *template* contract under a **known, live** owner.
 #[derive(Clone, Debug)]
@@ -187,7 +213,9 @@ pub(crate) enum TemplateContract {
     NotTemplated,
     /// The owner still declares the track's `template_id`, and its **current**
     /// `input_schema` still accepts the persisted `template_input` under the
-    /// same matrix the create route enforces.
+    /// same matrix the create route enforces — specifically the
+    /// `TemplateInputOwner::Plugin(_)` rows of it, which are the only rows a
+    /// live owner can be in.
     Honored {
         template: TemplateDescriptor,
         /// The row's `template_input`, re-checked against `plugin`'s current
@@ -196,6 +224,26 @@ pub(crate) enum TemplateContract {
     },
     /// The owner is live but the contract cannot be honored: nothing template
     /// -shaped may reach the prompt. Tool visibility is unaffected.
+    ///
+    /// # It is not behaviourally distinguishable from [`Self::NotTemplated`]
+    ///
+    /// This enum has exactly two consumers —
+    /// `operation::planner_harness_start_adapter::bound_template` and
+    /// `mcp_server::tool_visibility` — and **both project this variant and
+    /// `NotTemplated` onto the same output** (`Ok(None)` / `Only(owner)`). The
+    /// only difference either one produces is the `tracing::error!` on the
+    /// `Broken` arm of `bound_template`. Nothing asserts on that log line, so
+    /// **no test in this repository can tell the two variants apart**: swapping
+    /// every `Broken(..)` construction for `NotTemplated` leaves the suite
+    /// green.
+    ///
+    /// Keep the distinction anyway — the log *is* the carrier (it is the only
+    /// operator-visible signal that a contract broke, and see the module doc's
+    /// KNOWN GAP (2) for how thin that signal is), and `NotTemplated` cannot
+    /// carry a [`ContractFailure`] to render. But do not reason from "the type
+    /// distinguishes them" to "some behaviour distinguishes them": if you add a
+    /// consumer that must treat them differently, it needs its own test,
+    /// because no existing one will go red for you.
     Broken(ContractFailure),
 }
 
@@ -321,11 +369,24 @@ fn resolve_template_contract(
     // Some(input))` corner of the create-time matrix — a NULL
     // `template_input` skipped the check entirely, so an owner upgrade that
     // *added* `required: [...]` left a track the create route would now
-    // reject (400) resolving as fully honored. The whole matrix is one
-    // function and this calls it, absence included.
-    if let Err(reason) =
-        validate_template_input_binding(Some(manifest), track.template_input.as_ref())
-    {
+    // reject (400) resolving as fully honored. The matrix is one function and
+    // this calls it, absence included.
+    //
+    // 第二轮评审 NIT-1 — "both callers enter this function over the whole
+    // matrix" is true only of the rows a live owner can occupy. This branch is
+    // already past the `template_id IS NULL` early return above, so it only
+    // ever reaches the `TemplateInputOwner::Plugin(_)` half; the create route
+    // additionally reaches `NoTemplateId` / `NoBoundPlugin`, and the first of
+    // those disagrees with this resolver by construction — create answers 400
+    // for `(no template_id, input present)` while a row in that shape resolves
+    // `NotTemplated` here without consulting the matrix at all. No production
+    // writer produces such a row (a NULL `template_id` is only ever written
+    // together with a NULL `template_input`), so the disagreement is
+    // unreachable rather than reconciled.
+    if let Err(reason) = validate_template_input_binding(
+        TemplateInputOwner::Plugin(manifest),
+        track.template_input.as_ref(),
+    ) {
         return TemplateContract::Broken(ContractFailure::InputRejected {
             plugin_id: plugin_id.to_string(),
             template_id: template_id.to_string(),
