@@ -184,11 +184,16 @@ around it stays interface-sized. Running is ambience and lives in the panel.
   its `Write` / `Rewrite` labels, its pending state and its notice are all
   removed. The empty state is now **one sentence** and nothing else.
 
-  What replaced it is not another control: the day's activity window is
-  injected **server-side** when a conversation is started on the launchpad
-  track, so an agent opens with the day's numbers in hand and the page has
-  nothing left to ask for. `POST /api/today/summary` is still served and still
-  behaves exactly as it did; nothing in the browser calls it.
+  What replaced it is not another control. Two server-side changes carry it:
+  the day's activity window is injected when a conversation is started on the
+  launchpad track, and that conversation's agent is started under an identity
+  whose first duty is keeping today's report current
+  (`planner_card::LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE`). Material
+  without authority was measured not to be enough — the ordinary assistant
+  prompt closes with "you are a guest in a document the planner agent
+  maintains", which is false on the launchpad. Ordinary tracks are unchanged.
+  `POST /api/today/summary` is still served and still behaves exactly as it
+  did; nothing in the browser calls it.
 
   **INV-TODAYDOC-007 did not move and did not weaken.** It is still enforced by
   that endpoint, which still refuses an empty window without creating a

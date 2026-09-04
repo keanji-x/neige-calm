@@ -914,6 +914,77 @@ async fn an_empty_day_is_briefed_as_empty_and_still_opens_the_conversation() {
     );
 }
 
+/// #1343 — the launchpad's assistant is started under the launchpad identity,
+/// and every other track's under the ordinary one.
+///
+/// This is the *other half* of the injection: material without authority did
+/// not move the report. Measured on the 4140 preview before this change — told
+/// explicitly to write a block, the agent wrote one; told casually what had
+/// happened, it made zero tool calls, because its prompt's first duty was
+/// "answer the user" and its closing sentence said it was a guest in a document
+/// the planner agent maintains.
+///
+/// Asserted on `developer_instructions` at `thread/start`, which is the only
+/// place in the process where the two identities are distinguishable, and by
+/// **equality against the production renderer** rather than by a keyword: a
+/// `contains("launchpad")` check would stay green if the fork shipped a
+/// half-built template. Both directions are in one case because either alone is
+/// satisfied by a build that hands every track the same prompt.
+#[tokio::test]
+async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_do_not() {
+    let b = boot().await;
+    let ordinary = b.user_track("ordinary").await;
+    let launchpad = b.ensure_launchpad().await;
+
+    let (status, created) = b
+        .create_conversation(&launchpad, "identity-launchpad", "hi")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "created={created}");
+    let (status, created) = b
+        .create_conversation(&ordinary, "identity-ordinary", "hi")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "created={created}");
+
+    let instructions: Vec<String> = b
+        .state
+        .shared_codex_appserver
+        .started_thread_params_for_test()
+        .into_iter()
+        .filter_map(|(developer_instructions, _, _)| developer_instructions)
+        .collect();
+
+    let launchpad_prompt =
+        calm_server::planner_card::render_launchpad_assistant_prompt_for_test(&launchpad);
+    let ordinary_prompt = calm_server::planner_card::render_assistant_prompt_for_test(&ordinary);
+    assert!(
+        instructions.contains(&launchpad_prompt),
+        "the launchpad assistant must be started under the launchpad identity;          started threads carried: {instructions:#?}"
+    );
+    assert!(
+        instructions.contains(&ordinary_prompt),
+        "an ordinary track's assistant must keep the identity it always had;          started threads carried: {instructions:#?}"
+    );
+    // The launchpad identity must not leak onto the other track. Keyed on the
+    // sentence that is true there and false here rather than on a whole
+    // document, because this says *which* claim must not travel.
+    //
+    // The ASSISTANT start, located by its own opening line: that track also has
+    // a planner thread start in this list, and an earlier version of this
+    // assertion picked it up by matching the track id alone.
+    let ordinary_started = instructions
+        .iter()
+        .find(|text| {
+            text.starts_with(&format!(
+                "You are an assistant conversation on track `{ordinary}`"
+            ))
+        })
+        .expect("the ordinary track's assistant thread start");
+    assert!(
+        ordinary_started.contains("you are a guest in a document"),
+        "the guest framing is correct on an ordinary track and must survive:          {ordinary_started}"
+    );
+}
+
 /// #1343 stays on the launchpad. An ordinary track's conversation is untouched.
 ///
 /// The branch is `track_get_launchpad()`-identity, so this is the case that

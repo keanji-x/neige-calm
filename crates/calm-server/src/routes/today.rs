@@ -318,6 +318,33 @@ pub(crate) async fn resolve_today_launchpad(
     })))
 }
 
+/// Is this track Today's launchpad? (#1343)
+///
+/// **One criterion, and every caller uses this one.** Two places now behave
+/// differently on the launchpad — the activity briefing a new conversation
+/// opens with (`routes::track_conversations`) and the identity that
+/// conversation's agent is started under
+/// (`operation::planner_harness_start_adapter`) — and a second spelling of
+/// "is this the launchpad?" would let them disagree about the same track.
+///
+/// Identity against `track_get_launchpad`, not a re-derivation from `purpose`
+/// or from the system area: the launchpad is a single row the repository
+/// already knows how to find, and the partial unique index on
+/// `purpose = 'launchpad'` is what makes that row unique. Matching on the
+/// column here would be a second implementation of the repository's own query.
+///
+/// `false` when there is no launchpad yet, which is the ordinary state of a
+/// fresh workspace. Nothing is ensured from here.
+pub(crate) async fn is_launchpad_track(
+    repo: &(impl crate::db::ServerRepoReadExt + ?Sized),
+    track_id: &str,
+) -> Result<bool> {
+    Ok(repo
+        .track_get_launchpad()
+        .await?
+        .is_some_and(|launchpad| launchpad.id.as_str() == track_id))
+}
+
 /// What a reset answers with.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TodayLaunchpadReportReset {

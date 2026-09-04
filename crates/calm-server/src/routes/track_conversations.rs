@@ -359,10 +359,13 @@ pub(crate) async fn create_track_conversation_inner(
 
 /// Today's activity briefing, if this track is the launchpad (#1343).
 ///
-/// `None` for every other track, and the predicate is identity against
-/// `track_get_launchpad` rather than anything about the track's shape: the
-/// launchpad is a single named row, and matching on `purpose` or on the system
-/// area here would be a second spelling of a fact the repository already owns.
+/// `None` for every other track. The predicate is
+/// [`routes::today::is_launchpad_track`], which is the one criterion in the
+/// codebase — the agent's identity (`planner_harness_start_adapter`) forks on
+/// the same call, and two spellings of "is this the launchpad?" would let the
+/// briefing and the identity disagree about one track.
+///
+/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
 ///
 /// The window itself comes from `activity_window::todays_workspace_activity`,
 /// the same entry `POST /api/today/summary` uses, so the two surfaces cannot
@@ -380,10 +383,7 @@ async fn launchpad_opening_briefing(
     w: &WorkerState,
     track_id: &str,
 ) -> Result<Option<String>> {
-    let Some(launchpad) = s.repo.track_get_launchpad().await? else {
-        return Ok(None);
-    };
-    if launchpad.id.as_str() != track_id {
+    if !crate::routes::today::is_launchpad_track(s.repo.as_ref(), track_id).await? {
         return Ok(None);
     }
     let pool = w.repo.sqlite_pool().ok_or_else(|| {

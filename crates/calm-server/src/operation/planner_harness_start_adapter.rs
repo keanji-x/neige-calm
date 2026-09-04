@@ -1030,10 +1030,33 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // tools the assistant is forbidden to call, and a template
                 // binding drives the track's plan, which is likewise not the
                 // assistant's business.
-                HarnessProfile::Assistant => Some(crate::planner_card::render_system_prompt(
-                    crate::planner_card::ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-                    &track_id,
-                )),
+                //
+                // #1343 — on Today's launchpad it gets a different *identity*
+                // under the same tools: there, keeping the day's report current
+                // is the job rather than a capability, and the ordinary
+                // prompt's closing "you are a guest in a document the planner
+                // agent maintains" is simply false, because no planner agent
+                // writes that report. See
+                // `LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE`.
+                //
+                // The criterion is `routes::today::is_launchpad_track`, the
+                // same call the activity briefing makes. One criterion on
+                // purpose: two spellings could send a conversation its material
+                // and then start it under an identity that says the document is
+                // not its to write.
+                HarnessProfile::Assistant => {
+                    let template =
+                        if crate::routes::today::is_launchpad_track(self.repo.as_ref(), &track_id)
+                            .await?
+                        {
+                            crate::planner_card::LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE
+                        } else {
+                            crate::planner_card::ASSISTANT_SYSTEM_PROMPT_TEMPLATE
+                        };
+                    Some(crate::planner_card::render_system_prompt(
+                        template, &track_id,
+                    ))
+                }
                 HarnessProfile::Planner => {
                     let bound_template = self.bound_template(&track_id).await?;
                     Some(render_planner_developer_instructions(
