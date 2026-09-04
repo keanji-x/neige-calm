@@ -568,7 +568,6 @@ pub fn spawn_dispatcher(fx: &Fixture) -> Dispatcher {
         fx.shared.clone(),
         fx.runtime.clone(),
         4,
-        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
 }
 
@@ -592,6 +591,7 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         fx.shared.clone(),
         fx.runtime.clone(),
         4,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
 }
 

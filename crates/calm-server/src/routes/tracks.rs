@@ -3585,8 +3585,7 @@ async fn finish_track_deletion(
                 // committing the delete without knowing which projections to
                 // refresh would leave directly claimable rows admitted under
                 // the old share.
-                let surviving_root = match track_tree_term(&mut **tx, track_id.as_str()).await?.term
-                {
+                let surviving_root = match track_tree_term(tx, track_id.as_str()).await?.term {
                     TrackTreeTerm::Share(share) if share.root_id != track_id.as_str() => {
                         Some(share.root_id)
                     }
