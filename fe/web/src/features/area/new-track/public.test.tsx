@@ -188,11 +188,50 @@ describe('NewTrackForm asks only what the track starts from', () => {
     expect(submitButton().disabled).toBe(false);
   });
 
-  it('calls onSubmit with the trimmed sentence', async () => {
+  /*
+   * #1299 — the sentence leaves this form **verbatim**.
+   *
+   * The composer's text is delivered to the planner agent by the create, and
+   * the kernel forwards it untrimmed (`send_planner_input`) and hashes it
+   * untrimmed (`first_message_digest`), so the whitespace around what the
+   * reader typed is part of what they said. This form trims to decide whether
+   * it may submit at all and for nothing else.
+   *
+   * The version of this case that shipped first asserted the *trimmed* string
+   * and so certified the defect: the form trimmed, the route trimmed again,
+   * and a deliberately indented instruction arrived flattened with every suite
+   * green.
+   */
+  it('calls onSubmit with the sentence exactly as typed, whitespace and all', async () => {
     const { props } = renderForm();
-    await fillMessage('  Ship the thing  ');
+    await fillMessage('  keep indentation  ');
     await userEvent.click(submitButton());
-    expect(props.onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+    expect(props.onSubmit).toHaveBeenCalledWith({ message: '  keep indentation  ' });
+  });
+
+  /*
+   * Blank is the **kernel's** question, and this form must answer it the same
+   * way (`isBlankForKernel`).
+   *
+   * The kernel refuses `text.trim().is_empty()` with Rust's `char::is_whitespace`
+   * — the Unicode `White_Space` property — and JS `trim()` is a different set:
+   * `U+0085 NEXT LINE` is whitespace to Rust and an ordinary character to JS.
+   * A form gated on `trim()` therefore lights up Create for a `U+0085`-only
+   * draft, posts it, and collects a 400 the reader cannot act on. Both gates
+   * are asserted, because they are two call sites: the button's `disabled`
+   * (`valid`) and the Enter path (`submit`'s own guard).
+   */
+  const BLANK_TO_THE_KERNEL: readonly (readonly [string, string])[] = [
+    ['an ordinary space', ' '],
+    ['a no-break space, U+00A0', '\u00A0'],
+    ['a next line, U+0085 — whitespace to Rust, not to JS trim()', '\u0085'],
+  ];
+  it.each(BLANK_TO_THE_KERNEL)('refuses a draft of nothing but %s', async (_name, blank) => {
+    const { props } = renderForm();
+    await fillMessage(blank);
+    expect(submitButton().disabled).toBe(true);
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), '{Enter}');
+    expect(props.onSubmit).not.toHaveBeenCalled();
   });
 
   /*
@@ -837,7 +876,10 @@ describe('The folder is optional, and its absence is the managed default', () =>
     await fillMessage('  Ship the thing  ');
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ message: 'Ship the thing' });
+    /* Padded on purpose, and the padding survives: this case is about the
+       absent `cwd`, but it types whitespace, so it would silently re-certify
+       a trimming `message` if it asserted the trimmed string. */
+    expect(draft).toEqual({ message: '  Ship the thing  ' });
     expect(Object.hasOwn(draft, 'cwd')).toBe(false);
   });
 

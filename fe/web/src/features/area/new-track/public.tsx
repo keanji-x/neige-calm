@@ -54,11 +54,18 @@
 // not deliver it and must not learn to: two review rounds showed the three-write
 // sequence a component would need cannot be made sound (see `NewTrackRoute`),
 // which is why the kernel took the write. All this form does is hand the
-// trimmed sentence to its caller.
+// sentence to its caller — **verbatim**, exactly as it was typed.
 //
-// So there is nothing on screen about repeating yourself, and there used not to
-// be: until delivery landed, a notice above the send button said the sentence
-// would have to be said again in the track's chat. It went with the retyping.
+// Whitespace is load-bearing here in two different ways, and the two must not
+// be confused. Whether the draft is blank decides whether Create is live at
+// all, and that question is asked with `isBlankForKernel` — the kernel's own
+// Unicode criterion, so this form never enables a send the server is bound to
+// answer 400. What is *submitted* is the untouched string: the kernel stores
+// and forwards it untrimmed, so stripping the reader's indentation on the way
+// out would deliver something they did not write.
+//
+// There is nothing on screen about repeating yourself: the sentence arrives in
+// the track's planner conversation on its own.
 //
 // ## The folder picker needs a `Dialog` above it
 //
@@ -225,7 +232,7 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
-import type { TrackRecipe, TrackTemplate } from '../../../../../core/domain/track.ts';
+import { isBlankForKernel, type TrackRecipe, type TrackTemplate } from '../../../../../core/domain/track.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -267,9 +274,12 @@ export type NewTrackDraft = Readonly<{
    * The caller creates the track with no `title` — the kernel stores the empty
    * string and the planner agent names it later (#1211). This text's destination
    * is the new track's planner agent as its first message, which the caller puts
-   * on the create as `first_message` (#1299). Always non-empty and already
-   * trimmed: the composer will not submit otherwise, and a blank one would be a
-   * 400 the reader never asked for.
+   * on the create as `first_message` (#1299).
+   *
+   * **Verbatim, and never blank.** It is the reader's own string — leading and
+   * trailing whitespace included, because the kernel delivers what it is given
+   * — and the composer refuses to submit one the kernel would read as blank
+   * (`isBlankForKernel`), which would be a 400 nobody asked for.
    */
   message: string;
   /**
@@ -536,7 +546,12 @@ export function NewTrackForm({
   const issueUrlTouched = issueUrl.trim() !== '';
   const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
   const inputBlocker = unsupportedInput || (issueDev && parsedIssue === null);
-  const valid = message.trim() !== '' && !inputBlocker;
+  /* Blank by the *kernel's* rule, not JS's: `isBlankForKernel` is the one
+     place that criterion is written (`core/domain/track.ts`), and `submit`
+     below asks it the same question. A gate that used `trim()` here would
+     light up Create for a draft the server refuses — see that function for the
+     code point the two disagree about. */
+  const valid = !isBlankForKernel(message) && !inputBlocker;
   /* The folder control's accessible name *and* its hover string — one value,
      because they answer the same question and must not drift apart. Neither is
      the chip's text: unset that text is the default's name, and set it is a
@@ -556,14 +571,21 @@ export function NewTrackForm({
       : undefined;
 
   function submit(text: string): void {
-    const trimmed = text.trim();
-    if (trimmed === '' || inputBlocker || submitting) return;
+    /* Blank refuses the submit; it does not *rewrite* it. `text` goes on to
+       the caller exactly as typed — the draft is what the reader said, and the
+       kernel forwards it to the agent untrimmed. An earlier cut passed
+       `text.trim()` on, and `"  keep indentation  "` reached the agent with
+       the indentation gone. */
+    if (isBlankForKernel(text) || inputBlocker || submitting) return;
     /* Spread, not `cwd: folder || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
-       inspects the draft before it is serialized — including the tests. */
+       inspects the draft before it is serialized — including the tests.
+
+       The trim here is the path's, not the sentence's: a `cwd` is a filesystem
+       path chosen in the picker, where surrounding space is never meant. */
     const folder = cwd.trim();
-    const base = { message: trimmed, ...(folder === '' ? {} : { cwd: folder }) };
+    const base = { message: text, ...(folder === '' ? {} : { cwd: folder }) };
     if (effectiveSelection.kind === 'none') { onSubmit(base); return; }
     /* A recipe carries `recipe_id` and stops here. It can never also carry
        `template_id`: the union has one arm at a time, so the exclusivity the
@@ -625,6 +647,10 @@ export function NewTrackForm({
            * internal path is unused either) — so nothing clears the field
            * behind our back. Nothing needs to: a successful submit navigates
            * away and unmounts this component.
+           *
+           * It is also what keeps the sentence verbatim (#1299): the `trimmed`
+           * in astryx's handler is astryx's own, and both of this page's
+           * submit paths pass `message` — the field's value — instead.
            *
            * **Only when the field itself is the target**, and `matches` rather
            * than `closest` for a reason that is not pedantry. This handler sits

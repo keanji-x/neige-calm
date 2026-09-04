@@ -52,6 +52,42 @@ test('creates a track from an Area group with no title, and persists it', async 
       creates.push(pending);
     }
   });
+  /*
+   * The kernel's own account of the delivery, over the socket the app is
+   * already on (#1299).
+   *
+   * `harness.user_message.enqueued` is emitted where the message is queued onto
+   * the harness — not by this page, and not by the HTTP response — so it is the
+   * one signal at this tier that says the *server* did the thing rather than
+   * that the browser asked for it. It carries `track_id` and `char_count` and
+   * no text, which is exactly enough: the track it names is the one just
+   * created, and the count is the length of what was typed.
+   *
+   * It does **not** replace the in-process assertion in
+   * `crates/calm-server/tests/cases/track_create_first_message.rs`: enqueued is
+   * not "reached the agent's turn input", and only that suite can see the turn.
+   * What this adds is that the browser's create really produced the kernel-side
+   * enqueue, once, for this track.
+   *
+   * Registered before `goto` because the app opens the socket on first paint,
+   * and it subscribes to `['*']` with a replay cursor, so an event emitted
+   * during the create arrives here even though the page did not know the track
+   * id when it subscribed.
+   */
+  const frames: Record<string, unknown>[] = [];
+  page.on('websocket', (socket) => {
+    if (new URL(socket.url()).pathname !== '/api/events') return;
+    socket.on('framereceived', (frame) => {
+      if (typeof frame.payload !== 'string') return;
+      try {
+        const parsed: unknown = JSON.parse(frame.payload);
+        if (typeof parsed === 'object' && parsed !== null) frames.push(parsed as Record<string, unknown>);
+      } catch {
+        /* Not JSON — a keepalive or a partial frame. The assertion below counts
+           what did parse, so junk cannot make it pass. */
+      }
+    });
+  });
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   await page.goto('/next/');
@@ -179,6 +215,22 @@ test('creates a track from an Area group with no title, and persists it', async 
   await page.waitForTimeout(1_000);
   expect(creates, 'the create carrying the sentence must happen exactly once').toHaveLength(1);
   expect((creates[0]?.postDataJSON() as { first_message?: unknown }).first_message).toBe(message);
+
+  /*
+   * And the kernel enqueued it onto the harness — exactly once, for this track.
+   *
+   * Counted after the same settle window as the creates above, and for the same
+   * reason: a second create would show up here as a second enqueue. `char_count`
+   * is asserted too, because a delivery of some *other* text would otherwise be
+   * indistinguishable from this one (the event carries no message body).
+   */
+  const enqueued = frames.filter((frame) => frame.ev === 'harness.user_message.enqueued'
+    && (frame.data as { track_id?: unknown } | undefined)?.track_id === trackId);
+  expect(
+    enqueued,
+    'the kernel must enqueue the sentence onto the new track\'s harness exactly once',
+  ).toHaveLength(1);
+  expect((enqueued[0]?.data as { char_count?: unknown }).char_count).toBe([...message].length);
 
   const foldersResponse = await request.get(`/api/areas/${area.id}/folders`);
   expect(foldersResponse.ok()).toBe(true);

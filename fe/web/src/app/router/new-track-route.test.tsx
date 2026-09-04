@@ -389,6 +389,33 @@ describe('the new-track page is a route reached from Area groups', () => {
   });
 
   /*
+   * #1299 — what the reader typed is what the agent is sent, byte for byte.
+   *
+   * The kernel forwards `first_message` to the agent untrimmed and hashes it
+   * untrimmed, so the whitespace around the sentence is content, and this
+   * route's only business with it is deciding whether the key rides at all.
+   * Both layers used to trim — the form on the way out and this route on the
+   * way to the wire — and a deliberately indented instruction went out
+   * flattened with every suite green, because the form's own case asserted the
+   * trimmed string.
+   *
+   * The assertion is on the *request body*, which is the only place the whole
+   * path (composer → draft → POST) is visible at once: a trim reintroduced in
+   * either layer fails here.
+   */
+  it('posts the sentence exactly as typed, whitespace and all', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    const padded = '  keep indentation  ';
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), padded);
+    await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+    expect(createdTrackBodies(sent)[0]).toMatchObject({ first_message: padded });
+  });
+
+  /*
    * The other half of the same contract. `attach_folder: true` is not decorative
    * — with it omitted the kernel refuses any path no area has already claimed,
    * so an attached create would 409 for exactly the folders a user is most
@@ -853,7 +880,12 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
   });
 
-  it('reports a create that failed, and creates nothing', async () => {
+  /* Not "and creates nothing": a failed create is not a create that did not
+     happen. `first_message` makes a failed harness start answer 500 *after*
+     the track is minted (#1299), so what this route owes the reader on a
+     failure is the report, their text back, and no retry — the state of the
+     server is the kernel's to say, not this test's. */
+  it('reports a create that failed, keeps the sentence, and does not retry', async () => {
     const { sent } = harness({
       trackCreate: { status: 500, statusText: 'Server Error', body: { error: 'boom' } },
     });
@@ -866,6 +898,10 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
+    /* One attempt, and no second one on the reader's behalf. The create carries
+       no idempotency key, so an automatic retry would be a second track and a
+       second delivery of the same sentence (#1384). */
+    expect(createdTrackBodies(sent)).toHaveLength(1);
     expect(plannerInputTexts(sent)).toEqual([]);
   });
 });
