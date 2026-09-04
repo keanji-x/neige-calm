@@ -74,8 +74,20 @@
     color: var(--text);
   }
 
-  /* Grow so the rename control's max-inline-size: 100% has a definite
-     parent. Without flex-grow that 100% resolved against a 0-width box. */
+  /* Size the cluster to its content so lifecycle metadata stays attached to
+     the title instead of being pushed into the middle of the header. It may
+     still shrink as one unit when a long title meets the trailing actions. */
+  .titleCluster {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: baseline;
+    gap: var(--space-4);
+    min-inline-size: 0;
+    max-inline-size: 100%;
+  }
+
+  /* Grow inside the content-sized cluster so the rename control's
+     max-inline-size has a definite parent while long titles still truncate. */
   .titleHeading {
     flex: 1 1 auto;
     min-inline-size: 0;

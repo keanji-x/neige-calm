@@ -377,29 +377,27 @@ export function TrackPage({
               while the title is empty), so clearing the name is a real request
               here and not the cancel it is on an area.
             */}
-            <h1 className={styles.titleHeading}><EditableTitle
-              value={track.title}
-              placeholder={UNTITLED_TRACK_LABEL}
-              emptyCommit="clear"
-              onCommit={onRenameTrack}
-              editLabel="Rename track"
-              inputLabel="Track title"
-              className={styles.title}
-              isPageTitle
-            /></h1>
+            <div className={styles.titleCluster}>
+              <h1 className={styles.titleHeading}><EditableTitle
+                value={track.title}
+                placeholder={UNTITLED_TRACK_LABEL}
+                emptyCommit="clear"
+                onCommit={onRenameTrack}
+                editLabel="Rename track"
+                inputLabel="Track title"
+                className={styles.title}
+                isPageTitle
+              /></h1>
+              {lifecycle !== null && <TrackLifecycleBadge lifecycle={lifecycle} />}
+            </div>
           </>
         }
-        meta={
-          <>
-            {lifecycle !== null && <TrackLifecycleBadge lifecycle={lifecycle} />}
-            {track.anyCardNeedsInput && (
-              <span className={styles.needsInput}>
-                <span className={styles.needsInputDot} aria-hidden="true" />
-                Needs input
-              </span>
-            )}
-          </>
-        }
+        meta={track.anyCardNeedsInput ? (
+          <span className={styles.needsInput}>
+            <span className={styles.needsInputDot} aria-hidden="true" />
+            Needs input
+          </span>
+        ) : undefined}
         actions={(
           <button
             type="button"

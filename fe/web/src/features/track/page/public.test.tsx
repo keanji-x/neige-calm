@@ -19,23 +19,23 @@ describe('TrackPage header', () => {
   it('shows the track title and the lifecycle badge', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('img', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
   });
 
   it('does not put Draft in the header', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Draft' })).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Track lifecycle: Draft' })).toBeNull();
   });
 
   it('hides done and canceled, and still shows failed', () => {
     renderPage({ track: track({ lifecycle: 'done' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Done' })).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Track lifecycle: Done' })).toBeNull();
     cleanup();
     renderPage({ track: track({ lifecycle: 'canceled' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Canceled' })).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Track lifecycle: Canceled' })).toBeNull();
     cleanup();
     renderPage({ track: track({ lifecycle: 'failed' }) });
-    expect(screen.getByRole('img', { name: 'Track lifecycle: Failed' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Track lifecycle: Failed' })).toBeTruthy();
   });
 
   it('falls back to the untitled label for a blank title', () => {

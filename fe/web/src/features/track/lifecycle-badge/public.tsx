@@ -13,8 +13,6 @@ import styles from './lifecycle-badge.module.css';
 
 export type TrackLifecycleBadgeProps = Readonly<{
   lifecycle: TrackLifecycle;
-  /** Drops the leading dot; the label always stays. */
-  compact?: boolean;
 }>;
 
 type BadgeTone = 'attention' | 'running' | 'neutral';
@@ -32,19 +30,18 @@ function toneClass(tone: BadgeTone): string {
   return styles.neutral;
 }
 
-export function TrackLifecycleBadge({ lifecycle, compact = false }: TrackLifecycleBadgeProps) {
+export function TrackLifecycleBadge({ lifecycle }: TrackLifecycleBadgeProps) {
   const label = lifecycleLabel(lifecycle);
   const tone = toneOf(lifecycle);
 
   return (
     <span
-      className={`${styles.badge} ${toneClass(tone)} ${compact ? styles.compact : ''}`}
+      className={`${styles.badge} ${toneClass(tone)}`}
       data-nc-lifecycle-tone={tone}
-      role="img"
+      role="status"
       aria-label={`Track lifecycle: ${label}`}
     >
-      {!compact && <span className={styles.dot} aria-hidden="true" />}
-      <span className={styles.label}>{label}</span>
+      {label}
     </span>
   );
 }
