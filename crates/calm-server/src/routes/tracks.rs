@@ -487,8 +487,9 @@ fn prepare_template_report(key: &str) -> Result<InitialReportSnapshot> {
 /// `POST /api/tracks` through [`prepare_template_report`], and
 /// `GET /api/track-templates` (`routes::track_templates::current_definition`),
 /// which projects the picker's task list off the result rather than re-parsing
-/// the rendered body. Those two are the call sites `grep -rn compile_template
-/// crates/ fe/ web/ scripts/` reports outside `#[cfg(test)]`.
+/// the rendered body. Method for "two": `grep -rn "compile_template(" crates/`
+/// returns three lines — this definition and those two calls — and `crates/`
+/// holds every workspace member, so a Rust caller cannot be outside it.
 ///
 /// This governs the roster half only. User-authored recipes (#1292) are
 /// validated at their write boundary in `routes::track_recipes`, which answers
@@ -1998,8 +1999,9 @@ async fn start_planner_harness(
 ///
 /// #1321 S3 — a named struct rather than the 4-tuple this used to be. The
 /// producers ([`prepare_initial_report_payload`], [`prepare_fork_report`]) and
-/// the single consumer (`structural_init_report_tx`, called from
-/// `create_track_structure`) all name the same four things, and a tuple made
+/// its single production consumer (`structural_init_report_tx`, called from
+/// `create_track_structure`; the unit tests below read it too) all name the
+/// same four things, and a tuple made
 /// `.2` vs `.3` — declarations vs diagnostics, both `Vec`s — a positional
 /// question.
 pub(super) struct InitialReportSnapshot {
@@ -2020,10 +2022,12 @@ impl InitialReportSnapshot {
     /// `parse_fence` → `filter_map`), where a fence that failed to parse was
     /// silently demoted to prose and its task disappeared from the picker.
     ///
-    /// `None` blocks is `Internal`, not an empty list: every construction site
-    /// of this struct sets them (`prepare_initial_report_payload` and
-    /// `prepare_fork_report`, the two `Ok(InitialReportSnapshot { .. })` in this
-    /// file), so absence is a defect rather than "this report has no tasks".
+    /// `None` blocks is `Internal`, not an empty list: both construction sites
+    /// set them (`prepare_initial_report_payload` and `prepare_fork_report` —
+    /// the two `Ok(InitialReportSnapshot { .. })` this file contains), and in
+    /// safe Rust there can be no third anywhere else, because every field here
+    /// is private, so a struct literal outside `routes::tracks` is `E0451`.
+    /// Absence is therefore a defect rather than "this report has no tasks".
     pub(super) fn task_block_payloads(&self) -> Result<Vec<&serde_json::Value>> {
         let blocks = self.payload.blocks.as_ref().ok_or_else(|| {
             CalmError::Internal(

@@ -157,10 +157,14 @@ pub fn template_by_key(key: &str) -> Option<&'static Template> {
 ///
 /// ## What reads this, and what does not
 ///
-/// Nothing in this crate outside `#[cfg(test)]` calls it: I grepped
-/// `template_task_payloads_from_body` over `crates/`, `fe/`, `web/` and
-/// `scripts/`, and the remaining call sites are this module's own tests and
-/// `repro_1239`. Its production caller was `template_task_payloads`, which
+/// Nothing in this crate outside `#[cfg(test)]` calls it. Method:
+/// `grep -rn template_task_payloads_from_body crates/`, which is the whole
+/// carrier set for a Rust caller — every workspace member in the root
+/// `Cargo.toml` lives under `crates/`. The hits are this function, this
+/// module's own tests, its `repro_1239` module, and one `#[cfg(test)]`
+/// assertion in `routes::tracks`
+/// (`every_recipe_instantiates_and_declares_its_tasks`).
+/// Its production caller was `template_task_payloads`, which
 /// `GET /api/track-templates` used to re-parse a rendered recipe body with;
 /// #1321 S3 pointed that endpoint at `routes::tracks::compile_template`
 /// instead, so the picker now projects from the same validated blocks the
