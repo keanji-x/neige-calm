@@ -59,6 +59,7 @@ use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
+use crate::routes::conversations_shared::validate_first_message;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -194,6 +195,36 @@ pub struct CreateTrackRequest {
     /// the new report inside the track-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
+    /// Issue #1299 S1 — the sentence the user typed on the synthesiser page,
+    /// delivered to the planner agent **with** this create instead of having to
+    /// be retyped after landing on the track.
+    ///
+    /// It becomes an `Observation::UserMessage` seeded into the harness
+    /// snapshot inside the `planner-harness-start` transaction — not a
+    /// `TrackGoal`, which is a different semantic slot (see
+    /// `PlannerHarnessStartOperationPayload::first_message`). Validated exactly
+    /// like `POST /api/cards/{id}/planner/input` (non-blank after trim, at most
+    /// 32768 **characters**) and validated before anything is minted.
+    ///
+    /// Omitting it leaves this endpoint's behaviour byte-for-byte unchanged,
+    /// down to the operation payload, whose `first_message` key is
+    /// `skip_serializing_if`-omitted.
+    ///
+    /// Supplying it also changes what a harness-start failure means. Without
+    /// it, a create whose `planner-harness-start` operation fails still returns
+    /// 201 — "the track exists, its planner agent is inert" is a documented,
+    /// recoverable state. With it, that same failure is a 500, because the
+    /// sentence the user typed was only ever going to be written by that
+    /// operation. The 500 does **not** undo the create: the track and its cards
+    /// are already committed and nothing compensates for them (see the 500
+    /// description on `create_track`).
+    ///
+    /// This slice delivers the message; it does not make the create
+    /// **retryable**. A client that retries a create carrying a
+    /// `first_message` gets a second track, exactly as a client retrying any
+    /// other create always has.
+    #[serde(default)]
+    pub first_message: Option<String>,
 }
 
 impl CreateTrackRequest {
@@ -579,16 +610,40 @@ pub(crate) async fn get_track_detail(
     tag = "tracks",
     request_body = CreateTrackRequest,
     responses(
-        (status = 201, description = "Track created", body = Track),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction.", body = Track),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — an empty or over-long message. Decided before anything is minted.", body = ErrorBody),
+        (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness failed to start, the track, its cards and its workspace are already committed but the message was not delivered. Nothing is rolled back and the create is not retryable — read the track back from `GET /api/tracks` and send the message from the track itself. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(request): Json<CreateTrackRequest>,
+    Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
+    // #1299 S1 — first, before every other check in this handler and therefore
+    // before every mint it can reach. A rejected first message (blank or
+    // over-long) must leave no track, no cards, no folder claim and no
+    // materialized workspace behind, and this handler's own comment below
+    // explains why "non-201 ⇒ no side effect" is otherwise not one of its
+    // properties.
+    //
+    // `validate_first_message` is the conversation route's function, called not
+    // restated: a message this endpoint accepts is delivered through the same
+    // `Observation::UserMessage` slot `POST /api/cards/{id}/planner/input`
+    // writes, so one ceiling has to govern both or one of them accepts what the
+    // other later refuses.
+    //
+    // There is no create shape this endpoint accepts that skips the harness:
+    // since #1318 S2 retired `as_template`, `create_track_with_planner_harness`
+    // calls `start_planner_harness` unconditionally, so a `template_id` or
+    // `recipe_id` create delivers the message exactly like a bare one. Pinned by
+    // `track_create_first_message::a_template_create_delivers_the_first_message`
+    // and `…::a_recipe_create_delivers_the_first_message`.
+    let first_message = request.first_message.take();
+    if let Some(text) = first_message.as_deref() {
+        validate_first_message(text)?;
+    }
     let (mut p, fork_report_from, recipe_id, cwd_omitted) = request.into_parts();
 
     // #1292 — two starting points is not a preference to resolve, it is a
@@ -820,6 +875,7 @@ pub(crate) async fn create_track(
         s,
         actor,
         p,
+        first_message,
         CreateTrackOptions {
             folder_claim,
             body_area_id,
@@ -1341,11 +1397,25 @@ async fn create_track_with_planner_harness(
     s: RouteState,
     actor: Actor,
     p: NewTrack,
+    // #1299 S1 — travels to `start_planner_harness` and nowhere else. The
+    // create transaction never sees it: the message is delivered by the
+    // `planner-harness-start` operation submitted after that transaction
+    // commits, which is why an in-transaction refusal (an unknown `recipe_id`,
+    // say) rolls the whole create back and leaves no operation carrying it.
+    first_message: Option<String>,
     options: CreateTrackOptions,
 ) -> Result<Response> {
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
-    start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
+    start_planner_harness(
+        &s,
+        &actor,
+        &track,
+        planner_card_id,
+        report_card_id,
+        first_message,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
@@ -1733,7 +1803,13 @@ async fn start_planner_harness(
     track: &Track,
     planner_card_id: String,
     report_card_id: String,
+    first_message: Option<String>,
 ) -> Result<()> {
+    // #1299 S1 — captured before `first_message` moves into the payload. This
+    // is the entire switch between the two failure semantics below, and it is
+    // read exactly once, after the match, so all four failure branches share
+    // one decision rather than four copies of it.
+    let carries_first_message = first_message.is_some();
     // #1211 S1: no goal is seeded on this user-driven create path. An omitted
     // title is stored as the empty string (`Untitled track` is only what the
     // frontend shows for a blank one) and the planner agent names the track once
@@ -1754,12 +1830,25 @@ async fn start_planner_harness(
         profile: Default::default(),
         create_card: None,
         first_message_sha256: None,
+        // #1299 S1 — `None` here is not "no message", it is the pre-#1299 shape
+        // verbatim: `skip_serializing_if` drops the key entirely, so a create
+        // that typed nothing writes byte-identical payload JSON and therefore
+        // the same `payload_hash` an older binary would have written.
+        first_message,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
     }))?;
+    // #1299 S1 — `Some(reason)` iff the harness did not start. Every one of the
+    // four ways that can happen (submit rejected, wait errored, the operation
+    // reached `Failed`, the operation reached `Stuck`) writes it, so the
+    // decision after the match is reached from all four and cannot be true of
+    // only the one that happened to be edited. The `warn!` lines are unchanged
+    // and still fire on every failure regardless of `first_message`: they are
+    // what the create-without-a-message path has always emitted.
+    let mut harness_start_failed: Option<String> = None;
     match s
         .operation_runtime
         .submit(
@@ -1789,6 +1878,8 @@ async fn start_planner_harness(
                         error = %last_error,
                         "planner harness start operation failed; track created but planner agent is inert"
                     );
+                    harness_start_failed =
+                        Some(format!("operation failed in {from_phase:?}: {last_error}"));
                 }
                 OperationOutcome::Stuck { reason, from_phase } => {
                     tracing::warn!(
@@ -1798,21 +1889,60 @@ async fn start_planner_harness(
                         reason,
                         "planner harness start operation stuck; track created but planner agent is inert"
                     );
+                    harness_start_failed =
+                        Some(format!("operation stuck in {from_phase:?}: {reason}"));
                 }
             },
-            Err(e) => tracing::warn!(
+            Err(e) => {
+                tracing::warn!(
+                    planner_card_id,
+                    track_id = %track.id,
+                    error = %e,
+                    "planner harness start wait failed; track created but planner agent may be inert"
+                );
+                harness_start_failed = Some(format!("waiting for the operation failed: {e}"));
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
                 planner_card_id,
                 track_id = %track.id,
                 error = %e,
-                "planner harness start wait failed; track created but planner agent may be inert"
-            ),
-        },
-        Err(e) => tracing::warn!(
-            planner_card_id,
-            track_id = %track.id,
-            error = %e,
-            "planner harness start submission failed; track created but planner agent is inert"
-        ),
+                "planner harness start submission failed; track created but planner agent is inert"
+            );
+            harness_start_failed = Some(format!("submitting the operation failed: {e}"));
+        }
+    }
+
+    // #1299 S1 — a create that carried a `first_message` promised to deliver
+    // it. The message is only ever written by the `planner-harness-start`
+    // operation, so if that operation did not run to success the sentence the
+    // user typed is gone, and a 201 would say it was delivered. Report the
+    // failure instead.
+    //
+    // What this 5xx does NOT say: it does not say nothing happened. The track,
+    // its two cards, its folder claim and (on the managed path) its
+    // materialized workspace are all already committed by the time this
+    // function runs — `create_track_structure` returned before it was called.
+    // "non-201 ⇒ no side effect" is not a property of this handler and this
+    // branch does not make it one; there is deliberately no compensating
+    // delete here. The client's recourse is to look at the track it can see in
+    // the list and retype the message, not to assume the create was undone.
+    // Making the create *retryable* — an idempotency key that survives the id
+    // mint — is #1384, not this slice.
+    //
+    // Without a `first_message` this is unreachable: the pre-#1299 semantics
+    // stay byte-for-byte, `warn!` + 201, i.e. "the track exists and its planner
+    // agent is inert", which is a documented and recoverable state because
+    // nothing the user said was riding on that operation.
+    if let Some(reason) = harness_start_failed
+        && carries_first_message
+    {
+        return Err(CalmError::Internal(format!(
+            "track create: the track was created but its planner harness did not start, so the \
+             first message was not delivered ({reason}). The track exists; send the message from \
+             the track itself."
+        )));
     }
 
     Ok(())
@@ -2641,6 +2771,7 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         profile: Default::default(),
         create_card: None,
         first_message_sha256: None,
+        first_message: None,
     };
     let hash = match stable_payload_hash(
         &serde_json::json!({"actor": actor.as_str(), "request": &request}),

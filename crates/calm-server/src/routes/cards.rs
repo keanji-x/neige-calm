@@ -1513,6 +1513,7 @@ async fn reset_planner_harness_card(
         profile,
         create_card: None,
         first_message_sha256: None,
+        first_message: None,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_planner_card_operation(&s, "planner-harness-start", start_payload).await?;

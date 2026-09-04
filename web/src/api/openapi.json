@@ -3168,7 +3168,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created",
+            "description": "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3177,8 +3177,18 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — an empty or over-long message. Decided before anything is minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
-            "description": "Internal error",
+            "description": "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness failed to start, the track, its cards and its workspace are already committed but the message was not delivered. Nothing is rolled back and the create is not retryable — read the track back from `GET /api/tracks` and send the message from the track itself. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5218,6 +5228,13 @@
               "null"
             ],
             "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the track row and skip `area_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
+          },
+          "first_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #1299 S1 — the sentence the user typed on the synthesiser page,\ndelivered to the planner agent **with** this create instead of having to\nbe retyped after landing on the track.\n\nIt becomes an `Observation::UserMessage` seeded into the harness\nsnapshot inside the `planner-harness-start` transaction — not a\n`TrackGoal`, which is a different semantic slot (see\n`PlannerHarnessStartOperationPayload::first_message`). Validated exactly\nlike `POST /api/cards/{id}/planner/input` (non-blank after trim, at most\n32768 **characters**) and validated before anything is minted.\n\nOmitting it leaves this endpoint's behaviour byte-for-byte unchanged,\ndown to the operation payload, whose `first_message` key is\n`skip_serializing_if`-omitted.\n\nSupplying it also changes what a harness-start failure means. Without\nit, a create whose `planner-harness-start` operation fails still returns\n201 — \"the track exists, its planner agent is inert\" is a documented,\nrecoverable state. With it, that same failure is a 500, because the\nsentence the user typed was only ever going to be written by that\noperation. The 500 does **not** undo the create: the track and its cards\nare already committed and nothing compensates for them (see the 500\ndescription on `create_track`).\n\nThis slice delivers the message; it does not make the create\n**retryable**. A client that retries a create carrying a\n`first_message` gets a second track, exactly as a client retrying any\nother create always has."
           },
           "fork_report_from": {
             "type": [

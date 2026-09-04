@@ -189,6 +189,55 @@
 #   list must be regenerated against the FINAL diff — a list produced before a
 #   later commit or a merge is expired evidence, not an audit trail.
 #
+# REQUIRED-FIELD INITIALISERS ON TYPES THIS SLICE DOES NOT OWN
+#   The `spec` note above splits the world in two: prose can be reworded, a
+#   persisted literal cannot. There is a THIRD case, and the `runtime_id` cell
+#   below is where it turns up.
+#
+#   When a slice adds one construction site for a type that already exists, the
+#   field NAMES in that initialiser belong to the type definition, which lives
+#   somewhere else. The caller does not get to choose them:
+#   `crates/calm-types/src/event.rs` declares
+#   `Event::HarnessUserMessageEnqueued { runtime_id: String, .. }`, so an
+#   initialiser that spells it any other way is not worded differently, it does
+#   not compile. Spelling it differently for real means editing the type
+#   definition plus every existing construction and every read of it — the work
+#   of the matching rename slice, not of a slice whose only involvement is
+#   being one more caller.
+#
+#   So this is the SECOND class that admits a baseline RAISE with a stated
+#   reason, and like the first it is narrow on purpose:
+#     * every added occurrence is a STRUCT- OR VARIANT-FIELD INITIALISER inside
+#       a construction expression, and it is either
+#         (i) the FIELD NAME, where that name is declared by a type-definition
+#             line this slice's diff does NOT add — note this is per FIELD, not
+#             per type: a slice may add other fields to the same type and still
+#             count a retiring-name field it did not introduce under this
+#             clause; or
+#         (ii) a SAME-NAMED LOCAL BINDING handed to that field — and ONLY when
+#             the binding itself is not introduced by this slice (its `let` is
+#             not in this slice's diff). This branch is the narrow one and the
+#             restriction is the whole point: `let runtime_id = new_id();
+#             Foo { runtime_id }` inside one slice is TWO fresh retiring-name
+#             identifiers, which is exactly what this ratchet exists to stop.
+#             A slice that needs a new local there names it something else and
+#             spells the field explicitly (`Foo { runtime_id: fresh }`), paying
+#             the one unavoidable occurrence instead of two;
+#     * NOT ONE added line is prose, and not one is an identifier this slice
+#       itself coined. A new comment mentioning a retiring concept, or a fresh
+#       `runtime_id`-shaped name minted here, is precisely what this ratchet
+#       exists to stop, and it does not become admissible by riding along in
+#       the same commit;
+#     * the field is REQUIRED by the type. If the type derives `Default` and
+#       leaving the field out changes no behaviour, then leave it out — that is
+#       not this case. `#[serde(default)]` alone does NOT make a field
+#       omissible: it governs deserialization, while a Rust struct literal must
+#       still name every field of a type that has no `Default`.
+#     * the raise commit message lists the constituent lines one by one
+#       (path:line + content) so a reviewer can check all three points above
+#       without re-deriving the delta.
+#   A raise that cannot produce that list is not this case; it is drift.
+#
 # `runtime_id` — the RETIRED-ID sense ONLY (#1316 B class, narrowed at S0)
 #   `runtime` matches 7307 lines in scope; only 1496 are this. The umbrella
 #   issue originally said "Runtime 退役", which was too wide for its carrier and
