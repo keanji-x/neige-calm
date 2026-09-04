@@ -21,9 +21,9 @@ use crate::session_projection_repo::{
     WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError,
 };
 use crate::session_projection_row::{
-    WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT, card_runtime_from_ws_join_row,
-    projectable_runtimes_for_cards_from_rows, projectable_runtimes_for_cards_query,
-    run_status_from_db,
+    ACTIVE_RUNTIME_ID_FOR_CARD_SQL, WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT,
+    card_runtime_from_ws_join_row, projectable_runtimes_for_cards_from_rows,
+    projectable_runtimes_for_cards_query, run_status_from_db,
 };
 use calm_types::worker::WorkerSessionState;
 
@@ -60,11 +60,14 @@ pub(super) async fn runtime_get_active_for_card_from_pool(
     pool: &SqlitePool,
     card_id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    // The active-runtime choice itself is not restated here: it is
+    // `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`, the same statement the
+    // `harness.user_message.enqueued` predicate embeds, so the runtime this read
+    // reports and the runtime that predicate scopes its evidence to cannot drift
+    // apart (#1314).
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
-           WHERE c.id = ?1
-             AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
-           ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
+           WHERE ws.id = ({ACTIVE_RUNTIME_ID_FOR_CARD_SQL})
            LIMIT 1"#,
     );
     let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;

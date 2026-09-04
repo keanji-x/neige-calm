@@ -375,6 +375,38 @@ impl Boot {
         .unwrap()
     }
 
+    /// The **production** predicate statement, run against this server's
+    /// database.
+    ///
+    /// `user_message_enqueued_on_active_runtime` is `pub(crate)` and takes a
+    /// `WorkerState`, so an integration test cannot call it; what it can do is
+    /// execute the exact SQL that function executes, which
+    /// `user_message_enqueued_on_active_runtime_sql` exists to hand out. Copying
+    /// the statement into this file instead would test the copy.
+    async fn enqueued_on_active_runtime(&self, track_id: &str, card_id: &str) -> bool {
+        sqlx::query_scalar::<_, i64>(
+            &calm_server::routes::conversations_shared::user_message_enqueued_on_active_runtime_sql(
+            ),
+        )
+        .bind(card_id)
+        .bind(track_id)
+        .fetch_optional(self.repo.pool())
+        .await
+        .unwrap()
+        .is_some()
+    }
+
+    /// This card's ACTIVE runtime id, through the production read rather than a
+    /// hand-written state filter.
+    async fn active_runtime_id(&self, card_id: &str) -> Option<String> {
+        use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
+        self.repo
+            .session_projection_active_for_card(&card_id.to_string())
+            .await
+            .unwrap()
+            .map(|runtime| runtime.id)
+    }
+
     async fn last_event_id(&self) -> i64 {
         sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
             .fetch_one(self.repo.pool())
@@ -1763,6 +1795,129 @@ async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger
             .await,
         1,
         "healing the conversation must not mint a second one"
+    );
+}
+
+/// #1314 — evidence stamped with a runtime that has since been **replaced** is
+/// not evidence, and the predicate that says so is one statement.
+///
+/// **What this case is a regression for.** The predicate used to be two
+/// autocommit reads: pick the card's ACTIVE runtime, then look for that
+/// runtime's `harness.user_message.enqueued` row. `/planner/reset` takes the
+/// *recovery* lock, not the first-message claim this caller holds, so it can
+/// supersede R1 and start R2 between those two reads. Read 1 then reports R1,
+/// read 2 finds R1's own row and answers `true`, so the bootstrap is skipped —
+/// and the summary that follows unconditionally writes R2's own enqueued row, so
+/// every later trigger reads `true` legitimately and skips it again. The standing
+/// instruction never arrives at all.
+///
+/// **The interleaving itself is not constructed here, and that is not a
+/// shortcut.** Constructing it needs a suspension point *between* the two reads;
+/// the fix is that there is no longer anything between them, because there is one
+/// statement, and a single SQLite statement reads one snapshot. There is no hook
+/// a fixture could park on, so a "race" case here would either hammer two
+/// endpoints and hope — green whichever way the scheduler ran — or park on a
+/// rendezvous that production no longer contains. What is asserted instead is the
+/// property the race violated, at the two levels that can be observed:
+///
+/// 1. the production statement, run verbatim, answers `false` when the surviving
+///    evidence names a runtime that is no longer the active one (and `true`
+///    before the replacement, or a constant-`false` statement would pass);
+/// 2. end to end, the trigger after the replacement delivers the bootstrap
+///    again — the "eventually delivered, never permanently skipped" half.
+///
+/// The replacement is staged through `/planner/reset`, the endpoint whose lock
+/// ordering made the race reachable, rather than by editing `worker_sessions`.
+#[tokio::test]
+async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
+    let b = boot().await;
+    let track_id = b.user_track("replaced").await;
+    b.edit_report(&track_id, "something happened").await;
+
+    let (status, first) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    let card_id = first["card_id"].as_str().unwrap().to_string();
+    // The track the predicate is scoped by is the launchpad's, the same one the
+    // handler passes it — not the user track the activity came from.
+    let launchpad = first["track_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        b.enqueued_char_counts(&card_id).await.len(),
+        2,
+        "premise: the mint wrote the bootstrap's and the summary's evidence rows"
+    );
+    let r1 = b
+        .active_runtime_id(&card_id)
+        .await
+        .expect("premise: the mint leaves an active runtime behind");
+    assert!(
+        b.enqueued_on_active_runtime(&launchpad, &card_id).await,
+        "premise: while R1 is still active its own rows ARE evidence — without \
+         this direction a statement that never matches anything would pass the \
+         assertion below"
+    );
+
+    // The replacement, through the racing endpoint itself.
+    let (status, reset) = b
+        .request(
+            "POST",
+            &format!("/api/cards/{card_id}/planner/reset"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "reset={reset}");
+    let r2 = b
+        .active_runtime_id(&card_id)
+        .await
+        .expect("premise: the reset leaves a new active runtime");
+    assert_ne!(
+        r1, r2,
+        "premise: the reset really replaced the runtime — if it did not, the \
+         predicate below would be answering about R1 and prove nothing"
+    );
+    assert_eq!(
+        b.enqueued_char_counts(&card_id).await.len(),
+        2,
+        "premise: `events` is append-only, so R1's rows survive the reset — they \
+         are exactly what the two-read predicate was fooled by"
+    );
+    assert_eq!(
+        b.scalar(&format!(
+            "SELECT COUNT(*) FROM events \
+               WHERE kind = 'harness.user_message.enqueued' \
+                 AND scope_card = '{card_id}' \
+                 AND json_extract(payload, '$.runtime_id') = '{r2}'"
+        ))
+        .await,
+        0,
+        "premise: every surviving row names the REPLACED runtime; the new one \
+         has not been spoken to yet"
+    );
+
+    assert!(
+        !b.enqueued_on_active_runtime(&launchpad, &card_id).await,
+        "the whole point: rows bound to a runtime that is no longer active are \
+         not evidence, so the next trigger must re-send rather than skip"
+    );
+
+    // …and the end-to-end half: the bootstrap really is delivered again.
+    let (status, second) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={second}");
+    // `await_reached_appserver` is deliberately NOT used here: R1's bootstrap is
+    // already in this server's turn texts, so it would return the instant it
+    // looked and would say nothing about the message this trigger sent. What
+    // discriminates is the split below — measured [2, 2] over 4 messages: the
+    // mint's bootstrap and summary, both folded into R1's turns, plus a bootstrap
+    // AND a summary sitting on R2's queue. A predicate still fooled by R1's rows
+    // sends the summary alone and reads [1, 2] over 3.
+    assert_eq!(
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 4)
+            .await,
+        vec![2, 2],
+        "the trigger after the replacement must deliver BOTH the bootstrap and \
+         the summary onto the new runtime — `delivered`'s queued half reads the \
+         card's NEWEST session, so those two are R2's, not R1's leftovers (R1 \
+         drained into its turns before the reset)"
     );
 }
 

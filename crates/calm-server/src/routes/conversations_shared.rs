@@ -6,6 +6,8 @@
 
 use sha2::{Digest, Sha256};
 
+use calm_truth::session_projection_row::ACTIVE_RUNTIME_ID_FOR_CARD_SQL;
+
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
 use crate::routes::cards::MAX_PLANNER_INPUT_CHARS;
@@ -125,12 +127,19 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// the strength of it strands the message forever (#1314; the measured shape is
 /// in the ACTIVE paragraph below).
 ///
-/// **What "ACTIVE" means is not restated here.** The row is picked by
-/// `Repo::session_projection_active_for_card`, which owns the state filter
-/// (`starting | running | idle | turn_pending`) and the newest-first ordering.
-/// That is the pool-side twin of `session_projection_active_for_card_tx` — the
-/// read `session_supersede_and_start_tx` and every dormancy check go through —
-/// and the two are pinned equal for every runtime kind by
+/// **One statement, not two.** "Which runtime is active" and "does that runtime
+/// have evidence" are decided by a single SELECT over a single snapshot, because
+/// as two reads they race: see the body comment for the interleaving that
+/// strands the instruction permanently.
+///
+/// **What "ACTIVE" means is not restated here.** The runtime is picked by
+/// `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`, embedded as a subquery — the same statement
+/// `Repo::session_projection_active_for_card` is built from, which owns the state
+/// filter (`starting | running | idle | turn_pending`) and the newest-first
+/// ordering. That is the pool-side twin of
+/// `session_projection_active_for_card_tx` — the read
+/// `session_supersede_and_start_tx` and every dormancy check go through — and the
+/// two are pinned equal for every runtime kind by
 /// `runtime_get_active_for_card_from_pool_matches_runtimes_backed_for_all_kinds`
 /// (`calm-truth/src/db/sqlite/runtime_read_flip_parity_tests.rs`). So "this
 /// predicate's notion of active" and "the runtime a send would actually reach"
@@ -168,8 +177,10 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// *inherits* the old runtime's still-undelivered queue (`/planner/reset`, a
 /// manual harness start against a live session) moves the message forward while
 /// leaving its row pointing at the superseded runtime, so this answers `false`
-/// and the caller re-sends a message that was still reachable. The cost is one
-/// duplicated standing instruction on a path a human explicitly asked for; the
+/// and the caller re-sends a message that was still reachable. The cost is a
+/// duplicated standing instruction on a path a human explicitly asked for — one
+/// per such replacement, and nothing here caps how many times that can be
+/// repeated before the inherited queue drains; the
 /// alternative — the dormant restart *not* inheriting, which is the common case
 /// — silently loses the message instead. A "still queued" conjunct would not fix
 /// it either: see the synchronous-visibility paragraph above.
@@ -213,42 +224,68 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
         .repo
         .sqlite_pool()
         .ok_or_else(|| CalmError::Internal("conversations require a sqlite-backed repo".into()))?;
-    // Two AUTOCOMMIT statements, deliberately NOT one explicit transaction.
-    // #930/#1016: a deferred `pool.begin()` holds every table lock it has taken
-    // (R locks included) until commit, so a multi-table read like this one —
-    // `worker_sessions`+`cards`, then `events` — is exactly the lock-holding
-    // waiter that closes a deadlock cycle against a concurrent IMMEDIATE
-    // writer. `deferred_write_tx_invariant` fails closed on it, the allowlist is
-    // empty on purpose, and autocommit is the route that needs no proof.
+    // ONE AUTOCOMMIT statement, and it has to be one.
     //
-    // What that costs is atomicity between the two reads: the runtime can be
-    // superseded in between, and the answer is then about a runtime that is no
-    // longer active. Both outcomes are already inside this predicate's stated
-    // contract — one extra bootstrap onto the new runtime, or one skipped that
-    // the *next* trigger sends — and neither is worth a deadlock class. The
-    // caller serializes itself with a per-card lock, so the interleaving needs a
-    // different endpoint restarting the harness mid-read.
-    let Some(runtime) = w
-        .repo
-        .session_projection_active_for_card(&card_id.to_string())
-        .await?
-    else {
-        return Ok(false);
-    };
-    let found: Option<i64> = sqlx::query_scalar(
+    // Two statements — pick the active runtime, then look for its evidence —
+    // leave a window that a *different* endpoint walks through: `/planner/reset`
+    // takes the recovery lock, not this caller's per-card lock, so it can
+    // supersede R1 and start R2 between the two reads. The first read then
+    // reports R1, the second finds R1's own (now unreachable) evidence row and
+    // answers `true`, the bootstrap is skipped, and the unconditional summary
+    // that follows writes R2's *own* enqueued row — so the next trigger skips it
+    // again. The standing instruction never arrives, which is the exact failure
+    // class this predicate exists to close.
+    //
+    // Nor is an explicit transaction the fix. #930/#1016: a deferred
+    // `pool.begin()` holds every table lock it has taken (R locks included)
+    // until commit, so a multi-table read like this one is the lock-holding
+    // waiter that closes a deadlock cycle against a concurrent IMMEDIATE writer;
+    // `deferred_write_tx_invariant` fails closed on it and the allowlist is empty
+    // on purpose. That rule is about *multi-statement* read transactions. A
+    // single statement is atomic in SQLite by construction — it reads one
+    // snapshot — so it needs neither the transaction nor an exemption.
+    //
+    // The runtime choice is not restated here: `ACTIVE_RUNTIME_ID_FOR_CARD_SQL`
+    // is the same statement `Repo::session_projection_active_for_card` is built
+    // from (`calm-truth/src/session_projection_row.rs`), embedded as a subquery.
+    // It owns the state list (`starting | running | idle | turn_pending`) and the
+    // newest-first tie-break, and it is the pool-side twin pinned equal to
+    // `session_projection_active_for_card_tx` — the read
+    // `session_supersede_and_start_tx` and every dormancy check go through — by
+    // `runtime_get_active_for_card_from_pool_matches_runtimes_backed_for_all_kinds`
+    // (`calm-truth/src/db/sqlite/runtime_read_flip_parity_tests.rs`). So "this
+    // predicate's notion of active" and "the runtime a send would actually
+    // reach" cannot drift apart.
+    //
+    // No active runtime ⇒ the subquery yields no row ⇒ the comparison is NULL ⇒
+    // nothing matches ⇒ `false`, the re-send direction, as documented above.
+    let found: Option<i64> = sqlx::query_scalar(&user_message_enqueued_on_active_runtime_sql())
+        .bind(card_id)
+        .bind(track_id)
+        .fetch_optional(&pool)
+        .await?;
+    Ok(found.is_some())
+}
+
+/// The statement [`user_message_enqueued_on_active_runtime`] runs: `?1` is the
+/// card id (bound twice — the outer scope filter and the embedded active-runtime
+/// subquery share it), `?2` the track id. A row means "already enqueued onto the
+/// runtime that is active *at this statement's snapshot*"; no row means `false`.
+///
+/// It is a function rather than an inline literal so that a test can execute the
+/// **production** text against a real database instead of restating it. A test
+/// that re-typed this SQL would pass on its own copy and prove nothing about
+/// this one.
+pub fn user_message_enqueued_on_active_runtime_sql() -> String {
+    format!(
         r#"SELECT 1
-             FROM events
-            WHERE kind = 'harness.user_message.enqueued'
-              AND scope_track = ?1
-              AND scope_card = ?2
-              AND (CASE WHEN json_valid(payload)
-                        THEN json_extract(payload, '$.runtime_id') END) = ?3
+             FROM events e
+            WHERE e.kind = 'harness.user_message.enqueued'
+              AND e.scope_card = ?1
+              AND e.scope_track = ?2
+              AND (CASE WHEN json_valid(e.payload)
+                        THEN json_extract(e.payload, '$.runtime_id') END)
+                  = ({ACTIVE_RUNTIME_ID_FOR_CARD_SQL})
             LIMIT 1"#,
     )
-    .bind(track_id)
-    .bind(card_id)
-    .bind(&runtime.id)
-    .fetch_optional(&pool)
-    .await?;
-    Ok(found.is_some())
 }

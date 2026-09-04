@@ -194,12 +194,20 @@ fn synthetic_actor() -> Actor {
 /// hazard below is "the agent's first turn happens with no material" — and it is
 /// *per session*, because a new runtime is a new codex thread that holds none of
 /// the old one's context. A runtime replacement is precisely the moment the
-/// standing instruction has to be said again. The bounded cost is the mirror
-/// case: a replacement that *inherited* the old queue re-sends an instruction
-/// that was still reachable, so the agent may see "stand by and do nothing yet"
-/// twice. That text is idempotent by construction — obeying it twice is obeying
-/// it once — which is why the duplicate is the acceptable side to err on and the
-/// silent loss is not.
+/// standing instruction has to be said again. The cost is the mirror case: a
+/// replacement that *inherited* the old queue re-sends an instruction that was
+/// still reachable, so the agent can see "stand by and do nothing yet" more than
+/// once.
+///
+/// **How many copies, stated as what is actually true.** Not "at most two":
+/// nothing here caps the count. Each `reset → trigger` pair run before the
+/// inherited queue has drained carries the previous copies forward and appends
+/// one more, so repeating that pair repeats the copy, and every copy is a
+/// `UserMessage` that can hard-fire a turn of its own. What makes this the
+/// acceptable side to err on is not a bound on the number but the content: the
+/// text tells the agent to stand by and touch nothing, so obeying it an
+/// additional time is obeying it once — the wasted turns are empty. The
+/// alternative, the silent loss, is not recoverable at all.
 ///
 /// **What the bootstrap is for.** `UserMessage` is hard-fire, so if it reaches
 /// an issuable drain before the summary does, the agent takes a turn holding
