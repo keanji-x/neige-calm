@@ -2129,7 +2129,8 @@
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
   source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:791-827
-  authoritative_test: fe/core/domain/area.test.ts:78-84; fe/web/src/app/providers/queries.contract.test.ts:233-278,302-339
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:179-210;
+    fe/web/src/app/providers/queries.contract.test.ts:233-278,302-339
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
