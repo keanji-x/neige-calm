@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Surface-routing fixtures for classify-code-changes.sh plus the workflow
-# wiring that consumes its outputs.
+# Surface-routing fixtures for classify-code-changes.sh plus the CI wiring that
+# consumes its outputs.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -155,10 +155,10 @@ for mode in fe web openapi fe-e2e stack mutation; do
   fi
 done
 
-workflow=.github/workflows/ci.yml
-require_workflow_contract() {
+ci_file=.github/workflows/ci.yml
+require_ci_contract() {
   local needle="$1" label="$2"
-  if ! grep -Fq -- "$needle" "$workflow"; then
+  if ! grep -Fq -- "$needle" "$ci_file"; then
     echo "CI surface routing contract missing $label: $needle" >&2
     exit 1
   fi
@@ -166,16 +166,16 @@ require_workflow_contract() {
 
 for mode in fe web openapi fe-e2e stack mutation; do
   output_name="${mode//-/_}_changed"
-  require_workflow_contract \
+  require_ci_contract \
     "$output_name: \${{ steps.classify.outputs.$output_name }}" \
     "$mode changes output"
-  require_workflow_contract \
+  require_ci_contract \
     "needs.changes.outputs.$output_name == 'true'" \
     "$mode job routing"
 done
-require_workflow_contract "RUN_RUST_CHECKS:" "step-scoped Rust lint switch"
-require_workflow_contract "name: Select no mutation evidence for unrelated changes" \
+require_ci_contract "RUN_RUST_CHECKS:" "step-scoped Rust lint switch"
+require_ci_contract "name: Select no mutation evidence for unrelated changes" \
   "mutation no-op plan"
-require_workflow_contract 'steps.noop.outputs.selected' "mutation no-op outputs"
+require_ci_contract 'steps.noop.outputs.selected' "mutation no-op outputs"
 
 echo "classify-code-changes: fixtures passed"

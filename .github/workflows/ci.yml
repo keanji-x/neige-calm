@@ -895,7 +895,7 @@ jobs:
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
       MUTATION_TEST_SCOPE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'witness' }}
-      RUN_MUTATION_PLAN: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.mutation_changed == 'true' }}
+      RUN_MUTATION_PLAN: ${{ needs.changes.result != 'success' || needs.changes.outputs.mutation_changed == 'true' }}
     defaults:
       run:
         working-directory: fe
