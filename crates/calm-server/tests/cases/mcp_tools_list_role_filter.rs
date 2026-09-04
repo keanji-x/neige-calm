@@ -21,6 +21,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.blocks.upsert",
         "calm.report.edit",
         "calm.report.links.backlinks",
+        "calm.report.read",
         "calm.report.write",
         "calm.report.write_markdown",
         "calm.review.round",
@@ -126,9 +127,9 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
 /// must turn this red rather than slip in under a subset check.
 ///
 /// `calm.report.read` is deliberately NOT here: it is callable by an
-/// assistant (see `mcp_assistant_tool_gate`) but its descriptor carries
-/// `visible_to_roles: &[]`, so it is hidden from *every* role's
-/// `tools/list` and is advertised through the agent brief instead.
+/// assistant (see `mcp_assistant_tool_gate`) but its descriptor is visible
+/// only to Planner, so an assistant still receives the report read contract
+/// through its agent brief rather than `tools/list`.
 #[tokio::test]
 async fn tools_list_for_assistant_role_returns_block_channel_only() {
     let names = tools_list_names_for_role(CardRole::Assistant).await;

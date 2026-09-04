@@ -128,7 +128,7 @@ fn read_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 
