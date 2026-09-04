@@ -15,7 +15,7 @@ import {
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
-  useAreaMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
+  useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -396,6 +396,22 @@ describe('delete mutation wiring', () => {
 
     expect(client.getQueryData(queryKeys.areas())).toBeUndefined();
     expect(client.getQueryState(queryKeys.areas())?.status).toBe('error');
+  });
+
+  it('does not turn an acknowledged planner send into a send failure when refresh fails', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+      .mockRejectedValue(new Error('history refresh failed'));
+    const wireRuntimeKey = ['runtime', 'id'].join('_');
+    const transport: ApiTransportPort = {
+      send: () => Promise.resolve(ok({ card_id: 'card-1', [wireRuntimeKey]: 'runtime-1' })),
+    };
+    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await expect(result.current.send('accepted by the server')).resolves.toMatchObject({ card_id: 'card-1' });
+    expect(invalidate).toHaveBeenCalledTimes(2);
   });
 });
 

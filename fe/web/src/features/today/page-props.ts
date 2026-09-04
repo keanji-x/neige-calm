@@ -13,7 +13,7 @@
 // ledger says are rendered, so one of the two directions must be an import of
 // this file. A type-only cycle would not do: `.dependency-cruiser.cjs` runs
 // with `tsPreCompilationDeps: true`, and `no-circular` fires on type-only
-// edges (measured). `public.tsx` re-exports all three types, so nothing outside
+// edges (measured). `public.tsx` re-exports the public types, so nothing outside
 // this directory changes.
 
 import type { ReactNode } from 'react';
@@ -50,6 +50,9 @@ export type TrackRowRenderer = (
   track: Track,
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; areaName?: string }>,
 ) => ReactNode;
+
+/** Which step of the summary trigger is currently in flight. */
+export type TodaySummaryPhase = 'preparing' | 'writing';
 
 export type TodayPageProps = Readonly<{
   tracks: readonly Track[];
@@ -103,6 +106,11 @@ export type TodayPageProps = Readonly<{
   /** The trigger is in flight: the control says so and does not fire again. */
   summaryPending?: boolean;
   /**
+   * Which step is in flight. Preparing materialises a missing launchpad and
+   * may wait on its harness; writing submits the summary request itself.
+   */
+  summaryPhase?: TodaySummaryPhase;
+  /**
    * What the last trigger said, when it did not simply work — already worded
    * and rendered by the composition layer, the same way `launchpadError` is.
    *
@@ -120,15 +128,13 @@ export type TodayPageProps = Readonly<{
    *
    * A slot rather than props for the same reason `renderTrackRow` is a callback:
    * `features/**` may not import a sibling domain, and the conversation list is
-   * `features/chat`. The same slot appears on all three routes — that identical
-   * second module is the point of the skeleton.
+   * `features/chat`. The same slot appears on the Today and Track routes — that
+   * identical second module is the point of the skeleton.
    *
-   * It reads as a duplicate of the track pages and is not one: on Today this is
-   * the **cross-track index** (#1189 S5). It is the only place a track's
-   * conversations stay reachable after you navigate away from that track, and
-   * G6 opens one from here — the row navigates to the track *and* opens its
-   * assistant drawer. `app/router/track-conversation.test.tsx` owns that
-   * contract; dropping the module turns 18 of its assertions red.
+   * On Today it is the launchpad Track's own server-backed list (#1341), not the
+   * old tab-wide registry index. Rows open in place because the launchpad is the
+   * Track this page represents. `app/router/today-conversation.test.tsx` owns
+   * that contract.
    */
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
@@ -225,6 +231,10 @@ export const TODAY_VIEWPORT_LEDGER = Object.freeze({
   summaryPending: Object.freeze({
     render: false,
     why: 'Only ever read to put the write-progress trigger in its busy state, and that trigger is not drawn.',
+  } as const),
+  summaryPhase: Object.freeze({
+    render: false,
+    why: 'Only labels the desktop write-progress trigger while it is busy; that trigger is not drawn on a phone.',
   } as const),
   summaryNotice: Object.freeze({
     render: false,

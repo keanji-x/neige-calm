@@ -178,6 +178,13 @@ export type ConversationTurn = Readonly<{
   atMs: number;
 }>;
 
+/** A user turn accepted optimistically, carrying the newest persisted item the
+ * sender had observed before that request. The provenance survives route
+ * remounts through the conversation registry. */
+export type OptimisticConversationTurn = ConversationTurn & Readonly<{
+  serverHighWaterBefore: number;
+}>;
+
 /** A kernel observation delivered through Codex's user-message transport.
  * It is transcript content, but nobody in the conversation authored it. */
 export type ConversationSystemEntry = Readonly<{
@@ -1004,6 +1011,41 @@ export function reconcileUserEchoes(
       !matchedUserIndexes.has(index) && userTextMatchesEcho(text, echo.text));
     if (match < 0) return true;
     matchedUserIndexes.add(match);
+    return false;
+  });
+}
+
+export function isOptimisticConversationTurn(
+  entry: TranscriptEntry,
+): entry is OptimisticConversationTurn {
+  if (entry.author !== 'you' || !('serverHighWaterBefore' in entry)) return false;
+  const before = entry.serverHighWaterBefore;
+  return typeof before === 'number' && Number.isFinite(before);
+}
+
+/** Highest persisted item id observed before an optimistic send. */
+export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]): number {
+  return items.reduce((highest, item) => Math.max(highest, item.id), 0);
+}
+
+/**
+ * Reconcile each optimistic echo only against server rows that did not exist
+ * before that send. Echoes may come from older route instances, so matching is
+ * one-to-one across the whole remembered set rather than local to one caller.
+ */
+export function reconcileOptimisticConversationTurns(
+  serverTurns: readonly ConversationMessage[],
+  echoes: readonly OptimisticConversationTurn[],
+): readonly OptimisticConversationTurn[] {
+  const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
+  return echoes.filter((echo) => {
+    const match = available.findIndex((turn) => {
+      const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
+      return sequence > echo.serverHighWaterBefore
+        && reconcileUserEchoes([turn], [echo]).length === 0;
+    });
+    if (match < 0) return true;
+    available.splice(match, 1);
     return false;
   });
 }

@@ -1,5 +1,5 @@
 import {
-  createContext, useCallback, useContext, useMemo, type ReactNode,
+  createContext, useCallback, useContext, useMemo, useRef, type ReactNode,
 } from 'react';
 
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
@@ -159,6 +159,12 @@ export type ConversationRegistry = Readonly<{
   discardUnsentDraft: (scopeId: string) => void;
   adoptedDraftIdOf: (scopeId: string) => string | null;
   finishDraftAdoption: (scopeId: string, conversationId: string) => void;
+  /** One in-flight send per conversation across route/store remounts. */
+  pendingSendIds: ReadonlySet<string>;
+  /** Send failures keyed by the conversation that owns them. */
+  sendErrors: Readonly<Record<string, string>>;
+  tryBeginSend: (conversationId: string) => boolean;
+  finishSend: (conversationId: string, error: string | null) => void;
   /* There is deliberately no "open the planner conversation of track W" slot here
      (#1211 S2). It was one, and a global slot cannot own that intent: the track
      the reader is leaving is still mounted when a create states it, and every
@@ -193,6 +199,33 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null
   >(null);
+  const pendingSendIdsRef = useRef<ReadonlySet<string>>(new Set());
+  const [pendingSendIds, setPendingSendIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [sendErrors, setSendErrors] = useState<Readonly<Record<string, string>>>({});
+  const tryBeginSend = useCallback((conversationId: string) => {
+    if (pendingSendIdsRef.current.has(conversationId)) return false;
+    const next = new Set(pendingSendIdsRef.current);
+    next.add(conversationId);
+    pendingSendIdsRef.current = next;
+    setPendingSendIds(next);
+    setSendErrors((current) => {
+      if (!(conversationId in current)) return current;
+      const withoutPrevious = { ...current };
+      delete withoutPrevious[conversationId];
+      return withoutPrevious;
+    });
+    return true;
+  }, []);
+  const finishSend = useCallback((conversationId: string, error: string | null) => {
+    if (!pendingSendIdsRef.current.has(conversationId)) return;
+    const next = new Set(pendingSendIdsRef.current);
+    next.delete(conversationId);
+    pendingSendIdsRef.current = next;
+    setPendingSendIds(next);
+    if (error !== null) {
+      setSendErrors((current) => ({ ...current, [conversationId]: error }));
+    }
+  }, []);
   const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
@@ -254,10 +287,13 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
+      pendingSendIds, sendErrors, tryBeginSend, finishSend,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, remember, requestOpen,
-      requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf, updateExisting],
+      discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, finishSend, pendingSendIds,
+      remember, requestOpen, sendErrors,
+      requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,
+      updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

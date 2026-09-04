@@ -1,15 +1,21 @@
 // @vitest-environment jsdom
 //
-// Starting a conversation on a track, and finding one again from Today
-// (#1189 slice 5), driven through the real router and the real transport port.
+// Starting a conversation on a track (#1189 slice 5), driven through the real
+// router and the real transport port — plus what the session registry is
+// allowed to remember about one, driven through the real store.
 //
 // The track route used to fork on whether the track had a planner card: one branch
 // opened that card and created nothing, the other offered no `+` at all. It is
-// one `'rows'` route now — the list is the server's, it may be empty, and the
-// `+` is always there. Everything here is about what that change made possible
-// and about the two places it could silently not work: the row a track's own
-// list does not contain (the planner card's), and the Today → track open request,
-// which is consumed in one place and thrown away in another.
+// one server-backed rows route now — the list may be empty, and the
+// `+` is always there. Everything here is about what that change made possible,
+// including the row a track's own list does not contain (the planner card's).
+//
+// The other half of slice 5 — "and finding one again from Today" — is gone.
+// #1341 reversed it: Today lists the launchpad track's own conversations, so a
+// track that is not the launchpad reaches Today with nothing, and Today asks no
+// other route to open anything. Each place that half was tested says which
+// assertion stood there and why it was revoked; the new contract is
+// `today-conversation.test.tsx`.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
@@ -23,7 +29,6 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
-import { queryKeys } from '../providers/queries.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -44,6 +49,7 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 const CONVERSATIONS = '/api/tracks/w1/conversations';
 const BARE_CONVERSATIONS = '/api/tracks/w2/conversations';
+const HISTORY_PATH = '/harness/items';
 
 type Row = {
   id: string; trackId: string; title: string | null; kind: string;
@@ -82,6 +88,12 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
+/* The two card-endpoint replies the probes below need, spelled once each: the
+   shapes are schema-checked by the transport, and an off-schema body is refused
+   before any of these tests can observe anything. */
+const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
+
 function created(body: unknown): ApiTransportResponse {
   return { status: 201, statusText: 'Created', body };
 }
@@ -116,7 +128,7 @@ function setup(reply?: Reply) {
       if (request.path === '/api/tracks/w2') return ok({ track: BARE_TRACK, cards: [], overlays: [] });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
-      if (request.path.includes('/harness/items')) return ok([]);
+      if (request.path.includes(HISTORY_PATH)) return ok([]);
       /* Both card endpoints echo **the card in the path**, which is what the
          kernel does (`cards.rs`'s `/planner/input` answers with the card it just
          accepted input for). A fixture answering with a fixed id is a server
@@ -139,6 +151,16 @@ function setup(reply?: Reply) {
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   return { client, requests, router };
+}
+
+function cachedHistoryKey(client: QueryClient, cardId: string): readonly unknown[] {
+  const key = client.getQueryCache().getAll().find((query) => {
+    const data = query.state.data;
+    return query.queryKey[1] === cardId
+      && typeof data === 'object' && data !== null && 'pages' in data;
+  })?.queryKey;
+  if (key === undefined) throw new Error('history query was not cached');
+  return key;
 }
 
 const creates = (requests: readonly ApiRequest[], path: string) =>
@@ -209,6 +231,115 @@ describe('track conversations', () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await screen.findByRole('button', { name: 'Conversation Assistant' });
+  });
+
+  it('keeps the name derived from confirmed turns after the drawer closes', async () => {
+    let historyAvailable = true;
+    const { client } = setup((request) => request.path.includes(HISTORY_PATH)
+      ? historyAvailable
+        ? ok([harnessMessage(1, 'userMessage', { content: [{ text: 'Named from history' }] })])
+        : new Promise(() => undefined)
+      : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    expect(await screen.findByRole('complementary', { name: 'Named from history' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    const remembered = await screen.findByRole('button', { name: /Conversation Named from history/ });
+
+    historyAvailable = false;
+    client.removeQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) });
+    fireEvent.click(remembered);
+    expect(await screen.findByRole('complementary', { name: 'Named from history' })).toBeTruthy();
+  });
+
+  it('does not reconcile an identical follow-up against an older pending history read', async () => {
+    let historyReads = 0;
+    let holdReopen = false;
+    let releaseOld!: (response: ApiTransportResponse) => void;
+    const oldRead = new Promise<ApiTransportResponse>((resolve) => { releaseOld = resolve; });
+    const first = harnessMessage(1, 'userMessage', { content: [{ text: 'repeat me' }] });
+    const { client, requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) {
+        historyReads += 1;
+        if (historyReads === 1) return oldRead;
+        if (holdReopen) return new Promise(() => undefined);
+        /* The pre-send baseline and the immediate post-send refresh may both
+           still contain only the first, identical message. */
+        return ok([first]);
+      }
+      if (request.path.endsWith('/planner/input')) return inputAccepted();
+      if (request.path.endsWith('/planner/run')) return runIdle();
+      return undefined;
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(screen.getByText('Loading conversation…')).toBeTruthy();
+    expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(false);
+
+    await act(async () => { releaseOld(ok([first])); await oldRead; });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('repeat me');
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
+
+    await waitFor(() => expect(historyReads).toBe(2));
+    const drawer = await screen.findByRole('complementary', { name: 'repeat me' });
+    await waitFor(() => expect(within(drawer).getAllByText('repeat me')).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    holdReopen = true;
+    client.removeQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation repeat me/ }));
+    const reopened = await screen.findByRole('complementary', { name: 'repeat me' });
+    expect(within(reopened).getAllByText('repeat me')).toHaveLength(2);
+  });
+
+  it('keeps history failures out of the send channel and offers a retry', async () => {
+    let reads = 0;
+    const first = harnessMessage(1, 'userMessage', { content: [{ text: 'first message' }] });
+    const { requests } = setup((request) => {
+      if (request.path.includes(HISTORY_PATH)) {
+        reads += 1;
+        return reads === 1
+          ? { status: 503, statusText: 'Service Unavailable', body: { error: 'history unavailable' } }
+          : ok([first]);
+      }
+      return undefined;
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('history unavailable');
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect(reads).toBe(2);
+  });
+
+  it('hands a send failure to the same conversation after its drawer remounts', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const { requests } = setup(async (request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      await held;
+      return { status: 503, statusText: 'Service Unavailable', body: { error: 'send failed after remount' } };
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('keep this failure visible');
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: /Conversation Assistant/ }));
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    await act(async () => { release(); await held; });
+    expect((await screen.findByRole('alert')).textContent).toContain('send failed after remount');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    expect(screen.queryByText('send failed after remount')).toBeNull();
   });
 
   /*
@@ -396,165 +527,39 @@ describe('track conversations', () => {
   });
 
   /*
-   * ── G5 ─────────────────────────────────────────────────────────────────────
+   * ── G5 was "a track's conversations reach Today", and #1341 revoked it ──────
    *
-   * Visited, never opened — and that is the whole test. Opening a row remembers
-   * it through a path that predates this slice; what is under test is the track
-   * route writing the rows it *lists* into the registry, which is the only way
-   * an assistant conversation can reach Today at all. It exists nowhere but in
-   * that list: no other surface fetches it, and the drawer would have to be
-   * opened on this very track for the older path to see it.
+   * `[G5] lists every conversation of a track on Today after merely visiting it`
+   * stood here. It was the #1189 S5 headline: the track route writes the rows it
+   * lists into the session registry, Today lists the registry, so visiting a
+   * track put its conversations on Today with a `, on <track>` suffix.
    *
-   * Both rows are asserted. The planner-derived row alone would stay green under a
-   * remember that only wrote the injected row, which is a strictly smaller fix
-   * that leaves the feature's own conversations invisible.
+   * Owner reversed that (#1341). Today lists the launchpad track's own
+   * conversations from the server, which is the same rule this route follows for
+   * itself, and a track that is not the launchpad reaches Today with nothing.
+   * The inverse — visiting a track leaves Today's list alone — is asserted in
+   * `today-conversation.test.tsx`, where the new contract lives.
+   *
+   * The registry writes themselves are NOT revoked and are still under test: the
+   * `registry write-through` block at the bottom of this file drives the real
+   * store against the real registry and asserts what enters it, which is where
+   * the four tests that used to read the answer off Today now read it.
    */
-  it('[G5] lists every conversation of a track on Today after merely visiting it', async () => {
-    const { router } = setup();
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await screen.findByRole('button', { name: 'Conversation Assistant' });
-    /* Nothing was opened: `[data-nc-drawer]` is the drawer's own marker, and
-       `role="complementary"` alone would match the rail. */
-    expect(document.querySelector('[data-nc-drawer]')).toBeNull();
-
-    await act(async () => { await router.navigate({ to: '/' }); });
-    const planner = await screen.findByRole('button', { name: 'Conversation Planner chat, on Test track' });
-    const assistant = await screen.findByRole('button', { name: 'Conversation Assistant, on Test track' });
-    /*
-     * And they are distinguishable **on screen**, not only to a screen reader.
-     *
-     * Asserting the two `aria-label`s alone is what let the row render the
-     * *track's* title in place of the conversation's: this list's whole point is
-     * now that one track contributes several rows to Today, and while the label
-     * carried the difference the visible text of all of them was `Test track`.
-     * A reader with a mouse had N identical rows and no way to choose. So the
-     * text is pinned here, both that each row says its own name and that the
-     * two rows differ.
-     */
-    expect(planner.textContent).toBe('Planner chatTest track');
-    expect(assistant.textContent).toBe('AssistantTest track');
-    expect(assistant.textContent).not.toBe(planner.textContent);
-  });
 
   /*
-   * The name a conversation earns, and what re-reading the list does to it.
+   * Two tests stood here — `[G5] keeps the name it derived from the first
+   * message after the drawer closes` and `[G5] does not keep a name, or a time,
+   * from a message that failed to send`. Both are alive, and both moved to the
+   * `registry write-through` block at the bottom of this file.
    *
-   * An assistant card is minted with no title and nothing backfills one, so the
-   * server's row is `title: null` for the whole life of the conversation. The
-   * only name it ever has is the one the drawer derives from its first message,
-   * and only the drawer can derive it. The batch remember below the drawer
-   * writes every listed row into the same registry entries — carrying `turns`
-   * and the transcript across, and, before this test existed, *not* the name:
-   * the moment the drawer closed, Today fell back to the bare kind label.
+   * Neither claim changed. What changed is where the answer is read: they read
+   * it off Today's list, and Today no longer lists the registry (#1341). The
+   * registry is still written by the same two effects and still read — the
+   * drawer's transcript fallback and `turnsBefore` in `send` — so the block
+   * below drives the real store under the real provider and asks the registry
+   * directly, which is the pattern `mints echo ids that a later mount cannot
+   * collide with` already used for the same reason.
    */
-  it('[G5] keeps the name it derived from the first message after the drawer closes', async () => {
-    const { router } = setup();
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    await screen.findByRole('complementary', { name: 'Assistant' });
-    await write('rename this conversation');
-    /* The drawer names itself from the transcript — the same derivation the
-       registry is about to be given. */
-    await screen.findByRole('complementary', { name: 'rename this conversation' });
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-
-    await act(async () => { await router.navigate({ to: '/' }); });
-    const row = await screen.findByRole('button', {
-      /* The turn count is the *other* thing this batch remember carries over,
-         and it is on the label for the same reason the name is: this tab read
-         it and the list does not send it. */
-      name: 'Conversation rename this conversation, on Test track, 1 turns',
-    });
-    expect(row.textContent).toBe('rename this conversationTest track');
-    /* Not the kind label it would have fallen back to. */
-    expect(screen.queryByRole('button', { name: /^Conversation Assistant,/ })).toBeNull();
-  });
-
-  /*
-   * And the name it did **not** earn, which is the same carry-over read from
-   * the other side.
-   *
-   * An echo goes on the screen the instant Enter is pressed, named and timed
-   * from the browser's own clock, and it is not yet a fact — the POST can still
-   * fail. Two rules that are each right compose into a wrong one: the effect
-   * above remembers the open conversation, and the batch remember below the
-   * drawer carries an entry's name and time forward rather than letting a
-   * `title: null` row undo them. Close the drawer while the POST is in flight
-   * and the optimistic values are what get carried; when the POST then fails,
-   * `scope` is already null, so the `catch` that drops the echo reaches nothing
-   * and the registry — which has no `forget` — keeps them for the life of the
-   * tab. Today was left naming a conversation after a message that never left
-   * the browser, and holding it above rows that really were touched.
-   *
-   * **The order is the test.** Rejecting before the drawer closes exercises the
-   * `scope !== null` path, where the open conversation is simply re-remembered
-   * without the echo and everything corrects itself; that arrangement is green
-   * with or without the fix. The gap is only reachable while the drawer is shut
-   * and the request is still out.
-   */
-  it('[G5] does not keep a name, or a time, from a message that failed to send', async () => {
-    let rejectInput!: () => void;
-    const settled = new Promise<void>((resolve) => { rejectInput = resolve; });
-    /* A row this tab has genuinely just seen activity on, timed a second ago on
-       the same clock the echo would use. It is what makes the *time* half of
-       this assertable at all: `updatedAt: 30` sorts below everything, so a row
-       carrying a leaked `Date.now()` and a row carrying its own honest time are
-       in the same place on Today unless something recent sits between them. */
-    const touchedAt = Date.now() - 1000;
-    const { router } = setup(async (request) => {
-      if (request.path === CONVERSATIONS) {
-        return ok([assistantRow(), assistantRow({
-          id: 'conv-assistant-2', title: 'Recently touched', updatedAt: touchedAt,
-        })]);
-      }
-      if (request.path.endsWith('/planner/input')) {
-        await settled;
-        return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
-      }
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    await screen.findByRole('complementary', { name: 'Assistant' });
-    await write('a message that never lands');
-    /* The premise, and the reason this bug was invisible: the optimistic name
-       really is derived and really is on screen. The drawer is right to show
-       it — you did type it — and that is exactly why the registry must not
-       take it. */
-    await screen.findByRole('complementary', { name: 'a message that never lands' });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    /*
-     * Shut, with the POST still out: this is the window, and releasing the
-     * rejection before this point would test a different code path.
-     *
-     * "Shut" is read off the panel rather than off `[data-nc-drawer]`, which
-     * stays in the document for one exit animation and therefore forever under
-     * jsdom (`ui/drawer`: the element is held mounted until `animationend`).
-     * The list's `aria-current` is the route's own answer to "is a conversation
-     * open", and it is exactly the state the store reads — `scope` is null the
-     * moment no row is current, which is what stops the effects.
-     */
-    await waitFor(() => expect(
-      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
-    ).toBeNull());
-    await act(async () => { rejectInput(); await Promise.resolve(); });
-
-    await act(async () => { await router.navigate({ to: '/' }); });
-    const rows = () => screen.getAllByRole('button', { name: /^Conversation / })
-      .map((row) => row.getAttribute('aria-label') ?? '');
-    /* The kind label, because there is still no name — not the sentence that
-       was never sent. `0 turns` is the same fact said twice: the count is the
-       length of the confirmed turns, and a conversation whose only message
-       failed has had none. */
-    await screen.findByRole('button', {
-      name: 'Conversation Assistant, on Test track, 0 turns',
-    });
-    expect(screen.queryByRole('button', { name: /never lands/ })).toBeNull();
-    /* And it did not float to the top on a clock only this browser read: the
-       row that really was touched a second ago is still above it. */
-    const listed = rows();
-    expect(listed.indexOf('Conversation Recently touched, on Test track'))
-      .toBeLessThan(listed.indexOf('Conversation Assistant, on Test track, 0 turns'));
-  });
 
   /*
    * The premise the test above rests on, from underneath: **at most one echo is
@@ -587,6 +592,7 @@ describe('track conversations', () => {
     /* Conversation A, one message, request still out. */
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await screen.findByRole('complementary', { name: 'Assistant' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('the first conversation speaks');
     await waitFor(() => expect(held.has(ASSISTANT_CARD.id)).toBe(true));
 
@@ -595,6 +601,7 @@ describe('track conversations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('the second conversation speaks');
     await waitFor(() => expect(held.has(PLANNER_CARD.id)).toBe(true));
     const sends = () => requests.filter((request) =>
@@ -617,228 +624,37 @@ describe('track conversations', () => {
   });
 
   /*
-   * The other side of the write-through: it may not undo what arrived while it
-   * was waiting.
-   *
-   * `mutations.send` resolves two refreshes *after* its POST returned 200
-   * (`usePlannerMutations` invalidates the item history and the run), and either
-   * refresh can land first. So the interval between "this message is a fact"
-   * and "the store may say so" is one in which the entry legitimately changes:
-   * the server's own copy of the message arrives, the agent's reply arrives
-   * with it, the effects write both into the registry — and then the drawer is
-   * closed and the second refresh finally settles.
-   *
-   * A callback merging into the list it captured when Enter was pressed writes
-   * the pre-send entry back: the reply is gone, the count is the one this
-   * browser could count on its own, and nothing will ever fetch them again for
-   * a conversation whose only surface is a track the reader has left. The read
-   * and the write have to be the same moment, which is `updateExisting`.
-   *
-   * `2 turns` is the assertion, and it is one number that rejects both ways of
-   * getting this wrong: a captured snapshot says `1` (the echo, on top of an
-   * entry that knew nothing), and an atomic merge that appends its echo without
-   * noticing the server already sent that message back says `3`.
+   * `[G5] does not overwrite a refresh that landed while the send was still
+   * settling` and `[G5] counts a message really sent twice, when the refresh is
+   * a moment behind` stood here, and moved to the `registry write-through`
+   * block for the reason given above: `2 turns` was read off Today's row label,
+   * and it is now read off the registry entry that label was rendering.
    */
-  it('[G5] does not overwrite a refresh that landed while the send was still settling', async () => {
-    let releaseRun!: () => void;
-    const runSettled = new Promise<void>((resolve) => { releaseRun = resolve; });
-    let answered = false;
-    const { router } = setup(async (request) => {
-      if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) {
-        return ok(answered ? [
-          harnessMessage(1, 'userMessage', { content: [{ text: 'what does this repo do?' }] }),
-          harnessMessage(2, 'agentMessage', { text: 'it runs tracks' }),
-        ] : []);
-      }
-      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`) {
-        answered = true;
-        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
-      }
-      /* The *second* of the two refreshes the send waits on, held open. The
-         first one — the history — is answered above and is what lands the new
-         facts in the registry while this one is still out. */
-      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/run`) {
-        await runSettled;
-        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
-      }
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    await screen.findByRole('complementary', { name: 'Assistant' });
-    await write('what does this repo do?');
-    /* The window is open: the history refresh has landed — the agent's reply is
-       on screen and in the registry — and the send has not settled. */
-    await screen.findByText('it runs tracks');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    await waitFor(() => expect(
-      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
-    ).toBeNull());
-    await act(async () => { releaseRun(); await Promise.resolve(); });
-
-    await act(async () => { await router.navigate({ to: '/' }); });
-    await screen.findByRole('button', {
-      name: 'Conversation what does this repo do?, on Test track, 2 turns',
-    });
-  });
 
   /*
-   * And the same write-through from the other side: a message the reader really
-   * did send twice is two messages.
+   * ── G6 was "open a conversation asked for from Today", and #1341 revoked it ─
    *
-   * The check above asks "did the refresh already bring this very message
-   * back?", and it asks it by text — an echo carries no server id, so text is
-   * all there is. Asked against the *whole* entry, an older identical message
-   * answers for the new one: `ping` is in the transcript from an hour ago, you
-   * type `ping` again, the POST succeeds, and the refresh that follows it is a
-   * moment behind the write. The write-through then finds a `ping` it did not
-   * mint, calls this one already recorded, and neither appends it nor counts
-   * it. `reconcileUserEchoes` pairs one-to-one only among the echoes of a
-   * single call, and this call passes one, so nothing tells it the old row is
-   * already spoken for. Only the rows that arrived *since the send* can answer
-   * the question that was asked.
+   * Three tests stood here: `opens an assistant conversation asked for from
+   * Today`, `keeps the open request until the list it names arrives`, and
+   * `gives up an open request whose list could not be read`. All three drove
+   * the same production path — Today lists a row belonging to another track,
+   * navigates there, and leaves the card id in the registry for the arriving
+   * route to redeem.
    *
-   * `2 turns` is the assertion and it fails in the one direction that matters:
-   * the old-`ping`-answers-for-the-new bug reports `1`.
-   */
-  it('[G5] counts a message really sent twice, when the refresh is a moment behind', async () => {
-    let releaseRun!: () => void;
-    const runSettled = new Promise<void>((resolve) => { releaseRun = resolve; });
-    let answered = false;
-    const { router } = setup(async (request) => {
-      /* The server's copy of the *first* `ping`, and only ever that one: the
-         second is accepted and persisted, and this read cannot see it yet. */
-      if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) {
-        return ok([harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })]);
-      }
-      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`) {
-        answered = true;
-        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
-      }
-      /* Held so the send is still settling when the drawer shuts, which is the
-         only window in which the write-through decides anything. */
-      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/run`) {
-        await runSettled;
-        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
-      }
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    /* Named from the `ping` that is already there — the row this test is about
-       having to not answer for the next one. */
-    await screen.findByRole('complementary', { name: 'ping' });
-    await write('ping');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    await waitFor(() => expect(
-      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
-    ).toBeNull());
-    await act(async () => { releaseRun(); await Promise.resolve(); });
-
-    await act(async () => { await router.navigate({ to: '/' }); });
-    await screen.findByRole('button', {
-      name: 'Conversation ping, on Test track, 2 turns',
-    });
-  });
-
-  /*
-   * ── G6 ─────────────────────────────────────────────────────────────────────
+   * Today has no such row any more: it lists the launchpad's own conversations
+   * and opens them in place, in its own drawer, navigating nowhere
+   * (`today-conversation.test.tsx` asserts exactly that). So the producer of a
+   * cross-track open request is gone, and with it the only driver these three
+   * had. Keeping them would have meant poking the registry by hand to prove a
+   * rule about a request no route makes.
    *
-   * Today can only navigate; the track has to finish the job. Two things had to
-   * change for an **assistant** row, and each of them alone leaves this red:
-   *
-   *  * `TrackRoute` cleared any open request whose card was not a planner harness,
-   *    which threw this one away before the list had even loaded;
-   *  * the panel's consume ran off `scope`, which on a `'rows'` route is null
-   *    until a row is already open — the very thing being asked for.
+   * The consume itself is NOT dead and is not deleted: #1211's planner-open intent
+   * still leaves a request — for a card of the very route that arms it — and
+   * `new-track-route.test.tsx` drives it end to end. The two *clears* are what
+   * lost their producer; they stay as fail-safes and say so at their site in
+   * `app/router/public.tsx`. The cross-track index card, on its own issue, is
+   * what would bring the producer back.
    */
-  it('[G6] opens an assistant conversation asked for from Today', async () => {
-    const { router } = setup();
-    await screen.findByRole('button', { name: 'Conversation Assistant' });
-    await act(async () => { await router.navigate({ to: '/' }); });
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Assistant, on Test track',
-    }));
-    await screen.findByRole('complementary', { name: 'Assistant' });
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w1`);
-  });
-
-  /*
-   * The same trip with the list arriving late, which is the shape the request
-   * really has: the reader is navigated to the track and the conversation list
-   * is a round trip behind them. A consume that answers "not in the rows, so
-   * clear it" is green on the test above and red here, and in production it
-   * loses the request for good — the reader lands on the track with the drawer
-   * shut and nothing to press.
-   */
-  it('[G6] keeps the open request until the list it names arrives', async () => {
-    let releaseList!: () => void;
-    const listed = new Promise<void>((resolve) => { releaseList = resolve; });
-    let holdList = false;
-    const { client, router } = setup(async (request) => {
-      if (request.path === CONVERSATIONS && holdList) {
-        await listed;
-        return ok([assistantRow()]);
-      }
-      return undefined;
-    });
-    await screen.findByRole('button', { name: 'Conversation Assistant' });
-    await act(async () => { await router.navigate({ to: '/' }); });
-    await screen.findByRole('button', { name: 'Conversation Assistant, on Test track' });
-
-    holdList = true;
-    /* Dropped from the cache, or the second visit would render the first
-       visit's rows and the request would be consumed before this test's
-       question — "what happens while the list is in flight?" — could be asked
-       at all. */
-    client.removeQueries({ queryKey: queryKeys.trackConversations(TRACK.id) });
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation Assistant, on Test track' }));
-    /*
-     * On the track with the list still in flight — and the track's *detail*
-     * already settled, which is the state that matters: that is precisely when
-     * `TrackRoute` gets to say whether this request is one of its own. A route
-     * that answers "no" here throws the request away a moment before the list
-     * that would have opened it lands.
-     */
-    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w1`));
-    await waitFor(() => expect(client.isFetching({ queryKey: queryKeys.trackDetail(TRACK.id) })).toBe(0));
-    /* The panel is up, so the route really has rendered against that detail. */
-    await screen.findByRole('button', { name: 'New conversation' });
-    expect(document.querySelector('[data-nc-drawer]')).toBeNull();
-
-    await act(async () => { releaseList(); await Promise.resolve(); });
-    await screen.findByRole('complementary', { name: 'Assistant' });
-  });
-
-  /*
-   * The fallback the two effects above deliberately do not cover: the card is
-   * on this track, so nothing clears the request, and the list that would open
-   * it could not be read, so nothing consumes it. Without a rule for this the
-   * id sits in the registry for the life of the tab and the drawer springs open
-   * the next time the reader wanders in.
-   */
-  it('[G6] gives up an open request whose list could not be read', async () => {
-    let failList = false;
-    const { client, router } = setup((request) => request.path === CONVERSATIONS && failList
-      ? { status: 500, statusText: 'Error', body: { code: 'internal', error: 'boom' } }
-      : undefined);
-    await screen.findByRole('button', { name: 'Conversation Assistant' });
-    await act(async () => { await router.navigate({ to: '/' }); });
-    failList = true;
-    client.removeQueries({ queryKey: queryKeys.trackConversations(TRACK.id) });
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Assistant, on Test track',
-    }));
-    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w1`));
-    /* Nothing opened — and, once the list recovers, still nothing opens: the
-       request was given up rather than left lying around. */
-    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Assistant' })).toBeNull());
-    failList = false;
-    await act(async () => { await router.navigate({ to: '/' }); });
-    await act(async () => { await router.navigate({ to: '/track/w1' }); });
-    await screen.findByRole('button', { name: 'Conversation Assistant' });
-    expect(screen.queryByRole('complementary', { name: 'Assistant' })).toBeNull();
-  });
 
   /*
    * ── §5.4 ───────────────────────────────────────────────────────────────────
@@ -865,23 +681,28 @@ describe('track conversations', () => {
 });
 
 /*
- * ── Echo identity, which outlives the store that minted it ───────────────────
+ * ── The registry write-through, asked of the registry ────────────────────────
  *
- * An echo id is minted off a counter in `useConversationStore`, and that store
- * dies with the route. The registry does not: it hangs off `ConversationProvider`
- * at the root and is the one thing on this surface with no `forget`. Leave a
- * track with a send still in flight and come back, and a *second* store starts
- * counting from one while the first one's request is still out — two different
- * messages arriving in one shared entry under one id.
+ * What may enter the session registry, what may not, and what survives a drawer
+ * being closed on a send that has not settled. Six invariants, all of them
+ * about `useConversationStore`'s two remember effects and its `send`.
  *
- * Driven through the store itself rather than the router because the defect is
- * an identity, and the routes render turns by that identity without ever showing
- * it: the count is `2` either way, and what a duplicate id costs — a React key
- * that names two rows, a jump target that resolves to the wrong one — is only
- * visible where the ids are. The two stores are mounted and unmounted for real
- * under one provider, so the lifetimes being claimed are the real ones.
+ * They are driven through the store itself rather than through the router, and
+ * that is a deliberate move rather than a shortcut. Four of them used to read
+ * their answer off Today's conversation list, which once used the registry as
+ * its source. Since #1341 every list is server-backed; confirmed metadata from
+ * the registry is projected onto those rows rather than becoming a separate
+ * list. The invariants did not go away — the registry is still read by the
+ * drawer's transcript fallback and by `turnsBefore` in `send` — so this block
+ * asks the store directly, while the route-level name test above pins the
+ * projection a reader sees. The store, provider, query client and transport port
+ * here are all the production ones; only the route around them is absent.
+ *
+ * The drawer is modelled by `scope`, which is exactly what the production panel
+ * does: `useConversationPanel` computes `scope` from the open row, so closing
+ * the drawer *is* handing this store a null scope while it stays mounted.
  */
-describe('echo identity across store instances', () => {
+describe('registry write-through', () => {
   const SCOPE = {
     id: 'w1', title: 'Test track', cardId: ASSISTANT_CARD.id, cardTitle: null,
     updatedAt: 30, kind: 'track-assistant' as const, state: 'idle' as const,
@@ -891,32 +712,301 @@ describe('echo identity across store instances', () => {
     kind: 'track-assistant', state: 'idle', updatedAt: 30,
   }];
 
-  it('[G5] mints echo ids that a later mount cannot collide with', async () => {
+  /**
+   * One mounted store over one registry, with the drawer openable and closable.
+   *
+   * `rows` is the track's server list, so the batch remember runs for real —
+   * which matters: three of the tests below are precisely about that effect
+   * writing a plain server row over what the drawer had derived.
+   */
+  function mountStore(transport: ApiTransportPort, rows: readonly Conversation[] = ROWS) {
+    let latestSend: (text: string) => void = () => undefined;
+    let known: readonly Conversation[] = [];
+    let readTurns: (id: string) => readonly TranscriptEntry[] = () => [];
+
+    function StoreProbe({ scope }: { scope: typeof SCOPE | null }) {
+      const store = useConversationStore(transport, unauthorized, scope, {
+        rows, rememberOn: 'w1',
+      });
+      const send = store.send;
+      useEffect(() => { latestSend = (text) => { send(ASSISTANT_CARD.id, text); }; });
+      return null;
+    }
+
+    function RegistryProbe() {
+      const registry = useConversationRegistry();
+      useEffect(() => { known = registry.conversations; readTurns = registry.turnsOf; });
+      return null;
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    const view = (scope: typeof SCOPE | null) => (
+      <QueryClientProvider client={client}>
+        <ConversationProvider>
+          <RegistryProbe />
+          <StoreProbe scope={scope} />
+        </ConversationProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view(SCOPE));
+    return {
+      /*
+       * Pressing Enter, and then letting the world turn.
+       *
+       * The macrotask is not padding. `mutations.send` resolves two query
+       * invalidations after its POST, and an invalidation only refetches for
+       * observers React has committed — so a send flushed with a bare
+       * `Promise.resolve()` resolves with neither refresh having gone out, which
+       * is not the state any of these tests is about. Under the router the same
+       * pumping is what `findBy*` does between renders.
+       */
+      send: async (text: string) => {
+        await act(async () => { latestSend(text); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      },
+      /** The drawer shuts; the store stays mounted, as it does in production. */
+      closeDrawer: async () => { await act(async () => { rerender(view(null)); await Promise.resolve(); }); },
+      settle: async () => {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      },
+      /** A history read landing, written where a landed history lives. */
+      deliverHistory: async (rows: readonly unknown[]) => {
+        await act(async () => {
+          client.setQueryData(
+            cachedHistoryKey(client, ASSISTANT_CARD.id),
+            { pages: [rows], pageParams: [0] },
+          );
+          await Promise.resolve();
+        });
+      },
+      entry: () => known.find((candidate) => candidate.id === ASSISTANT_CARD.id),
+      turns: () => readTurns(ASSISTANT_CARD.id),
+    };
+  }
+
+  /*
+   * The name a conversation earns, and what re-reading the list does to it.
+   *
+   * An assistant card is minted with no title and nothing backfills one, so the
+   * server's row is `title: null` for the whole life of the conversation. The
+   * only name it ever has is the one the drawer derives from its first message,
+   * and only the drawer can derive it. The batch remember writes every listed
+   * row into the same registry entries — carrying `turns` and the transcript
+   * across, and, before this test existed, *not* the name: the moment the
+   * drawer closed, the entry fell back to the bare kind label.
+   */
+  it('[G5] keeps the name it derived from the first message after the drawer closes', async () => {
+    const transport: ApiTransportPort = {
+      send(request) {
+        if (request.path.endsWith('/planner/input')) return Promise.resolve(inputAccepted());
+        if (request.path.endsWith('/planner/run')) return Promise.resolve(runIdle());
+        return Promise.resolve(ok([]));
+      },
+    };
+    const store = mountStore(transport);
+    await store.send('rename this conversation');
+    await waitFor(() => { expect(store.entry()?.title).toBe('rename this conversation'); });
+    await store.closeDrawer();
+    await store.settle();
+    /* And the batch remember, which now owns this entry, did not put the
+       server's `title: null` back over it. */
+    expect(store.entry()?.title).toBe('rename this conversation');
+  });
+
+  /*
+   * And the name it did **not** earn, which is the same carry-over read from the
+   * other side.
+   *
+   * An echo goes into the store the instant Enter is pressed, named and timed
+   * from the browser's own clock, and it is not yet a fact — the POST can still
+   * fail. Two rules that are each right compose into a wrong one: the effect
+   * that remembers the open conversation, and the batch remember that carries an
+   * entry's name and time forward rather than letting a `title: null` row undo
+   * them. Close the drawer while the POST is in flight and the optimistic values
+   * are what get carried; when the POST then fails, `scope` is already null, so
+   * the `catch` that drops the echo reaches nothing and the registry — which has
+   * no `forget` — keeps them for the life of the tab.
+   *
+   * **The order is the test.** Rejecting before the drawer closes exercises the
+   * `scope !== null` path, where the open conversation is simply re-remembered
+   * without the echo and everything corrects itself; that arrangement is green
+   * with or without the fix. The gap is only reachable while the drawer is shut
+   * and the request is still out.
+   */
+  it('[G5] does not keep a name, or a time, from a message that failed to send', async () => {
+    let rejectInput!: () => void;
+    const settled = new Promise<void>((resolve) => { rejectInput = resolve; });
+    const transport: ApiTransportPort = {
+      async send(request) {
+        if (request.path.endsWith('/planner/input')) {
+          await settled;
+          return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
+        }
+        if (request.path.endsWith('/planner/run')) return runIdle();
+        return ok([]);
+      },
+    };
+    const store = mountStore(transport);
+    const beforeSend = Date.now();
+    await store.send('a message that never lands');
+    /* Shut, with the POST still out: this is the window, and releasing the
+       rejection before this point would test a different code path. */
+    await store.closeDrawer();
+    await act(async () => { rejectInput(); await Promise.resolve(); });
+    await store.settle();
+
+    /* No name — the kind label is all this conversation has ever earned, which
+       is what a `title` of null renders as. */
+    expect(store.entry()?.title ?? null).toBeNull();
+    /* And no time from a clock only this browser read: the row's own
+       `updatedAt` stands, so the entry cannot float above rows that really were
+       touched. `beforeSend` is the fence — an echo's `atMs` is `Date.now()`. */
+    expect(store.entry()?.updatedAt).toBe(30);
+    expect(store.entry()?.updatedAt).toBeLessThan(beforeSend);
+    /* Nor is the message itself remembered as something that happened. */
+    expect(store.turns()).toHaveLength(0);
+  });
+
+  /*
+   * The other side of the write-through: it may not undo what arrived while it
+   * was waiting.
+   *
+   * The POST may still be in flight while an event or another read changes the
+   * entry legitimately: the server's own copy of the message arrives, the
+   * agent's reply arrives with it, and the effects write both into the registry
+   * before this send's acknowledgement handler runs, with the drawer already
+   * shut.
+   *
+   * A callback merging into the list it captured when Enter was pressed writes
+   * the pre-send entry back: the reply is gone, the count is the one this
+   * browser could count on its own, and nothing will ever fetch them again for
+   * a conversation whose only surface is a track the reader has left. The read
+   * and the write have to be the same moment, which is `updateExisting`.
+   *
+   * The arriving refresh is fed in with `setQueryData` rather than by holding
+   * one of the two invalidations open. Same state, one fewer moving part: what
+   * the test needs is a history that lands *between* the POST and its
+   * settlement, and the query cache is where a landed history lives —
+   * `planner-conversation.test.tsx` drives its refreshes the same way.
+   *
+   * Two turns is the assertion, and it is one number that rejects both ways of
+   * getting this wrong: a captured snapshot says `1` (the echo, on top of an
+   * entry that knew nothing), and an atomic merge that appends its echo without
+   * noticing the server already sent that message back says `3`.
+   */
+  it('[G5] does not overwrite a refresh that landed while the send was still settling', async () => {
+    let releaseInput!: () => void;
+    const inputSettled = new Promise<void>((resolve) => { releaseInput = resolve; });
+    const transport: ApiTransportPort = {
+      async send(request) {
+        if (request.path.endsWith('/planner/input')) {
+          await inputSettled;
+          return inputAccepted();
+        }
+        if (request.path.endsWith('/planner/run')) return runIdle();
+        return ok([]);
+      },
+    };
+    const store = mountStore(transport);
+    await store.send('what does this repo do?');
+    /* The window opens: the history refresh lands — the reader's own message
+       comes back from the server, and the agent has answered it — while the
+       POST that started all this is still out. */
+    await store.deliverHistory([
+      harnessMessage(1, 'userMessage', { content: [{ text: 'what does this repo do?' }] }),
+      harnessMessage(2, 'agentMessage', { text: 'it runs tracks' }),
+    ]);
+    await waitFor(() => { expect(store.turns()).toHaveLength(2); });
+
+    await store.closeDrawer();
+    await act(async () => { releaseInput(); await Promise.resolve(); });
+    await store.settle();
+    expect(store.turns()).toHaveLength(2);
+    expect(store.entry()?.turns).toBe(2);
+  });
+
+  /*
+   * And the same write-through from the other side: a message the reader really
+   * did send twice is two messages.
+   *
+   * The check above asks "did the refresh already bring this very message
+   * back?", and it asks it by text — an echo carries no server id, so text is
+   * all there is. Asked against the *whole* entry, an older identical message
+   * answers for the new one: `ping` is in the transcript from an hour ago, you
+   * type `ping` again, the POST succeeds, and the refresh that follows it is a
+   * moment behind the write. The write-through then finds a `ping` it did not
+   * mint, calls this one already recorded, and neither appends it nor counts it.
+   * `reconcileUserEchoes` pairs one-to-one only among the echoes of a single
+   * call, and this call passes one, so nothing tells it the old row is already
+   * spoken for. Only the rows that arrived *since the send* can answer the
+   * question that was asked.
+   *
+   * Two turns is the assertion and it fails in the one direction that matters:
+   * the old-`ping`-answers-for-the-new bug reports `1`.
+   */
+  it('[G5] counts a message really sent twice, when the refresh is a moment behind', async () => {
+    let releaseInput!: () => void;
+    const inputSettled = new Promise<void>((resolve) => { releaseInput = resolve; });
+    const transport: ApiTransportPort = {
+      async send(request) {
+        /* The server's copy of the *first* `ping`, and only ever that one: the
+           second is accepted and persisted, and no read brings it back before
+           the send settles. */
+        if (request.path.includes(HISTORY_PATH)) {
+          return ok([harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })]);
+        }
+        if (request.path.endsWith('/planner/input')) {
+          await inputSettled;
+          return inputAccepted();
+        }
+        if (request.path.endsWith('/planner/run')) return runIdle();
+        return ok([]);
+      },
+    };
+    const store = mountStore(transport);
+    /* The first `ping` is already in the transcript — the row this test is
+       about having to not answer for the next one. */
+    await waitFor(() => { expect(store.turns()).toHaveLength(1); });
+    await store.send('ping');
+
+    await store.closeDrawer();
+    await act(async () => { releaseInput(); await Promise.resolve(); });
+    await store.settle();
+    expect(store.turns()).toHaveLength(2);
+    expect(store.entry()?.turns).toBe(2);
+  });
+
+  /* Two real store instances under one provider: the first request crosses the
+     remount, the provider lease blocks a same-card second send, and the second
+     same-text echo remains distinct when the first server row arrives. */
+  it('[G5] serializes same-card sends across a remount and keeps both identical turns', async () => {
     /* Every send is held, so both are still out when their stores unmount. */
     const holds: (() => void)[] = [];
+    let historyRows: readonly unknown[] = [];
     const transport: ApiTransportPort = {
       async send(request) {
         if (request.path.endsWith('/planner/input')) {
           await new Promise<void>((resolve) => { holds.push(resolve); });
-          return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+          return inputAccepted();
         }
-        if (request.path.endsWith('/planner/run')) {
-          return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
-        }
-        /* No history: the server has brought nothing back, which is the state
-           in which an echo is the only account of the message. */
+        if (request.path.endsWith('/planner/run')) return runIdle();
+        if (request.path.includes(HISTORY_PATH)) return ok(historyRows);
         return ok([]);
       },
     };
     let latestSend: (text: string) => void = () => undefined;
+    let visibleTurns: readonly TranscriptEntry[] = [];
     let latestTurns: readonly TranscriptEntry[] = [];
 
     function StoreProbe() {
       const store = useConversationStore(transport, unauthorized, SCOPE, {
-        kind: 'rows', rows: ROWS, rememberOn: 'w1',
+        rows: ROWS, rememberOn: 'w1',
       });
       const send = store.send;
-      useEffect(() => { latestSend = (text) => { send(ASSISTANT_CARD.id, text); }; });
+      const turns = store.turnsOf(ASSISTANT_CARD.id);
+      useEffect(() => {
+        latestSend = (text) => { send(ASSISTANT_CARD.id, text); };
+        visibleTurns = turns;
+      });
       return null;
     }
 
@@ -937,7 +1027,7 @@ describe('echo identity across store instances', () => {
     );
     const { rerender } = render(view('first-mount'));
 
-    await act(async () => { latestSend('first'); await Promise.resolve(); });
+    await act(async () => { latestSend('ping'); await Promise.resolve(); });
     await waitFor(() => expect(holds).toHaveLength(1));
     /* The walk away: this store is gone, its counter with it, and its request
        is still out. */
@@ -945,20 +1035,32 @@ describe('echo identity across store instances', () => {
     /* And the walk back — a new store, on the same conversation, under the same
        registry. */
     await act(async () => { rerender(view('second-mount')); await Promise.resolve(); });
-    await act(async () => { latestSend('second'); await Promise.resolve(); });
-    await waitFor(() => expect(holds).toHaveLength(2));
-    await act(async () => { rerender(view(null)); await Promise.resolve(); });
+    await act(async () => { latestSend('ping'); await Promise.resolve(); });
+    /* The provider-wide per-card lease keeps a remount from starting another
+       send while the first request is unresolved. */
+    expect(holds).toHaveLength(1);
 
-    /* Both answers land with nobody mounted, which is exactly when the
-       write-through is the only writer of this entry. */
+    /* The first POST lands while the second store is mounted, and its refresh
+       exposes one `ping`. Only after that request settles may the new store
+       start its same-text send. */
+    historyRows = [harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })];
+    await act(async () => { holds[0]?.(); await Promise.resolve(); });
+    await waitFor(() => {
+      latestSend('ping');
+      expect(holds).toHaveLength(2);
+    });
+    await waitFor(() => expect(visibleTurns).toHaveLength(2));
+
+    /* The second answer lands after its store is gone, against the same stale
+       one-row history. Its write-through must retain the second echo. */
+    await act(async () => { rerender(view(null)); await Promise.resolve(); });
     await act(async () => {
-      for (const release of holds) release();
+      holds[1]?.();
       await Promise.resolve();
     });
     await waitFor(() => expect(latestTurns).toHaveLength(2));
-    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['first', 'second']);
-    /* The assertion: two messages, two identities. A counter reset by the
-       remount hands the registry both of them as `echo-1`. */
+    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['ping', 'ping']);
+    /* The assertion: two messages, two identities across the remount. */
     expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
   });
 });

@@ -26,6 +26,20 @@
 //! Step 2 comes before step 3 so that a refusal materialises no workspace and
 //! starts no harness, not merely "no conversation".
 //!
+//! **That guarantee is about this endpoint, and it is worth saying what it does
+//! not reach.** Since 2026-09-03 the Today page presses
+//! `POST /api/today/launchpad/ensure` before this route when there is no
+//! launchpad at all, because this ordering is precisely what made a quiet day
+//! unescapable: no activity ⇒ refused here at step 2 ⇒ never a launchpad ⇒ the
+//! page's other door (the Conversations `+`) withheld too. Nothing here changed
+//! for it, and nothing here should: a refusal from *this* handler still leaves
+//! nothing behind, which is the whole content of INV-TODAYDOC-007. What the
+//! frontend adds is a separate, explicitly-pressed request whose declared job is
+//! to materialise the workspace, so the workspace is attributable to that
+//! request rather than left behind by a refusal. The reasoning and its residual
+//! cost live with the caller, on `useTodaySummaryMutation` in
+//! `fe/web/src/app/providers/queries.ts`.
+//!
 //! Steps 4 and 5 are **one path, not two branches**. An earlier revision gave
 //! the summary to a "re-run" branch and let the create path carry only its
 //! first message; because `create_track_conversation` skips its send once

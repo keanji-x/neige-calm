@@ -4899,7 +4899,7 @@
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,490-504,638-659;
-    fe/web/src/app/router/public.tsx:1693-1744
+    fe/web/src/app/router/public.tsx:1788,1838-1908
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:398
   owner_slice: features/track/create
   intentional_omission: false
@@ -4920,7 +4920,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1735-1744
+  source: fe/web/src/app/router/public.tsx:1900-1908
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:517
   owner_slice: features/track/create
   intentional_omission: false
@@ -5025,7 +5025,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:172-217; fe/web/src/app/router/public.tsx:1749-1757
+  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:1913-1919
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:580
   owner_slice: features/track/create
   intentional_omission: false
@@ -5171,8 +5171,8 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:35,63-74,159-170,241-266;
-    fe/web/src/app/router/public.tsx:1295-1304,1746-1747,1966-1990;
-    fe/web/src/features/chat/thread/public.tsx:1890,1951-1970
+    fe/web/src/app/router/public.tsx:1330-1340,1911,2138-2165;
+    fe/web/src/features/chat/thread/public.tsx:1798-1800,1890,1951-1970
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
   # landing failed arms it again, 327 that redeeming is one-shot, 355 that the mark is struck off even

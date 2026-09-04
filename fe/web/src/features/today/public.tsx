@@ -26,7 +26,7 @@ import {
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import type {
-  ScheduledEvent, TodayCompactProps, TodayPageProps, TrackRowRenderer,
+  ScheduledEvent, TodayCompactProps, TodayPageProps, TodaySummaryPhase, TrackRowRenderer,
 } from './page-props.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
@@ -40,7 +40,7 @@ import styles from './today.module.css';
 // `page-props.ts`, next to the viewport ledger that has to enumerate every one
 // of `TodayPageProps`' keys, and are re-exported here so this module stays the
 // feature's entry. See that file's header for why the ledger cannot live here.
-export type { ScheduledEvent, TodayPageProps, TrackRowRenderer } from './page-props.ts';
+export type { ScheduledEvent, TodayPageProps, TodaySummaryPhase, TrackRowRenderer } from './page-props.ts';
 
 /** The copy for "the day has no document yet". */
 const NO_PROGRESS_YET = 'Nothing written today yet.';
@@ -63,7 +63,60 @@ const NO_PROGRESS_YET = 'Nothing written today yet.';
 const WRITE_SUMMARY = 'Write today\u2019s progress';
 const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
 
+/**
+ * One line above the control saying what pressing it does.
+ *
+ * The button's label is a verb phrase and nothing on the page said who acts or
+ * where the result lands, so the control read as a phrase before it read as
+ * something to press. This is the caption, not a guarantee: it says what the
+ * press asks for, and the answer — including "nothing happened today" — comes
+ * back beside the button as the notice.
+ */
+const SUMMARY_CAPTION = 'An agent reads today\u2019s activity and writes it up here.';
+
+/**
+ * What the control says while a press is in flight.
+ *
+ * Two, because the two steps take different amounts of time and the slow one is
+ * invisible: on a workspace with no launchpad yet the press first materialises
+ * one and waits on a harness start, which is seconds to tens of seconds, and a
+ * button that said "Writing…" for all of it would be describing the wrong step.
+ * These are labels for the step actually running, not a progress estimate —
+ * neither one claims to know how far along it is.
+ */
+const PREPARING_LABEL = 'Preparing today\u2019s workspace\u2026';
+const WRITING_LABEL = 'Writing\u2026';
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
+
+/**
+ * The week grid's section label, named after the week it actually labels.
+ *
+ * It used to read `weekStart`'s month alone, which put `August 2026` above a
+ * grid of 8/31–9/6 while the page header said `Thursday, September 3` — two
+ * months on one screen, and the reader has to work out which one the calendar
+ * means. A week crossing a month is ordinary (most months produce one), so this
+ * is the common path, not a boundary case.
+ *
+ * Naming both months is what keeps the label a label: the row names the seven
+ * days below it, and on a crossing week those days are in two months. It also
+ * cannot contradict the header, whose month is always one of the two.
+ *
+ * The year is printed once when both ends share it and twice when they do not,
+ * so a New Year's week reads `Dec 2026 – Jan 2027` rather than filing December
+ * under the wrong year. Short month names keep the crossing label inside a
+ * seven-column panel that full names would overrun.
+ */
+function weekLabel(weekStart: Date, weekEnd: Date): string {
+  const long = (date: Date, options: Intl.DateTimeFormatOptions) =>
+    date.toLocaleDateString('en-US', options);
+  if (weekStart.getMonth() === weekEnd.getMonth() && weekStart.getFullYear() === weekEnd.getFullYear()) {
+    return long(weekStart, { month: 'long', year: 'numeric' });
+  }
+  if (weekStart.getFullYear() === weekEnd.getFullYear()) {
+    return `${long(weekStart, { month: 'short' })} – ${long(weekEnd, { month: 'short', year: 'numeric' })}`;
+  }
+  return `${long(weekStart, { month: 'short', year: 'numeric' })} – ${long(weekEnd, { month: 'short', year: 'numeric' })}`;
+}
 
 /**
  * An agenda row spans areas, so it always names one. When the id resolves to
@@ -170,7 +223,7 @@ function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }>
  * point of the split: what the phone leaves out is declared in the ledger, and
  * a prop declared as left out is *not a member of the type* the phone renderer
  * receives, so touching it does not compile. Before #1234 the phone branch sat
- * inside this function with all thirteen props in scope, and #1253 added six
+ * inside this function with the full prop bag in scope, and #1253 added six
  * of them that the phone never drew, with nobody the wiser.
  *
  * **This function does not know which viewport it is on**, and that is the
@@ -237,13 +290,45 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  onWriteSummary, summaryPending, summaryNotice,
+  onWriteSummary, summaryPending, summaryPhase, summaryNotice,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
   const shownTracks = visibleTracks(tracks);
   const waiting = shownTracks.filter(needsUserAttention);
   const running = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsUserAttention(track));
+  const panel = (
+    <aside className={styles.panelColumn} data-nc-panel="">
+      <PanelCard>
+        <PanelModule title="Calendar">
+          <Calendar
+            today={today}
+            tracks={shownTracks}
+            areas={areas}
+            scheduledEvents={scheduledEvents}
+            renderTrackRow={renderTrackRow}
+            nowMs={now.getTime()}
+          />
+        </PanelModule>
+        <PanelRows title="Running" tracks={running} render={renderTrackRow} />
+        <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
+      </PanelCard>
+    </aside>
+  );
+  const firstRun = (
+    <div className={styles.emptyPage}>
+      <p className={styles.hero}>Nothing here yet.</p>
+      <TodayDocument
+        launchpad={launchpad}
+        document={launchpadDocument}
+        error={launchpadError}
+        onWriteSummary={onWriteSummary}
+        pending={summaryPending}
+        phase={summaryPhase}
+        notice={summaryNotice}
+      />
+    </div>
+  );
 
   /*
    * A brand-new workspace: one hero line, and *still the document*.
@@ -262,17 +347,9 @@ function TodayDesktop({
           today={today} waiting={waiting.length} running={running.length}
           now={now}
         />
-        <div className={styles.emptyPage}>
-          <p className={styles.hero}>Nothing here yet.</p>
-          <TodayDocument
-            launchpad={launchpad}
-            document={launchpadDocument}
-            error={launchpadError}
-            onWriteSummary={onWriteSummary}
-            pending={summaryPending}
-            notice={summaryNotice}
-          />
-        </div>
+        {launchpad === null || launchpad === undefined
+          ? firstRun
+          : <div className={styles.content}>{firstRun}{panel}</div>}
       </div>
     );
   }
@@ -302,20 +379,21 @@ function TodayDesktop({
             error={launchpadError}
             onWriteSummary={onWriteSummary}
             pending={summaryPending}
+            phase={summaryPhase}
             notice={summaryNotice}
           />
         </div>
 
         {/*
-          One card, two modules — the skeleton every route now shares. The
+          One card, two modules — the skeleton the Today and Track routes share. The
           route-specific module comes first because it is why you are on this
           route; the conversation list is second and identical everywhere, so
           it can be found without reading it.
 
-          The conversation module was proposed for removal on 2026-09-03 as a
-          duplicate of the track pages' and kept: on Today it is the
-          cross-track index, and it is where G6 opens an assistant conversation
-          from. See `TodayPageProps.conversationList`.
+          The conversation module was proposed for removal on 2026-09-03 and
+          kept; #1341 then changed its source. On Today it is now the launchpad
+          Track's own list, and rows open in place. See
+          `TodayPageProps.conversationList`.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open: the drawer is a card on this exact track, and a
@@ -323,36 +401,11 @@ function TodayDesktop({
             Module class is not nameable from the shell's stylesheet, so the
             marker is the seam.
 
-            Today needs it more than the area and track pages do, not less. Their
-            panels are sticky at the same offset the drawer starts at, so they
-            stay behind it; this column is not sticky, so it scrolls up out from
+            Today needs it more than the track page does, not less. That panel
+            is sticky at the same offset the drawer starts at, so it stays
+            behind it; this column is not sticky, so it scrolls up out from
             under the drawer's top edge and would surface above it. */}
-        <aside className={styles.panelColumn} data-nc-panel="">
-          <PanelCard>
-            <PanelModule title="Calendar">
-              <Calendar
-                today={today}
-                tracks={shownTracks}
-                areas={areas}
-                scheduledEvents={scheduledEvents}
-                renderTrackRow={renderTrackRow}
-                nowMs={now.getTime()}
-              />
-            </PanelModule>
-            {/* Ambience, moved out of the reading column (#1253 D7). Follows
-                §6.1's rule that a section with zero rows is not rendered, which
-                is what `Section` already does in the main column — an empty
-                RUNNING module would read as a gap.
-
-                RECENT used to sit here and no longer does — a trade of reach
-                for focus, not a de-duplication. The criterion that decides what
-                the agenda above shows is `activeTracksOn`
-                (`fe/core/domain/track.ts`); this comment does not restate it.
-                See this feature's README for the decision. */}
-            <PanelRows title="Running" tracks={running} render={renderTrackRow} />
-            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
-          </PanelCard>
-        </aside>
+        {panel}
       </div>
     </div>
   );
@@ -416,12 +469,13 @@ function WaitingSection({ tracks, render }: {
  * on this page (INV-TODAYDOC-003) — no null-check of the document, no reading
  * of its text.
  */
-function TodayDocument({ launchpad, document, error, onWriteSummary, pending, notice }: {
+function TodayDocument({ launchpad, document, error, onWriteSummary, pending, phase, notice }: {
   launchpad?: TodayLaunchpadWire | null;
   document?: ReactNode;
   error?: ReactNode;
   onWriteSummary?: () => void;
   pending?: boolean;
+  phase?: TodaySummaryPhase;
   notice?: ReactNode;
 }) {
   if (error !== undefined && error !== null) return <>{error}</>;
@@ -439,6 +493,7 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
       label={written ? REWRITE_SUMMARY : WRITE_SUMMARY}
       onWrite={onWriteSummary}
       pending={pending}
+      phase={phase}
       notice={notice}
     />
   );
@@ -467,7 +522,20 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
       </div>
     );
   }
-  return <div className={styles.document}>{document}{trigger}</div>;
+  /*
+   * The trigger comes BEFORE the report, and only in this branch.
+   *
+   * A written report is the long thing on this page — it is the whole main
+   * column and then some — so a control below it is a control the reader has to
+   * scroll past the entire document to find, and its caption is an explanation
+   * that arrives after the thing it was meant to introduce. Above, both land
+   * before the reading starts.
+   *
+   * The vacant branch keeps the other order on purpose: there the sentence
+   * "nothing written today yet" is the headline, and the trigger is the answer
+   * to it.
+   */
+  return <div className={styles.document}>{trigger}{document}</div>;
 }
 
 /**
@@ -481,30 +549,57 @@ function TodayDocument({ launchpad, document, error, onWriteSummary, pending, no
  * honest shape for "this composition has no trigger", which is what the
  * feature's own suites pass.
  */
-function SummaryTrigger({ label, onWrite, pending, notice }: {
+function SummaryTrigger({ label, onWrite, pending, phase, notice }: {
   label: string;
   onWrite?: () => void;
   pending?: boolean;
+  phase?: TodaySummaryPhase;
   notice?: ReactNode;
 }) {
   if (onWrite === undefined) return null;
   const busy = pending === true;
   return (
     <div className={styles.summaryTrigger}>
-      <button
-        type="button"
-        data-nc-action="tertiary"
-        className={styles.moreButton}
-        // Disabled only while a request is actually in flight, so a double
-        // click cannot send two. Not a general "can you press this?" gate:
-        // whether there is anything to summarise is the server's answer.
-        disabled={busy}
-        aria-busy={busy}
-        onClick={onWrite}
-      >
-        {busy ? 'Writing\u2026' : label}
-      </button>
-      {notice !== undefined && notice !== null && <>{notice}</>}
+      <p className={styles.summaryCaption}>{SUMMARY_CAPTION}</p>
+      <div className={styles.summaryRow}>
+        {/*
+          `data-nc-action="tertiary"` \u2014 \u00a74.1's quiet tier, on its own.
+
+          Two owner readings shaped this, and the second overturned the first.
+          It began as `tertiary` **plus `.moreButton`**, and read as a phrase
+          rather than as something to press; the fix taken then was `secondary`,
+          which is the framed tier. Owner read that frame as too heavy for a
+          control the report should outrank.
+
+          What that pair of readings locates is the shrink, not the tier.
+          `.moreButton` is the disclosure recipe \u2014 `--text-xs`, `--space-2`
+          padding, no border \u2014 so it overrode \u00a74.1's geometry down to something
+          text-sized. `tertiary` alone keeps that geometry: `--control-h`,
+          `--space-6` padding-inline and `--text-base`, which is button-shaped
+          at rest without drawing a frame around it. Its fill and border are
+          transparent until `:hover`/`:focus-visible`, where \u00a74.1 raises it to
+          `--overlay-hover` and `--text` \u2014 quiet on arrival, and it answers when
+          the pointer or the keyboard reaches it.
+
+          Still a tier and not a button drawn here: \u00a79's gate measures
+          `[data-nc-action]` as one vocabulary, and `.moreButton` is exactly the
+          per-module override that got this wrong the first time.
+        */}
+        <button
+          type="button"
+          data-nc-action="tertiary"
+          // Busy stays focusable and in the action colour ladder; the click
+          // guard prevents a second request. Whether there is anything to
+          // summarise remains the server's answer.
+          aria-busy={busy ? true : undefined}
+          aria-disabled={busy ? true : undefined}
+          data-nc-state={busy ? 'busy' : undefined}
+          onClick={() => { if (!busy) onWrite(); }}
+        >
+          {busy ? (phase === 'preparing' ? PREPARING_LABEL : WRITING_LABEL) : label}
+        </button>
+        {notice !== undefined && notice !== null && <>{notice}</>}
+      </div>
     </div>
   );
 }
@@ -625,7 +720,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
           <button type="button" data-nc-role="icon" className={styles.navButton}
             aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}><Icon name="chevron-left" /></button>
           <span className={styles.monthLabel}>
-            {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            {weekLabel(weekStart, addDays(weekStart, 6))}
           </span>
           <button type="button" data-nc-role="icon" className={styles.navButton}
             aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}><Icon name="chevron-right" /></button>

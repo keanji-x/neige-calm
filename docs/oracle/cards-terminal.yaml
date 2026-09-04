@@ -3329,7 +3329,7 @@
      零消费者——生产 entry 取常量 `accessibleName: () => 'Planner harness'`
     （fe/web/src/systems/cards/builtins/planner.ts:45），既不读 goal 也无处播报。
     需求的后继者是 conversation 行：用户看到的 planner 名字来自
-    `fe/web/src/app/router/public.tsx:186` 的会话命名路径，不是卡片的 accessibleName。
+    `fe/web/src/app/router/public.tsx:167-168` 的会话命名路径，不是卡片的 accessibleName。
     注意本条只陈述今天的事实：S2 的 grid 尚未写，没有任何机器手段保证它会从
     `partitionTrackCards` 的 visible 分支渲染而不是直接遍历原始 `cards`；
     S2 必须走 visible 分支，否则本条前提重新成立，须连同措辞一起重开重定

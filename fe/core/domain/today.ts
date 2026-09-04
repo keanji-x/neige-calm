@@ -27,6 +27,7 @@
 import { z } from 'zod';
 
 import type { ApiFailure, ApiOperation } from '../api/types.js';
+import { trackConversationCardId, type Conversation } from './conversation.js';
 
 export const todayLaunchpadSchema = z.object({
   track_id: z.string(),
@@ -84,6 +85,23 @@ export const todaySummarySchema = z.object({
 });
 
 export type TodaySummaryWire = z.infer<typeof todaySummarySchema>;
+
+/** The server's fixed idempotency key for the launchpad's summary writer. */
+export const TODAY_SUMMARY_CONVERSATION_KEY = 'today-summary';
+export const TODAY_SUMMARY_CONVERSATION_TITLE = 'Today’s progress';
+
+/**
+ * Give the server-synthesised summary writer a reader-facing name. Its first
+ * persisted user turn is an internal bootstrap instruction, so the ordinary
+ * "first thing said" fallback would expose implementation text as the title.
+ * A future explicit server title wins unchanged.
+ */
+export function nameTodaySummaryConversation(trackId: string, row: Conversation): Conversation {
+  if (row.title !== null || row.id !== trackConversationCardId(trackId, TODAY_SUMMARY_CONVERSATION_KEY)) {
+    return row;
+  }
+  return { ...row, title: TODAY_SUMMARY_CONVERSATION_TITLE };
+}
 
 /**
  * Ask the server to write today's progress into Today's document (#1253 D5).
@@ -147,4 +165,57 @@ export function todaySummaryFailure(failure: ApiFailure): TodaySummaryFailure {
     return { kind: 'unavailable', message: `The agent service is not available: ${failure.message}` };
   }
   return { kind: 'error', message: failure.message };
+}
+
+/**
+ * `POST /api/today/launchpad/ensure` — materialise the launchpad track.
+ *
+ * **Not on any page-load path** (INV-TODAYDOC-001). It creates a workspace and
+ * then waits on a harness start, so a route that rendered it would fail
+ * hard whenever codex is down. Its one caller is the Today trigger, on a press,
+ * and the reason that is not the same thing is written out where it is called
+ * (`app/providers/queries.ts`).
+ *
+ * The response is `TodayLaunchpad`, a **different** shape from this module's
+ * `todayLaunchpadSchema`: it carries the launchpad's two card ids and no
+ * `report_has_noninitial_content`. Only `track_id` is read here — the trigger
+ * needs to know the launchpad exists, and the page re-reads its actual state
+ * through the resolve — and the rest is left unparsed rather than mirrored.
+ */
+export const todayLaunchpadEnsureSchema = z.object({ track_id: z.string() });
+
+export type TodayLaunchpadEnsureWire = z.infer<typeof todayLaunchpadEnsureSchema>;
+
+export function todayLaunchpadEnsureOperation(): ApiOperation<TodayLaunchpadEnsureWire> {
+  return {
+    method: 'POST',
+    path: '/api/today/launchpad/ensure',
+    responseSchema: todayLaunchpadEnsureSchema,
+  };
+}
+
+/**
+ * Classify a rejected `ensure`.
+ *
+ * Its own function rather than a `step` parameter on `todaySummaryFailure`,
+ * because the two endpoints answer different things and the difference is the
+ * whole point of the wording: `today_summary_no_activity` cannot come from here
+ * (`ensure` never looks at the day), and a 503 here means the harness would not
+ * start — the launchpad itself may well have been created, which is why the
+ * page refetches the resolve even after this failure.
+ *
+ * There is no `'no-activity'` branch and there must not be one: an empty day is
+ * a fact `POST /api/today/summary` alone can establish.
+ */
+export function todayLaunchpadEnsureFailure(failure: ApiFailure): TodaySummaryFailure {
+  if (failure.kind === 'transport' || failure.kind === 'decode') {
+    return { kind: 'error', message: failure.message };
+  }
+  if (failure.status === 503) {
+    return {
+      kind: 'unavailable',
+      message: `Today’s workspace could not be started: ${failure.message}`,
+    };
+  }
+  return { kind: 'error', message: `Today’s workspace could not be prepared: ${failure.message}` };
 }

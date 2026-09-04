@@ -77,6 +77,40 @@ describe('Today clock', () => {
   });
 });
 
+/*
+ * The week grid's label names the week, and the crossing week is the case that
+ * matters: a label reading one month over a grid of two is what put
+ * `August 2026` on the same screen as `Thursday, September 3`. A suite that only
+ * pinned a within-month week would have stayed green through exactly that bug,
+ * so the crossing weeks are the point and the within-month one is the control.
+ */
+describe('Today calendar label', () => {
+  it('names the single month when the week does not cross one', () => {
+    // NOW is Monday 10 August 2026, whose week is 10–16 August.
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
+    expect(screen.getByText('August 2026')).toBeTruthy();
+  });
+
+  it('names both months on a week that crosses one, agreeing with the page header', () => {
+    // Thursday 3 September 2026 — the day owner saw. Its week is 31 Aug – 6 Sep.
+    const nowMs = new Date(2026, 8, 3, 15, 0, 0).getTime();
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
+    expect(screen.getByText('Aug – Sep 2026')).toBeTruthy();
+    /* The pair, not just the label: the defect was the contradiction between
+       these two elements, so both are read in one test. */
+    expect(screen.getByRole('heading', { name: 'Thursday, September 3' })).toBeTruthy();
+    expect(screen.queryByText('August 2026')).toBeNull();
+  });
+
+  it('prints both years on a week that crosses one', () => {
+    // Thursday 31 December 2026 — week 28 Dec 2026 – 3 Jan 2027.
+    const nowMs = new Date(2026, 11, 31, 15, 0, 0).getTime();
+    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
+    /* `Dec – Jan 2027` would file December under 2027. */
+    expect(screen.getByText('Dec 2026 – Jan 2027')).toBeTruthy();
+  });
+});
+
 describe('Today agenda', () => {
   it('excludes archived tracks from counts, sections, calendar dots, and agenda', () => {
     render(<TodayPage

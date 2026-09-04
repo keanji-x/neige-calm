@@ -206,7 +206,7 @@ describe('planner conversation regressions', () => {
    * closes it, and none of that reaches the endpoint.
    */
   it('never posts to the planner reset endpoint, however the drawer is driven', async () => {
-    const { requests } = setupWithTurns();
+    const { requests, router } = setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
 
@@ -224,8 +224,13 @@ describe('planner conversation regressions', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: /Conversation Planner chat, on Test track/ });
+    /* And once more from a fresh mount of the route, since a caller that fires
+       on mount is the only kind the version this replaced could have caught.
+       Today no longer lists another track's conversations (#1341), so it is a
+       neutral mounted route to cross before returning here. */
+    await act(async () => { await router.navigate({ to: '/' }); });
+    await act(async () => { await router.navigate({ to: '/track/w1' }); });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
     expect(requests.filter((request) => request.path.endsWith('/planner/reset'))).toHaveLength(0);
     /* And the pressing above actually did something, so an inert sweep cannot
        pass this by touching nothing. */
@@ -267,42 +272,29 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('button', { name: 'Conversation Planner chat' })).toBeNull();
   });
 
-  it('keeps a track conversation on Today after navigating away from the track', async () => {
-    setup();
-    await openConversation();
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    const conversation = await screen.findByRole('button', {
-      name: 'Conversation Planner chat, on Test track, 0 turns',
-    });
-    expect(conversation.textContent).toContain('Test track');
-  });
-
   /*
-   * #1189 §5.1 / G5 — and the point is that the track was only *visited*.
+   * ── Three Today tests stood here, and #1341 revoked all three ──────────────
    *
-   * The row was never opened, so nothing here went through the open-row
-   * remember: the track route writes the rows it lists into the registry as it
-   * lists them, which is the only way an assistant conversation — which exists
-   * nowhere but in that list — can ever reach Today.
+   * They were `keeps a track conversation on Today after navigating away from
+   * the track`, `lists a track conversation on Today after merely visiting the
+   * track` and `navigates from a Today conversation to its track before opening
+   * it` — the #1189 S5 deliverable that Today lists the tab's cross-track
+   * visiting history and navigates into whichever track a row belongs to.
+   *
+   * Owner reversed the contract: Today lists the LAUNCHPAD track's own
+   * conversations, by the same rule this route uses for itself, and it opens
+   * them in place. A track other than the launchpad therefore contributes
+   * nothing to Today however often it is visited, so all three describe a
+   * behaviour that is not merely unimplemented but deliberately gone. The new
+   * contract, including the inverse of these three, is
+   * `today-conversation.test.tsx`; the cross-track index they were reaching for
+   * becomes its own card on its own issue.
+   *
+   * One assertion from the third is not about Today and survived the move: that
+   * no `/api/cards//` request is ever made — a card path built from an empty id.
+   * It is asserted there, where the empty id is now possible (a workspace with
+   * no launchpad yet).
    */
-  it('lists a track conversation on Today after merely visiting the track', async () => {
-    const { router } = setup();
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await router.navigate({ to: '/' });
-    await screen.findByRole('button', { name: 'Conversation Planner chat, on Test track' });
-  });
-
-  it('navigates from a Today conversation to its track before opening it', async () => {
-    const { requests } = setup();
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Planner chat, on Test track',
-    }));
-    await screen.findByRole('complementary', { name: 'Planner chat' });
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w1`);
-    expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
-  });
 
   /*
    * Three "after reset …" registry tests stood here. All three drove the same
@@ -312,13 +304,22 @@ describe('planner conversation regressions', () => {
    * invalidation raced. Reset was that mechanism's one and only writer, so the
    * fields are deleted with it and there is nothing left to suppress.
    *
-   * What was worth keeping from them is the part that is not about reset: the
-   * registry must still track a card through a card switch and still carry the
-   * conversation to Today. That is what the test below now does, driven by the
-   * card list changing under the route rather than by a reset.
+   * What was worth keeping from them is the part that is not about reset, and
+   * #1341 narrowed even that — so the claim is worth stating exactly, because a
+   * wider one was written here first and was not true.
+   *
+   * This asserts the **route**, not the registry: the list follows the track
+   * detail through a card swap and back, and the row the drawer is on is
+   * replaced in place by the counted one, twice, on one mounted panel. It used
+   * to end on Today and read the registry's memory of the swapped-out card;
+   * Today lists the launchpad's own conversations now (#1341) and this track is
+   * not the launchpad, so that ending is gone. Stubbing `registry.remember` to a
+   * no-op leaves this test green — which is the honest statement of its scope.
+   * What the registry still holds, and who still reads it, is
+   * `track-conversation.test.tsx`'s `registry write-through` block.
    */
-  it('remembers a card again after the open card is swapped and swapped back', async () => {
-    const { client, router } = setup((request) => request.path.includes('/harness/items')
+  it('follows a card swapped out and back, counting whichever row is open', async () => {
+    const { client } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(3)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     /* The open row is the one this route can count, so it is the one that grows
@@ -326,9 +327,6 @@ describe('planner conversation regressions', () => {
        arrived before the card is swapped underneath it. */
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
-    client.setQueryData(queryKeys.harnessItems(CARD_SAME_TRACK.id), {
-      pages: [harnessRows(3)], pageParams: [0],
-    });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD_SAME_TRACK], overlays: [] });
     /* The listed row is the swapped-in card, and the drawer's row is gone with
        the old one — a `'rows'` route lists what the server (here, the track
@@ -336,39 +334,29 @@ describe('planner conversation regressions', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, cards: [CARD], overlays: [] });
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await router.navigate({ to: '/' });
-    /* Both are on Today, and the first one still carries the transcript it was
-       remembered with — the swap did not cost it. */
-    await screen.findByRole('button', { name: 'Conversation Planner chat, on Test track, 3 turns' });
-    await screen.findByRole('button', { name: 'Conversation Other chat, on Test track, 3 turns' });
+    /* Swapped back, and reopened: the original row is listed again and counts
+       again. Both directions on one panel instance, which is what a route that
+       forked on its planner card could not do. */
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
   });
 
-  it('clears an unclaimed open request after a track without a planner card resolves', async () => {
-    let omitTargetCard = false;
-    const { client, router } = setup((request) => {
-      if (request.path === '/api/tracks/w1' && omitTargetCard) {
-        return ok({ track: TRACK, cards: [], overlays: [] });
-      }
-      if (request.path === '/api/tracks/w2') {
-        return ok({ track: TRACK_B, cards: [{ ...CARD, track_id: TRACK_B.id }], overlays: [] });
-      }
-      return undefined;
-    });
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await router.navigate({ to: '/' });
-    omitTargetCard = true;
-    client.removeQueries({ queryKey: queryKeys.trackDetail(TRACK.id) });
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Planner chat, on Test track',
-    }));
-    await screen.findByText('No cards yet.');
-    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
-
-    await router.navigate({ to: '/track/w2' });
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
-  });
+  /*
+   * `clears an unclaimed open request after a track without a planner card
+   * resolves` stood here, and #1341 took its producer away.
+   *
+   * An "open request" is a card id one route leaves in the registry for another
+   * route to redeem, and Today's cross-track list was the only thing that ever
+   * left one for a card the arriving track might not have. The one producer
+   * left is #1211's planner-open intent, which names a card of the very route it
+   * arms on and never names a missing one (`TrackRouteBody` returns early when
+   * there is no planner card). So this test had no production driver left, and
+   * keeping it would have meant driving the registry by hand to prove a rule
+   * about a request nothing makes.
+   *
+   * The clears themselves are kept as fail-safes and say so at their site; the
+   * cross-track card, on its own issue, is what would bring the producer back.
+   */
 
   it('renders a server-sent reply from the history fixture', async () => {
     setup((request) => request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined);
