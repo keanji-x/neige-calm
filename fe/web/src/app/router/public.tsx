@@ -1710,7 +1710,37 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
     }).finally(() => { setCreating(false); });
   };
 
+  /*
+   * A syntactically fine id for an area that has been deleted must not render a
+   * working composer: the reader types a sentence, presses Enter and only then
+   * eats a 4xx. The rail's own area list answers it, so no extra read.
+   *
+   * Three states of that read, three answers — and the composer is behind all
+   * of them. An earlier cut computed one `areaResolved` flag and refused only
+   * the settled-and-absent case, letting the other two **fall through to the
+   * form**: a cold deep link whose `GET /api/areas` was still in flight got a
+   * submittable composer with no answer behind it, and a 500 on that read
+   * (`areas: []`, not loading, error set) got one *permanently*. Both are the
+   * 4xx-after-typing this check exists to prevent, so the fall-through is now a
+   * refusal in each direction.
+   *
+   * `areasLoading` is `areasQuery.isLoading`, which TanStack v5 derives as
+   * `isPending && isFetching` — a read with **no cached list at all** that is
+   * currently fetching. A background refetch over a cached list is
+   * `isRefetching`, not `isLoading`, so this branch cannot swallow the composer
+   * on every revalidation; it is the first paint only.
+   */
   if (areaId === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
+  /* In flight, nothing cached. Nothing on screen rather than a skeleton, the
+     same answer the index route gives while this exact list loads: this frame
+     is one round trip long on a healthy server. */
+  if (workspace.areasLoading) return null;
+  /* The read failed, so "is this area still there" has no answer. The list is
+     the rail's, so this is the rail's own message and its own retry — not a
+     "could not be found" the server never said. */
+  if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
+  /* Settled and successful: `[]` now means empty, and absence means deleted. */
+  if (!workspace.areas.some((area) => area.id === areaId)) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
   return (
     <NewTrackForm
       submitting={creating}

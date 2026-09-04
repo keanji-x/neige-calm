@@ -2416,7 +2416,7 @@
   why: >
     源码注释:"the title-row `+` button is the visible trigger, and it stays mounted while the Dialog is open
     so Dialog's focus-restore lands keyboard users back on the `+` button after close."
-  source: web/src/pages/Area.tsx:419-443
+  source: web/src/pages/Area.tsx:119-130,145-155,414-438,474-477
   authoritative_test: NONE
   owner_slice: features/area/page
   intentional_omission: false
@@ -2434,7 +2434,15 @@
   why: >
     源码注释(#891 signoff round 2):"the owner wants the dialog to read as one cohesive card … the visible
     'New track' head is gone but the accessible name stays."
-  source: web/src/pages/Area.tsx:479-491
+  # The statement names four things, so the anchor names all four carriers.
+  # `Area.tsx:475-486` is the naming half (`title` + `hideTitleRow` + the
+  # `onClose` the two Dialog-owned dismissals call); the three close paths are
+  # implemented elsewhere and an anchor on the naming half alone survives
+  # deleting any of them: `Area.tsx:549-556` hands the form its Cancel handler,
+  # `NewTaskForm.tsx:813-820` is the Cancel control that fires it, and
+  # `Dialog.tsx:160-172` / `:340-349` are the Esc key handler and the overlay
+  # mousedown that call `onClose` themselves.
+  source: web/src/pages/Area.tsx:475-486,549-556; web/src/shared/components/NewTaskForm.tsx:813-820; web/src/ui/Dialog/Dialog.tsx:160-172,340-349
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: features/area/page
   intentional_omission: true
