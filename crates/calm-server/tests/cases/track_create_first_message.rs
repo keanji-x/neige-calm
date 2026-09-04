@@ -2204,8 +2204,12 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
         "premise: the old key is exhausted: body={poisoned_body}"
     );
 
+    // A distinct sentence, so the delivery assertion below is about THIS track.
+    // The poisoned track's harness was shut down before the disturbance, which
+    // drops anything still sitting in its pending queue — counting both copies
+    // would be counting a fixture artefact.
     let (fresh, fresh_body) = b
-        .create_track(Some("idem-fresh"), Some("ship the thing"))
+        .create_track(Some("idem-fresh"), Some("ship the OTHER thing"))
         .await;
     assert_eq!(
         fresh,
@@ -2226,9 +2230,10 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
         "…which really was materialized"
     );
     assert_eq!(
-        b.copies_in_harness("ship the thing", 2).await,
-        2,
-        "two distinct tracks, one delivery each"
+        b.copies_in_harness("ship the OTHER thing", 1).await,
+        1,
+        "and the recovered track really received its message — a 201 alone would not prove the \
+         recovery produced a WORKING track"
     );
     b.shutdown_harnesses().await;
 }
