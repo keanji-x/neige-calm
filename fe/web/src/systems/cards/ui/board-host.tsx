@@ -25,6 +25,11 @@ const PADDING = Object.freeze([0, 0] as const);
 const RESIZE_HANDLES = Object.freeze(['se'] as const);
 const DRAG_HANDLE = '.card-drag-handle';
 
+type ScheduledLayoutUpdate =
+  | Readonly<{ kind: 'scheduling' }>
+  | Readonly<{ kind: 'animation-frame'; handle: number }>
+  | Readonly<{ kind: 'timeout'; handle: ReturnType<typeof setTimeout> }>;
+
 export type BoardHostItem = Readonly<{
   card: RegisteredCard;
   title: string;
@@ -84,26 +89,48 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   );
 
   const pendingRef = useRef<Layout | null>(null);
-  const rafRef = useRef<number | null>(null);
+  const scheduledRef = useRef<ScheduledLayoutUpdate | null>(null);
   const persistLayout = useCallback((next: Layout) => {
     pendingRef.current = next;
-    if (rafRef.current !== null) return;
-    const schedule = typeof requestAnimationFrame === 'function'
-      ? requestAnimationFrame
-      : (cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 0) as unknown as number;
-    rafRef.current = schedule(() => {
-      rafRef.current = null;
+    if (scheduledRef.current !== null) return;
+
+    const scheduling: ScheduledLayoutUpdate = { kind: 'scheduling' };
+    scheduledRef.current = scheduling;
+    const flush = () => {
+      scheduledRef.current = null;
       const latched = pendingRef.current;
       pendingRef.current = null;
       if (latched === null) return;
       setStored(layoutToPositions(latched));
-    });
+    };
+
+    if (
+      typeof requestAnimationFrame === 'function'
+      && typeof cancelAnimationFrame === 'function'
+    ) {
+      const handle = requestAnimationFrame(flush);
+      if (scheduledRef.current === scheduling) {
+        scheduledRef.current = { kind: 'animation-frame', handle };
+      }
+      return;
+    }
+
+    const handle = setTimeout(flush, 0);
+    if (scheduledRef.current === scheduling) {
+      scheduledRef.current = { kind: 'timeout', handle };
+    }
   }, []);
 
   useEffect(() => () => {
-    if (rafRef.current === null) return;
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
+    const scheduled = scheduledRef.current;
+    scheduledRef.current = null;
+    pendingRef.current = null;
+    if (scheduled === null || scheduled.kind === 'scheduling') return;
+    if (scheduled.kind === 'animation-frame') {
+      cancelAnimationFrame(scheduled.handle);
+    } else {
+      clearTimeout(scheduled.handle);
+    }
   }, []);
 
   return (
@@ -178,7 +205,7 @@ function BoardCell({ host, item, focused, visible, onRemove }: {
   useLayoutEffect(() => {
     mountedRef.current?.host.setVisible(visible);
     mountedRef.current?.host.setFocused(focused);
-  }, [visible, focused]);
+  }, [host, cardId, visible, focused]);
 
   if (Component === undefined || capabilities === null) {
     return (
