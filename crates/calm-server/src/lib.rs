@@ -651,11 +651,12 @@ pub mod report_backlinks;
 ///     lost fence, a missing contract prefix, a normalization applied to the
 ///     wrong thing.
 ///   * **Cannot see** — anything that moves *both* sides at once, because both
-///     sides go through this module's own `key → recipe` match and its shared
-///     `split_body` / `parse_fence` / `render_fence`. Concretely: swapping two
-///     arms of [`templates::template_report`], rewriting a recipe's content,
-///     retitling a [`templates::TEMPLATES`] entry, or a fence renderer that
-///     drops the same field on both roads.
+///     sides go through this module's own key → recipe association and its
+///     shared `split_body` / `parse_fence` / `render_fence`. Concretely:
+///     swapping two [`templates::TEMPLATES`] entries' `build_recipe` (#1321 S3
+///     — that association was a second `match`, `template_report`, when this
+///     paragraph was written), rewriting a recipe's content, retitling a roster
+///     entry, or a fence renderer that drops the same field on both roads.
 ///
 /// It compares values, not provenance — which is why the first bullet says
 /// *value* and not "reads these constants". Repoint the instantiation path at

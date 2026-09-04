@@ -70,9 +70,9 @@
 //! removal quietly comes back.
 
 use crate::error::{ErrorBody, Result};
-use crate::routes::tracks::resolve_template_binding;
+use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
-use crate::templates::{TEMPLATES, task_payload_key_and_goal, template_task_payloads};
+use crate::templates::{TEMPLATES, Template, task_payload_key_and_goal};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -129,7 +129,11 @@ pub struct TrackTemplateTask {
     tag = "tracks",
     responses(
         (status = 200, description = "Selectable track templates", body = Vec<TrackTemplate>),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        // #1321 S3 — reachable, not boilerplate: a roster recipe that does not
+        // compile answers 500 here for the same reason `POST /api/tracks`
+        // answers 500 for it, instead of a 200 with an empty title and a
+        // shortened task list.
+        (status = 500, description = "A built-in recipe did not compile", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_track_templates(
@@ -144,7 +148,7 @@ pub(crate) async fn list_track_templates(
         let input_schema = resolve_template_binding(&s, template)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
-        let definition = current_definition(template.key());
+        let definition = current_definition(template)?;
         templates.push(TrackTemplate {
             id: template.key().to_string(),
             title: definition.title,
@@ -181,23 +185,39 @@ pub(crate) async fn list_track_templates(
 /// the property worth being able to point at.
 struct Definition {
     title: String,
-    /// Whole task-block payloads, never a narrowed struct — see
-    /// `template_task_payloads_from_body` for why that distinction is
-    /// load-bearing rather than stylistic.
+    /// Whole task-block payloads, never a narrowed struct — the projection to
+    /// `key` + `goal` happens at the last moment, in the handler.
     tasks: Vec<Value>,
 }
 
-fn current_definition(key: &str) -> Definition {
-    // `unwrap_or_default` is unreachable for a `TEMPLATES` key and stays a
-    // default rather than a panic: both tables are keyed off the same
-    // constants, and `listed_tasks_are_exactly_the_report_task_blocks` fails
-    // loudly if one ever grows an entry the other lacks.
-    Definition {
-        title: TEMPLATES
-            .iter()
-            .find(|template| template.key() == key)
-            .map(|template| template.title().to_string())
-            .unwrap_or_default(),
-        tasks: template_task_payloads(key).unwrap_or_default(),
-    }
+/// #1321 S3 — fallible, and reading the *compiled* recipe.
+///
+/// Both changes are one change. This used to call `template_task_payloads`,
+/// which re-parsed the rendered recipe body leniently, and then
+/// `unwrap_or_default()` on both halves. Neither degradation was reachable
+/// through a bad request — the only input is a roster entry — so both could
+/// only ever fire on a kernel defect, and both answered it with a 200 carrying
+/// an empty title or a silently shortened task list. `POST /api/tracks` refuses
+/// the same recipe with `CalmError::Internal`
+/// (`routes::tracks::prepare_template_report`); this endpoint now fails the same
+/// way, off the same `compile_template` call, so the picker cannot advertise a
+/// template create would refuse.
+///
+/// KNOWN GAP — no automated test covers the error arm, and none can be written
+/// from a test: the only input is a `&'static Template` borrowed from
+/// [`TEMPLATES`], whose `build_recipe` is a private field of a module-private
+/// constructor (`templates.rs`), so a non-compiling roster recipe is not
+/// constructible outside that module. It was verified by mutation instead —
+/// corrupting one built-in recipe body and observing which test goes red; the
+/// #1321 S3 commit message records the test name and its message.
+fn current_definition(template: &Template) -> Result<Definition> {
+    let compiled = compile_template(template)?;
+    Ok(Definition {
+        title: template.title().to_string(),
+        tasks: compiled
+            .task_block_payloads()?
+            .into_iter()
+            .cloned()
+            .collect(),
+    })
 }

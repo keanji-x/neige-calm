@@ -1878,8 +1878,9 @@ async fn both_spellings_together_are_an_unknown_field() {
 fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
 
-    let recipe = calm_server::templates::template_report(key)
-        .unwrap_or_else(|| panic!("`{key}` is not a known template"));
+    let recipe = calm_server::templates::template_by_key(key)
+        .unwrap_or_else(|| panic!("`{key}` is not a known template"))
+        .recipe();
     let mut body = String::new();
     let mut tasks = Vec::new();
     for slice in split_body(&recipe.body) {
@@ -1918,13 +1919,14 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
 ///
 /// The exact-recipe half of `listed_template_keys_create_their_exact_recipes`
 /// derives its expectation
-/// from `templates::template_report`, which is the production `key → recipe`
-/// match itself. That is the right call for *content* — it is what stops the
+/// from `Template::recipe` on the roster entry, which is the production
+/// `key → recipe` association itself (#1321 S3 made the roster entry that
+/// association; it was a second `match`, `template_report`, before). That is the right call for *content* — it is what stops the
 /// case being a change detector over kilobytes of prose — but it means the two
 /// sides of that comparison share the mapping, so a class of drift moves both
 /// and stays green:
 ///
-///   * swapping two arms of the `template_report` match (`SMALL_CHANGE` returns
+///   * swapping two roster entries' `build_recipe` (`SMALL_CHANGE` builds
 ///     `investigation_report()`);
 ///   * a recipe rewritten wholesale into a different workflow;
 ///   * a `TEMPLATES` entry whose `title` no longer describes its `key`.

@@ -1,11 +1,16 @@
 //! Template recipes — the report a `template_id` create starts from.
 //!
 //! Three recipes hold the former git-forge plan as report `task` blocks, as
-//! **Rust constants**: [`TEMPLATES`] is the roster and [`template_report`] maps
-//! a key to the report it instantiates to. `POST /api/tracks` with a matching
-//! `template_id` builds that report inside its own create transaction
-//! (`routes::tracks::prepare_template_report`), reading nothing from the
-//! database.
+//! **Rust constants**: [`TEMPLATES`] is the roster, and each entry carries its
+//! own recipe builder ([`Template::recipe`]) beside its key and title.
+//! `POST /api/tracks` with a matching `template_id` builds that report inside
+//! its own create transaction (`routes::tracks::prepare_template_report`),
+//! reading nothing from the database.
+//!
+//! #1321 S3 — the key→recipe association used to be a second `match` beside
+//! [`TEMPLATES`] (`template_report`), plus a third `#[cfg(test)]` one
+//! (`template_tasks`). Three tables keyed off the same three constants is three
+//! places to keep in sync; the roster entry is now the only one.
 //!
 //! #1300 S2 — through #1110 S6 this module described the same three plans as
 //! *seeded system-area template tracks*, discovered through an overlay payload
@@ -17,7 +22,12 @@
 
 use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::track_report::TrackReportPayload;
-use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
+use calm_types::report_blocks::render_fence;
+// #1321 S3 — the lenient body reader that needed these went `#[cfg(test)]`
+// with this slice; production reads the compiled blocks instead
+// (`routes::tracks::InitialReportSnapshot::task_block_payloads`).
+#[cfg(test)]
+use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
 use calm_types::track_report::report_contract_prefix_for_template;
 use serde_json::{Value, json};
 
@@ -28,7 +38,7 @@ pub const INVESTIGATION: &str = "investigation";
 /// One roster entry. **Constructible only inside this module and its
 /// descendants — in safe Rust.**
 ///
-/// #1318 S2 (第二轮评审 MAJOR) — both fields are private and there is no
+/// #1318 S2 (第二轮评审 MAJOR) — every field is private and there is no
 /// constructor, no `Clone`, no `Copy` and no `Default`, so a struct literal
 /// written outside this module's subtree is `E0451` and `*template` cannot be
 /// moved out of a borrow either. That is what the compiler checks about "a
@@ -67,6 +77,11 @@ pub const INVESTIGATION: &str = "investigation";
 pub struct Template {
     key: &'static str,
     title: &'static str,
+    /// #1321 S3 — this entry's recipe, as the function that builds it. Holding
+    /// the builder here is what makes the roster the only key→recipe table in
+    /// this file: an entry cannot be listed without naming the recipe it
+    /// instantiates to, and there is no second `match` to disagree with.
+    build_recipe: fn() -> TrackReportPayload,
 }
 
 impl Template {
@@ -79,6 +94,21 @@ impl Template {
     pub fn title(&self) -> &'static str {
         self.title
     }
+
+    /// Build this entry's recipe: the summary and body a `template_id` create
+    /// instantiates from.
+    ///
+    /// Freshly built on every call — the recipes are `String`-valued constants
+    /// assembled by [`report_from_tasks`], not a cached value — so nothing a
+    /// caller does to the returned payload is visible to the next caller.
+    ///
+    /// This is the *un*compiled recipe. `POST /api/tracks` and
+    /// `GET /api/track-templates` both reach it through
+    /// `routes::tracks::compile_template`, which validates the body and
+    /// projects it; neither reads this directly.
+    pub fn recipe(&self) -> TrackReportPayload {
+        (self.build_recipe)()
+    }
 }
 
 /// The template roster. `static`, not `const`, so [`template_by_key`] can
@@ -87,14 +117,17 @@ pub static TEMPLATES: [Template; 3] = [
     Template {
         key: ISSUE_DEVELOPMENT,
         title: "Issue development",
+        build_recipe: issue_development_report,
     },
     Template {
         key: SMALL_CHANGE,
         title: "Small change",
+        build_recipe: small_change_report,
     },
     Template {
         key: INVESTIGATION,
         title: "Investigation",
+        build_recipe: investigation_report,
     },
 ];
 
@@ -119,38 +152,25 @@ pub fn template_by_key(key: &str) -> Option<&'static Template> {
     TEMPLATES.iter().find(|template| template.key == key)
 }
 
-pub fn template_report(key: &str) -> Option<TrackReportPayload> {
-    match key {
-        ISSUE_DEVELOPMENT => Some(issue_development_report()),
-        SMALL_CHANGE => Some(small_change_report()),
-        INVESTIGATION => Some(investigation_report()),
-        _ => None,
-    }
-}
-
-/// The typed task list a template's constants declare, **for tests only**.
-///
-/// #1209 had `GET /api/track-templates` read the picker's task list through this
-/// function. #1230 moved the production read onto
-/// [`template_task_payloads`], which returns whole task-block payloads
-/// rather than a struct that models only some of the vocabulary — see
-/// [`template_task_payloads_from_body`] for why that distinction is
-/// load-bearing. What is left here is the authored source the tests compare
-/// against, so `the_picker_projection_matches_the_constant_task_list` is
-/// checking the payload path against a hand-written list and not against
-/// itself.
-#[cfg(test)]
-pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
-    match key {
-        ISSUE_DEVELOPMENT => Some(issue_development_tasks()),
-        SMALL_CHANGE => Some(small_change_tasks()),
-        INVESTIGATION => Some(investigation_tasks()),
-        _ => None,
-    }
-}
-
 /// Read the task blocks back out of a rendered template report body, **as the
-/// payloads they are**.
+/// payloads they are** — `#[cfg(test)]` since #1321 S3.
+///
+/// ## What reads this, and what does not
+///
+/// Nothing in this crate outside `#[cfg(test)]` calls it: I grepped
+/// `template_task_payloads_from_body` over `crates/`, `fe/`, `web/` and
+/// `scripts/`, and the remaining call sites are this module's own tests and
+/// `repro_1239`. Its production caller was `template_task_payloads`, which
+/// `GET /api/track-templates` used to re-parse a rendered recipe body with;
+/// #1321 S3 pointed that endpoint at `routes::tracks::compile_template`
+/// instead, so the picker now projects from the same validated blocks the
+/// create path builds rather than from a second, lenient parse of the same
+/// bytes.
+///
+/// It stays as the *independent* reader the tests below compare that
+/// projection against: an assertion that walks the body with `split_body` /
+/// `parse_fence` is checking the compiled result against something, rather than
+/// against itself.
 ///
 /// ## Why this returns `Value` and not `PlanTaskInput`
 ///
@@ -178,14 +198,19 @@ pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
 /// carried whole.
 ///
 /// #1300 S1 deleted the Settings editor this paragraph used to name as the
-/// consumer. The reason to keep the payload whole did not go with it: the read
-/// still feeds `POST /api/tracks`, so a field this function dropped would be a
-/// field an instantiated track never receives.
+/// consumer. The reason to keep the payload whole outlived it, and outlives
+/// this function's demotion to tests: the same "keep the whole payload"
+/// property is what the create path's own reader (`ReportDoc::blocks_snapshot`,
+/// via `routes::tracks::prepare_initial_report_payload`) provides, and a field
+/// dropped there is a field an instantiated track never receives.
 ///
 /// Still lenient in the one way `split_body` is: a slice that is not a
 /// well-formed `task` fence — prose, another kind, unparseable JSON — is
 /// skipped. That is leniency about *shape*, which the parser has already
-/// decided, not about vocabulary.
+/// decided, not about vocabulary. That leniency is exactly why this is not the
+/// production reader: on this path an unparseable fence silently becomes prose
+/// and its task disappears, whereas `compile_template` refuses the recipe.
+#[cfg(test)]
 pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
     split_body(body)
         .iter()
@@ -199,10 +224,10 @@ pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
 /// a payload that has neither (a tombstone).
 ///
 /// Used by the read side to answer "what tasks does this template pre-set" for
-/// the New track picker. Tombstones are *not* tasks the picker should advertise,
-/// but they must still survive the read untouched — which is why the
-/// filtering happens here, at the projection, and never in
-/// [`template_task_payloads_from_body`].
+/// the New track picker (`routes::track_templates::current_definition`).
+/// Tombstones are *not* tasks the picker should advertise, but they must still
+/// survive the read untouched — which is why the filtering happens here, at the
+/// projection, and never in the reader that produced the payloads.
 pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
     if payload
         .get("tombstone")
@@ -213,14 +238,6 @@ pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
     let key = payload.get("key")?.as_str()?.to_string();
     let goal = payload.get("goal")?.as_str()?.to_string();
     Some((key, goal))
-}
-
-/// The task payloads a template's built-in constants render to, for the
-/// not-yet-seeded case. Same shape the body would yield, so the read side has
-/// one type on both branches.
-pub fn template_task_payloads(key: &str) -> Option<Vec<Value>> {
-    let body = template_report(key)?.body;
-    Some(template_task_payloads_from_body(&body))
 }
 
 /// Placeholder so `require_task_gates` does not treat these as scheduled
@@ -536,6 +553,23 @@ mod tests {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
     use std::collections::BTreeSet;
 
+    /// Each recipe builder beside the task list it is built from.
+    ///
+    /// #1321 S3 — deliberately **not** keyed by template key. The key→recipe
+    /// association is [`TEMPLATES`] and nowhere else in this file; a test table
+    /// spelling `ISSUE_DEVELOPMENT => issue_development_tasks()` would be the
+    /// third copy of exactly the mapping this slice deleted. What this pairs is
+    /// a `*_report()` with its own `*_tasks()`, which is the construction the
+    /// tests below check and is not expressible through the roster.
+    type BuildRecipe = fn() -> TrackReportPayload;
+    type BuildTasks = fn() -> Vec<PlanTaskInput>;
+
+    const RECIPE_AND_TASKS: [(BuildRecipe, BuildTasks); 3] = [
+        (issue_development_report, issue_development_tasks),
+        (small_change_report, small_change_tasks),
+        (investigation_report, investigation_tasks),
+    ];
+
     /// #1230 — reading a task block out of a body and rendering it back must be
     /// an **identity on the payload**, not merely agree on the fields some
     /// struct happens to model. The first cut deserialized into
@@ -550,8 +584,9 @@ mod tests {
     /// report's blocks and not about this module's constants.
     #[test]
     fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
-        for key in TEMPLATES.iter().map(|template| template.key) {
-            let body = template_report(key).expect("known key").body;
+        for template in &TEMPLATES {
+            let key = template.key();
+            let body = template.recipe().body;
             let payloads = template_task_payloads_from_body(&body);
             assert!(!payloads.is_empty(), "{key}: no task payloads parsed");
             for payload in &payloads {
@@ -564,21 +599,26 @@ mod tests {
         }
     }
 
-    /// The picker projection still sees exactly the constants' keys and goals.
+    /// The `key`/`goal` projection still sees exactly the authored task list.
+    ///
+    /// This is about `report_from_tasks` → body → projection, not about the
+    /// HTTP picker: `GET /api/track-templates` projects from the compiled
+    /// blocks (`routes::tracks::compile_template`), and that its response
+    /// carries these same keys in order is pinned over HTTP by
+    /// `track_templates_read::every_template_lists_the_tasks_its_report_pre_sets`.
     #[test]
-    fn the_picker_projection_matches_the_constant_task_list() {
-        for key in TEMPLATES.iter().map(|template| template.key) {
-            let expected: Vec<(String, String)> = template_tasks(key)
-                .expect("known key")
+    fn the_body_projection_matches_the_constant_task_list() {
+        for (build_recipe, build_tasks) in RECIPE_AND_TASKS {
+            let recipe = build_recipe();
+            let expected: Vec<(String, String)> = build_tasks()
                 .into_iter()
                 .map(|task| (task.key, task.goal))
                 .collect();
-            let projected: Vec<(String, String)> =
-                template_task_payloads_from_body(&template_report(key).unwrap().body)
-                    .iter()
-                    .filter_map(task_payload_key_and_goal)
-                    .collect();
-            assert_eq!(projected, expected, "{key}");
+            let projected: Vec<(String, String)> = template_task_payloads_from_body(&recipe.body)
+                .iter()
+                .filter_map(task_payload_key_and_goal)
+                .collect();
+            assert_eq!(projected, expected, "{}", recipe.summary);
         }
     }
 
@@ -587,7 +627,7 @@ mod tests {
     /// function's doc, exercised rather than asserted.
     #[test]
     fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
-        let mut body = template_report(SMALL_CHANGE).expect("known key").body;
+        let mut body = small_change_report().body;
         let before = template_task_payloads_from_body(&body).len();
         body.push_str("\n## Notes\n\nSomething the user typed.\n\n");
         body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
@@ -731,12 +771,16 @@ mod tests {
             let key = template.key;
             assert!(template_by_key(key).is_some());
             assert_eq!(template_by_key(key).map(|found| found.key), Some(key));
-            assert!(template_report(key).is_some());
-            assert!(template_tasks(key).is_some());
+            // #1321 S3 — every roster entry answers with a non-empty recipe.
+            // Before this slice a fourth entry could be added with no `match`
+            // arm beside it and `template_report` would have returned `None`;
+            // now the field is required to construct the entry at all, so what
+            // is left to check is that the builder produces something.
+            let recipe = template.recipe();
+            assert!(!recipe.summary.is_empty(), "{key}: empty recipe summary");
+            assert!(!recipe.body.is_empty(), "{key}: empty recipe body");
         }
         assert!(template_by_key("missing-template").is_none());
-        assert!(template_report("missing-template").is_none());
-        assert!(template_tasks("missing-template").is_none());
     }
 
     /// #1318 S2 — `template_by_key` hands back a borrow **into** [`TEMPLATES`],
@@ -753,7 +797,8 @@ mod tests {
     /// The mutation this catches is not hypothetical: any case-folding or
     /// aliasing rule that reflects the caller's spelling back — e.g.
     /// `TEMPLATES.iter().find(..).map(|t| &*Box::leak(Box::new(Template {
-    /// key: String::leak(key.to_string()), title: t.title })))` — still
+    /// key: String::leak(key.to_string()), title: t.title,
+    /// build_recipe: t.build_recipe })))` — still
     /// returns an equal key and turns this test red. (The leak is not
     /// incidental: the signature returns `Option<&'static Template>`, so a
     /// mutation that rebuilds the entry has to leak it to compile at all. The
@@ -830,10 +875,11 @@ mod tests {
     }
 
     /// #1209 — the picker's tooltip lists a template's pre-set tasks, and it
-    /// reads them from `template_tasks`. That is only honest while the
-    /// list is the *same* slice the report renders: a task added to the report
-    /// but not to the list (or a list entry that seeds nothing) would make the
-    /// tooltip promise something the forked report does not contain.
+    /// reads them out of the recipe body. That is only honest while the body's
+    /// `task` fences are the *same* slice the authored `*_tasks()` list holds:
+    /// a task added to the report but not to the list (or a list entry that
+    /// renders no fence) would make the tooltip promise something the
+    /// instantiated report does not contain.
     ///
     /// ## What this can and cannot catch
     ///
@@ -846,7 +892,7 @@ mod tests {
     /// a task quietly dropped from the list) fails here immediately.
     ///
     /// The drift that actually reaches the picker — the route serving a
-    /// different list than the one seeded — is out of this module's reach and
+    /// different list than the one the recipe renders — is out of this module's reach and
     /// is pinned in
     /// `tests/cases/track_templates_read.rs::every_template_lists_the_tasks_its_report_pre_sets`,
     /// which asserts the HTTP response's keys in order.
@@ -858,22 +904,23 @@ mod tests {
     /// been the fragile version — any nested payload carrying that literal
     /// would have made it fail for the wrong reason. Both halves were measured
     /// by mutation, not asserted: appending one extra `task` fence to every
-    /// seeded body turns this red on the key set (`ghost` shows up on the right
+    /// recipe body turns this red on the key set (`ghost` shows up on the right
     /// of the diff), while giving each task a `context` of `{"key": "..."}`
     /// leaves it green and would have taken the old count from 3 to 6 on
     /// `small-change` alone.
     #[test]
     fn listed_tasks_are_exactly_the_report_task_blocks() {
-        for template in &TEMPLATES {
-            let key = template.key;
-            let tasks = template_tasks(key).expect("known key");
-            let body = template_report(key).expect("known key").body;
+        for (build_recipe, build_tasks) in RECIPE_AND_TASKS {
+            let recipe = build_recipe();
+            let key = recipe.summary.clone();
+            let tasks = build_tasks();
+            let body = recipe.body;
             assert!(!tasks.is_empty(), "{key} lists no tasks");
 
             // The report's own reader, not a string scan: `split_body` cuts the
             // well-formed fences out and `parse_fence` gives their payloads, so
-            // this sees exactly the task blocks a forked track would.
-            let mut seeded: Vec<String> = Vec::new();
+            // this sees exactly the task blocks an instantiated track would.
+            let mut fenced_keys: Vec<String> = Vec::new();
             for slice in split_body(&body) {
                 let Some(fence) = parse_fence(&slice.raw) else {
                     continue;
@@ -881,7 +928,7 @@ mod tests {
                 if fence.kind != KIND_TASK {
                     continue;
                 }
-                seeded.push(
+                fenced_keys.push(
                     fence.payload["key"]
                         .as_str()
                         .unwrap_or_else(|| panic!("{key}: task block without a string key"))
@@ -889,26 +936,26 @@ mod tests {
                 );
             }
 
-            let mut unique = seeded.clone();
+            let mut unique = fenced_keys.clone();
             unique.sort();
             unique.dedup();
             assert_eq!(
                 unique.len(),
-                seeded.len(),
-                "{key}: the seeded report declares the same task key twice: {seeded:?}"
+                fenced_keys.len(),
+                "{key}: the recipe declares the same task key twice: {fenced_keys:?}"
             );
 
             let listed: BTreeSet<&str> = tasks.iter().map(|task| task.key.as_str()).collect();
-            let fenced: BTreeSet<&str> = seeded.iter().map(String::as_str).collect();
+            let fenced: BTreeSet<&str> = fenced_keys.iter().map(String::as_str).collect();
             assert_eq!(
                 listed, fenced,
-                "{key}: the advertised task keys and the seeded task blocks differ"
+                "{key}: the advertised task keys and the recipe's task blocks differ"
             );
 
             for task in &tasks {
                 assert!(
                     body.contains(&task.goal),
-                    "{key}: listed goal for {} is not the seeded goal",
+                    "{key}: listed goal for {} is not the recipe's goal",
                     task.key
                 );
             }
@@ -930,7 +977,7 @@ mod repro_1239 {
     /// whole-document rewrite.
     #[test]
     fn a_wellformed_task_fence_with_task_block_vocabulary_is_silently_dropped() {
-        let mut body = template_report(SMALL_CHANGE).expect("known key").body;
+        let mut body = small_change_report().body;
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({
@@ -958,7 +1005,7 @@ mod repro_1239 {
     /// nothing stops the rewrite from erasing it.
     #[test]
     fn a_task_tombstone_is_not_erased_by_the_read() {
-        let mut body = template_report(INVESTIGATION).expect("known key").body;
+        let mut body = investigation_report().body;
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({

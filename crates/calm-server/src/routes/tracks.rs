@@ -61,7 +61,7 @@ use crate::routes::conversations_shared::validate_first_message;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::templates::{Template, template_by_key, template_report};
+use crate::templates::{Template, template_by_key};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{track_get_tx, validate_transition};
@@ -475,9 +475,29 @@ fn user_visible_track(track: &Track) -> bool {
 /// bad request. (`prepare_fork_report` answers `BadRequest` for the same checks
 /// because its input is another track's user content.)
 fn prepare_template_report(key: &str) -> Result<InitialReportSnapshot> {
-    let payload = template_report(key)
+    let template = template_by_key(key)
         .ok_or_else(|| CalmError::Internal(format!("track create: unknown template `{key}`")))?;
-    prepare_initial_report_payload(key, payload)
+    compile_template(template)
+}
+
+/// Compile one **built-in roster** entry: recipe bytes in, validated report
+/// plus task declarations out.
+///
+/// #1321 S3 — the one compiler for the roster half. Two callers reach it:
+/// `POST /api/tracks` through [`prepare_template_report`], and
+/// `GET /api/track-templates` (`routes::track_templates::current_definition`),
+/// which projects the picker's task list off the result rather than re-parsing
+/// the rendered body. Those two are the call sites `grep -rn compile_template
+/// crates/ fe/ web/ scripts/` reports outside `#[cfg(test)]`.
+///
+/// This governs the roster half only. User-authored recipes (#1292) are
+/// validated at their write boundary in `routes::track_recipes`, which answers
+/// `BadRequest` — a user's bad body is a bad request, while a roster recipe
+/// that does not compile is a kernel defect and stays `Internal`. Both
+/// eventually run the same [`prepare_initial_report_payload`] core; what
+/// differs is which failures each side can produce and how it answers them.
+pub(super) fn compile_template(template: &Template) -> Result<InitialReportSnapshot> {
+    prepare_initial_report_payload(template.key(), template.recipe())
 }
 
 /// The recipe-to-snapshot core, taking the payload rather than the key.
@@ -505,7 +525,12 @@ fn prepare_initial_report_payload(
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
     let mut prepared = TrackReportPayload::new(summary, body);
     prepared.blocks = Some(blocks);
-    Ok((prepared, doc, declarations, diagnostics))
+    Ok(InitialReportSnapshot {
+        payload: prepared,
+        doc,
+        declarations,
+        diagnostics,
+    })
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -927,8 +952,9 @@ pub(crate) async fn create_track(
 /// plugin binding that comes with it.
 ///
 /// The word *admission* is the point: this answers **admission**, not "what
-/// does the template look like". The authority for the latter is
-/// `templates::template_report`, a Rust constant — which is why there is no
+/// does the template look like". The authority for the latter is the roster
+/// entry's own `build_recipe` (`templates::Template::recipe`), a Rust constant
+/// — which is why there is no
 /// `title` and no report here. (#1300: before S2 the authority was a seeded
 /// system-area template track found by a database lookup, and this sentence
 /// named it. Both the track and the lookup are gone.)
@@ -962,8 +988,9 @@ impl TemplateAdmission {
     ///
     /// It reaches **all three** consumers of an admitted id:
     ///
-    ///   * the **recipe lookup** (`templates::template_report`) inside the
-    ///     create transaction, via `TrackInit::Template { key }`;
+    ///   * the **recipe lookup** (`templates::template_by_key`, then
+    ///     `Template::recipe`) inside the create transaction, via
+    ///     `TrackInit::Template { key }`;
     ///   * the **track row**, since #1318 S2: `create_track` overwrites
     ///     `NewTrack::template_id` with `admission.key()` before the insert, so
     ///     `tracks.template_id` stores the roster's spelling;
@@ -1082,7 +1109,7 @@ impl TemplateAdmission {
 /// admitted id is byte-equal to a roster key; both surviving consumers of
 /// [`TemplateAdmission::key`] read the roster borrow; and an un-normalized key
 /// that somehow reached the create transaction would not silently mis-seed —
-/// `templates::template_report`'s exact `match` returns `None`, so
+/// `templates::template_by_key`'s exact match returns `None`, so
 /// [`prepare_template_report`] raises `CalmError::Internal` and the create
 /// fails loudly instead.
 ///
@@ -1656,7 +1683,13 @@ async fn create_track_structure(
                 .await?;
 
                 let mut init_projection = None;
-                if let Some((payload, mut doc, declarations, diagnostics)) = init_snapshot {
+                if let Some(InitialReportSnapshot {
+                    payload,
+                    mut doc,
+                    declarations,
+                    diagnostics,
+                }) = init_snapshot
+                {
                     // #1252 S2 — the structural door of the report write
                     // boundary. It takes no author, no actor, no event bus and
                     // no CAS input, so neither of the two things this closure
@@ -1961,12 +1994,49 @@ async fn start_planner_harness(
     Ok(())
 }
 
-type InitialReportSnapshot = (
-    TrackReportPayload,
-    ReportDoc,
-    Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
-    Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
-);
+/// The compiled starting report a create instantiates, before it is persisted.
+///
+/// #1321 S3 — a named struct rather than the 4-tuple this used to be. The
+/// producers ([`prepare_initial_report_payload`], [`prepare_fork_report`]) and
+/// the single consumer (`structural_init_report_tx`, called from
+/// `create_track_structure`) all name the same four things, and a tuple made
+/// `.2` vs `.3` — declarations vs diagnostics, both `Vec`s — a positional
+/// question.
+pub(super) struct InitialReportSnapshot {
+    payload: TrackReportPayload,
+    doc: ReportDoc,
+    declarations: Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
+    diagnostics: Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
+}
+
+impl InitialReportSnapshot {
+    /// The compiled `task` blocks' payloads, in document order.
+    ///
+    /// Read off [`Self::payload`]'s blocks — the ones
+    /// [`prepare_initial_report_payload`] took from `ReportDoc`, after
+    /// `validate_body_fences` accepted the body — so a fence this returns is a
+    /// fence that parsed and passed its schema. It is not a second parse of the
+    /// body: `GET /api/track-templates` used to run one (`split_body` →
+    /// `parse_fence` → `filter_map`), where a fence that failed to parse was
+    /// silently demoted to prose and its task disappeared from the picker.
+    ///
+    /// `None` blocks is `Internal`, not an empty list: every construction site
+    /// of this struct sets them (`prepare_initial_report_payload` and
+    /// `prepare_fork_report`, the two `Ok(InitialReportSnapshot { .. })` in this
+    /// file), so absence is a defect rather than "this report has no tasks".
+    pub(super) fn task_block_payloads(&self) -> Result<Vec<&serde_json::Value>> {
+        let blocks = self.payload.blocks.as_ref().ok_or_else(|| {
+            CalmError::Internal(
+                "compiled initial report carries no blocks snapshot to project".to_string(),
+            )
+        })?;
+        Ok(blocks
+            .iter()
+            .filter(|block| block.kind == calm_types::report_blocks::KIND_TASK)
+            .map(|block| &block.payload)
+            .collect())
+    }
+}
 
 // #1252 S2 — `persist_initial_report_and_project_tasks_tx` used to live here.
 // It was the second production caller of `card_update_with_crdt_tx`, i.e. the
@@ -2155,7 +2225,12 @@ fn prepare_fork_report(
             .map(flat_text)
             .collect::<String>()
     );
-    Ok((payload, doc, declarations, diagnostics))
+    Ok(InitialReportSnapshot {
+        payload,
+        doc,
+        declarations,
+        diagnostics,
+    })
 }
 
 /// The payload production writes on a planner-harness card.
@@ -3693,10 +3768,11 @@ mod tests {
     fn every_recipe_instantiates_and_declares_its_tasks() {
         for template in &TEMPLATES {
             let key = template.key();
-            let (payload, _doc, declarations, _diagnostics) = prepare_template_report(key)
-                .unwrap_or_else(|error| {
-                    panic!("`{key}` must instantiate: {error}");
-                });
+            let compiled = prepare_template_report(key).unwrap_or_else(|error| {
+                panic!("`{key}` must instantiate: {error}");
+            });
+            let payload = compiled.payload;
+            let declarations = compiled.declarations;
             assert!(
                 payload.blocks.as_ref().is_some_and(|b| !b.is_empty()),
                 "`{key}`: no blocks"
@@ -3705,11 +3781,11 @@ mod tests {
                 .iter()
                 .map(|declaration| declaration.key.as_str())
                 .collect();
-            let fenced: Vec<String> = crate::templates::template_task_payloads(key)
-                .expect("known key")
-                .iter()
-                .filter_map(|task| task.get("key").and_then(|k| k.as_str()).map(str::to_string))
-                .collect();
+            let fenced: Vec<String> =
+                crate::templates::template_task_payloads_from_body(&template.recipe().body)
+                    .iter()
+                    .filter_map(|task| task.get("key").and_then(|k| k.as_str()).map(str::to_string))
+                    .collect();
             assert_eq!(
                 declared,
                 fenced.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -3742,7 +3818,9 @@ mod tests {
     /// for a body no constant produces.
     #[test]
     fn a_recipe_that_does_not_parse_is_refused() {
-        let good = crate::templates::template_report("small-change").expect("known key");
+        let good = crate::templates::template_by_key("small-change")
+            .expect("known key")
+            .recipe();
 
         // A: an indented opener. `split_body` demotes it to prose.
         let indented = good
