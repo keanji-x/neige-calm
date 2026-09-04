@@ -126,6 +126,36 @@ async fn resolve_live_renderer_from_terminal(s: &AppState, term: Terminal) -> Re
         return Ok(LiveRenderer::Alive(entry));
     }
 
+    // Lazy reattach bypasses OperationRuntime, so it shares DELETE's direct
+    // per-track fence. Re-read after acquiring it: a delete may have removed
+    // the terminal/card/track while this websocket waited for the guard.
+    let initial_card = s
+        .repo
+        .card_get(term.card_id.as_str())
+        .await?
+        .ok_or_else(|| crate::error::CalmError::NotFound(format!("card {}", term.card_id)))?;
+    let _track_delete_guard =
+        crate::per_card_lock::lock_key(s.track_delete_locks(), initial_card.track_id.as_str())
+            .await;
+    let term = s
+        .repo
+        .terminal_get(term.id.as_str())
+        .await?
+        .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {}", term.id)))?;
+    let card = s
+        .repo
+        .card_get(term.card_id.as_str())
+        .await?
+        .ok_or_else(|| crate::error::CalmError::NotFound(format!("card {}", term.card_id)))?;
+    if card.track_id != initial_card.track_id
+        || s.repo.track_get(card.track_id.as_str()).await?.is_none()
+    {
+        return Err(crate::error::CalmError::NotFound(format!(
+            "track {}",
+            initial_card.track_id
+        )));
+    }
+
     if term.exit_code.is_some() {
         tracing::info!(
             terminal_id = %term.id,

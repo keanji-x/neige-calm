@@ -1373,6 +1373,7 @@ async fn ensure_live_planner_harness(
         s.write.area_cache().clone(),
         cs.shared_codex_appserver.clone(),
         &s.harness,
+        &s.track_delete_locks,
         runtime.clone(),
         crate::harness::ClaimMode::Replace,
     )

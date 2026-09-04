@@ -70,6 +70,15 @@ impl OperationRuntime {
         self.kinds.keys().copied()
     }
 
+    /// Stop every operation phase while a single-track DELETE snapshots and
+    /// tears down its externally running resources. Operations are the common
+    /// funnel for planner resets, scheduler workers, and terminal/card starts;
+    /// sharing this existing serialization boundary prevents any of them from
+    /// creating a runtime behind deletion's snapshot.
+    pub(crate) async fn lock_for_track_delete(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.drive_mutex.clone().lock_owned().await
+    }
+
     pub async fn new(
         repo: Arc<dyn OperationRepo>,
         kinds: Vec<Arc<dyn ProviderAdapter>>,

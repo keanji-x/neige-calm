@@ -111,6 +111,8 @@ struct PreparedTrackDeletion {
     track: Track,
     area_kind: Option<AreaKind>,
     plan: TrackDeletePlan,
+    _operation_guard: tokio::sync::OwnedMutexGuard<()>,
+    _delete_guard: crate::per_card_lock::KeyedLockGuard,
 }
 
 struct QuiescedTrackDeletion(PreparedTrackDeletion);
@@ -3822,8 +3824,7 @@ impl RecycledTrackDeletion {
                 // back for us.
                 route
                     .write
-                    .area_cache()
-                    .insert(track.id.clone(), track.area_id.clone());
+                    .remember_track(track.id.clone(), track.area_id.clone());
                 if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
                 {
                     return Err(CalmError::Internal(format!(
@@ -3851,21 +3852,17 @@ impl RecycledTrackDeletion {
 async fn finish_recycled_track_deletion_owned(
     route: RouteState,
     actor: ActorId,
-    delete_guard: crate::per_card_lock::KeyedLockGuard,
     deletion: RecycledTrackDeletion,
 ) -> Result<()> {
     let track_id = deletion.prepared.track.id.clone();
-    tokio::spawn(async move {
-        let _delete_guard = delete_guard;
-        deletion.commit(&route, actor).await
-    })
-    .await
-    .map_err(|error| {
-        CalmError::Internal(format!(
-            "owned deletion task for track {} failed: {error}",
-            track_id.as_str()
-        ))
-    })?
+    tokio::spawn(async move { deletion.commit(&route, actor).await })
+        .await
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "owned deletion task for track {} failed: {error}",
+                track_id.as_str()
+            ))
+        })?
 }
 
 #[utoipa::path(
@@ -3892,6 +3889,10 @@ pub(crate) async fn delete_track(
     // One process owns this track's move + transaction + compensation at a
     // time. The deployment contract is one calm-server per data directory;
     // multi-process deletion would require a durable database lease instead.
+    // OperationRuntime is the common funnel for every normal runtime/process
+    // start. Acquire it before the per-track direct-recovery fence to establish
+    // the only lock order: operation drive → track delete.
+    let operation_guard = s.operation_runtime.lock_for_track_delete().await;
     let delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
     // Issue #197 — eager teardown for every terminal under the track.
     //
@@ -4008,9 +4009,11 @@ pub(crate) async fn delete_track(
         plan: snapshot_track_deletion(&s, &pool, &track).await?,
         track,
         area_kind: owning_area.map(|area| area.kind),
+        _operation_guard: operation_guard,
+        _delete_guard: delete_guard,
     };
     let recycled = prepared.quiesce(&s, &w, &cs).await?.recycle(&s)?;
-    finish_recycled_track_deletion_owned(s, actor.to_actor_id(), delete_guard, recycled).await?;
+    finish_recycled_track_deletion_owned(s, actor.to_actor_id(), recycled).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

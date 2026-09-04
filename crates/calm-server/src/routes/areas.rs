@@ -32,7 +32,8 @@ use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
     sweep_workspace_worktrees_for_tracks_repo,
 };
-use crate::state::{AppState, RouteState, WorkerState};
+use crate::routes::cards::interrupt_shared_card_active_turn;
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::workspace_materialize::validate_attached_workspace;
 use crate::workspace_recycle;
@@ -371,6 +372,7 @@ pub(crate) async fn update_area(
 pub(crate) async fn delete_area(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
@@ -396,10 +398,28 @@ pub(crate) async fn delete_area(
         )));
     }
 
+    // OperationRuntime is the common funnel for normal runtime/process starts.
+    // Track DELETE holds this same guard through commit or compensation, so an
+    // area deletion cannot erase the rows underneath a workspace restoration.
+    let _operation_guard = s.operation_runtime.lock_for_track_delete().await;
+
     let tracks = s.repo.tracks_by_area(&id).await?;
-    let track_ids = tracks
+    let mut guarded_track_ids = tracks
         .iter()
-        .map(|track| track.id.as_str())
+        .map(|track| track.id.to_string())
+        .collect::<Vec<_>>();
+    guarded_track_ids.sort();
+    // Direct harness recovery and websocket terminal reattach bypass the
+    // operation driver. Lock every member in stable order before teardown so
+    // those paths either finish before this snapshot or observe deleted rows.
+    let mut _track_delete_guards = Vec::with_capacity(guarded_track_ids.len());
+    for track_id in &guarded_track_ids {
+        _track_delete_guards
+            .push(crate::per_card_lock::lock_key(&s.track_delete_locks, track_id).await);
+    }
+    let track_ids = guarded_track_ids
+        .iter()
+        .map(String::as_str)
         .collect::<Vec<_>>();
     // Defensive TOCTOU guard only: this non-transactional read happens before
     // the teardown tx, so a forge-action can still become in-flight before the
@@ -425,9 +445,23 @@ pub(crate) async fn delete_area(
     for track in &tracks {
         let cards = s.repo.cards_by_track(track.id.as_str()).await?;
         for card in &cards {
+            interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
             if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
                 reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
                 terminal_ids.push(t.id);
+            }
+        }
+        let active_runtime_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM worker_sessions WHERE track_id=?1 \
+             AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+        )
+        .bind(track.id.as_str())
+        .fetch_all(&pool)
+        .await?;
+        for runtime_id in active_runtime_ids {
+            if let Some(harness) = w.harness.get(&runtime_id) {
+                harness.shutdown().await?;
+                let _ = w.harness.remove(&runtime_id);
             }
         }
     }
@@ -493,6 +527,10 @@ pub(crate) async fn delete_area(
             })
         })
         .await?;
+    for track_id in &guarded_track_ids {
+        s.write
+            .forget_track(&crate::ids::TrackId::from(track_id.clone()));
+    }
     sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
     Ok(StatusCode::NO_CONTENT)
 }

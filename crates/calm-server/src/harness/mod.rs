@@ -16,7 +16,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
-use crate::session_projection_repo::WorkerSessionProjection;
+use crate::per_card_lock::{KeyedLocks, lock_key};
+use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 
@@ -28,6 +29,15 @@ pub use run_loop::{PlannerHarness, PlannerHarnessParams};
 pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
 pub use state::{HarnessState, IssuingKind, run_status_for};
 pub use token_usage::{BASELINE_TOKENS, TokenUsage};
+
+/// Shared fence type required by direct harness-recovery entry points. Normal
+/// runtime starts are serialized by `OperationRuntime`; recovery callers must
+/// explicitly provide the single-track deletion fence they coordinate with.
+pub type TrackDeleteLocks = KeyedLocks;
+
+pub fn new_track_delete_locks() -> TrackDeleteLocks {
+    crate::per_card_lock::new_keyed_locks()
+}
 
 /// #953 §5 — how [`spawn_recovered_harness`] claims the registry slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,10 +102,10 @@ async fn install_or_shutdown(
     }
 }
 
-// Pre-existing 7-arg surface (every arg an independently-owned AppState
-// part) + the #953 ClaimMode; the boot/user/deferred callers already thread
-// these parts individually, so a params struct would be churn without
-// clarity.
+// The boot/user/deferred callers already thread these independently-owned
+// AppState parts. The explicit delete fence is load-bearing: a caller cannot
+// accidentally recover a runtime without choosing which server instance's
+// destructive boundary it coordinates with.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_recovered_harness(
     repo: Arc<dyn Repo>,
@@ -104,6 +114,7 @@ pub async fn spawn_recovered_harness(
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
+    track_delete_locks: &KeyedLocks,
     runtime: WorkerSessionProjection,
     claim_mode: ClaimMode,
 ) -> Result<RecoveryOutcome> {
@@ -158,6 +169,30 @@ pub async fn spawn_recovered_harness(
         .await?;
     }
     let runtime_id = runtime.id.clone();
+    let track_id = card.track_id.clone();
+    // Recovery replay may be long, so claim the lifecycle fence only at the
+    // installation boundary and then revalidate every row DELETE can remove.
+    // If deletion won while replay ran, recovery abstains instead of installing
+    // a harness for a stale runtime whose workspace has moved to trash.
+    let _track_delete_guard = lock_key(track_delete_locks, track_id.as_str()).await;
+    let Some(current_card) = repo.card_get(&runtime.card_id).await? else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if current_card.track_id != track_id || repo.track_get(track_id.as_str()).await?.is_none() {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    let Some(current_runtime) = repo.session_projection_by_id(&runtime_id).await? else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if !matches!(
+        current_runtime.status,
+        WorkerSessionState::Starting
+            | WorkerSessionState::Running
+            | WorkerSessionState::Idle
+            | WorkerSessionState::TurnPending
+    ) {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     // #953 §5 placement invariant: the reservation sits exactly where the
     // old `remove()` sat — after recovery replay, immediately before handle
     // construction/install — so the accepted reserve→install residual is
@@ -352,6 +387,7 @@ pub async fn recover_harnesses_on_boot(
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     registry: &HarnessRegistry,
+    track_delete_locks: &KeyedLocks,
 ) -> Result<usize> {
     let runtimes = repo.session_projection_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
@@ -364,6 +400,7 @@ pub async fn recover_harnesses_on_boot(
             track_area_cache.clone(),
             daemon.clone(),
             registry,
+            track_delete_locks,
             runtime,
             ClaimMode::Replace,
         )
@@ -396,6 +433,7 @@ pub struct DeferredRecoveryParams {
     pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub registry: HarnessRegistry,
+    pub track_delete_locks: KeyedLocks,
     /// Fixtures-only deterministic-race hook (#953 test 8): fired once per
     /// runtime AFTER the per-runtime eligibility check (readiness still
     /// running, generation unchanged) and BEFORE the `try_reserve` claim —
@@ -483,6 +521,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 params.track_area_cache.clone(),
                 params.daemon.clone(),
                 &params.registry,
+                &params.track_delete_locks,
                 runtime,
                 ClaimMode::SkipIfClaimed {
                     expected_generation: observed.generation,
@@ -770,6 +809,7 @@ mod tests {
             track_area_cache,
             daemon.clone(),
             &registry,
+            &crate::per_card_lock::new_keyed_locks(),
             runtime,
             ClaimMode::Replace,
         )
@@ -967,6 +1007,7 @@ mod tests {
             track_area_cache,
             daemon.clone(),
             &registry,
+            &crate::per_card_lock::new_keyed_locks(),
             runtime,
             ClaimMode::Replace,
         )

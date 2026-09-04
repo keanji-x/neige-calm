@@ -172,9 +172,14 @@ pub struct RouteState {
     ///      and `/planner/reset` take only the recovery lock and never enter
     ///      conversation create); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
-    /// Per-track serialization for the multi-stage DELETE flow. The workspace
-    /// move and database transaction must have one owner, or a losing concurrent
-    /// request could compensate the winner's committed deletion.
+    /// Per-track fence shared by single-track deletion and direct runtime
+    /// recovery/reattach paths that bypass `OperationRuntime`. Once DELETE owns
+    /// this lock, those paths cannot install a runtime behind its teardown
+    /// snapshot; the guard transfers to the owned deletion saga and survives
+    /// request cancellation through commit or compensation.
+    ///
+    /// The deployment contract is one calm-server per SQLite data directory.
+    /// Multi-process serving would require a durable database fence.
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
 }
 
@@ -621,6 +626,10 @@ impl AppState {
         &self.route.workspace_root
     }
 
+    pub(crate) fn track_delete_locks(&self) -> &crate::per_card_lock::KeyedLocks {
+        &self.route.track_delete_locks
+    }
+
     /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
     /// defaults to a per-`AppState` directory under the system temp dir so no
     /// test can silently materialize repositories into the developer's real
@@ -706,6 +715,7 @@ impl AppState {
             self.track_area_cache.clone(),
             self.shared_codex_appserver.clone(),
             &self.harness,
+            &self.route.track_delete_locks,
         )
         .await
     }
@@ -727,6 +737,7 @@ impl AppState {
                 track_area_cache: self.track_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
                 registry: self.harness.clone(),
+                track_delete_locks: self.route.track_delete_locks.clone(),
                 #[cfg(feature = "fixtures")]
                 post_eligibility_hook: None,
             },

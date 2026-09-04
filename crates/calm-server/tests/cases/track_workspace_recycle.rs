@@ -971,6 +971,157 @@ async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
     );
 }
 
+/// The delete fence is shared with harness installation, not merely with a
+/// second DELETE. A reset that starts after the teardown snapshot must wait;
+/// otherwise it can install a runtime the snapshot never knew to stop.
+#[tokio::test]
+async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "one lifecycle").await;
+    let runtime_id = install_live_harness(&b, &track_id).await;
+    let card_id: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
+        .bind(&runtime_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let hook = calm_server::routes::tracks::TrackDeleteTeardownHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::tracks::install_track_delete_teardown_hook_for_test(
+        &track_id,
+        hook.clone(),
+    );
+
+    let delete_app = b.app.clone();
+    let delete_id = track_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+
+    let reset_app = b.app.clone();
+    let reset_task = tokio::spawn(async move {
+        request(
+            reset_app,
+            "POST",
+            &format!("/api/cards/{card_id}/planner/reset"),
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !reset_task.is_finished(),
+        "planner reset bypassed the track lifecycle fence"
+    );
+
+    hook.release.notify_one();
+    let (delete_status, delete_body) = delete_task.await.unwrap();
+    assert_eq!(delete_status, StatusCode::NO_CONTENT, "body={delete_body}");
+    let (reset_status, _) = tokio::time::timeout(std::time::Duration::from_secs(2), reset_task)
+        .await
+        .expect("reset must observe the completed deletion")
+        .unwrap();
+    assert!(!reset_status.is_success());
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    assert!(!path.exists());
+    assert_eq!(
+        b.harness.len_active(),
+        0,
+        "no harness may outlive its track"
+    );
+}
+
+/// Area deletion uses the same operation fence as a track saga. It cannot
+/// erase ownership rows while a failed track transaction is deciding whether
+/// to restore its recycled workspace.
+#[tokio::test]
+async fn area_delete_waits_for_track_delete_compensation_to_finish() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (root_id, _) = managed_track(&b, &area_id, "root").await;
+    let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
+    let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
+        .bind(&root_id)
+        .bind(&victim_id)
+        .bind(&survivor_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(
+        &victim_id,
+        hook.clone(),
+    );
+
+    let track_app = b.app.clone();
+    let delete_id = victim_id.clone();
+    let track_delete = tokio::spawn(async move {
+        request(
+            track_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    assert!(!victim_path.exists(), "victim must already be recycled");
+
+    let corrupted =
+        sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
+            .bind(b"not-an-automerge-document".as_slice())
+            .bind(&survivor_id)
+            .execute(b.repo.pool())
+            .await
+            .unwrap()
+            .rows_affected();
+    assert_eq!(corrupted, 1);
+
+    let area_app = b.app.clone();
+    let delete_area_id = area_id.clone();
+    let area_delete = tokio::spawn(async move {
+        request(
+            area_app,
+            "DELETE",
+            &format!("/api/areas/{delete_area_id}"),
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !area_delete.is_finished(),
+        "area deletion bypassed the in-flight track saga"
+    );
+
+    hook.release.notify_one();
+    let (track_status, _) = track_delete.await.unwrap();
+    assert_eq!(track_status, StatusCode::INTERNAL_SERVER_ERROR);
+    let (area_status, area_body) = area_delete.await.unwrap();
+    assert_eq!(area_status, StatusCode::NO_CONTENT, "body={area_body}");
+    assert!(b.repo.track_get(&victim_id).await.unwrap().is_none());
+    assert!(!victim_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_some());
+    assert_eq!(
+        b.tracks
+            .area_of(&calm_server::ids::TrackId::from(victim_id)),
+        None
+    );
+}
+
 /// Drive the production child-track creation path. Copied in shape from
 /// `today_launchpad.rs`: the parent task row is seeded directly because the
 /// adapter only reads frozen task fields from it, while every decision about

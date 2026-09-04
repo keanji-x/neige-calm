@@ -1349,6 +1349,7 @@ async fn review_round_recovers_into_pending_queue() {
         fx.track_area_cache.clone(),
         daemon,
         &registry,
+        &calm_server::harness::new_track_delete_locks(),
         runtime,
         calm_server::harness::ClaimMode::Replace,
     )
