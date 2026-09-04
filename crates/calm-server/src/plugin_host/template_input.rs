@@ -354,6 +354,114 @@ pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), Stri
     validate_instance("template_input", schema, input)
 }
 
+/// Why a `template_input` has no owning plugin Manifest to be checked against
+/// — or the Manifest itself.
+///
+/// # #1321 S1 第二轮评审 NIT-3
+///
+/// This used to be a bare `Option<&Manifest>`, and the `None` arm answered
+/// "``template_input`` requires ``template_id``" for **both** of its causes.
+/// The second cause makes that message a lie, and it is reachable: `create_track`
+/// derives its Manifest from `admit_template(..).binding`, which is `None`
+/// whenever the roster admits the `template_id` but no *running ∧ trusted*
+/// plugin currently declares it (`routes::tracks::resolve_template_binding`).
+/// A caller who sent a perfectly good `template_id` while the owning plugin was
+/// stopped was told to supply the field they had already supplied.
+///
+/// Splitting the `None` lets each cause say what actually went wrong, and makes
+/// the "whole matrix" claim on [`validate_template_input_binding`] true of the
+/// owner axis as well as the input axis.
+pub enum TemplateInputOwner<'a> {
+    /// No `template_id` was given at all, so there is no plugin to bind to.
+    NoTemplateId,
+    /// A `template_id` was given and the roster admits it, but no running ∧
+    /// trusted plugin declares it right now, so there is no `input_schema` to
+    /// check the input against.
+    NoBoundPlugin,
+    /// The owning plugin's current Manifest.
+    Plugin(&'a crate::plugin_host::manifest::Manifest),
+}
+
+/// #891 / #1110 S2 — the **whole** `(owner, template_input)` matrix,
+/// fail-closed: input is only accepted when a bound plugin Manifest declares an
+/// `input_schema`, and a schema with required fields makes input mandatory. The
+/// kernel never applies schema `default`s — the value persists exactly as the
+/// caller sent it. Descriptor-level `input_schema` is never consulted.
+///
+/// # #1321 S1 — why this lives here and not in `routes::tracks`
+///
+/// It used to be a private fn in `routes::tracks`, and the run-time re-check
+/// in [`crate::track_binding`] restated *half* of it (only the
+/// `(Some(schema), Some(input))` arm). The two therefore disagreed on the
+/// same triple: a track created while its owner declared no `input_schema`
+/// stores `template_input = NULL`, and after an owner upgrade that adds
+/// `required: [...]` the create route answers 400 for that exact
+/// (plugin, template, input) while the run-time restatement answered "fine".
+/// CLAUDE.md「Mirror Code Must Call The Original」: the restatement is gone
+/// and both callers now enter *this* function.
+///
+/// The error is a bare reason with no route vocabulary in it —
+/// `routes::tracks::create_track` prefixes `track create: ` and the binding
+/// resolver reports it as a contract failure. The prefix keeps the
+/// pre-existing 400 bodies byte-identical **except** for the
+/// [`TemplateInputOwner::NoBoundPlugin`] + `Some(input)` cell, which #1321 S1
+/// deliberately changed: it used to answer "`template_input` requires
+/// `template_id`" — asking the caller for the field they had just sent — and
+/// now names the real cause (no running ∧ trusted plugin declares the
+/// template). That single reworded body is pinned by
+/// `routes::tracks::tests::template_input_binding::input_with_a_template_whose_owner_is_not_running_names_that_cause`
+/// and, at the HTTP boundary, by
+/// `track_binding::tests::create_time_and_run_time_binding_agree_for_a_stopped_owner`.
+pub fn validate_template_input_binding(
+    owner: TemplateInputOwner<'_>,
+    input: Option<&Value>,
+) -> Result<(), String> {
+    let plugin = match owner {
+        TemplateInputOwner::Plugin(plugin) => plugin,
+        TemplateInputOwner::NoTemplateId => {
+            if input.is_some() {
+                return Err("`template_input` requires `template_id`".into());
+            }
+            return Ok(());
+        }
+        TemplateInputOwner::NoBoundPlugin => {
+            if input.is_some() {
+                return Err(
+                    "`template_input` requires a `template_id` whose owning plugin is \
+                     currently running and trusted; no running and trusted plugin declares \
+                     this template right now, so there is no input_schema to validate against"
+                        .into(),
+                );
+            }
+            return Ok(());
+        }
+    };
+    let plugin_id = &plugin.id;
+    match (plugin.input_schema.as_ref(), input) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(format!(
+            "plugin `{plugin_id}` does not declare an input_schema; \
+             `template_input` is not accepted"
+        )),
+        (Some(schema), None) => {
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if required.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "plugin `{plugin_id}` requires `template_input` \
+                     (required: {required:?})"
+                ))
+            }
+        }
+        (Some(schema), Some(input)) => validate_template_input(schema, input),
+    }
+}
+
 /// Check a single value against a property schema's `type` + `enum`.
 fn check_value(value: &Value, schema: &Map<String, Value>) -> Result<(), String> {
     let ty = schema

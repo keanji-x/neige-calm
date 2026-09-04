@@ -40,7 +40,6 @@ use crate::db::sqlite::{
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewTrack,
@@ -54,7 +53,6 @@ use crate::operation::workspace_lease::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
-use crate::plugin_host::template_input::validate_template_input;
 use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::cards::interrupt_shared_card_active_turn;
@@ -747,7 +745,20 @@ pub(crate) async fn create_track(
     // validated here, before any DB write, so the inner writer persists
     // the blob verbatim. Still requires `template_id` this slice
     // (S5 deletes the template entity).
-    validate_template_input_binding(bound_plugin, p.template_input.as_ref())?;
+    //
+    // 第二轮评审 NIT-3 — `bound_plugin` is `None` for two different reasons and
+    // the 400 has to name the right one: no `template_id` at all, or an
+    // admitted `template_id` whose owning plugin is not running ∧ trusted right
+    // now. (An unknown `template_id` cannot reach here — `admit_template`
+    // above already 400s.)
+    let owner = match bound_plugin {
+        Some(manifest) => crate::plugin_host::template_input::TemplateInputOwner::Plugin(manifest),
+        None if p.template_id.is_some() => {
+            crate::plugin_host::template_input::TemplateInputOwner::NoBoundPlugin
+        }
+        None => crate::plugin_host::template_input::TemplateInputOwner::NoTemplateId,
+    };
+    validate_template_input_binding(owner, p.template_input.as_ref())?;
     // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
     // insert. Unbound create leaves it None. Not a request field.
     p.plugin_scope = bound_plugin.map(|manifest| manifest.id.clone());
@@ -1139,8 +1150,11 @@ pub(crate) async fn resolve_template_binding(
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
-        running_plugin_ids.contains(&manifest.id)
-            && trusted_forge_plugin(&manifest.id)
+        // #1321 S1 — "may this plugin own a template" has one definition,
+        // shared with the per-track resolver that later re-checks the owner
+        // this line picks. Restating it here is how the two ends of the
+        // binding drifted apart in the first place.
+        crate::track_binding::plugin_is_eligible_owner(&running_plugin_ids, &manifest.id)
             && manifest
                 .templates
                 .iter()
@@ -1148,49 +1162,19 @@ pub(crate) async fn resolve_template_binding(
     })
 }
 
-/// #891 / #1110 S2 — create-time `template_input` validation matrix.
-/// Fail-closed: input is only accepted when the bound plugin Manifest
-/// declares an `input_schema`, and a schema with required fields makes
-/// input mandatory. The kernel never applies schema `default`s — the
-/// value persists exactly as the caller sent it. Descriptor-level
-/// `input_schema` is never consulted.
+/// #1321 S1 — create-time `template_input` validation now *is* the shared
+/// judgement: the matrix moved to
+/// [`crate::plugin_host::template_input::validate_template_input_binding`] so
+/// the run-time owner-binding re-check calls the same function instead of
+/// restating a subset of it. This wrapper adds nothing but the route's error
+/// vocabulary, which is what keeps every pre-existing 400 body
+/// byte-identical.
 fn validate_template_input_binding(
-    plugin: Option<&Manifest>,
+    owner: crate::plugin_host::template_input::TemplateInputOwner<'_>,
     input: Option<&serde_json::Value>,
 ) -> Result<()> {
-    let Some(plugin) = plugin else {
-        if input.is_some() {
-            return Err(CalmError::BadRequest(
-                "track create: `template_input` requires `template_id`".into(),
-            ));
-        }
-        return Ok(());
-    };
-    let plugin_id = &plugin.id;
-    match (plugin.input_schema.as_ref(), input) {
-        (None, None) => Ok(()),
-        (None, Some(_)) => Err(CalmError::BadRequest(format!(
-            "track create: plugin `{plugin_id}` does not declare an input_schema; \
-             `template_input` is not accepted"
-        ))),
-        (Some(schema), None) => {
-            let required: Vec<&str> = schema
-                .get("required")
-                .and_then(serde_json::Value::as_array)
-                .map(|keys| keys.iter().filter_map(serde_json::Value::as_str).collect())
-                .unwrap_or_default();
-            if required.is_empty() {
-                Ok(())
-            } else {
-                Err(CalmError::BadRequest(format!(
-                    "track create: plugin `{plugin_id}` requires `template_input` \
-                     (required: {required:?})"
-                )))
-            }
-        }
-        (Some(schema), Some(input)) => validate_template_input(schema, input)
-            .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}"))),
-    }
+    crate::plugin_host::template_input::validate_template_input_binding(owner, input)
+        .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))
 }
 
 /// Issue #275 — the cwd claim scan runs **inside** the track-create
@@ -4016,7 +4000,14 @@ mod tests {
         use super::super::validate_template_input_binding;
         use crate::error::CalmError;
         use crate::plugin_host::manifest::Manifest;
+        use crate::plugin_host::template_input::TemplateInputOwner;
         use serde_json::{Value, json};
+
+        /// The three `owner` axis values, as short constructors, so each test
+        /// below reads as one cell of the matrix.
+        fn owned(plugin: &Manifest) -> TemplateInputOwner<'_> {
+            TemplateInputOwner::Plugin(plugin)
+        }
 
         fn plugin(input_schema: Option<Value>) -> Manifest {
             let mut v = json!({
@@ -4049,9 +4040,21 @@ mod tests {
             })
         }
 
-        fn expect_bad_request(plugin: Option<&Manifest>, input: Option<&Value>, needle: &str) {
-            match validate_template_input_binding(plugin, input) {
+        /// 第二轮评审 MINOR-2 — every 400 this matrix produces ships through
+        /// `create_track`, and the route's own vocabulary (`track create: `) is
+        /// part of the body. Nothing in the repository asserted that prefix:
+        /// deleting it left the whole `--lib` suite green, because the needles
+        /// used here are all substrings of the bare reason. It is asserted on
+        /// every arm now, so the wrapper cannot silently stop wrapping.
+        const ROUTE_PREFIX: &str = "track create: ";
+
+        fn expect_bad_request(owner: TemplateInputOwner<'_>, input: Option<&Value>, needle: &str) {
+            match validate_template_input_binding(owner, input) {
                 Err(CalmError::BadRequest(message)) => {
+                    assert!(
+                        message.starts_with(ROUTE_PREFIX),
+                        "400 body `{message}` must keep the route prefix `{ROUTE_PREFIX}`"
+                    );
                     assert!(message.contains(needle), "message `{message}` ∌ `{needle}`");
                 }
                 other => panic!("expected BadRequest containing `{needle}`, got {other:?}"),
@@ -4060,61 +4063,106 @@ mod tests {
 
         #[test]
         fn input_without_template_id_is_rejected() {
-            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `template_id`");
+            expect_bad_request(
+                TemplateInputOwner::NoTemplateId,
+                Some(&json!({ "x": 1 })),
+                "requires `template_id`",
+            );
+        }
+
+        /// 第二轮评审 NIT-3 — the other cause of "no owning Manifest": the
+        /// `template_id` **was** given and the roster admits it, but no running
+        /// ∧ trusted plugin declares it. This cell used to answer "requires
+        /// `template_id`", i.e. it asked for the field the caller had already
+        /// sent. Reachable in production — `create_time_and_run_time_binding_
+        /// agree_for_a_stopped_owner` (`track_binding::tests`) drives it
+        /// through the real route.
+        #[test]
+        fn input_with_a_template_whose_owner_is_not_running_names_that_cause() {
+            let message = match validate_template_input_binding(
+                TemplateInputOwner::NoBoundPlugin,
+                Some(&json!({ "x": 1 })),
+            ) {
+                Err(CalmError::BadRequest(message)) => message,
+                other => panic!("expected BadRequest, got {other:?}"),
+            };
+            assert!(message.starts_with(ROUTE_PREFIX), "{message}");
+            assert!(message.contains("running and trusted"), "{message}");
+            // 第三轮评审 MINOR — the *second* clause must stay narrow too.
+            // `NoBoundPlugin` also covers a stopped/untrusted owner whose
+            // Manifest is still in the registry and still declares this
+            // template; a bare "no plugin declares this template" would be
+            // false in exactly the case this test drives.
+            assert!(
+                message.contains("no running and trusted plugin declares this template"),
+                "the cause clause must be scoped to running ∧ trusted, not to all \
+                 plugins — a stopped owner still declares the template: {message}"
+            );
+            // The discriminating half: it must NOT tell the caller to supply a
+            // `template_id` they already supplied.
+            assert!(
+                !message.contains("requires `template_id`"),
+                "a stopped owner must not be reported as a missing template_id: {message}"
+            );
         }
 
         #[test]
         fn no_template_no_input_is_ok() {
-            validate_template_input_binding(None, None).expect("plain track create unchanged");
+            validate_template_input_binding(TemplateInputOwner::NoTemplateId, None)
+                .expect("plain track create unchanged");
+            // Same for an admitted template with no live owner: nothing to
+            // validate, and nothing to refuse.
+            validate_template_input_binding(TemplateInputOwner::NoBoundPlugin, None)
+                .expect("unowned template without input is not an error");
         }
 
         #[test]
         fn input_against_schema_less_plugin_is_rejected_fail_closed() {
             let p = plugin(None);
-            expect_bad_request(Some(&p), Some(&json!({ "x": 1 })), "does not declare");
-            expect_bad_request(Some(&p), Some(&json!({ "x": 1 })), "plugin");
+            expect_bad_request(owned(&p), Some(&json!({ "x": 1 })), "does not declare");
+            expect_bad_request(owned(&p), Some(&json!({ "x": 1 })), "plugin");
         }
 
         #[test]
         fn schema_less_binding_without_input_stays_valid() {
             let p = plugin(None);
-            validate_template_input_binding(Some(&p), None).expect("bound create unchanged");
+            validate_template_input_binding(owned(&p), None).expect("bound create unchanged");
         }
 
         #[test]
         fn missing_input_with_required_schema_is_rejected() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
-            expect_bad_request(Some(&p), None, "requires `template_input`");
-            expect_bad_request(Some(&p), None, "issue_url");
+            expect_bad_request(owned(&p), None, "requires `template_input`");
+            expect_bad_request(owned(&p), None, "issue_url");
         }
 
         #[test]
         fn missing_input_with_no_required_fields_is_ok() {
             let p = plugin(Some(schema(json!([]))));
-            validate_template_input_binding(Some(&p), None).expect("optional input omitted");
+            validate_template_input_binding(owned(&p), None).expect("optional input omitted");
         }
 
         #[test]
         fn input_is_validated_against_the_plugin_schema() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
             validate_template_input_binding(
-                Some(&p),
+                owned(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
             )
             .expect("conforming input accepted");
             // INV-1110-003 — missing required / extra key / enum still 400.
             expect_bad_request(
-                Some(&p),
+                owned(&p),
                 Some(&json!({ "merge_policy": "auto-merge" })),
                 "template_input.issue_url",
             );
             expect_bad_request(
-                Some(&p),
+                owned(&p),
                 Some(&json!({ "issue_url": "u", "ghost": true })),
                 "template_input.ghost",
             );
             expect_bad_request(
-                Some(&p),
+                owned(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
                 "template_input.merge_policy",
             );

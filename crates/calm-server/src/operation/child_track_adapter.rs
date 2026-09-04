@@ -1392,7 +1392,7 @@ mod tests {
 
         // §6.2 hole: child of Only(X) must not become All. Column copy plus
         // the gate reading plugin_scope is the composition; pin the gate.
-        let _trusted = trust_inherited_plugin();
+        let _trusted = trust_inherited_plugin().await;
         let repo = Arc::new(repo);
         let (host, _tmp) = plugin_host_with_id(repo.clone(), "must-inherit-plugin").await;
         host.spawn("must-inherit-plugin")
@@ -1926,7 +1926,15 @@ mod tests {
 
     const INHERITED_PLUGIN_ID: &str = "must-inherit-plugin";
 
-    fn trust_inherited_plugin() -> InheritedTrustGuard {
+    /// #1321 S1 第一轮评审 MINOR-4 — takes the crate-wide env lock
+    /// (`forge_trust::trusted_forge_plugins_env_lock`) because this is the
+    /// *second* writer of `NEIGE_TRUSTED_FORGE_PLUGINS` inside the lib-test
+    /// binary; `track_binding::tests::TrustGuard` is the other, and its own
+    /// module-private lock could not see this one.
+    async fn trust_inherited_plugin() -> InheritedTrustGuard {
+        let lock = crate::forge_trust::trusted_forge_plugins_env_lock()
+            .lock()
+            .await;
         let previous = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS").ok();
         let combined = match previous.as_deref() {
             Some(configured)
@@ -1944,11 +1952,15 @@ mod tests {
             trusted_forge_plugin(INHERITED_PLUGIN_ID),
             "{INHERITED_PLUGIN_ID} must be trusted for the Only pin"
         );
-        InheritedTrustGuard { previous }
+        InheritedTrustGuard {
+            previous,
+            _lock: lock,
+        }
     }
 
     struct InheritedTrustGuard {
         previous: Option<String>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl Drop for InheritedTrustGuard {

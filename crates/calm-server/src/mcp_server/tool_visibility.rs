@@ -11,16 +11,38 @@
 //! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a track is scoped
 //! to a plugin that is not currently running ∧ trusted (plugin stopped,
 //! trust revoked, track row unreadable), the scope is
-//! [`TrackPluginScope::None`] — zero plugin tools. This mirrors the planner
-//! harness's descriptor-unresolved degradation (vanilla prompt): the tools
-//! are withdrawn together with the plugin context rather than silently
-//! widened back to the union. The gate reads `tracks.plugin_scope` only —
-//! it does not look up `templates[]` by `template_id`.
+//! [`TrackPluginScope::None`] — zero plugin tools. On *this* trigger the
+//! planner harness degrades too (vanilla prompt): the tools are withdrawn
+//! together with the plugin context rather than silently widened back to the
+//! union. #1321 S1 narrowed the "mirrors" claim that used to sit here to that
+//! one trigger — the planner has a second degradation (a broken template
+//! contract) that this gate deliberately does **not** mirror; see below.
+//!
+//! #1321 S1 — the paragraph above used to end "The gate reads
+//! `tracks.plugin_scope` only — it does not look up `templates[]` by
+//! `template_id`". Both halves still hold, and the first is now stronger: the
+//! owner column is the *only* way in, and this module no longer decides that
+//! by itself — it delegates to
+//! [`crate::track_binding::resolve_track_owner_binding`], the single per-track
+//! owner judgement shared with the planner harness.
+//!
+//! What this gate reads out of that judgement is **owner identity only**. The
+//! resolver also reports whether the track's *template contract* still holds
+//! (the owner still declares its `template_id`, its current `input_schema`
+//! still accepts the persisted `template_input`), and this module deliberately
+//! ignores that: tool authorization is proven by `plugin_scope` alone, and a
+//! broken contract is not evidence that someone else owns the track. Failing
+//! closed on it would also be unrecoverable — `TrackPatch` cannot write those
+//! three columns, so one incompatible `input_schema` bump would strip a live
+//! track of every plugin tool with no API left to restore it. The contract
+//! failure is honored where it is actually dangerous: the planner harness
+//! drops the descriptor and the input rather than prompting against an
+//! unchecked contract.
 
 use std::sync::Arc;
 
-use crate::forge_trust::trusted_forge_plugin;
 use crate::mcp_server::registry::AppContext;
+use crate::track_binding::{TrackOwnerBinding, resolve_track_owner_binding};
 
 /// Which plugins' tools a caller may see / call, resolved from the caller's
 /// track context. Produced only by [`plugin_scope_for_track`].
@@ -51,14 +73,17 @@ impl TrackPluginScope {
 ///
 /// * `track_id = None` (no track context) → [`TrackPluginScope::All`].
 /// * Track row has `plugin_scope = None` (unbound) → [`TrackPluginScope::All`].
-/// * Track has `plugin_scope = Some(id)` → [`TrackPluginScope::Only`] if that
-///   plugin is running ∧ trusted; [`TrackPluginScope::None`] when it is not
-///   (same fail-closed as today's "bound template has no running owner").
+/// * Track has `plugin_scope = Some(id)` → [`TrackPluginScope::Only`] if
+///   [`resolve_track_owner_binding`] resolves that owner (running ∧ trusted ∧
+///   present in the registry), **whatever became of the track's template
+///   contract**; [`TrackPluginScope::None`] otherwise.
 /// * Track lookup failure / missing track row → [`TrackPluginScope::None`]:
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
 ///
-/// Does not consult `track.template_id` or `manifest.templates[]`.
+/// #1321 S1 — the decision itself lives in [`crate::track_binding`]; this
+/// function only projects it onto the tool-visibility vocabulary, so it
+/// cannot drift from the planner harness's answer.
 pub(crate) async fn plugin_scope_for_track(
     ctx: &Arc<AppContext>,
     track_id: Option<&str>,
@@ -106,27 +131,24 @@ async fn resolve_plugin_scope_for_track(
             return TrackPluginScope::None;
         }
     };
-    let Some(plugin_id) = track.plugin_scope.as_deref() else {
-        // Unbound track — historical union, but routed through this function
-        // so the policy has exactly one home.
-        return TrackPluginScope::All;
-    };
-    let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        // Scoped track but no plugin host yet (boot ordering) — there are no
-        // plugin tools to expose anyway; report the fail-closed scope.
-        return TrackPluginScope::None;
-    };
-    let running_plugin_ids = plugin_host.running_plugin_ids().await;
-    if running_plugin_ids.contains(plugin_id) && trusted_forge_plugin(plugin_id) {
-        return TrackPluginScope::Only(plugin_id.to_string());
+    let plugin_host = ctx.plugin_host.get().cloned();
+    match resolve_track_owner_binding(&track, plugin_host.as_deref()).await {
+        // Unbound track — historical union, but routed through the shared
+        // resolver so the policy has exactly one home.
+        TrackOwnerBinding::Unbound => TrackPluginScope::All,
+        // Owner identity is the whole input here; `contract` is the planner's
+        // business (see the module doc).
+        TrackOwnerBinding::Owned { plugin, .. } => TrackPluginScope::Only(plugin.id),
+        TrackOwnerBinding::OwnerUnavailable { plugin_id } => {
+            tracing::warn!(
+                target: "mcp_server::tool_visibility",
+                track_id,
+                plugin_id,
+                "plugin tool scope: the track's recorded owner is not running ∧ trusted; failing closed"
+            );
+            TrackPluginScope::None
+        }
     }
-    tracing::warn!(
-        target: "mcp_server::tool_visibility",
-        track_id,
-        plugin_id,
-        "plugin tool scope: scoped plugin is not running and trusted; failing closed"
-    );
-    TrackPluginScope::None
 }
 
 #[cfg(test)]
