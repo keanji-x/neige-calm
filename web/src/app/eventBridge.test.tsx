@@ -401,7 +401,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('runtime.started invalidates owning track detail, card overlays, and track files', () => {
+  it('worker_session.started invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
     seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -412,9 +412,9 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'runtime.started',
+      ev: 'worker_session.started',
       data: {
-        runtime_id: 'runtime_1',
+        worker_session_id: 'runtime_1',
         card_id: 'card_runtime',
         kind: 'terminal',
         agent_provider: null,
@@ -429,7 +429,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('runtime.status_changed invalidates owning track detail, card overlays, and track files', () => {
+  it('worker_session.status_changed invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
     seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -440,9 +440,9 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'runtime.status_changed',
+      ev: 'worker_session.status_changed',
       data: {
-        runtime_id: 'runtime_1',
+        worker_session_id: 'runtime_1',
         card_id: 'card_runtime',
         old_status: 'starting',
         new_status: 'running',
@@ -456,7 +456,7 @@ describe('EventBridge', () => {
     cleanup();
   });
 
-  it('runtime.superseded invalidates owning track detail, card overlays, and track files', () => {
+  it('worker_session.superseded invalidates owning track detail, card overlays, and track files', () => {
     const client = makeClient();
     seedTrackDetailWithCard(client, 'track_1', 'card_runtime');
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -467,10 +467,10 @@ describe('EventBridge', () => {
       </Wrapper>,
     );
     fakeStream.emit({
-      ev: 'runtime.superseded',
+      ev: 'worker_session.superseded',
       data: {
-        old_runtime_id: 'runtime_1',
-        new_runtime_id: 'runtime_2',
+        old_worker_session_id: 'runtime_1',
+        new_worker_session_id: 'runtime_2',
         card_id: 'card_runtime',
       },
     });
@@ -749,7 +749,7 @@ describe('EventBridge', () => {
       fakeStream.emit({
         ev: 'harness.transcript.cleared',
         data: {
-          runtime_id: 'runtime_2',
+          worker_session_id: 'runtime_2',
           card_id: 'card_planner',
           track_id: 'track_1',
           cleared_item_count: 12,
@@ -775,7 +775,7 @@ describe('EventBridge', () => {
       fakeStream.emit({
         ev: 'harness.user_message.enqueued',
         data: {
-          runtime_id: 'runtime_2',
+          worker_session_id: 'runtime_2',
           card_id: 'card_planner',
           track_id: 'track_1',
           char_count: 9,

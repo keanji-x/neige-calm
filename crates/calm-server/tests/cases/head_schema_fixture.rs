@@ -31,6 +31,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0091_terminal_output_evidence.sql",
     "0092_track_create_message_less_binding.sql",
     "0093_operations_keyed_rows_are_permanent.sql",
+    "0094_runtime_id_to_worker_session_id.sql",
 ];
 
 #[test]

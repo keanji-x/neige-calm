@@ -112,7 +112,7 @@ export const trackFsHookEventSchema = z.object({
 });
 
 export const cardRuntimeViewSchema = z.object({
-  runtime_id: z.string(),
+  worker_session_id: z.string(),
   kind: runtimeKindSchema,
   status: workerSessionStateSchema,
   provider: agentProviderSchema.optional(),

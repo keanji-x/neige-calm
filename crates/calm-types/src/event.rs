@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 15;
+pub const SYNC_EVENT_VERSION: u32 = 16;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -359,30 +359,30 @@ pub enum Event {
     #[serde(rename = "card.deleted")]
     CardDeleted { id: CardId, track_id: TrackId },
 
-    #[serde(rename = "runtime.started")]
-    RuntimeStarted {
-        runtime_id: String,
+    #[serde(rename = "worker_session.started")]
+    WorkerSessionStarted {
+        worker_session_id: String,
         card_id: String,
         kind: crate::runtime::WorkerSessionKind,
         agent_provider: Option<crate::runtime::AgentProvider>,
         status: crate::worker::WorkerSessionState,
     },
-    #[serde(rename = "runtime.status_changed")]
-    RuntimeStatusChanged {
-        runtime_id: String,
+    #[serde(rename = "worker_session.status_changed")]
+    WorkerSessionStatusChanged {
+        worker_session_id: String,
         card_id: String,
         old_status: crate::worker::WorkerSessionState,
         new_status: crate::worker::WorkerSessionState,
     },
-    #[serde(rename = "runtime.superseded")]
-    RuntimeSuperseded {
-        old_runtime_id: String,
-        new_runtime_id: String,
+    #[serde(rename = "worker_session.superseded")]
+    WorkerSessionSuperseded {
+        old_worker_session_id: String,
+        new_worker_session_id: String,
         card_id: String,
     },
     #[serde(rename = "harness.item.added")]
     HarnessItemAdded {
-        runtime_id: String,
+        worker_session_id: String,
         card_id: CardId,
         track_id: TrackId,
         item_db_id: i64,
@@ -393,7 +393,7 @@ pub enum Event {
     },
     #[serde(rename = "harness.phase.changed")]
     HarnessPhaseChanged {
-        runtime_id: String,
+        worker_session_id: String,
         card_id: CardId,
         track_id: TrackId,
         old_phase: HarnessPhaseTag,
@@ -413,7 +413,7 @@ pub enum Event {
     /// existing "an absent `Option` field is `None`" rule, not the thing
     /// doing the work (removing it changes nothing — verified by mutation).
     ///   * Absence must deserialize because rows written before #1252 carry
-    ///     only `{card_id, runtime_id, track_id}`, and
+    ///     only `{card_id, worker_session_id, track_id}`, and
     ///     [`Event::from_kind_and_payload`] is how `events_since` /
     ///     `events_for_track` rebuild stored rows. A required field makes
     ///     those rows fail to deserialize, and both readers `continue` past
@@ -429,7 +429,7 @@ pub enum Event {
     /// `None` exists only for historical rows read back off the events table.
     #[serde(rename = "harness.transcript.cleared")]
     HarnessTranscriptCleared {
-        runtime_id: String,
+        worker_session_id: String,
         card_id: CardId,
         track_id: TrackId,
         /// Number of `harness_items` rows deleted by this reset.
@@ -460,7 +460,7 @@ pub enum Event {
     /// the subsequent turn input. We log size only.
     #[serde(rename = "harness.user_message.enqueued")]
     HarnessUserMessageEnqueued {
-        runtime_id: String,
+        worker_session_id: String,
         card_id: CardId,
         track_id: TrackId,
         char_count: u32,
@@ -1132,9 +1132,9 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(id.to_string()),
             },
-            Event::RuntimeStarted { card_id, .. }
-            | Event::RuntimeStatusChanged { card_id, .. }
-            | Event::RuntimeSuperseded { card_id, .. } => EventMetadata {
+            Event::WorkerSessionStarted { card_id, .. }
+            | Event::WorkerSessionStatusChanged { card_id, .. }
+            | Event::WorkerSessionSuperseded { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
@@ -1323,9 +1323,9 @@ impl Event {
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
-            Event::RuntimeStarted { .. } => "runtime.started",
-            Event::RuntimeStatusChanged { .. } => "runtime.status_changed",
-            Event::RuntimeSuperseded { .. } => "runtime.superseded",
+            Event::WorkerSessionStarted { .. } => "worker_session.started",
+            Event::WorkerSessionStatusChanged { .. } => "worker_session.status_changed",
+            Event::WorkerSessionSuperseded { .. } => "worker_session.superseded",
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
@@ -1446,9 +1446,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
         // not carry track_id, and today's web client subscribes with ["*"].
         // Future track-only subscribers can revisit by threading EventScope into
         // topics() or adding track_id to these payloads.
-        Event::RuntimeStarted { card_id, .. }
-        | Event::RuntimeStatusChanged { card_id, .. }
-        | Event::RuntimeSuperseded { card_id, .. } => {
+        Event::WorkerSessionStarted { card_id, .. }
+        | Event::WorkerSessionStatusChanged { card_id, .. }
+        | Event::WorkerSessionSuperseded { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
         Event::HarnessItemAdded {
@@ -1969,32 +1969,35 @@ mod scope_tests {
         };
         assert_eq!(claude_hook.kind_tag(), "claude.hook");
 
-        let runtime_started = Event::RuntimeStarted {
-            runtime_id: "runtime-1".into(),
+        let runtime_started = Event::WorkerSessionStarted {
+            worker_session_id: "runtime-1".into(),
             card_id: "card-1".into(),
             kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
             status: crate::worker::WorkerSessionState::Starting,
         };
-        assert_eq!(runtime_started.kind_tag(), "runtime.started");
+        assert_eq!(runtime_started.kind_tag(), "worker_session.started");
 
-        let runtime_status_changed = Event::RuntimeStatusChanged {
-            runtime_id: "runtime-1".into(),
+        let runtime_status_changed = Event::WorkerSessionStatusChanged {
+            worker_session_id: "runtime-1".into(),
             card_id: "card-1".into(),
             old_status: crate::worker::WorkerSessionState::Starting,
             new_status: crate::worker::WorkerSessionState::Running,
         };
-        assert_eq!(runtime_status_changed.kind_tag(), "runtime.status_changed");
+        assert_eq!(
+            runtime_status_changed.kind_tag(),
+            "worker_session.status_changed"
+        );
 
-        let runtime_superseded = Event::RuntimeSuperseded {
-            old_runtime_id: "runtime-1".into(),
-            new_runtime_id: "runtime-2".into(),
+        let runtime_superseded = Event::WorkerSessionSuperseded {
+            old_worker_session_id: "runtime-1".into(),
+            new_worker_session_id: "runtime-2".into(),
             card_id: "card-1".into(),
         };
-        assert_eq!(runtime_superseded.kind_tag(), "runtime.superseded");
+        assert_eq!(runtime_superseded.kind_tag(), "worker_session.superseded");
 
         let transcript_cleared = Event::HarnessTranscriptCleared {
-            runtime_id: "runtime-1".into(),
+            worker_session_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
             track_id: TrackId::from("track-1"),
             cleared_item_count: Some(12),
@@ -2004,7 +2007,7 @@ mod scope_tests {
         assert_eq!(transcript_cleared.kind_tag(), "harness.transcript.cleared");
 
         let user_message_enqueued = Event::HarnessUserMessageEnqueued {
-            runtime_id: "runtime-1".into(),
+            worker_session_id: "runtime-1".into(),
             card_id: CardId::from("card-1"),
             track_id: TrackId::from("track-1"),
             char_count: 5,
@@ -2048,8 +2051,8 @@ mod scope_tests {
 
     #[test]
     fn runtime_started_serde_round_trip() {
-        let ev = Event::RuntimeStarted {
-            runtime_id: "runtime-1".into(),
+        let ev = Event::WorkerSessionStarted {
+            worker_session_id: "runtime-1".into(),
             card_id: "card-1".into(),
             kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
@@ -2057,8 +2060,8 @@ mod scope_tests {
         };
 
         let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["ev"], "runtime.started");
-        assert_eq!(json["data"]["runtime_id"], "runtime-1");
+        assert_eq!(json["ev"], "worker_session.started");
+        assert_eq!(json["data"]["worker_session_id"], "runtime-1");
         assert_eq!(json["data"]["card_id"], "card-1");
         assert_eq!(json["data"]["kind"], "codex");
         assert_eq!(json["data"]["agent_provider"], "codex");
@@ -2066,82 +2069,82 @@ mod scope_tests {
 
         let back: Event = serde_json::from_value(json).unwrap();
         match back {
-            Event::RuntimeStarted {
-                runtime_id,
+            Event::WorkerSessionStarted {
+                worker_session_id,
                 card_id,
                 kind,
                 agent_provider,
                 status,
             } => {
-                assert_eq!(runtime_id, "runtime-1");
+                assert_eq!(worker_session_id, "runtime-1");
                 assert_eq!(card_id, "card-1");
                 assert_eq!(kind, crate::runtime::WorkerSessionKind::CodexCard);
                 assert_eq!(agent_provider, Some(crate::runtime::AgentProvider::Codex));
                 assert_eq!(status, crate::worker::WorkerSessionState::Starting);
             }
-            other => panic!("expected RuntimeStarted after round-trip, got {other:?}"),
+            other => panic!("expected WorkerSessionStarted after round-trip, got {other:?}"),
         }
     }
 
     #[test]
     fn runtime_status_changed_serde_round_trip() {
-        let ev = Event::RuntimeStatusChanged {
-            runtime_id: "runtime-1".into(),
+        let ev = Event::WorkerSessionStatusChanged {
+            worker_session_id: "runtime-1".into(),
             card_id: "card-1".into(),
             old_status: crate::worker::WorkerSessionState::Starting,
             new_status: crate::worker::WorkerSessionState::Running,
         };
 
         let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["ev"], "runtime.status_changed");
-        assert_eq!(json["data"]["runtime_id"], "runtime-1");
+        assert_eq!(json["ev"], "worker_session.status_changed");
+        assert_eq!(json["data"]["worker_session_id"], "runtime-1");
         assert_eq!(json["data"]["card_id"], "card-1");
         assert_eq!(json["data"]["old_status"], "starting");
         assert_eq!(json["data"]["new_status"], "running");
 
         let back: Event = serde_json::from_value(json).unwrap();
         match back {
-            Event::RuntimeStatusChanged {
-                runtime_id,
+            Event::WorkerSessionStatusChanged {
+                worker_session_id,
                 card_id,
                 old_status,
                 new_status,
             } => {
-                assert_eq!(runtime_id, "runtime-1");
+                assert_eq!(worker_session_id, "runtime-1");
                 assert_eq!(card_id, "card-1");
                 assert_eq!(old_status, crate::worker::WorkerSessionState::Starting);
                 assert_eq!(new_status, crate::worker::WorkerSessionState::Running);
             }
-            other => panic!("expected RuntimeStatusChanged after round-trip, got {other:?}"),
+            other => panic!("expected WorkerSessionStatusChanged after round-trip, got {other:?}"),
         }
     }
 
     #[test]
     fn runtime_superseded_serde_round_trip() {
-        let ev = Event::RuntimeSuperseded {
-            old_runtime_id: "runtime-1".into(),
-            new_runtime_id: "runtime-2".into(),
+        let ev = Event::WorkerSessionSuperseded {
+            old_worker_session_id: "runtime-1".into(),
+            new_worker_session_id: "runtime-2".into(),
             card_id: "card-1".into(),
         };
 
         let json = serde_json::to_value(&ev).unwrap();
-        assert_eq!(json["ev"], "runtime.superseded");
-        assert_eq!(json["data"]["old_runtime_id"], "runtime-1");
-        assert_eq!(json["data"]["new_runtime_id"], "runtime-2");
+        assert_eq!(json["ev"], "worker_session.superseded");
+        assert_eq!(json["data"]["old_worker_session_id"], "runtime-1");
+        assert_eq!(json["data"]["new_worker_session_id"], "runtime-2");
         assert_eq!(json["data"]["card_id"], "card-1");
 
         let back: Event = serde_json::from_value(json).unwrap();
         match back {
-            Event::RuntimeSuperseded {
-                old_runtime_id,
-                new_runtime_id,
+            Event::WorkerSessionSuperseded {
+                old_worker_session_id,
+                new_worker_session_id,
                 card_id,
             } => {
-                assert_eq!(old_runtime_id, "runtime-1");
-                assert_eq!(new_runtime_id, "runtime-2");
+                assert_eq!(old_worker_session_id, "runtime-1");
+                assert_eq!(new_worker_session_id, "runtime-2");
                 assert_eq!(card_id, "card-1");
             }
-            other => panic!("expected RuntimeSuperseded after round-trip, got {other:?}"),
+            other => panic!("expected WorkerSessionSuperseded after round-trip, got {other:?}"),
         }
     }
 
@@ -2699,8 +2702,8 @@ mod scope_tests {
 
     #[test]
     fn runtime_started_topics_card_only() {
-        let ev = Event::RuntimeStarted {
-            runtime_id: "rt-1".into(),
+        let ev = Event::WorkerSessionStarted {
+            worker_session_id: "rt-1".into(),
             card_id: "card-1".into(),
             kind: crate::runtime::WorkerSessionKind::CodexCard,
             agent_provider: Some(crate::runtime::AgentProvider::Codex),
@@ -2718,8 +2721,8 @@ mod scope_tests {
 
     #[test]
     fn runtime_status_changed_topics_card_only() {
-        let ev = Event::RuntimeStatusChanged {
-            runtime_id: "rt-1".into(),
+        let ev = Event::WorkerSessionStatusChanged {
+            worker_session_id: "rt-1".into(),
             card_id: "card-1".into(),
             old_status: crate::worker::WorkerSessionState::Starting,
             new_status: crate::worker::WorkerSessionState::Running,
@@ -2736,9 +2739,9 @@ mod scope_tests {
 
     #[test]
     fn runtime_superseded_topics_card_only() {
-        let ev = Event::RuntimeSuperseded {
-            old_runtime_id: "rt-old".into(),
-            new_runtime_id: "rt-new".into(),
+        let ev = Event::WorkerSessionSuperseded {
+            old_worker_session_id: "rt-old".into(),
+            new_worker_session_id: "rt-new".into(),
             card_id: "card-1".into(),
         };
         let t = topics(&ev);
@@ -2793,26 +2796,26 @@ mod scope_tests {
                 id: CardId::from("card-deleted"),
                 track_id: TrackId::from("track-1"),
             },
-            Event::RuntimeStarted {
-                runtime_id: "runtime-started".into(),
+            Event::WorkerSessionStarted {
+                worker_session_id: "runtime-started".into(),
                 card_id: "card-runtime".into(),
                 kind: crate::runtime::WorkerSessionKind::CodexCard,
                 agent_provider: Some(crate::runtime::AgentProvider::Codex),
                 status: crate::worker::WorkerSessionState::Starting,
             },
-            Event::RuntimeStatusChanged {
-                runtime_id: "runtime-status".into(),
+            Event::WorkerSessionStatusChanged {
+                worker_session_id: "runtime-status".into(),
                 card_id: "card-runtime".into(),
                 old_status: crate::worker::WorkerSessionState::Starting,
                 new_status: crate::worker::WorkerSessionState::Running,
             },
-            Event::RuntimeSuperseded {
-                old_runtime_id: "runtime-old".into(),
-                new_runtime_id: "runtime-new".into(),
+            Event::WorkerSessionSuperseded {
+                old_worker_session_id: "runtime-old".into(),
+                new_worker_session_id: "runtime-new".into(),
                 card_id: "card-runtime".into(),
             },
             Event::HarnessTranscriptCleared {
-                runtime_id: "runtime-transcript".into(),
+                worker_session_id: "runtime-transcript".into(),
                 card_id: CardId::from("card-runtime"),
                 track_id: TrackId::from("track-1"),
                 cleared_item_count: Some(12),
@@ -2820,7 +2823,7 @@ mod scope_tests {
                 card_age_ms_at_clear: Some(86_400_000),
             },
             Event::HarnessUserMessageEnqueued {
-                runtime_id: "runtime-user-message".into(),
+                worker_session_id: "runtime-user-message".into(),
                 card_id: CardId::from("card-runtime"),
                 track_id: TrackId::from("track-1"),
                 char_count: 5,
@@ -3131,10 +3134,10 @@ mod scope_tests {
                 serde_json::json!({ "idempotency_key": "k", "reason": "r" }),
             ),
             (
-                "runtime.started",
-                "runtime.started",
+                "worker_session.started",
+                "worker_session.started",
                 serde_json::json!({
-                    "runtime_id": "runtime-1",
+                    "worker_session_id": "runtime-1",
                     "card_id": "card-1",
                     "kind": "codex",
                     "agent_provider": "codex",
@@ -3142,21 +3145,21 @@ mod scope_tests {
                 }),
             ),
             (
-                "runtime.status_changed",
-                "runtime.status_changed",
+                "worker_session.status_changed",
+                "worker_session.status_changed",
                 serde_json::json!({
-                    "runtime_id": "runtime-1",
+                    "worker_session_id": "runtime-1",
                     "card_id": "card-1",
                     "old_status": "starting",
                     "new_status": "running",
                 }),
             ),
             (
-                "runtime.superseded",
-                "runtime.superseded",
+                "worker_session.superseded",
+                "worker_session.superseded",
                 serde_json::json!({
-                    "old_runtime_id": "runtime-1",
-                    "new_runtime_id": "runtime-2",
+                    "old_worker_session_id": "runtime-1",
+                    "new_worker_session_id": "runtime-2",
                     "card_id": "card-1",
                 }),
             ),

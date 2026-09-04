@@ -121,8 +121,9 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
 }
 
 /// #1252 S0 R1/F1 — `harness.transcript.cleared` gained three telemetry
-/// fields. Rows written before that carry only `{card_id, runtime_id,
-/// track_id}` (9 such rows in the live prod db at the time of the fix), and
+/// fields. Rows written before that carry only `{card_id, worker_session_id,
+/// track_id}` — spelled `runtime_id` until migration 0094 rewrote the key
+/// (9 such rows in the live prod db at the time of the fix) — and
 /// `events_since` feeds every stored row back through
 /// `Event::from_kind_and_payload`. If the new fields were required, those
 /// rows would fail to deserialize and be silently `continue`d past — while
@@ -138,7 +139,7 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'harness.transcript.cleared',
-             '{"card_id":"card-old","runtime_id":"rt-old","track_id":"track-old"}',
+             '{"card_id":"card-old","worker_session_id":"rt-old","track_id":"track-old"}',
              'kernel',
              0,
              1
@@ -160,7 +161,7 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
         matches!(
             &rows[0].3,
             Event::HarnessTranscriptCleared {
-                runtime_id,
+                worker_session_id: runtime_id,
                 card_id,
                 track_id,
                 cleared_item_count: None,

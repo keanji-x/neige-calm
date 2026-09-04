@@ -66,7 +66,7 @@
     "description": "validator may write a harness user-message observation event in own card scope",
     "principal": { "session_id": "$VALIDATOR_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$VALIDATOR_CARD" },
-    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "$VALIDATOR_SESSION", "card_id": "$VALIDATOR_CARD", "track_id": "$HOME_TRACK", "char_count": 4 } },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "worker_session_id": "$VALIDATOR_SESSION", "card_id": "$VALIDATOR_CARD", "track_id": "$HOME_TRACK", "char_count": 4 } },
     "scope": { "kind": "Card", "id": { "card": "$VALIDATOR_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }

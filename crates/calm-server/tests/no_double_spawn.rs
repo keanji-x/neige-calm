@@ -2780,19 +2780,19 @@ async fn pre_pr4_operation_payload_deserializes_with_missing_runtime_id() {
     let terminal: TerminalCreateOperationPayload =
         serde_json::from_value(without_runtime_id(terminal_payload("track-pre-pr4")))
             .expect("terminal payload without runtime_id");
-    assert!(terminal.runtime_id.is_none());
+    assert!(terminal.worker_session_id.is_none());
 
     let codex: CodexCreateOperationPayload =
         serde_json::from_value(without_runtime_id(codex_payload("track-pre-pr4", None)))
             .expect("codex payload without runtime_id");
-    assert!(codex.runtime_id.is_none());
+    assert!(codex.worker_session_id.is_none());
 
     let boot = boot_claude_with_counted_spawn().await;
     let claude: ClaudeCreateOperationPayload = serde_json::from_value(without_runtime_id(
         claude_payload(&boot, "track-pre-pr4", None),
     ))
     .expect("claude payload without runtime_id");
-    assert!(claude.runtime_id.is_none());
+    assert!(claude.worker_session_id.is_none());
 }
 
 #[tokio::test]
@@ -2892,7 +2892,7 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
 fn terminal_payload(track_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: Some(new_id()),
+        worker_session_id: Some(new_id()),
         request: TerminalCreateRequestPayload {
             track_id: track_id.to_string(),
             title: None,
@@ -2982,7 +2982,7 @@ fn install_terminal_worker_runtime_with_hook(
 fn codex_payload(track_id: &str, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: Some(new_id()),
+        worker_session_id: Some(new_id()),
         request: NormalizedCodexCreateRequest {
             track_id: track_id.to_string(),
             title: None,
@@ -3018,7 +3018,7 @@ fn claude_payload(boot: &Boot, track_id: &str, prompt: Option<&str>) -> Value {
     }
     serde_json::to_value(ClaudeCreateOperationPayload {
         actor: ActorId::User,
-        runtime_id: Some(new_id()),
+        worker_session_id: Some(new_id()),
         request: PreparedClaudeCreateRequest {
             track_id: track_id.to_string(),
             title: None,

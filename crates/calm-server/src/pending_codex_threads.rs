@@ -50,7 +50,7 @@ pub struct PendingEntry {
     pub role: CardRole,
     pub track_id: Option<String>,
     pub terminal_id: String,
-    pub runtime_id: String,
+    pub worker_session_id: String,
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
     pub pty_pid: Option<i32>,
     pub registered_at: Instant,
@@ -71,7 +71,7 @@ impl PendingEntry {
             role: CardRole::Worker,
             track_id,
             terminal_id,
-            runtime_id,
+            worker_session_id: runtime_id,
             pty_pid: None,
             registered_at: Instant::now(),
             belt_and_suspenders_attribution_via_tools_call: false,
@@ -97,12 +97,13 @@ impl PendingThreadStartRegistry {
         let card_id = entry.card_id.clone();
         let track_id = entry.track_id.clone();
         let terminal_id = entry.terminal_id.clone();
-        let runtime_id = entry.runtime_id.clone();
+        let runtime_id = entry.worker_session_id.clone();
         let pty_pid = entry.pty_pid;
         let (queue_len_after, already_registered) = {
             let mut queue = self.queue.lock().await;
             if queue.iter().any(|pending| {
-                pending.card_id == card_id.as_str() && pending.runtime_id == runtime_id.as_str()
+                pending.card_id == card_id.as_str()
+                    && pending.worker_session_id == runtime_id.as_str()
             }) {
                 (queue.len(), true)
             } else {
@@ -128,7 +129,7 @@ impl PendingThreadStartRegistry {
         let mut queue = self.queue.lock().await;
         let Some(index) = queue
             .iter()
-            .position(|entry| entry.runtime_id == runtime_id)
+            .position(|entry| entry.worker_session_id == runtime_id)
         else {
             return false;
         };
@@ -338,7 +339,7 @@ impl PendingThreadStartRegistry {
             self.repo.as_ref(),
             &self.events,
             &entry.card_id,
-            &entry.runtime_id,
+            &entry.worker_session_id,
         )
         .await
         .is_ok();
@@ -368,7 +369,7 @@ impl PendingThreadStartRegistry {
         )
         .await?;
         let card_id_for_tx = card_id.to_string();
-        let runtime_id_for_tx = entry.runtime_id.clone();
+        let runtime_id_for_tx = entry.worker_session_id.clone();
         let thread_id_for_tx = thread_id.to_string();
         let card_for_event = card;
         let card_role_cache = CardRoleCache::default();
@@ -407,7 +408,7 @@ impl PendingThreadStartRegistry {
                         tx,
                         &runtime.id,
                         ThreadAttribution {
-                            runtime_id: runtime.id.clone(),
+                            worker_session_id: runtime.id.clone(),
                             provider: AgentProvider::Codex,
                             thread_id: Some(thread_id_for_tx.clone()),
                             session_id: None,
@@ -427,8 +428,8 @@ impl PendingThreadStartRegistry {
                     if old_status != WorkerSessionState::Running {
                         events.push((
                             scope,
-                            Event::RuntimeStatusChanged {
-                                runtime_id,
+                            Event::WorkerSessionStatusChanged {
+                                worker_session_id: runtime_id,
                                 card_id: card_id_for_tx,
                                 old_status,
                                 new_status: WorkerSessionState::Running,
@@ -546,7 +547,7 @@ pub(crate) async fn card_payload_clear_pending_status(
 }
 
 fn same_pending_entry(a: &PendingEntry, b: &PendingEntry) -> bool {
-    a.runtime_id == b.runtime_id && a.terminal_id == b.terminal_id
+    a.worker_session_id == b.worker_session_id && a.terminal_id == b.terminal_id
 }
 
 pub fn spawn_periodic_expire_task(

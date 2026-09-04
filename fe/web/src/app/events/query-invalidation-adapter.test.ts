@@ -284,7 +284,7 @@ describe('query invalidation adapter', () => {
    * a bare `planner-run` were the correct answer for `harness.phase.changed`.
    */
   it('turns each real harness plan into its exact live query invalidations', () => {
-    const base = { runtime_id: 'r-1', card_id: 'card-1', track_id: 'track-1' } as const;
+    const base = { worker_session_id: 'r-1', card_id: 'card-1', track_id: 'track-1' } as const;
     const expected = [
       [
         { ...base, item_db_id: 1, item_uuid: null, item_type: null, turn_id: null, method: 'x' },
@@ -328,9 +328,9 @@ describe('query invalidation adapter', () => {
    */
   it('drives the conversation-list keys all the way onto the query client', async () => {
     const event = wireEventSchema.parse({
-      ev: 'runtime.started',
+      ev: 'worker_session.started',
       data: {
-        runtime_id: 'r-1', card_id: 'card-1', kind: 'codex',
+        worker_session_id: 'r-1', card_id: 'card-1', kind: 'codex',
         agent_provider: 'codex', status: 'starting',
       },
     });
@@ -354,8 +354,8 @@ describe('query invalidation adapter', () => {
    */
   it('drives the bare track-conversations prefix onto the client when no track resolves', async () => {
     const event = wireEventSchema.parse({
-      ev: 'runtime.status_changed',
-      data: { runtime_id: 'r-1', card_id: 'card-1', old_status: 'starting', new_status: 'running' },
+      ev: 'worker_session.status_changed',
+      data: { worker_session_id: 'r-1', card_id: 'card-1', old_status: 'starting', new_status: 'running' },
     });
     const plan = invalidationPlanFor(event, { findTrackOwningCard: () => null });
     const { calls, client } = recordingClient();

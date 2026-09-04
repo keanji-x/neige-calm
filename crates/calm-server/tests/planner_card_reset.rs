@@ -591,7 +591,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -658,7 +658,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -784,7 +784,7 @@ async fn send_planner_input_happy() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     let snapshot = wait_for_user_message(&harness, text).await;
     assert!(
         snapshot.pending_queue.iter().any(|obs| {
@@ -922,7 +922,7 @@ async fn send_planner_input_emits_audit_event() {
                     area: scope_area
                 },
                 calm_server::event::Event::HarnessUserMessageEnqueued {
-                    runtime_id: ev_rt,
+                    worker_session_id: ev_rt,
                     card_id: ev_card,
                     track_id: ev_track,
                     char_count,
@@ -1386,7 +1386,7 @@ async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert!(
         boot.state.harness.get(&runtime_id).is_some(),
         "registry must hold the lazily recovered harness handle"
@@ -1398,7 +1398,7 @@ async fn send_planner_input_registry_miss_recovers_harness_and_enqueues() {
     let found = events.iter().any(|(_id, _v, _scope, event)| {
         matches!(
             event,
-            calm_server::event::Event::HarnessUserMessageEnqueued { runtime_id: ev_rt, card_id: ev_card, .. }
+            calm_server::event::Event::HarnessUserMessageEnqueued { worker_session_id: ev_rt, card_id: ev_card, .. }
                 if ev_rt == &runtime_id && ev_card == &card.id
         )
     });
@@ -1497,7 +1497,7 @@ async fn send_planner_input_null_thread_snapshot_fallback_recovers() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert!(
         boot.state.harness.get(&runtime_id).is_some(),
         "snapshot last_thread_id fallback must recover the harness"
@@ -1533,7 +1533,7 @@ async fn send_planner_input_blank_thread_snapshot_fallback_recovers() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     let handle = boot
         .state
         .harness
@@ -2250,7 +2250,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: old_runtime_id.clone(),
+        worker_session_id: old_runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -2373,7 +2373,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: old_runtime_id.clone(),
+        worker_session_id: old_runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(old_thread_id.clone()),

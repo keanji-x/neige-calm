@@ -185,6 +185,16 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 #   calm-server/src/activity_window.rs      1  inside `#[cfg(test)] mod tests`
 #   calm-server/src/task_context.rs         1  inside `#[cfg(test)] mod tests`
 #   calm-server/tests/cases/*               6  integration tests
+#   calm-server/tests/cases/
+#     migration_0094_worker_session_id.rs   1  integration test. It seeds `events`
+#                                              rows at the PRE-0094 schema so that
+#                                              migration 0094 can then be run over
+#                                              adversarial payloads. The appender
+#                                              seam writes the CURRENT schema, and
+#                                              the migration that produces that
+#                                              schema is the thing under test, so
+#                                              this fixture cannot reach the rows
+#                                              it needs through the seam.
 #   calm-truth/src/db/mod.rs                2  PROSE only (module doc comments)
 #   calm-truth/src/db/sqlite/events.rs      2  the seam itself: the one real
 #                                              production INSERT, plus prose
@@ -202,6 +212,7 @@ crates/calm-server/src/task_context.rs:1
 crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
 crates/calm-server/tests/cases/events_pruner.rs:4
 crates/calm-server/tests/cases/mcp_track_report.rs:1
+crates/calm-server/tests/cases/migration_0094_worker_session_id.rs:1
 crates/calm-server/tests/cases/sync_engine.rs:5
 crates/calm-server/tests/cases/ws_replay.rs:1
 crates/calm-truth/src/db/mod.rs:2

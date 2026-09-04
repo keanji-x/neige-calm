@@ -77,7 +77,7 @@ async function emitPhase(
       listener({
         ev: 'harness.phase.changed',
         data: {
-          runtime_id: 'runtime_1',
+          worker_session_id: 'runtime_1',
           card_id: cardId,
           track_id: 'track_1',
           old_phase: oldPhase,
@@ -91,7 +91,7 @@ async function emitPhase(
 function plannerRun(phase: string | null) {
   return {
     card_id: 'card_1',
-    runtime_id: phase == null ? null : 'runtime_1',
+    worker_session_id: phase == null ? null : 'runtime_1',
     phase,
   };
 }

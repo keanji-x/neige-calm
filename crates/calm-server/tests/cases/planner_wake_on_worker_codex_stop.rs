@@ -167,7 +167,7 @@ async fn boot() -> Boot {
 
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(thread_id),

@@ -1004,7 +1004,7 @@ pub trait RepoOutOfDomain: RepoRead {
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(
         &self,
-        runtime_id: &str,
+        worker_session_id: &str,
         card_id: &str,
         track_id: &str,
         thread_id: &str,

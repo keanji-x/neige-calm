@@ -438,7 +438,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
             "planner-harness-interrupt",
             key(),
             serde_json::to_value(PlannerHarnessInterruptOperationPayload {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
                 reason: "test interrupt".into(),
             })
             .unwrap(),
@@ -463,7 +463,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
             "planner-harness-shutdown",
             key(),
             serde_json::to_value(PlannerHarnessShutdownOperationPayload {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
             })
             .unwrap(),
         )
@@ -520,7 +520,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
             "planner-harness-shutdown",
             key(),
             serde_json::to_value(PlannerHarnessShutdownOperationPayload {
-                runtime_id: runtime_id.clone(),
+                worker_session_id: runtime_id.clone(),
             })
             .unwrap(),
         )
@@ -1150,7 +1150,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
 
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: old_runtime_id.clone(),
+        worker_session_id: old_runtime_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),
@@ -1253,7 +1253,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: old_runtime_id.clone(),
+        worker_session_id: old_runtime_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),

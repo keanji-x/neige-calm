@@ -717,7 +717,7 @@ fn codex_worker_key(idempotency_key: &str) -> OperationKey {
 }
 
 #[tokio::test]
-async fn worker_operation_provisions_real_worktree_before_runtime_started_and_recovers_once() {
+async fn worker_operation_provisions_real_worktree_before_session_started_and_recovers_once() {
     let _guard = ENV_LOCK.lock().await;
     let (state, repo, track_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-real-worktree";
@@ -778,26 +778,26 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
     assert_eq!(lease.2, card_id);
     assert_eq!(lease.3, track_id.to_string());
 
-    let rows = ordered_event_rows(&repo, &["worktree.provisioned", "runtime.started"]).await;
+    let rows = ordered_event_rows(&repo, &["worktree.provisioned", "worker_session.started"]).await;
     let provisioned = rows
         .iter()
         .find(|row| row.kind == "worktree.provisioned")
         .expect("worktree.provisioned event");
-    let runtime_started = rows
+    let session_started = rows
         .iter()
-        .find(|row| row.kind == "runtime.started")
-        .expect("runtime.started event");
+        .find(|row| row.kind == "worker_session.started")
+        .expect("worker_session.started event");
     assert!(
-        provisioned.id < runtime_started.id,
-        "worktree.provisioned must precede runtime.started"
+        provisioned.id < session_started.id,
+        "worktree.provisioned must precede worker_session.started"
     );
     assert_eq!(provisioned.payload["track_id"], track_id.to_string());
     assert_eq!(provisioned.payload["card_id"], card_id);
     assert_eq!(provisioned.payload["path"], cwd);
-    assert_eq!(runtime_started.payload["card_id"], card_id);
+    assert_eq!(session_started.payload["card_id"], card_id);
 
     let provisioned_before = event_count(&repo, "worktree.provisioned").await;
-    let runtime_started_before = event_count(&repo, "runtime.started").await;
+    let session_started_before = event_count(&repo, "worker_session.started").await;
     sqlx::query("UPDATE terminals SET exit_code = 0, signal_killed = 0 WHERE id = ?1")
         .bind(&terminal_id)
         .execute(repo.pool())
@@ -832,9 +832,9 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
         "re-driving app_server_interact must not duplicate worktree.provisioned"
     );
     assert_eq!(
-        event_count(&repo, "runtime.started").await,
-        runtime_started_before,
-        "re-driving app_server_interact must not duplicate runtime.started"
+        event_count(&repo, "worker_session.started").await,
+        session_started_before,
+        "re-driving app_server_interact must not duplicate worker_session.started"
     );
 }
 

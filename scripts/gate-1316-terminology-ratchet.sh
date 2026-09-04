@@ -357,6 +357,31 @@
 #   `try_reserve`), not a log. Renaming those to `Transcript*` would be a worse
 #   name than the one it replaces. Only `harness_items` / `HarnessItem` is
 #   genuinely a protocol transcript, so only that is scanned.
+#   A RAISE, taken ONCE by S4b (migration `0094`). Written as PER-FILE COUNTS,
+#   not as a criterion, for the reason the `spec` block above states: a
+#   description ("a migration may name the table whose column it renames")
+#   reads as a standing permission that a later commit satisfies word for word.
+#   Counts cannot be re-spent:
+#
+#     crates/calm-truth/migrations/0094_runtime_id_to_worker_session_id.sql
+#                                                                    0 ->   8
+#     crates/calm-server/tests/cases/migration_0094_worker_session_id.rs
+#                                                                    0 ->  10
+#                                                          net      245 -> 263
+#
+#   Reproduce with the combined pattern this script builds, occurrence-counted
+#   per file, against `origin/main`. Both files are new in that diff, so each
+#   cell's "before" is 0 and the two per-file counts are the whole net. Every
+#   one of the 18 is a SQL statement, a real SQLite object name
+#   (`harness_items`, `idx_harness_items_runtime_id`,
+#   `idx_harness_items_card_id`), a Rust symbol that already exists
+#   (`harness_item_page`, `harness_items_measure_by_card_tx`,
+#   `harness_items_delete_by_card_tx`, `harness_item_insert`), or the one test
+#   function name plus the module-doc line that cites it. Prose
+#   back-references were reworded to "the table" and contribute zero. If a
+#   later commit needs either cell higher, that is a NEW raise needing its own
+#   argument; it does not inherit this one.
+#
 #   Left open on purpose: the harness registry is keyed by `runtime_id`, i.e.
 #   `runtime` / `harness` / `worker_session` are three names for layers of one
 #   execution concept. That is a design question, not a rename, and #1316

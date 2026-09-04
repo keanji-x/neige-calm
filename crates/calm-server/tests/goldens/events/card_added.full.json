@@ -11,7 +11,7 @@
         "foo": "bar"
       },
       "runtime": {
-        "runtime_id": "rt-01",
+        "worker_session_id": "rt-01",
         "kind": "codex",
         "status": "running",
         "provider": "codex",

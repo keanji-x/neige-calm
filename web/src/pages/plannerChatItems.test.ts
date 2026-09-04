@@ -24,7 +24,7 @@ function harnessRow(
 
   return {
     id: 10,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card',
     track_id: 'track',
     thread_id: 'thread',

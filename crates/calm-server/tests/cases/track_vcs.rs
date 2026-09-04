@@ -355,8 +355,8 @@ async fn start_codex_runtime_with_event(
                     },
                 )
                 .await?;
-                Ok(Event::RuntimeStarted {
-                    runtime_id: runtime.id,
+                Ok(Event::WorkerSessionStarted {
+                    worker_session_id: runtime.id,
                     card_id: runtime.card_id,
                     kind: runtime.kind,
                     agent_provider: runtime.agent_provider,
@@ -402,8 +402,8 @@ async fn set_runtime_status_with_event(
             let new_status = new_status;
             Box::pin(async move {
                 session_set_status_tx(tx, &runtime_id, new_status).await?;
-                Ok(Event::RuntimeStatusChanged {
-                    runtime_id,
+                Ok(Event::WorkerSessionStatusChanged {
+                    worker_session_id: runtime_id,
                     card_id: card_id.to_string(),
                     old_status,
                     new_status,
@@ -3065,9 +3065,9 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
         &bus,
         &roles,
         &areas,
-        Event::RuntimeSuperseded {
-            old_runtime_id: runtime.id,
-            new_runtime_id: "missing-replacement".into(),
+        Event::WorkerSessionSuperseded {
+            old_worker_session_id: runtime.id,
+            new_worker_session_id: "missing-replacement".into(),
             card_id: worker.id.to_string(),
         },
     )
@@ -3158,8 +3158,8 @@ async fn planner_runtime_payload_blob_matches_live_view_without_projected_fields
         &bus,
         &roles,
         &areas,
-        Event::RuntimeStarted {
-            runtime_id: runtime.id,
+        Event::WorkerSessionStarted {
+            worker_session_id: runtime.id,
             card_id: runtime.card_id,
             kind: runtime.kind,
             agent_provider: runtime.agent_provider,

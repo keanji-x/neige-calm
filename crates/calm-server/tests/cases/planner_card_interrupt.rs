@@ -232,7 +232,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
     snapshot.last_thread_id = Some(thread_id.clone());
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id.clone()),
@@ -280,7 +280,7 @@ async fn interrupt_running_turn_issues_interrupt() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert_eq!(body["stopped"], json!(true), "body={body}");
     assert!(
         boot.state
@@ -320,7 +320,7 @@ async fn interrupt_issuing_turn_window_reports_not_stopped() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["stopped"], json!(false), "body={body}");
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert!(
         boot.state
             .shared_codex_appserver
@@ -388,7 +388,7 @@ async fn interrupt_idle_harness_is_a_200_noop() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["stopped"], json!(false), "body={body}");
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert!(
         boot.state
             .shared_codex_appserver
@@ -472,7 +472,7 @@ async fn get_planner_run_running_turn_reports_phase() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["runtime_id"], json!(runtime_id.as_str()));
+    assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     assert_eq!(body["phase"], json!("turn_running"), "body={body}");
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
@@ -489,7 +489,7 @@ async fn get_planner_run_without_runtime_returns_nulls() {
 
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
-    assert_eq!(body["runtime_id"], json!(null), "body={body}");
+    assert_eq!(body["worker_session_id"], json!(null), "body={body}");
     assert_eq!(body["phase"], json!(null), "body={body}");
 }
 
@@ -504,7 +504,7 @@ async fn get_planner_run_registry_miss_returns_nulls() {
     let (status, body) = get_json(boot.app, &format!("/api/cards/{}/planner/run", card.id)).await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["runtime_id"], json!(null), "body={body}");
+    assert_eq!(body["worker_session_id"], json!(null), "body={body}");
     assert_eq!(body["phase"], json!(null), "body={body}");
 }
 

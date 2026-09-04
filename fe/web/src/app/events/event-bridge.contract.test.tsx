@@ -314,7 +314,7 @@ describe('EventBridge contracts', () => {
     render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
-    emit(eventFrame(10, { ev: 'runtime.status_changed', data: { card_id: 'card-1' } }));
+    emit(eventFrame(10, { ev: 'worker_session.status_changed', data: { card_id: 'card-1' } }));
     await waitFor(() => expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey))
       .toContainEqual(['track', 'w1']));
   });

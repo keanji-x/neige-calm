@@ -19,7 +19,7 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
 const CARD_B = { ...CARD, id: 'card-2', track_id: 'w2', title: 'Second chat' };
 const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
-const PLANNER_RUN_IDLE = { card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' };
+const PLANNER_RUN_IDLE = { card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -27,7 +27,7 @@ function ok(body: unknown): ApiTransportResponse {
 
 function harnessRows(count: number) {
   return Array.from({ length: count }, (_, index) => ({
-    id: index + 1, runtime_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread',
+    id: index + 1, worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread',
     turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: `reply ${index}` } }), created_at_ms: index + 1,
   }));
@@ -61,8 +61,8 @@ function setup(reply?: Reply) {
       });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
-      if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
-      if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: CARD.id, runtime_id: 'runtime', stopped: true });
+      if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, worker_session_id: 'runtime' });
+      if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -486,7 +486,7 @@ describe('planner conversation regressions', () => {
     const pendingInterrupt = new Promise<ApiTransportResponse>((resolve) => { resolveInterrupt = resolve; });
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'turn_running' });
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running' });
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
     });
@@ -502,7 +502,7 @@ describe('planner conversation regressions', () => {
     fireEvent.keyDown(drawer, { key: 'Escape' });
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
     expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
-    resolveInterrupt(ok({ card_id: CARD.id, runtime_id: 'runtime', stopped: true }));
+    resolveInterrupt(ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true }));
   });
 
   /*

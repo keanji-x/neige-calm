@@ -39,7 +39,14 @@ use utoipa::ToSchema;
 /// capability. A newer bundle cannot parse an older server's response without
 /// that field, so web-only/server-only upgrades must be rejected instead of
 /// passing preflight and failing later in the Track route.
-pub const API_VERSION: &str = "5";
+///
+/// #1316 S4b bumps `"5"` -> `"6"`: three REST response bodies renamed a field.
+/// `POST /api/cards/{id}/planner/input`, `POST /api/cards/{id}/planner/interrupt`
+/// and `GET /api/cards/{id}/planner/run` now answer `worker_session_id` where
+/// they answered `runtime_id`. Unlike a removed endpoint this is silent on the
+/// wire — the request still 200s and the old client reads `undefined` — so the
+/// compatibility gate is the only thing that can turn it into a visible refusal.
+pub const API_VERSION: &str = "6";
 
 /// Monotonically increasing frontend compatibility floor.
 ///
@@ -76,7 +83,30 @@ pub const API_VERSION: &str = "5";
 /// #1456 bumps 22 -> 23: terminal task blocks now carry `command` instead of
 /// the shared `goal`. Cached bundles at 22 parse that known block as invalid
 /// and disable report UI unless the compatibility curtain stops them first.
-pub const WEB_COMPAT_VERSION: u32 = 23;
+///
+/// #1316 S4b bumps 23 -> 24 with API v6: `runtime_id` is retired from the
+/// kernel-owned typed carriers — three planner REST responses, and the payloads
+/// of the nine event kinds migration 0094 rewrites (`worker_session.started` /
+/// `.status_changed` / `.superseded`, the last of which carries two renamed
+/// keys; `harness.item.added` / `.phase.changed` / `.transcript.cleared` /
+/// `.user_message.enqueued`; and the `runtime` object inside `card.added` /
+/// `card.updated`). 0094 rewrote the stored rows to match, so a cached bundle
+/// at 23 meets the new spelling on live frames and on replay alike.
+///
+/// It fails differently on the two surfaces, and neither failure is loud:
+///
+/// * REST — `web/src/api/calm.ts` types these three responses with a TypeScript
+///   generic and does not validate them at runtime, so the field simply reads
+///   `undefined`.
+/// * Events — the v23 zod union still requires the old key, so `safeParse`
+///   rejects the frame. `web/src/api/events.ts` advances the cursor BEFORE
+///   parsing (deliberately, so one bad frame cannot pin the cursor), which means
+///   the rejected row is skipped permanently rather than retried. The three
+///   renamed `worker_session.*` discriminators are rejected by that same union.
+///
+/// A dropped row and an `undefined` field both leave a plausible-looking UI, so
+/// the refresh curtain is what has to stop such a bundle from connecting.
+pub const WEB_COMPAT_VERSION: u32 = 24;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

@@ -112,7 +112,7 @@ async fn boot() -> Boot {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(thread_id.clone()),
@@ -189,7 +189,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id,
+        worker_session_id: runtime_id,
         track_id: boot.track_id.clone(),
         card_id: chat_card.id,
         thread_id: Some(thread_id),
@@ -338,7 +338,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id,
+        worker_session_id: runtime_id,
         track_id: boot.track_id.clone(),
         card_id: assistant_card.id.clone(),
         thread_id: Some(thread_id),
@@ -554,8 +554,8 @@ async fn start_worker_runtime_with_event(
                         },
                     )
                     .await?;
-                    Ok(Event::RuntimeStarted {
-                        runtime_id: runtime.id,
+                    Ok(Event::WorkerSessionStarted {
+                        worker_session_id: runtime.id,
                         card_id: runtime.card_id,
                         kind: runtime.kind,
                         agent_provider: runtime.agent_provider,
@@ -597,8 +597,8 @@ async fn set_worker_runtime_status_with_event(
                 let new_status = new_status;
                 Box::pin(async move {
                     session_set_status_tx(tx, &runtime_id, new_status).await?;
-                    Ok(Event::RuntimeStatusChanged {
-                        runtime_id,
+                    Ok(Event::WorkerSessionStatusChanged {
+                        worker_session_id: runtime_id,
                         card_id: card_id.to_string(),
                         old_status,
                         new_status,
@@ -942,7 +942,7 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let recovered = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: boot.runtime_id.clone(),
+        worker_session_id: boot.runtime_id.clone(),
         track_id: boot.track_id.clone(),
         card_id: boot.planner_card_id.clone(),
         thread_id: Some(boot.thread_id.clone()),

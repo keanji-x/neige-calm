@@ -59,7 +59,7 @@ export type PlannerHarnessPhase =
 export interface ForcePlannerPhaseResult {
   ok: boolean;
   card_id: string;
-  runtime_id: string;
+  worker_session_id: string;
   old_phase: string;
   new_phase: string;
 }
@@ -130,13 +130,13 @@ export async function getPlannerCardId(
 /** Response body of `GET /api/cards/{id}/planner/run` — the FE's seed read. */
 export interface PlannerRunSnapshot {
   card_id: string;
-  runtime_id: string | null;
+  worker_session_id: string | null;
   phase: string | null;
 }
 
 /**
  * Read the harness phase snapshot the FE seeds from on mount. A dormant
- * card (no forced harness yet) answers `{runtime_id: null, phase: null}`.
+ * card (no forced harness yet) answers `{worker_session_id: null, phase: null}`.
  */
 export async function getPlannerRun(
   request: APIRequestContext,

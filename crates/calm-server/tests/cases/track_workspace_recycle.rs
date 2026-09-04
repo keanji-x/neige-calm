@@ -141,7 +141,7 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     let repo: Arc<dyn Repo> = b.repo.clone();
     let (harness, _observations) = calm_server::harness::PlannerHarness::run_unstarted_for_test(
         calm_server::harness::PlannerHarnessParams {
-            runtime_id: runtime_id.clone(),
+            worker_session_id: runtime_id.clone(),
             track_id: track_id.to_string().into(),
             card_id: card_id.into(),
             thread_id: None,

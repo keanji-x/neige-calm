@@ -161,7 +161,7 @@ async fn probe_replay_boot_track_create_leaves_planner_card_inert() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        body["runtime_id"].is_null() && body["phase"].is_null(),
+        body["worker_session_id"].is_null() && body["phase"].is_null(),
         "planner/run must answer dormant in replay boot; got {body}"
     );
 }
@@ -304,7 +304,7 @@ async fn force_planner_phase_three_surfaces_agree() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["runtime_id"], json!(outcome.runtime_id));
+    assert_eq!(body["worker_session_id"], json!(outcome.worker_session_id));
     assert_eq!(body["phase"], json!("turn_running"));
 
     // Surface 2 — `harness.phase.changed` is persisted AND broadcast.
@@ -343,7 +343,7 @@ async fn force_planner_phase_three_surfaces_agree() {
         .await
         .unwrap()
         .expect("force must have stood up an active runtime row");
-    assert_eq!(runtime.id, outcome.runtime_id);
+    assert_eq!(runtime.id, outcome.worker_session_id);
     let snapshot = runtime
         .handle_state_json
         .expect("forced runtime must carry a persisted snapshot");
@@ -432,7 +432,7 @@ async fn force_planner_phase_same_phase_twice_emits_one_event() {
     );
     assert_eq!(second.new_phase, HarnessPhaseTag::TurnRunning);
     assert_eq!(
-        second.runtime_id, first.runtime_id,
+        second.worker_session_id, first.worker_session_id,
         "repeat forces reuse the stood-up runtime + harness"
     );
 
@@ -542,7 +542,7 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
         status.is_success(),
         "/planner/input must stay functional on a forced harness: status={status} body={text}"
     );
-    assert_eq!(body["runtime_id"], json!(outcome.runtime_id));
+    assert_eq!(body["worker_session_id"], json!(outcome.worker_session_id));
 
     // UserMessage is hard-fire: an unpaused harness would issue on the
     // next 50ms tick. Give the run loop several ticks (and clear the
@@ -568,7 +568,7 @@ async fn forced_harness_planner_input_enqueues_without_issuing_turns() {
     let harness = boot
         .state
         .harness
-        .get(&outcome.runtime_id)
+        .get(&outcome.worker_session_id)
         .expect("forced harness stays registered");
     assert_eq!(
         harness.pending_len_for_test().await,
@@ -614,9 +614,9 @@ async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
     )
     .await
     .expect("force after drain respawns the harness");
-    assert_eq!(again.runtime_id, outcome.runtime_id);
+    assert_eq!(again.worker_session_id, outcome.worker_session_id);
     assert!(
-        boot.state.harness.get(&again.runtime_id).is_some(),
+        boot.state.harness.get(&again.worker_session_id).is_some(),
         "re-force must register a fresh harness"
     );
 }

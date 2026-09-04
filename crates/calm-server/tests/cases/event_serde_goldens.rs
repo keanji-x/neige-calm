@@ -307,7 +307,7 @@ golden_test!(
     Event::CardAdded(Card {
         payload: json!({"foo": "bar"}),
         runtime: Some(CardRuntimeView {
-            runtime_id: "rt-01".into(),
+            worker_session_id: "rt-01".into(),
             kind: WorkerSessionKind::CodexCard,
             status: WorkerSessionState::Running,
             provider: Some(AgentProvider::Codex),
@@ -336,7 +336,7 @@ golden_test!(
         sort: 2.5,
         payload: json!({"n": 1}),
         runtime: Some(CardRuntimeView {
-            runtime_id: "rt-02".into(),
+            worker_session_id: "rt-02".into(),
             kind: WorkerSessionKind::Terminal,
             status: WorkerSessionState::Exited,
             provider: None,
@@ -360,10 +360,10 @@ golden_test!(
 );
 
 golden_test!(
-    runtime_started_full,
-    "runtime_started.full.json",
-    Event::RuntimeStarted {
-        runtime_id: "rt-01".into(),
+    worker_session_started_full,
+    "worker_session_started.full.json",
+    Event::WorkerSessionStarted {
+        worker_session_id: "rt-01".into(),
         card_id: "card-01".into(),
         kind: WorkerSessionKind::ClaudeCard,
         agent_provider: Some(AgentProvider::Claude),
@@ -372,10 +372,10 @@ golden_test!(
 );
 
 golden_test!(
-    runtime_started_min,
-    "runtime_started.min.json",
-    Event::RuntimeStarted {
-        runtime_id: "rt-01".into(),
+    worker_session_started_min,
+    "worker_session_started.min.json",
+    Event::WorkerSessionStarted {
+        worker_session_id: "rt-01".into(),
         card_id: "card-01".into(),
         kind: WorkerSessionKind::Terminal,
         agent_provider: None,
@@ -384,10 +384,10 @@ golden_test!(
 );
 
 golden_test!(
-    runtime_status_changed,
-    "runtime_status_changed.json",
-    Event::RuntimeStatusChanged {
-        runtime_id: "rt-01".into(),
+    worker_session_status_changed,
+    "worker_session_status_changed.json",
+    Event::WorkerSessionStatusChanged {
+        worker_session_id: "rt-01".into(),
         card_id: "card-01".into(),
         old_status: WorkerSessionState::TurnPending,
         new_status: WorkerSessionState::Running,
@@ -395,11 +395,11 @@ golden_test!(
 );
 
 golden_test!(
-    runtime_superseded,
-    "runtime_superseded.json",
-    Event::RuntimeSuperseded {
-        old_runtime_id: "rt-01".into(),
-        new_runtime_id: "rt-02".into(),
+    worker_session_superseded,
+    "worker_session_superseded.json",
+    Event::WorkerSessionSuperseded {
+        old_worker_session_id: "rt-01".into(),
+        new_worker_session_id: "rt-02".into(),
         card_id: "card-01".into(),
     }
 );
@@ -408,7 +408,7 @@ golden_test!(
     harness_item_added_full,
     "harness_item_added.full.json",
     Event::HarnessItemAdded {
-        runtime_id: "rt-01".into(),
+        worker_session_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         item_db_id: 42,
@@ -423,7 +423,7 @@ golden_test!(
     harness_item_added_min,
     "harness_item_added.min.json",
     Event::HarnessItemAdded {
-        runtime_id: "rt-01".into(),
+        worker_session_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         item_db_id: 42,
@@ -438,7 +438,7 @@ golden_test!(
     harness_phase_changed,
     "harness_phase_changed.json",
     Event::HarnessPhaseChanged {
-        runtime_id: "rt-01".into(),
+        worker_session_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         old_phase: HarnessPhaseTag::PendingThreadStart,
@@ -450,7 +450,7 @@ golden_test!(
     harness_transcript_cleared,
     "harness_transcript_cleared.json",
     Event::HarnessTranscriptCleared {
-        runtime_id: "rt-01".into(),
+        worker_session_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         cleared_item_count: Some(12),
@@ -463,7 +463,7 @@ golden_test!(
     harness_user_message_enqueued,
     "harness_user_message_enqueued.json",
     Event::HarnessUserMessageEnqueued {
-        runtime_id: "rt-01".into(),
+        worker_session_id: "rt-01".into(),
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         char_count: 280,
@@ -1185,9 +1185,9 @@ const ALL_KIND_TAGS: [&str; 49] = [
     "card.added",
     "card.updated",
     "card.deleted",
-    "runtime.started",
-    "runtime.status_changed",
-    "runtime.superseded",
+    "worker_session.started",
+    "worker_session.status_changed",
+    "worker_session.superseded",
     "harness.item.added",
     "harness.phase.changed",
     "harness.transcript.cleared",
@@ -1289,9 +1289,9 @@ fn kind_tag_list_matches_enum() {
             Event::CardAdded(_) => "card.added",
             Event::CardUpdated(_) => "card.updated",
             Event::CardDeleted { .. } => "card.deleted",
-            Event::RuntimeStarted { .. } => "runtime.started",
-            Event::RuntimeStatusChanged { .. } => "runtime.status_changed",
-            Event::RuntimeSuperseded { .. } => "runtime.superseded",
+            Event::WorkerSessionStarted { .. } => "worker_session.started",
+            Event::WorkerSessionStatusChanged { .. } => "worker_session.status_changed",
+            Event::WorkerSessionSuperseded { .. } => "worker_session.superseded",
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",

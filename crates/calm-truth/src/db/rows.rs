@@ -263,7 +263,7 @@ impl From<CardRow> for Card {
 #[derive(Debug, sqlx::FromRow)]
 pub struct HarnessItemRow {
     pub id: i64,
-    pub runtime_id: String,
+    pub worker_session_id: String,
     #[sqlx(try_from = "String")]
     pub card_id: CardId,
     #[sqlx(try_from = "String")]
@@ -291,7 +291,7 @@ impl TryFrom<HarnessItemRow> for HarnessItem {
             .transpose()?;
         Ok(HarnessItem {
             id: r.id,
-            runtime_id: r.runtime_id,
+            worker_session_id: r.worker_session_id,
             card_id: r.card_id,
             track_id: r.track_id,
             thread_id: r.thread_id,

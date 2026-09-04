@@ -134,9 +134,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
-        | Event::RuntimeStarted { .. }
-        | Event::RuntimeStatusChanged { .. }
-        | Event::RuntimeSuperseded { .. }
+        | Event::WorkerSessionStarted { .. }
+        | Event::WorkerSessionStatusChanged { .. }
+        | Event::WorkerSessionSuperseded { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
@@ -1172,9 +1172,9 @@ impl Inner {
             | Event::CardAdded(_)
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }
-            | Event::RuntimeStarted { .. }
-            | Event::RuntimeStatusChanged { .. }
-            | Event::RuntimeSuperseded { .. }
+            | Event::WorkerSessionStarted { .. }
+            | Event::WorkerSessionStatusChanged { .. }
+            | Event::WorkerSessionSuperseded { .. }
             | Event::HarnessItemAdded { .. }
             | Event::HarnessPhaseChanged { .. }
             | Event::HarnessTranscriptCleared { .. }
@@ -1559,9 +1559,9 @@ pub(crate) fn harness_observation_from_event(
         | Event::CardAdded(_)
         | Event::CardUpdated(_)
         | Event::CardDeleted { .. }
-        | Event::RuntimeStarted { .. }
-        | Event::RuntimeStatusChanged { .. }
-        | Event::RuntimeSuperseded { .. }
+        | Event::WorkerSessionStarted { .. }
+        | Event::WorkerSessionStatusChanged { .. }
+        | Event::WorkerSessionSuperseded { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }

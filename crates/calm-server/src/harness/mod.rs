@@ -269,7 +269,7 @@ pub async fn spawn_recovered_harness(
         }
     };
     let handle = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
         card_id: CardId::from(runtime.card_id.clone()),
         // Normalize blank/whitespace thread IDs to `None` before the
@@ -697,7 +697,7 @@ mod tests {
         assert!(previous_live.is_none());
 
         let handle = PlannerHarness::run(PlannerHarnessParams {
-            runtime_id: runtime_id.clone(),
+            worker_session_id: runtime_id.clone(),
             track_id: TrackId::from("track-install-failure".to_string()),
             card_id: CardId::from("card-install-failure".to_string()),
             thread_id: None,

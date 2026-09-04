@@ -87,7 +87,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function plannerRunBody(phase: string | null, cardId = 'card_planner_1') {
   return {
     card_id: cardId,
-    runtime_id: phase == null ? null : 'runtime',
+    worker_session_id: phase == null ? null : 'runtime',
     phase,
   };
 }
@@ -102,7 +102,7 @@ async function emitPhase(
       listener({
         ev: 'harness.phase.changed',
         data: {
-          runtime_id: 'runtime',
+          worker_session_id: 'runtime',
           card_id: cardId,
           track_id: 'track',
           old_phase: oldPhase,
@@ -121,7 +121,7 @@ async function startTurn() {
 function harnessUserRow(id: number, text: string) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -146,7 +146,7 @@ function harnessUserRow(id: number, text: string) {
 function harnessAgentRow(id: number, text: string) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -172,7 +172,7 @@ function harnessAgentRow(id: number, text: string) {
 function harnessCommandRow(id: number) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -238,7 +238,7 @@ function harnessReasoningRow(
 ) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -271,7 +271,7 @@ function harnessToolRow(
 ) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -325,7 +325,7 @@ function harnessFileChangeRow(
 ) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -355,7 +355,7 @@ function harnessFileChangeRow(
 function harnessCompactRow(id: number) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -379,7 +379,7 @@ function harnessCompactRow(id: number) {
 function harnessUnknownRow(id: number) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner_1',
     track_id: 'track',
     thread_id: 'thread',
@@ -426,7 +426,7 @@ async function emitHarnessItemAdded(
       listener({
         ev: 'harness.item.added',
         data: {
-          runtime_id: 'runtime',
+          worker_session_id: 'runtime',
           card_id: 'card_planner_1',
           track_id: 'track',
           item_db_id: 999,
@@ -489,12 +489,12 @@ describe('PlannerConversation', () => {
     mocks.sendPlannerInput.mockReset();
     mocks.sendPlannerInput.mockResolvedValue({
       card_id: 'card_planner_1',
-      runtime_id: 'runtime',
+      worker_session_id: 'runtime',
     });
     mocks.interruptPlannerCard.mockReset();
     mocks.interruptPlannerCard.mockResolvedValue({
       card_id: 'card_planner_1',
-      runtime_id: 'runtime',
+      worker_session_id: 'runtime',
       stopped: true,
     });
     mocks.resetPlannerCard.mockReset();
@@ -1095,7 +1095,7 @@ describe('PlannerConversation', () => {
     await act(async () => {
       interrupt.resolve({
         card_id: 'card_planner_1',
-        runtime_id: 'runtime',
+        worker_session_id: 'runtime',
         stopped: true,
       });
       await interrupt.promise;
@@ -1239,7 +1239,7 @@ describe('PlannerConversation', () => {
     const user = userEvent.setup();
     mocks.interruptPlannerCard.mockResolvedValue({
       card_id: 'card_planner_1',
-      runtime_id: 'runtime',
+      worker_session_id: 'runtime',
       stopped: false,
     });
     await renderHarness();

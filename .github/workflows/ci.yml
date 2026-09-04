@@ -613,6 +613,12 @@ jobs:
       - name: web compat version lockstep gate (#1209 PR-2)
         run: ./scripts/gate-web-compat-version-lockstep.sh
 
+      - name: sync event version lockstep gate (#1316 S4b)
+        run: ./scripts/gate-sync-event-version-lockstep.sh
+
+      - name: sync event version lockstep gate discriminates (#1316 S4b)
+        run: ./scripts/gate-sync-event-version-lockstep.sh --selftest
+
       - name: template rename residual gate (#1209 PR-2, acceptance B10)
         run: ./scripts/gate-1209-template-rename-residual.sh
 

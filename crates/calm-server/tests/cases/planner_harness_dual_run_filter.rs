@@ -87,7 +87,7 @@ async fn harness_drops_foreign_thread_notifications() {
     let events = EventBus::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id,
+        worker_session_id: runtime_id,
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_b.clone()),
@@ -205,7 +205,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let registry = HarnessRegistry::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: track.id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -368,7 +368,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
     let (harness, mut observations) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
-            runtime_id: runtime_id.clone(),
+            worker_session_id: runtime_id.clone(),
             track_id: track.id.clone(),
             card_id: card.id.clone(),
             thread_id: Some(thread_id),

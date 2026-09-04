@@ -173,7 +173,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
     card.runtime = Some(CardRuntimeView {
-        runtime_id: runtime.id.clone(),
+        worker_session_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
         status: runtime.status,
         provider: runtime.agent_provider.clone(),
@@ -217,7 +217,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
 
 pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> CardRuntimeView {
     CardRuntimeView {
-        runtime_id: runtime.id.clone(),
+        worker_session_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
         status: runtime.status,
         provider: runtime.agent_provider.clone(),

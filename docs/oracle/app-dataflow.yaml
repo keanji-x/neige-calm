@@ -714,7 +714,7 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `runtime.started` / `runtime.status_changed` / `runtime.superseded` 必须同时失效
+    `worker_session.started` / `worker_session.status_changed` / `worker_session.superseded` 必须同时失效
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。

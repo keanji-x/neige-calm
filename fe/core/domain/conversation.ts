@@ -214,7 +214,7 @@ const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
-  id: z.number(), runtime_id: z.string(), card_id: z.string(), track_id: z.string(),
+  id: z.number(), worker_session_id: z.string(), card_id: z.string(), track_id: z.string(),
   thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
   item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
   input_segments: z.array(harnessInputSegmentSchema).optional(),
@@ -227,7 +227,7 @@ const harnessPhaseSchema = z.enum([
 
 export type PlannerRun = Readonly<{
   card_id: string;
-  runtime_id?: string | null;
+  worker_session_id?: string | null;
   phase?: z.infer<typeof harnessPhaseSchema> | null;
 }>;
 
@@ -246,7 +246,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
   return {
     method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/planner/run`,
     responseSchema: z.object({
-      card_id: z.string(), runtime_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
+      card_id: z.string(), worker_session_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
     }),
   };
 }
@@ -254,14 +254,14 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
 export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },
-    responseSchema: z.object({ card_id: z.string(), runtime_id: z.string() }),
+    responseSchema: z.object({ card_id: z.string(), worker_session_id: z.string() }),
   };
 }
 
 export function interruptPlannerOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/interrupt`,
-    responseSchema: z.object({ card_id: z.string(), runtime_id: z.string(), stopped: z.boolean() }),
+    responseSchema: z.object({ card_id: z.string(), worker_session_id: z.string(), stopped: z.boolean() }),
   };
 }
 

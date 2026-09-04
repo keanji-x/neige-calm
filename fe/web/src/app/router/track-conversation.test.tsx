@@ -81,7 +81,7 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
  */
 function harnessMessage(id: number, itemType: string, item: unknown) {
   return {
-    id, runtime_id: 'r', card_id: ASSISTANT_CARD.id, track_id: 'w1', thread_id: 't',
+    id, worker_session_id: 'r', card_id: ASSISTANT_CARD.id, track_id: 'w1', thread_id: 't',
     turn_id: null, item_uuid: null, item_type: itemType, method: 'item/completed',
     params: JSON.stringify({ item, completedAtMs: id }), created_at_ms: id,
   };
@@ -99,8 +99,8 @@ function ok(body: unknown): ApiTransportResponse {
 /* The two card-endpoint replies the probes below need, spelled once each: the
    shapes are schema-checked by the transport, and an off-schema body is refused
    before any of these tests can observe anything. */
-const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
-const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
+const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' });
+const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle' });
 
 function created(body: unknown): ApiTransportResponse {
   return { status: 201, statusText: 'Created', body };
@@ -148,12 +148,12 @@ function setup(reply?: Reply) {
          that does not exist: nothing here reads the field today, so it is not
          a false green yet — it is a trap laid for the first case that does,
          which would then pass against a reply about the wrong conversation. */
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r', phase: 'idle' });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle' });
       /* Answering an open conversation's send. The shape matters: an
          off-schema body is refused by the transport, the optimistic echo is
          rolled back, and the name derived from that echo — what the test
          below is about — never exists. */
-      if (request.path.endsWith('/planner/input')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r' });
+      if (request.path.endsWith('/planner/input')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },

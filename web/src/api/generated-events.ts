@@ -103,7 +103,7 @@ export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
  * result. Future cleanup (#581 item 4) will remove the legacy payload-key
  * projection; this typed view is the forward-compatible reader path.
  */
-export type CardRuntimeView = { runtime_id: string, kind: WorkerSessionKind, status: WorkerSessionState, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
+export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
 
 /**
  * Per-channel verdict recorded on a `review.round`.
@@ -130,7 +130,7 @@ export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `AreaUpdated(Area)`) pull in the struct's own export.
  */
-export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "track.lifecycle_changed", "data": { id: TrackId, area_id: AreaId, from: TrackLifecycle, to: TrackLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, 
+export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "track.lifecycle_changed", "data": { id: TrackId, area_id: AreaId, from: TrackLifecycle, to: TrackLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, 
 /**
  * Number of `harness_items` rows deleted by this reset.
  * `None` on pre-#1252 rows only.
@@ -147,7 +147,7 @@ cleared_params_bytes: number | null,
  * in milliseconds. Lets a retrospective tell "reset an hour in"
  * from "reset after a week". `None` on pre-#1252 rows only.
  */
-card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
+card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`
  * (#955 §5.3); `None` for every other author.
@@ -282,7 +282,7 @@ export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_f
  */
 export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, };
 
-export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
+export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 

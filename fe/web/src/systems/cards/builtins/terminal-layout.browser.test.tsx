@@ -26,7 +26,7 @@ it('preserves attached terminal geometry and output when its session exits', asy
     const card = registry.resolve({
       id: 'card-1', kind: 'terminal',
       payload: { cwd: '/repo/worker-checkout', gate_cwd: '/repo/gate-checkout' },
-      runtime: { runtime_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
+      runtime: { worker_session_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
     });
     if (card === null) throw new Error('Missing terminal');
     return <BoardHost host={host} items={[

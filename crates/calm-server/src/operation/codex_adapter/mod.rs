@@ -180,7 +180,15 @@ impl CodexWorkerAdapter {
 pub struct CodexCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    pub runtime_id: Option<String>,
+    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
+    /// but leaves `operations.payload_json` alone — see that migration's §4.
+    /// The `rename` is the load-bearing half: an operation parked across a
+    /// restart is resumed by re-reading its stored payload, and without the
+    /// rename a row that stores a real id under the frozen key would
+    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
+    /// a FRESH session id for a row that already had one.
+    #[serde(rename = "runtime_id")]
+    pub worker_session_id: Option<String>,
     pub request: NormalizedCodexCreateRequest,
 }
 
@@ -326,7 +334,7 @@ impl ProviderAdapter for CodexAdapter {
     ) -> Result<TxOutput> {
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
-        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
+        let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let scope = card_scope(
@@ -357,8 +365,8 @@ impl ProviderAdapter for CodexAdapter {
         let projected_card =
             project_codex_runtime_fields_for_response(card.clone(), Some(&term.id), None, None);
         let event = Event::CardAdded(projected_card.clone());
-        let runtime_event = Event::RuntimeStarted {
-            runtime_id: runtime_id.clone(),
+        let runtime_event = Event::WorkerSessionStarted {
+            worker_session_id: runtime_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
@@ -1429,7 +1437,7 @@ async fn persist_shared_worker_runtime_fields(
                 tx,
                 &runtime.id,
                 ThreadAttribution {
-                    runtime_id: runtime.id.clone(),
+                    worker_session_id: runtime.id.clone(),
                     provider: AgentProvider::Codex,
                     thread_id: Some(thread_id_for_tx),
                     session_id: None,
@@ -1631,8 +1639,8 @@ async fn provision_codex_worker_workspace(
                 if !runtime_started_persisted {
                     events.push((
                         scope,
-                        Event::RuntimeStarted {
-                            runtime_id: runtime_id_for_tx,
+                        Event::WorkerSessionStarted {
+                            worker_session_id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
                             kind: WorkerSessionKind::CodexCard,
                             agent_provider: Some(AgentProvider::Codex),
@@ -1693,7 +1701,7 @@ async fn persist_prompt_thread(
                     tx,
                     &runtime.id,
                     ThreadAttribution {
-                        runtime_id: runtime.id.clone(),
+                        worker_session_id: runtime.id.clone(),
                         provider: AgentProvider::Codex,
                         thread_id: Some(thread_id_for_tx.clone()),
                         session_id: None,
@@ -1727,8 +1735,8 @@ async fn persist_prompt_thread(
                 if old_status != WorkerSessionState::Running {
                     events.push((
                         scope,
-                        Event::RuntimeStatusChanged {
-                            runtime_id,
+                        Event::WorkerSessionStatusChanged {
+                            worker_session_id: runtime_id,
                             card_id: card_id_for_tx,
                             old_status,
                             new_status: WorkerSessionState::Running,
@@ -1831,8 +1839,8 @@ async fn persist_pending_thread_status(
                 if old_status != WorkerSessionState::TurnPending {
                     events.push((
                         scope,
-                        Event::RuntimeStatusChanged {
-                            runtime_id,
+                        Event::WorkerSessionStatusChanged {
+                            worker_session_id: runtime_id,
                             card_id: card_id_for_tx,
                             old_status,
                             new_status: WorkerSessionState::TurnPending,

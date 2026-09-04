@@ -1239,7 +1239,7 @@ mod tests {
 
     fn harness_user_message_enqueued(card: &str, track: &str) -> Event {
         Event::HarnessUserMessageEnqueued {
-            runtime_id: "rt-1".into(),
+            worker_session_id: "rt-1".into(),
             card_id: CardId::from(card),
             track_id: TrackId::from(track),
             char_count: 3,

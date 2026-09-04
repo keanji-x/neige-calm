@@ -417,7 +417,7 @@ impl RepoOutOfDomain for SqlxRepo {
     #[allow(clippy::too_many_arguments)]
     async fn harness_item_insert(
         &self,
-        runtime_id: &str,
+        worker_session_id: &str,
         card_id: &str,
         track_id: &str,
         thread_id: &str,
@@ -430,13 +430,13 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<i64> {
         let row = sqlx::query(
             r#"INSERT INTO harness_items (
-                   runtime_id, card_id, track_id, thread_id, turn_id,
+                   worker_session_id, card_id, track_id, thread_id, turn_id,
                    item_uuid, item_type, method, params, input_segments, created_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                RETURNING id"#,
         )
-        .bind(runtime_id)
+        .bind(worker_session_id)
         .bind(card_id)
         .bind(track_id)
         .bind(thread_id)

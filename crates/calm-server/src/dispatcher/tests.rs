@@ -1835,8 +1835,8 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::RuntimeStarted {
-                runtime_id: "rt".into(),
+            Event::WorkerSessionStarted {
+                worker_session_id: "rt".into(),
                 card_id: worker.to_string(),
                 kind: calm_types::runtime::WorkerSessionKind::CodexCard,
                 agent_provider: Some(calm_types::runtime::AgentProvider::Codex),
@@ -1847,8 +1847,8 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::RuntimeStatusChanged {
-                runtime_id: "rt".into(),
+            Event::WorkerSessionStatusChanged {
+                worker_session_id: "rt".into(),
                 card_id: worker.to_string(),
                 old_status: calm_types::worker::WorkerSessionState::Starting,
                 new_status: calm_types::worker::WorkerSessionState::Running,
@@ -1858,9 +1858,9 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::RuntimeSuperseded {
-                old_runtime_id: "rt-old".into(),
-                new_runtime_id: "rt-new".into(),
+            Event::WorkerSessionSuperseded {
+                old_worker_session_id: "rt-old".into(),
+                new_worker_session_id: "rt-new".into(),
                 card_id: worker.to_string(),
             },
             ActorId::KernelDispatcher,
@@ -1869,7 +1869,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::HarnessItemAdded {
-                runtime_id: "rt".into(),
+                worker_session_id: "rt".into(),
                 card_id: planner.clone(),
                 track_id: track.clone(),
                 item_db_id: 1,
@@ -1884,7 +1884,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::HarnessPhaseChanged {
-                runtime_id: "rt".into(),
+                worker_session_id: "rt".into(),
                 card_id: planner.clone(),
                 track_id: track.clone(),
                 old_phase: calm_types::harness::HarnessPhaseTag::Idle,
@@ -1896,7 +1896,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::HarnessTranscriptCleared {
-                runtime_id: "rt".into(),
+                worker_session_id: "rt".into(),
                 card_id: planner.clone(),
                 track_id: track.clone(),
                 cleared_item_count: Some(7),
@@ -1909,7 +1909,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::HarnessUserMessageEnqueued {
-                runtime_id: "rt".into(),
+                worker_session_id: "rt".into(),
                 card_id: planner.clone(),
                 track_id: track.clone(),
                 char_count: 5,

@@ -106,6 +106,14 @@
  *   new bundle must not be deployed web-only against an API v4 server.
  * * `23` — issue #1456 replaces terminal task `goal` with the discriminated
  *   `command` field. A cached v22 bundle cannot parse the new task block.
+ * * `24` — issue #1316 S4b retires `runtime_id` from the kernel-owned typed
+ *   carriers: three planner REST responses, and the payloads of the nine event
+ *   kinds migration 0094 rewrites, answer `worker_session_id` instead. A cached
+ *   v23 bundle fails differently on the two, and quietly on both: the REST
+ *   responses are typed by a generic and unvalidated, so the field reads
+ *   `undefined`; event frames are rejected by the v23 zod union, and because
+ *   `events.ts` advances the cursor before parsing, a rejected row is skipped
+ *   permanently rather than retried. Only the curtain stops such a bundle.
  *
  * This constant must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and in
@@ -114,7 +122,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 23;
+export const WEB_COMPAT_VERSION = 24;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

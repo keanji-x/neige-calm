@@ -535,7 +535,7 @@ impl DecisionSink for CardDecisionSink {
 /// the existing turn queue and is deliberately not wired to this stub.
 #[derive(Clone, Debug)]
 pub struct PlannerHarnessAgentReactor {
-    runtime_id: String,
+    worker_session_id: String,
     track_id: TrackId,
     area_id: AreaId,
 }
@@ -543,7 +543,7 @@ pub struct PlannerHarnessAgentReactor {
 impl PlannerHarnessAgentReactor {
     pub fn new(runtime_id: String, track_id: TrackId, area_id: AreaId) -> Self {
         Self {
-            runtime_id,
+            worker_session_id: runtime_id,
             track_id,
             area_id,
         }
@@ -554,7 +554,7 @@ impl PlannerHarnessAgentReactor {
 impl AgentReactor for PlannerHarnessAgentReactor {
     fn principal(&self) -> Principal {
         Principal::Agent {
-            session_id: WorkerSessionId::from(self.runtime_id.clone()),
+            session_id: WorkerSessionId::from(self.worker_session_id.clone()),
             track_id: self.track_id.clone(),
             area_id: self.area_id.clone(),
         }

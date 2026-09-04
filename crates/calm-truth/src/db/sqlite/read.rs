@@ -51,7 +51,7 @@ impl SqlxRepo {
         descending: bool,
         method_predicate: &str,
     ) -> Result<Vec<HarnessItem>> {
-        const COLUMNS: &str = "id, runtime_id, card_id, track_id, thread_id, turn_id, \
+        const COLUMNS: &str = "id, worker_session_id, card_id, track_id, thread_id, turn_id, \
                                item_uuid, item_type, method, params, input_segments, \
                                created_at_ms";
         let (comparison, order, cursor) = if descending {

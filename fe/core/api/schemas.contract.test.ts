@@ -259,7 +259,7 @@ describe('planner harness transcript lifecycle events', () => {
     const parsed = wireEventSchema.parse({
       ev: 'harness.transcript.cleared',
       data: {
-        runtime_id: 'runtime_2',
+        worker_session_id: 'runtime_2',
         card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: 12,
@@ -269,7 +269,7 @@ describe('planner harness transcript lifecycle events', () => {
     });
     expect(parsed.ev).toBe('harness.transcript.cleared');
     if (parsed.ev === 'harness.transcript.cleared') {
-      expect(parsed.data.runtime_id).toBe('runtime_2');
+      expect(parsed.data.worker_session_id).toBe('runtime_2');
       expect(parsed.data.card_id).toBe('card_planner_1');
       expect(parsed.data.track_id).toBe('track_1');
       expect(parsed.data.cleared_item_count).toBe(12);
@@ -278,7 +278,7 @@ describe('planner harness transcript lifecycle events', () => {
     }
   });
 
-  it('rejects harness.transcript.cleared missing runtime_id', () => {
+  it('rejects harness.transcript.cleared missing worker_session_id', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
@@ -300,7 +300,7 @@ describe('planner harness transcript lifecycle events', () => {
     const parsed = wireEventSchema.parse({
       ev: 'harness.transcript.cleared',
       data: {
-        runtime_id: 'runtime_2',
+        worker_session_id: 'runtime_2',
         card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: null,
@@ -325,7 +325,7 @@ describe('planner harness transcript lifecycle events', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
-        runtime_id: 'runtime_2',
+        worker_session_id: 'runtime_2',
         card_id: 'card_planner_1',
         track_id: 'track_1',
       },
@@ -338,7 +338,7 @@ describe('planner harness transcript lifecycle events', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
-        runtime_id: 'runtime_2',
+        worker_session_id: 'runtime_2',
         card_id: 'card_planner_1',
         track_id: 'track_1',
         cleared_item_count: '12',
@@ -353,7 +353,7 @@ describe('planner harness transcript lifecycle events', () => {
     const parsed = wireEventSchema.parse({
       ev: 'harness.user_message.enqueued',
       data: {
-        runtime_id: 'runtime_2',
+        worker_session_id: 'runtime_2',
         card_id: 'card_planner_1',
         track_id: 'track_1',
         char_count: 9,
@@ -361,7 +361,7 @@ describe('planner harness transcript lifecycle events', () => {
     });
     expect(parsed.ev).toBe('harness.user_message.enqueued');
     if (parsed.ev === 'harness.user_message.enqueued') {
-      expect(parsed.data.runtime_id).toBe('runtime_2');
+      expect(parsed.data.worker_session_id).toBe('runtime_2');
       expect(parsed.data.card_id).toBe('card_planner_1');
       expect(parsed.data.track_id).toBe('track_1');
       expect(parsed.data.char_count).toBe(9);

@@ -709,7 +709,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
     async fn harness_item_insert(
         &self,
-        runtime_id: &str,
+        worker_session_id: &str,
         card_id: &str,
         track_id: &str,
         thread_id: &str,
@@ -825,7 +825,7 @@ where
     }
     async fn harness_item_insert(
         &self,
-        runtime_id: &str,
+        worker_session_id: &str,
         card_id: &str,
         track_id: &str,
         thread_id: &str,
@@ -838,7 +838,7 @@ where
     ) -> Result<i64> {
         calm_truth::db::RepoOutOfDomain::harness_item_insert(
             self,
-            runtime_id,
+            worker_session_id,
             card_id,
             track_id,
             thread_id,

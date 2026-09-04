@@ -13,11 +13,11 @@ import { invalidationPlanFor } from './invalidation-plan.js';
  * an eighth policy — or dropping one of these seven — has to be typed here as
  * well, deliberately, before the suite goes green again.
  *
- * The three `runtime.*` kinds joined the original four in #1189 §5.5: a row's
+ * The three `worker_session.*` kinds joined the original four in #1189 §5.5: a row's
  * `state` comes from `worker_sessions.state`, and those are the events that
  * write it. `track.lifecycle_changed` is the near miss that must stay out — it
  * changes a track, not a session row, and the sessions it ends announce
- * themselves as `runtime.superseded`, which is already in this list.
+ * themselves as `worker_session.superseded`, which is already in this list.
  *
  * `harness.item.added` is a KNOWN and DELIBERATE gap, not an omission. It does
  * change what these lists show: the event's producer records the item and then
@@ -26,7 +26,7 @@ import { invalidationPlanFor } from './invalidation-plan.js';
  * (`routes/track_conversations.rs`, mirrored by `conversation.ts`'s sort on
  * `updatedAt`). So two concurrent sessions where the older one keeps producing
  * items without a phase change will have server-side order that the cache does
- * not, until the next phase or runtime event.
+ * not, until the next phase or worker-session event.
  *
  * It is still out for two reasons, and adding it here would make things worse
  * rather than better. It is the highest-frequency event the kernel emits, so it
@@ -40,7 +40,7 @@ import { invalidationPlanFor } from './invalidation-plan.js';
  */
 const CONVERSATION_LIST_KINDS = [
   'card.added', 'card.updated',
-  'runtime.started', 'runtime.status_changed', 'runtime.superseded',
+  'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'harness.phase.changed', 'harness.user_message.enqueued',
 ] as const;
 
@@ -143,9 +143,9 @@ describe('invalidation plan behavior', () => {
     ['card.updated', { track_id: 'track-1' }],
     ['harness.phase.changed', { card_id: 'card-1', track_id: 'track-1' }],
     ['harness.user_message.enqueued', { card_id: 'card-1', track_id: 'track-1' }],
-    ['runtime.started', { card_id: 'card-1' }],
-    ['runtime.status_changed', { card_id: 'card-1' }],
-    ['runtime.superseded', { card_id: 'card-1' }],
+    ['worker_session.started', { card_id: 'card-1' }],
+    ['worker_session.status_changed', { card_id: 'card-1' }],
+    ['worker_session.superseded', { card_id: 'card-1' }],
   ] as const)('keys the track conversation list by its own track for %s', (ev, data) => {
     const keys = invalidationPlanFor(event({ ev, data }), { findTrackOwningCard: () => 'track-1' })
       .invalidate.filter((key) => key[0] === 'track-conversations');
@@ -154,7 +154,7 @@ describe('invalidation plan behavior', () => {
 
   it('resolves runtime projections through card ownership', () => {
     expect(invalidationPlanFor(
-      event({ ev: 'runtime.started', data: { card_id: 'card-1' } }),
+      event({ ev: 'worker_session.started', data: { card_id: 'card-1' } }),
       { findTrackOwningCard: () => 'track-1' },
     )).toEqual({
       invalidate: [
@@ -174,7 +174,7 @@ describe('invalidation plan behavior', () => {
    */
   it('falls back to the track-conversations prefix when card ownership is unknown', () => {
     expect(invalidationPlanFor(
-      event({ ev: 'runtime.status_changed', data: { card_id: 'card-1' } }),
+      event({ ev: 'worker_session.status_changed', data: { card_id: 'card-1' } }),
       { findTrackOwningCard: () => null },
     )).toEqual({
       invalidate: [

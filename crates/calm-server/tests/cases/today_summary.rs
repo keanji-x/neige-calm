@@ -1886,7 +1886,7 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
             "SELECT COUNT(*) FROM events \
                WHERE kind = 'harness.user_message.enqueued' \
                  AND scope_card = '{card_id}' \
-                 AND json_extract(payload, '$.runtime_id') = '{r2}'"
+                 AND json_extract(payload, '$.worker_session_id') = '{r2}'"
         ))
         .await,
         0,

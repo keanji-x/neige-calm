@@ -1,0 +1,11 @@
+{
+  "description": "worker_session.superseded inline struct variant.",
+  "wire": {
+    "ev": "worker_session.superseded",
+    "data": {
+      "old_worker_session_id": "rt-01",
+      "new_worker_session_id": "rt-02",
+      "card_id": "card-01"
+    }
+  }
+}

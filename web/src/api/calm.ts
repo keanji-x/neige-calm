@@ -268,7 +268,7 @@ export const resetPlannerCard = (id: string) =>
     `/api/cards/${encodeURIComponent(id)}/planner/reset`,
   );
 export const sendPlannerInput = (id: string, text: string) =>
-  request<{ card_id: string; runtime_id: string }>(
+  request<{ card_id: string; worker_session_id: string }>(
     'POST',
     `/api/cards/${encodeURIComponent(id)}/planner/input`,
     { text },
@@ -276,7 +276,7 @@ export const sendPlannerInput = (id: string, text: string) =>
 // #668 — stop the running planner turn. `stopped: false` means the harness was
 // idle and the stop was a graceful no-op (no interrupt dispatched).
 export const interruptPlannerCard = (id: string) =>
-  request<{ card_id: string; runtime_id: string; stopped: boolean }>(
+  request<{ card_id: string; worker_session_id: string; stopped: boolean }>(
     'POST',
     `/api/cards/${encodeURIComponent(id)}/planner/interrupt`,
   );
@@ -287,7 +287,7 @@ export const interruptPlannerCard = (id: string) =>
 export const getPlannerRun = (id: string) =>
   request<{
     card_id: string;
-    runtime_id: string | null;
+    worker_session_id: string | null;
     phase: HarnessPhaseTag | null;
   }>('GET', `/api/cards/${encodeURIComponent(id)}/planner/run`);
 export const listHarnessItems = (

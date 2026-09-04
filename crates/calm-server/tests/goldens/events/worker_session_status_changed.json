@@ -1,0 +1,12 @@
+{
+  "description": "worker_session.status_changed; WorkerSessionState is rename_all=snake_case (TurnPending → \"turn_pending\").",
+  "wire": {
+    "ev": "worker_session.status_changed",
+    "data": {
+      "worker_session_id": "rt-01",
+      "card_id": "card-01",
+      "old_status": "turn_pending",
+      "new_status": "running"
+    }
+  }
+}

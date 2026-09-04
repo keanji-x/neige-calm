@@ -92,7 +92,7 @@ test.describe('planner chat live phase updates', () => {
       const data = evt.data as Record<string, unknown>;
       expect(data['card_id'], 'snake_case card_id').toBe(plannerCardId);
       expect(typeof data['new_phase'], 'snake_case new_phase').toBe('string');
-      expect(typeof data['runtime_id'], 'snake_case runtime_id').toBe('string');
+      expect(typeof data['worker_session_id'], 'snake_case worker_session_id').toBe('string');
       expect(data).not.toHaveProperty('newPhase');
       expect(data).not.toHaveProperty('cardId');
     }

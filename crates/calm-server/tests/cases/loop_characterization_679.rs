@@ -199,7 +199,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     // issuance racing the assertions).
     let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
-            runtime_id: runtime_id.clone(),
+            worker_session_id: runtime_id.clone(),
             track_id: track.id.clone(),
             card_id: planner_card.id.clone(),
             thread_id: Some(thread_id),
