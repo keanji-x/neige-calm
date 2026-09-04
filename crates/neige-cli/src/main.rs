@@ -7,6 +7,8 @@
 //! `NEIGE_MCP_DAEMON_TOKEN` is for the stdio shim only; the CLI requires
 //! `NEIGE_MCP_TOKEN` because its tool calls do not carry thread metadata.
 
+mod help;
+
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -35,6 +37,19 @@ async fn main() -> ExitCode {
     if args.first().map(String::as_str) == Some("--version") {
         println!("neige {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    if let Some(request) = help::request(&args) {
+        if let Some(output) = help::render(request) {
+            print!("{output}");
+            return ExitCode::SUCCESS;
+        }
+
+        let err = AppError::unknown_command(
+            request.command().expect("only command help can be unknown"),
+            args.iter().any(|arg| arg == "--json"),
+        );
+        emit_error(&err);
+        return ExitCode::from(err.exit_code);
     }
 
     let cli = match Cli::parse(args) {
@@ -1064,7 +1079,7 @@ impl Cli {
             other if other.starts_with('-') => {
                 Err(AppError::usage(format!("unknown option `{other}`"), json))
             }
-            other => Err(AppError::usage(format!("unknown command `{other}`"), json)),
+            other => Err(AppError::unknown_command(other, json)),
         }
     }
 
@@ -1171,6 +1186,10 @@ impl AppError {
                 "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text> | neige track-gc --track-id <id> [--keep N] [--dry-run] --force | neige vacuum --force",
             }),
         )
+    }
+
+    fn unknown_command(command: &str, json: bool) -> Self {
+        Self::usage(help::unknown_command_message(command), json)
     }
 
     fn missing_env(name: &str, json: bool) -> Self {
