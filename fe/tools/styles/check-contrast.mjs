@@ -70,9 +70,68 @@ const taskDotPulseFloor = keyframeOpacityFloor(
   'task-dot-pulse',
 );
 
+/**
+ * ── Recipes that live outside `tokens.css` ────────────────────────────────
+ *
+ * Settings › Plugins paints its five state chips with per-theme `oklch()`
+ * declared in its own CSS module rather than with tokens — they are
+ * use-specific fills for one column, not new semantic steps, and the module
+ * says why at length. That reasoning is only allowed to stand if the fills are
+ * still *measured*, so this reads the declarations back out of the stylesheet
+ * that owns them: lowering one of those ten values reddens this gate.
+ *
+ * Fail-closed in both directions. A missing block is an error rather than a
+ * skipped recipe, and so is a block that stops declaring a name this expects —
+ * the failure mode of the alternative is a rule silently checking nothing.
+ *
+ * @param {URL} url @param {string} selector
+ */
+function declarationsInRule(url, selector) {
+  const css = fs.readFileSync(url, 'utf8');
+  const start = css.indexOf(selector);
+  if (start === -1) throw new Error(`Missing rule ${selector} in ${url.pathname}`);
+  const open = css.indexOf('{', start);
+  const end = css.indexOf('}', open);
+  if (open === -1 || end === -1) throw new Error(`Unterminated rule ${selector} in ${url.pathname}`);
+  return declarations(css.slice(open, end + 1));
+}
+
+const chipModule = new URL('../../web/src/features/settings/settings.module.css', import.meta.url);
+const chipLight = declarationsInRule(chipModule, '\n  .pluginStateChip {');
+const chipDark = new Map([
+  ...chipLight,
+  ...declarationsInRule(chipModule, '\n  [data-theme="dark"] .pluginStateChip {'),
+]);
+/** The chip's fill and the type painted on it, named as astryx names them. */
+const chipPairs = [
+  { label: 'running chip', foreground: '--color-on-success', background: '--color-success' },
+  { label: 'crashed chip', foreground: '--color-on-error', background: '--color-error' },
+  { label: 'unavailable chip', foreground: '--color-on-warning', background: '--color-warning' },
+  { label: 'spawning/installing/installed chip', foreground: '--color-on-accent', background: '--color-accent' },
+  { label: 'unknown chip', foreground: '--color-text-primary', background: '--color-neutral' },
+];
+
 let failed = false;
 /** @type {Array<[string, Map<string, string>]>} */
 const themes = [['light', light], ['dark', dark]];
+/** @type {Array<[string, Map<string, string>]>} */
+const chipThemes = [['light', chipLight], ['dark', chipDark]];
+
+for (const [theme, vars] of chipThemes) {
+  for (const { label, foreground, background } of chipPairs) {
+    const fill = rgb(resolve(background, vars));
+    if (fill.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
+      failed = true;
+      console.error(`${theme} ${label} fill: outside sRGB gamut`);
+    }
+    const measured = ratio(rgb(resolve(foreground, vars)), fill);
+    console.log(`${theme} plugin ${label}: ${measured.toFixed(2)}:1`);
+    if (measured < 4.5) {
+      failed = true;
+      console.error(`${theme} plugin ${label}: ${measured.toFixed(2)}:1 (requires 4.50:1)`);
+    }
+  }
+}
 
 /**
  * This is deliberately a small semantic-pair check, not a CSS/DOM contrast

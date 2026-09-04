@@ -212,6 +212,91 @@
   }
 
   /*
+   * ── The state chip: one weight for all five states ────────────────────────
+   *
+   * Owner preview feedback: the column of chips down the trailing edge was
+   * three different marks pretending to be one. astryx's own variants ship
+   * three different *recipes* — `success`/`error`/`info` are solid fills with
+   * white type, `warning` is a bright amber fill with near-black type
+   * (`--color-on-warning` is `#0A1317`), and `neutral` is a 10–20% wash of the
+   * text colour, which on this app's paper is barely a block at all. Read down
+   * the column, that is a scale of loudness the states do not have: `installed`
+   * looked like nothing happened, `unavailable` shouted louder than `crashed`.
+   *
+   * So every chip becomes the same *object* — a solid, deep fill with white
+   * type — and hue alone carries the difference, which is the only channel that
+   * was ever meant to. This is scoped token overrides on the badge itself, not
+   * a DOM change and not a fork: astryx paints each variant from a
+   * `--color-<variant>` / `--color-on-<variant>` pair, and a custom property
+   * declared on the element is resolved before that element's own
+   * `background-color` is picked. One class therefore restates all five pairs
+   * and each variant takes the one it already asked for.
+   *
+   * **Why raw `oklch()` and not new tokens.** These are five use-specific fills
+   * for one list on one pane, not new semantic steps: `--warn` and `--error`
+   * stay exactly what they are everywhere else in the app, and a global
+   * `--color-warning` / `--color-neutral` override would repaint every Badge
+   * and Button in the product to fix one column. `styles/track-grid.css`,
+   * `styles/xterm-view.css` and the chat rail's dot all write per-theme
+   * `oklch()` outside `tokens.css` for the same reason; this follows them, and
+   * writes the dark theme the same way they write theirs.
+   *
+   * **The ratios are measured, not asserted.** `tools/styles/check-contrast.mjs`
+   * reads these ten declarations out of this file and checks white against each
+   * fill in both themes, so lowering one of them reddens `lint:css`. The
+   * numbers in the comments below are what that gate prints.
+   *
+   * The hues:
+   *
+   * - `running` green — the one "everything is as asked" state, and the only
+   *   green in the column.
+   * - `crashed` red — something meant to be running is not.
+   * - `unavailable` **ochre, deliberately not red**: it is a connector's normal
+   *   terminal state (see `plugins.tsx`), so it may not join the error colour;
+   *   45° of hue off the red keeps the two apart now that both are solid.
+   * - `spawning` / `installing` / `installed` the accent — on the way to
+   *   running, see `stateVariant`.
+   * - `unknown` grey — a state this build has no word for. Solid, because a
+   *   wash reads as "nothing to see" and an unknown state is not that.
+   *
+   * Dark raises every fill by four to five points of lightness: a 45% block on
+   * the 24.5% ground is a smudge, and the chip has to read as a block on both
+   * grounds before its hue means anything.
+   */
+  .pluginStateChip {
+    /* white on fill: 7.03:1 */
+    --color-success: oklch(45% 0.13 145);
+    --color-on-success: oklch(100% 0 0);
+    /* 8.09:1 */
+    --color-error: oklch(45% 0.16 25);
+    --color-on-error: oklch(100% 0 0);
+    /* 7.27:1 */
+    --color-warning: oklch(46% 0.09 70);
+    --color-on-warning: oklch(100% 0 0);
+    /* 7.55:1 */
+    --color-accent: oklch(45% 0.10 267);
+    --color-on-accent: oklch(100% 0 0);
+    /* 7.75:1 — `neutral` takes its type from `--color-text-primary`, so that is
+       the name this pair has to restate. It is scoped to the chip, and the chip
+       has no other text in it. */
+    --color-neutral: oklch(44% 0.02 250);
+    --color-text-primary: oklch(100% 0 0);
+  }
+
+  [data-theme="dark"] .pluginStateChip {
+    /* 5.67:1 */
+    --color-success: oklch(50% 0.13 145);
+    /* 6.48:1 */
+    --color-error: oklch(50% 0.15 25);
+    /* 6.13:1 */
+    --color-warning: oklch(50% 0.10 70);
+    /* 6.10:1 */
+    --color-accent: oklch(50% 0.11 267);
+    /* 6.52:1 */
+    --color-neutral: oklch(48% 0.02 250);
+  }
+
+  /*
    * Saved, but not in force — and not broken either.
    *
    * The three restart outcomes of #1284 §2.4 are mostly *this*: the restart was

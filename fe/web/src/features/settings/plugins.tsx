@@ -97,13 +97,30 @@ export type PluginsPaneProps = Readonly<{
  * state, and painting it red would say the kernel is broken when the truth is
  * that an upstream did not answer. `crashed` is the error tone, because
  * something that was meant to be running is not.
+ *
+ * `installed` is the **in-progress** tone, with `spawning` and `installing`.
+ * It is the kernel's fallback for "enabled, but the supervisor's table has no
+ * entry yet" (`routes/plugins.rs::list_plugins`), which is what a plugin the
+ * operator just switched on shows for as long as it takes the supervisor to
+ * pick it up. Painting that neutral put a grey chip that reads like a verdict
+ * next to a switch that is on — an inconsistency the reader would go looking
+ * for and not find. The three states that share this tone share a meaning: on
+ * the way to `running`, nothing to do.
+ *
+ * That leaves the neutral tone to `unknown` alone — a state name this build
+ * does not have a word for — which is the only state that really is "no
+ * information".
+ *
+ * The tone names are astryx's; what each one *looks like* here is
+ * `settings.module.css`'s `.pluginStateChip`, which makes all five one solid
+ * mark so the column reads as one column.
  */
 function stateVariant(state: PluginState): 'success' | 'warning' | 'error' | 'info' | 'neutral' {
   switch (state) {
     case 'running': return 'success';
     case 'crashed': return 'error';
     case 'unavailable': return 'warning';
-    case 'spawning': case 'installing': return 'info';
+    case 'spawning': case 'installing': case 'installed': return 'info';
     default: return 'neutral';
   }
 }
@@ -117,7 +134,15 @@ function stateVariant(state: PluginState): 'success' | 'warning' | 'error' | 'in
  */
 function stateBadge(state: PluginState): ReactNode {
   if (state === 'disabled') return null;
-  return <AstryxBadge variant={stateVariant(state)} label={state} />;
+  return (
+    <AstryxBadge
+      /* The chip's own appearance, as scoped token overrides on the badge —
+         `settings.module.css` says why it is not a variant and not a wrapper. */
+      className={styles.pluginStateChip}
+      variant={stateVariant(state)}
+      label={state}
+    />
+  );
 }
 
 export function PluginsPane({

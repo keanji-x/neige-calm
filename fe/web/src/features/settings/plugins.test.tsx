@@ -3,8 +3,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PluginListItem } from '../../../../core/domain/plugins.ts';
+import type { PluginListItem, PluginState } from '../../../../core/domain/plugins.ts';
 import { PluginsPane, type PluginsPaneProps } from './plugins.tsx';
+import styles from './settings.module.css';
 
 beforeEach(() => {
   // Astryx's Spinner calls `matchMedia` unguarded and jsdom has none. Stubbed
@@ -100,6 +101,60 @@ describe('Plugins pane', () => {
     expect(screen.queryByText('disabled')).toBeNull();
     expect(screen.getByRole<HTMLInputElement>('switch', { name: 'Enable Todo' }).checked).toBe(false);
     expect(screen.getByText('running')).toBeTruthy();
+  });
+
+  /*
+   * ── One mark, five hues ───────────────────────────────────────────────────
+   *
+   * Owner preview feedback: the chip column mixed three visual weights, because
+   * astryx's `warning` and `neutral` variants are not the solid white-on-fill
+   * block its other three are. `settings.module.css` makes all five one block
+   * via scoped token overrides, so every chip has to actually carry that class
+   * — a chip that missed it would fall back to the vendor's own recipe and be
+   * exactly the inconsistency this removed, silently.
+   *
+   * The tone table is keyed by `PluginState`, so a kernel that grows an eighth
+   * state fails to compile here rather than acquiring a tone by default. Two
+   * groupings are load-bearing and are the reason this is a table and not a
+   * spot check:
+   *
+   * - `unavailable` is **not** `crashed`'s tone. It is a connector's normal
+   *   terminal state; red would say the kernel is broken.
+   * - `installed` **is** `spawning`'s tone. It is the kernel's fallback for
+   *   "enabled, supervisor table has no entry yet", which is what a plugin the
+   *   operator just switched on shows — a grey verdict chip beside an on switch
+   *   read as a contradiction that was not there.
+   */
+  it('gives every chip one appearance, and keeps `unavailable` off the error tone', () => {
+    const tones: Record<Exclude<PluginState, 'disabled'>, string> = {
+      running: 'success',
+      crashed: 'error',
+      unavailable: 'warning',
+      spawning: 'info',
+      installing: 'info',
+      installed: 'info',
+      unknown: 'neutral',
+    };
+    const states = Object.keys(tones) as ReadonlyArray<Exclude<PluginState, 'disabled'>>;
+    render(<PluginsPane {...props({
+      // Neither the id nor the name may be the bare state word: the row paints
+      // both, and `getByText(state)` has to reach the chip and nothing else.
+      plugins: states.map((state) => plugin({
+        id: `p-${state}`, manifest_name: `Plugin ${state}`, state,
+      })),
+    })} />);
+
+    for (const state of states) {
+      const chip = screen.getByText(state);
+      expect([state, chip.getAttribute('data-variant')])
+        .toEqual([state, tones[state]]);
+      expect([state, chip.classList.contains(styles.pluginStateChip)])
+        .toEqual([state, true]);
+    }
+    // The two groupings, said as relations rather than as literals, so renaming
+    // a vendor tone cannot quietly satisfy them.
+    expect(tones.unavailable).not.toBe(tones.crashed);
+    expect(tones.installed).toBe(tones.spawning);
   });
 
   /*
