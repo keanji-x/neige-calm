@@ -576,14 +576,15 @@ async fn template_id_and_recipe_id_together_are_a_400() {
     assert_eq!(error["code"], json!("bad_request"), "{error}");
 }
 
-/// Ambiguity outranks the fork priority rule.
+/// All three named at once is the same 400.
 ///
-/// `fork_report_from` wins over *one* named starting point (pinned by
-/// `an_explicit_fork_source_still_wins_over_a_recipe`). It does not get to
-/// resolve a request that named *two*: `template_id + recipe_id` is
-/// contradictory whether or not a fork source rides along, so this is the same
-/// 400 as the no-fork case — not a `201` that silently takes the fork path and
-/// drops the contradiction on the floor.
+/// Until #1321 S2 this case carried a narrower statement: `fork_report_from`
+/// won over *one* named starting point but did not get to resolve a request
+/// that named *two*, so ordering the fork arm first would have swallowed the
+/// contradiction. With every pair refused there is no priority rule left to
+/// outrank — what remains worth pinning is that the three-field request lands
+/// on the *ambiguity* 400 and not on some later check, and that the message
+/// still names the fields.
 ///
 /// As above, the `code` assertion separates the refusal from a `500`/`internal`
 /// panic body, so this case stays decisive if the early guard is removed.
@@ -620,17 +621,41 @@ async fn template_id_and_recipe_id_with_a_fork_source_are_still_a_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
     assert_eq!(error["code"], json!("bad_request"), "{error}");
+    let message = error["error"].as_str().unwrap_or("");
+    for field in ["template_id", "recipe_id", "fork_report_from"] {
+        assert!(
+            message.contains(&format!("`{field}`")),
+            "the 400 must name every field that was sent; got {error}"
+        );
+    }
 }
 
-/// An explicit `fork_report_from` still wins, unchanged by #1292 — the same
-/// property `explicit_fork_report_from_is_not_overwritten` pins for
-/// `template_id`.
+/// #1321 S2 — a `recipe_id` and a `fork_report_from` together are a 400.
+///
+/// ## Why this pair, when the issue only named the other one
+///
+/// This case replaces `an_explicit_fork_source_still_wins_over_a_recipe`, which
+/// pinned the deleted behaviour: the fork used to win silently and the recipe
+/// was dropped.
+///
+/// #1321 S2's acceptance names `template_id + fork_report_from`. The argument
+/// #1292 wrote for `template_id + recipe_id` is what generalizes it: *a request
+/// naming two starting points is ambiguous whether or not it also asks for a
+/// fork, and ambiguity is not something a priority rule gets to resolve.* That
+/// argument is about **naming two starting points**, not about which two — so
+/// refusing only the pair the issue names would leave a hole of identical shape
+/// one field over, in the field pair that this file, not the issue's, exercises.
+///
+/// The `summary` assertion is what makes this more than a status check: it
+/// establishes the request was well-formed enough to have *succeeded* under the
+/// old rule (a real recipe, a real forkable source), so the 400 is the
+/// exclusivity and not a dangling id.
 #[tokio::test]
-async fn an_explicit_fork_source_still_wins_over_a_recipe() {
+async fn a_recipe_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;
     let recipe = create_recipe(boot.app.clone(), "recipe-side", &two_task_body()).await;
 
-    // A plain track whose report we will fork.
+    // A plain track whose report the old rule would have forked.
     let (_, source) = send(
         boot.app.clone(),
         "POST",
@@ -640,13 +665,36 @@ async fn an_explicit_fork_source_still_wins_over_a_recipe() {
     .await;
     let source_id = source["id"].as_str().unwrap().to_string();
 
-    let (status, created) = send(
+    // Control: each half alone is a legal create, so the refusal below is about
+    // the combination and not about either id.
+    for (leg, extra) in [
+        ("recipe-only", json!({ "recipe_id": recipe["id"].clone() })),
+        (
+            "fork-only",
+            json!({ "fork_report_from": source_id.clone() }),
+        ),
+    ] {
+        let (status, created) = send(
+            boot.app.clone(),
+            "POST",
+            "/api/tracks",
+            Some(create_track_body(
+                &boot.area_id,
+                &format!("control-{leg}"),
+                extra,
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{leg}: {created}");
+    }
+
+    let (status, error) = send(
         boot.app.clone(),
         "POST",
         "/api/tracks",
         Some(create_track_body(
             &boot.area_id,
-            "forked",
+            "recipe-plus-fork",
             json!({
                 "recipe_id": recipe["id"].as_str().unwrap(),
                 "fork_report_from": source_id,
@@ -654,13 +702,16 @@ async fn an_explicit_fork_source_still_wins_over_a_recipe() {
         )),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let payload =
-        report_payload(&track_detail(boot.app.clone(), created["id"].as_str().unwrap()).await);
-    assert_ne!(
-        payload.summary, "recipe-side",
-        "the fork source must win: {}",
-        payload.summary
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["code"], json!("bad_request"), "{error}");
+    let message = error["error"].as_str().unwrap_or("");
+    assert!(
+        message.contains("`recipe_id`") && message.contains("`fork_report_from`"),
+        "the 400 must name both offending fields; got {error}"
+    );
+    assert!(
+        !message.contains("`template_id`"),
+        "it must name the fields that were actually sent; got {error}"
     );
 }
 
@@ -1039,33 +1090,33 @@ async fn the_database_refuses_half_a_provenance() {
         .expect("clearing both at once is a state the system has a reading for");
 }
 
-/// A fork of a recipe-born track records no provenance of its own, and a
-/// request naming both a `recipe_id` and a `fork_report_from` resolves to the
-/// fork rather than to a 400.
+/// A fork of a recipe-born track records no provenance of its own.
 ///
-/// Both halves are pinned here because both are decisions made by omission: the
-/// resolution by the fall-through `(_, _, Some(source_track_id))` arm of
-/// `create_track`'s `init` match, the NULL provenance by the fork arm of
-/// `create_track_with_planner_harness` never producing a `TrackRecipeOrigin`.
+/// That is a decision made by omission — the fork arm of
+/// `create_track_with_planner_harness` never produces a `TrackRecipeOrigin` —
+/// which is why it is pinned rather than left to the columns' defaults.
 ///
-/// The 400 that exists on this route is for `template_id` + `recipe_id` — two
-/// *instantiation* sources. `template_id` + `fork_report_from` resolves
-/// silently to the fork (`explicit_fork_report_from_is_not_overwritten` in
-/// `track_template_tracks.rs` pins that), so `recipe_id` + `fork_report_from`
-/// resolving the same way is the existing rule, not a new one.
+/// #1321 S2 — this case used to pin a second half in the same body: that a
+/// request naming both a `recipe_id` and a `fork_report_from` resolved to the
+/// fork rather than to a 400. That half is deleted, not rewritten: the
+/// combination is now the 400 that
+/// `a_recipe_and_an_explicit_fork_source_are_a_400` above pins. Note what the
+/// deleted half is *not* — it was never needed to reach this case's own
+/// property. The recipe provenance being tested belongs to the **source**
+/// track, and this fork now names only `fork_report_from`, which is the shape
+/// every production fork has always had (neither frontend has ever sent
+/// `fork_report_from` at all, let alone with a second source alongside it).
 ///
 /// The forked report is asserted first so "no provenance" is not read as "the
-/// content did not arrive either": it did arrive, and the columns still stay
-/// NULL, because they name the recipe a track was *instantiated* from and this
-/// track was instantiated from a track.
+/// content did not arrive either": it did arrive, one hop removed, and the
+/// columns still stay NULL, because they name the recipe a track was
+/// *instantiated* from and this track was instantiated from a track.
 ///
-/// Mutations this catches. Verified: adding a `(_, Some(_), Some(_))` 400 arm
-/// ahead of the fork arm in `create_track`'s `init` match — i.e. flipping the
-/// resolution decision — turns this red (together with
-/// `an_explicit_fork_source_still_wins_over_a_recipe`, and nothing else in this
-/// file). Bound but not separately run: a fork arm that stamped provenance
-/// would break the two NULL assertions below, and no other case in this file
-/// asserts on a fork's provenance columns.
+/// Mutations this catches. Bound but not separately run: a fork arm that
+/// stamped provenance would break the two NULL assertions below, and no other
+/// case in this file asserts on a fork's provenance columns. (The mutation the
+/// previous version named — adding a `(_, Some(_), Some(_))` 400 arm ahead of
+/// the fork arm — is no longer a mutation; it is the behaviour.)
 #[tokio::test]
 async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     let boot = boot().await;
@@ -1096,8 +1147,7 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
         .expect("source exists");
     assert_eq!(source_track.recipe_id.as_deref(), Some(recipe_id.as_str()));
 
-    // Naming both is not refused: the fork wins, exactly as it does against
-    // `template_id`.
+    // Fork it — naming only the fork source, the one shape a create may name.
     let (status, forked) = send(
         boot.app.clone(),
         "POST",
@@ -1105,10 +1155,7 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
         Some(create_track_body(
             &boot.area_id,
             "fork-of-recipe-born",
-            json!({
-                "recipe_id": recipe_id,
-                "fork_report_from": source_id,
-            }),
+            json!({ "fork_report_from": source_id }),
         )),
     )
     .await;
