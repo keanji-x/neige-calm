@@ -59,8 +59,19 @@ require_path() {
 # first of which starts with `#[`. Treating the continuation as "some other
 # line" cleared the block, which made R1b go GREEN on a cfg'd writer. So the
 # block stays open until brackets balance.
+#
+# The code blob is fed in through a HERE-STRING, never through
+# `printf '%s' "$code" | awk …`. The awk below `exit`s at the line that closes
+# the block, which closes the pipe under the `printf` still writing into it:
+# `printf` takes SIGPIPE, exits 141, and with `set -o pipefail` 141 becomes the
+# status of this function — even though awk had already printed the complete
+# block. Callers then read the status, not the output, and the flake is a FALSE
+# verdict rather than a crash: `report_write_boundary.sh` R4 went RED on the
+# untouched production file at roughly 1-in-6, and `append_seam_boundary.sh` D1
+# reported all four of its subjects "not found". A here-string is written by the
+# shell into a temp file, so there is no writer process left to signal.
 attrs_above() {
-  printf '%s' "${1?code is required}" | awk -v pat="${2?pattern is required}" '
+  awk -v pat="${2?pattern is required}" '
     function depth(s,   i, c, d) {
       d = 0
       for (i = 1; i <= length(s); i++) {
@@ -75,7 +86,7 @@ attrs_above() {
     /^#\[/            { block = block $0 "\n"; open = depth($0); next }
     /^[[:space:]]*$/  { next }
                       { block = "" }
-  '
+  ' <<<"${1?code is required}"
 }
 
 scan_must_be_empty() {

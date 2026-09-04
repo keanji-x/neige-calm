@@ -371,18 +371,20 @@ d1_subject() {
     fail "D1: no \`$label\` declaration found in $GATE_FILE matching /$pattern/ — if it was renamed or removed, update D1 in the same PR rather than letting the rule check nothing"
     return
   fi
-  # `attrs_above` lives in lib.sh and still ends in `printf … | awk`, and that
-  # awk `exit`s at the matched line — so its own writer can be killed by
-  # SIGPIPE and the function returns 141 under `pipefail`. awk has already
-  # printed the whole block by then, so the OUTPUT is complete and 141 is not a
-  # failure here; any other non-zero status is. (Reading it through a variable
-  # is also what keeps the `rg` below off the end of a pipeline: that is the
-  # form that made this rule report all four subjects missing at random.)
+  # Read into a variable, so the `rg` below is not on the end of a pipeline fed
+  # by an early-exiting reader — that is the form that made this rule report all
+  # four subjects missing at random. `attrs_above` itself no longer has an
+  # internal `printf | awk` to be SIGPIPE'd (lib.sh feeds its awk a here-string),
+  # so the 141 that used to be tolerated here can no longer arise from a healthy
+  # call, and tolerating it would only hide a real awk failure. Any non-zero
+  # status is now a gate malfunction, reported as one — that message is distinct
+  # from the D1 verdict below, so a broken gate can still never be read as a
+  # verdict on `$label`.
   set +e
   attrs="$(attrs_above "$GATE_CODE" "$pattern")"
   rc=$?
   set -e
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 141 ]; then
+  if [ "$rc" -ne 0 ]; then
     fail "D1: reading the attribute block above /$pattern/ in $GATE_FILE failed (status $rc) — this is a gate malfunction, not a verdict on \`$label\`"
     return
   fi

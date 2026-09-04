@@ -190,12 +190,27 @@ fail() {
 # the KNOWN GAPS section below.
 CODE="$(awk '{ if ($0 ~ /^[[:space:]]*\/\//) print ""; else print }' "$BOUNDARY_FILE")"
 
+# Every rule below feeds a blob to its matcher through a HERE-STRING
+# (`rg … <<<"$CODE"`), never through `printf '%s' "$CODE" | rg …`, and reads
+# `attrs_above` into a variable rather than piping it onward. With `set -o
+# pipefail`, a reader that stops early — `rg -q` exits at the first match, and
+# `attrs_above`'s awk `exit`s at the line that closes the block — kills the
+# writer with SIGPIPE and 141 becomes the pipeline's status, which the `if`
+# then reads as a verdict. That is a measured, timing-dependent FALSE RED: on
+# this branch, R4 accused the untouched production file of having lost its
+# `#[cfg]` in 5 of 10 runs. In the `if rg -q …; then fail` rules the same race
+# points the other way — 141 reads as "no match", i.e. a false GREEN on a real
+# violation.
+#
+# Pipelines whose reader consumes to EOF (`rg --replace`, `rg --line-number`
+# without `-q`, `tr`, `sort`) cannot raise this and are left as they are.
+#
 # Adjacency for the cfg rules below is `attrs_above` in lib.sh — see its
 # comment there for the three constructions that shaped it (a decoy `const`
 # between the cfg and the item, a blank/doc line that must NOT break the block,
 # and a rustfmt-wrapped multi-line `#[cfg(all(…))]`). Callers pass CODE.
 
-if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
+if rg -q '/\*|\*/' <<<"$CODE"; then
   fail "R0: $BOUNDARY_FILE contains a block comment. This gate strips only whole-line \`//\` comments, so a \`/* */\` can hide a declaration from every rule below. Use \`//\`."
 fi
 
@@ -203,7 +218,7 @@ fi
 # rustc but not to a rule looking for `fn persist(`, so the pair
 # (`#[cfg(any())] async fn persist() {}` decoy, `pub(crate) async fn r#persist(`
 # real) would leave R1 inspecting the decoy. Nothing in this file needs one.
-if printf '%s' "$CODE" | rg -q 'r#'; then
+if rg -q 'r#' <<<"$CODE"; then
   fail "R0: $BOUNDARY_FILE uses \`r#\` — a raw identifier or a raw string. Both defeat name-based rules: \`r#persist\` *is* \`persist\` to rustc but not to a regex, and a raw string inside an attribute (\`#[doc = r#\"…\"#]\`) can carry text that looks like a second attribute to R4. Neither is needed in this file."
 fi
 
@@ -212,13 +227,13 @@ fi
 # allowlist cannot see it. This is the same `use … as` shape that walked past
 # #1300's census, which is worth stating plainly: the alias problem did not go
 # away with the module boundary, it just moved into this one file.
-if printf '%s' "$CODE" | rg -q '\buse\b[^;]*\bas\b'; then
+if rg -q '\buse\b[^;]*\bas\b' <<<"$CODE"; then
   fail "R0: $BOUNDARY_FILE contains a \`use … as …\` alias. Renaming an item — a macro especially — makes every name-based rule below inspect the wrong name."
 fi
 
 # `impl`: an `impl` block can carry a `pub(crate)` associated method that reaches
 # `persist` while sitting indented, below R3's column-0 anchor.
-if printf '%s' "$CODE" | rg -q '^\s*(impl|(pub(\([^)]*\))?\s+)?trait)\b'; then
+if rg -q '^\s*(impl|(pub(\([^)]*\))?\s+)?trait)\b' <<<"$CODE"; then
   fail "R0: $BOUNDARY_FILE declares an \`impl\` block or a \`trait\`. Both can carry a method that reaches \`persist\` while sitting indented, below R3's column-0 anchor — a \`trait\` with a *default* method is the sharper one, because a sibling implements it with an empty block and then calls the default. If one is genuinely needed, this gate has to grow a rule for it first."
 fi
 
@@ -258,7 +273,7 @@ if [ -z "$writer_decl" ]; then
   fail "R1: no top-level \`fn persist(\` declaration found in $BOUNDARY_FILE — the boundary this gate defends is not there, so every other rule below is checking nothing"
 elif [ "$(printf '%s\n' "$writer_decl" | wc -l)" -ne 1 ]; then
   fail "R1: expected exactly one top-level \`fn persist(\` in $BOUNDARY_FILE, found: $writer_decl"
-elif printf '%s' "$writer_decl" | rg -q '\bpub\b'; then
+elif rg -q '\bpub\b' <<<"$writer_decl"; then
   fail "R1: the writer is declared \`pub\` — that reopens the boundary to the whole crate and rustc will not complain: $writer_decl"
 fi
 
@@ -266,7 +281,8 @@ fi
 # either a decoy (see the raw-identifier note above) or a boundary that exists
 # in some builds and not others, and "which builds" is precisely what this gate
 # cannot evaluate.
-if [ -n "$writer_decl" ] && attrs_above "$CODE" '^[a-zA-Z_ ()]*fn persist[(]' | rg -q '#\[[[:space:]]*cfg'; then
+writer_attrs="$(attrs_above "$CODE" '^[a-zA-Z_ ()]*fn persist[(]')"
+if [ -n "$writer_decl" ] && rg -q '#\[[[:space:]]*cfg' <<<"$writer_attrs"; then
   fail "R1b: the writer carries a \`#[cfg]\` attribute. The boundary must exist in every build, and a cfg'd \`persist\` lets a second, differently-gated one sit beside it."
 fi
 
@@ -319,9 +335,10 @@ fi
 #
 # The cfg must be in the attribute block *attached to* the function, not merely
 # somewhere nearby — see `attrs_above` for the decoy that "nearby" admits.
-if ! printf '%s' "$CODE" | rg -q '^pub async fn persist_report\('; then
+test_entry_attrs="$(attrs_above "$CODE" '^pub async fn persist_report[(]')"
+if ! rg -q '^pub async fn persist_report\(' <<<"$CODE"; then
   fail "R4: no \`pub async fn persist_report(\` found — if the test entry was renamed or removed, update R4 and EXPECTED_ENTRIES together"
-elif ! attrs_above "$CODE" '^pub async fn persist_report[(]' | rg -q '^#\[cfg\(any\(test, feature = "fixtures"\)\)\]$'; then
+elif ! rg -q '^#\[cfg\(any\(test, feature = "fixtures"\)\)\]$' <<<"$test_entry_attrs"; then
   fail "R4: the test-only \`persist_report\` entry does not carry \`#[cfg(any(test, feature = \"fixtures\"))]\` in its own attribute block — without it, production builds get a \`pub\` writer that takes a caller-chosen EditAuthor"
 fi
 
