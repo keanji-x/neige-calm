@@ -15,7 +15,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -105,6 +105,14 @@ function harness(options: {
    */
   heldAreas?: Promise<void>;
   /**
+   * Fail `GET /api/areas` outright. The read that answers "does this area still
+   * exist" has a third state besides in-flight and landed, and a 500 leaves
+   * `workspace.areas` at `[]` with `areasLoading` false — indistinguishable
+   * from "landed, and this area is gone" to anything that only looks at the
+   * list.
+   */
+  areasFail?: boolean;
+  /**
    * Where the browser starts, under the basepath. Deep-linking is the entry
    * that reaches a *stale* area id: every in-app `+` can only name an area the
    * rail is currently showing.
@@ -159,6 +167,9 @@ function harness(options: {
         return options.heldDetail
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
+      }
+      if (request.path === '/api/areas' && options.areasFail) {
+        return Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'areas are unreadable' } });
       }
       if (request.path === '/api/areas' && options.heldAreas) {
         return options.heldAreas.then(() => ({ status: 200, statusText: 'OK', body: [AREA, OTHER] }));
@@ -545,6 +556,18 @@ describe('the new-track page is a route reached from Area groups', () => {
  * create eats a 4xx.
  */
 describe('the route refuses an area id that no longer exists', () => {
+  /*
+   * ── One case per state of `GET /api/areas`, and each falsifiable alone ────
+   *
+   * The composer is what a stale id must never reach, so "no composer" is the
+   * shared half; what differs is which state produces it and what is shown
+   * instead. The three route branches (in flight → nothing, failed → the
+   * rail's own error, settled → the existence verdict) are mutated one at a
+   * time in review, and each mutation turns exactly one of these four red —
+   * which is the property the earlier three-case shape did not have: its
+   * "an area that does exist" case passed off the *loading* composer, so
+   * forcing the existence check to `false` left it green.
+   */
   it('reports a deleted area instead of rendering a working composer', async () => {
     harness({ templates: TEMPLATES, path: '/area/c9/new' });
     const alert = await screen.findByRole('alert');
@@ -555,36 +578,96 @@ describe('the route refuses an area id that no longer exists', () => {
     expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
   });
 
-  it('renders the composer for an area that does exist', async () => {
-    harness({ templates: TEMPLATES, path: '/area/c1/new' });
+  /*
+   * The list has to have *landed* before the composer is allowed on screen —
+   * asserted in that order, not just at the end.
+   *
+   * A route that renders the form while the read is in flight would satisfy a
+   * bare `findComposer()` at the end of this case (the list lands either way),
+   * so the load-bearing assertion is the one before `releaseAreas()`: at that
+   * moment nothing is known about `c1` and there must be nothing to type into.
+   * Only the composer is asserted absent there, so that this case answers for
+   * the *success* branch and the in-flight case below answers for the
+   * in-flight one.
+   */
+  it('renders the composer for an area that does exist, and only once the list has landed', async () => {
+    let releaseAreas = (): void => undefined;
+    const held = new Promise<void>((resolve) => { releaseAreas = () => { resolve(); }; });
+    harness({ templates: TEMPLATES, path: '/area/c1/new', heldAreas: held });
+
+    // The route is mounted and the read is outstanding — nothing submittable.
+    await screen.findByRole('button', { name: 'Today' });
+    expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
+
+    releaseAreas();
+    await held;
     expect(await findComposer()).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
   /*
-   * The false red this check invites, pinned.
+   * In flight is not a verdict in *either* direction.
    *
    * `workspace.areas` is `[]` while `GET /api/areas` is in flight, and `[]`
-   * contains no id — so a bare `some()` calls *every* area deleted for as long
-   * as the read takes, which on a slow link is the whole first paint. The read
-   * is held open here, so "not found" is only ever a settled answer.
+   * contains no id — so a bare `some()` calls every area deleted for as long as
+   * the read takes. The first fix for that let the in-flight state fall through
+   * to the form instead, which is the worse half of the same mistake: a cold
+   * deep link got a *submittable* composer for an id nothing had confirmed, and
+   * the reader's sentence went to the 4xx anyway.
    *
-   * The composer assertion is what keeps this from passing vacuously against a
-   * route that renders nothing at all; the settled half — the list landing and
-   * the ErrorBox appearing — is the case above, deliberately, so that deleting
-   * the existence check turns exactly one of these three red.
+   * So neither the composer nor the verdict may appear while the read is open.
+   * The read is never released into a settled assertion here — that half is the
+   * two cases above — so mutating the existence or failure branch leaves this
+   * one green.
    */
-  it('does not call the area missing while the area list is still loading', async () => {
+  it('renders neither a composer nor a verdict while the area list is still loading', async () => {
     let releaseAreas = (): void => undefined;
     const held = new Promise<void>((resolve) => { releaseAreas = () => { resolve(); }; });
     harness({ templates: TEMPLATES, path: '/area/c9/new', heldAreas: held });
 
-    expect(await findComposer()).toBeTruthy();
+    /* The shell is up and the route committed: without this the absence checks
+       below would pass against an app that had not rendered at all. */
+    await screen.findByRole('button', { name: 'Today' });
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c9/new`);
+
+    expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
 
     // Let the read finish so nothing is left hanging on the way out.
     releaseAreas();
     await held;
+  });
+
+  /*
+   * A failed read is not a landed one.
+   *
+   * `areas` falls back to `[]` on failure too, and `areasLoading` is false by
+   * then — so a check that only asks "has loading stopped" reads a 500 as
+   * "the list arrived and this area is not in it" for a deleted-looking id, and
+   * as "carry on" for every other id, permanently. Neither is true: the
+   * question has no answer, so the page says what actually went wrong, in the
+   * rail's own words, with the rail's own retry.
+   */
+  it('reports a failed area read instead of a composer or a deletion verdict', async () => {
+    harness({ templates: TEMPLATES, path: '/area/c1/new', areasFail: true });
+
+    /* Scoped to `main`, because the rail reports the same failed read in its
+       own ErrorBox: an unscoped `getByRole('alert')` would pass on the rail's
+       copy no matter what this route decided. And `waitFor` rather than a
+       single read, so the assertion is about where the page *settles* — the
+       failure needs a tick to land, and what is on screen before it does is
+       the in-flight case's business, not this one's. */
+    const main = await screen.findByRole('main');
+    await waitFor(() => {
+      expect(within(main).getByRole('alert').textContent).toContain('areas are unreadable');
+    });
+    // Not the deletion wording: the server never said this area is gone.
+    expect(within(main).getByRole('alert').textContent).not.toContain('This area could not be found.');
+    expect(within(main).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
   });
 });
 
