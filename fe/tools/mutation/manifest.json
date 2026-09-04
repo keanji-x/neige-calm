@@ -799,7 +799,7 @@
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
       "query invalidation adapter removes mapped keys for a remove effect",
-      "query invalidation adapter turns a real track.deleted plan into area-list plus overlay invalidation and a detail removal",
+      "query invalidation adapter turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup",
       "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve"
     ],
     "selection_paths": [
@@ -1032,7 +1032,7 @@
     "target": "core/events/invalidation-plan.ts",
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
-      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts"
@@ -1048,7 +1048,7 @@
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
-      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts",
