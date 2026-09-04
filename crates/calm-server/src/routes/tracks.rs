@@ -215,9 +215,19 @@ pub struct CreateTrackRequest {
     /// 201 — "the track exists, its planner agent is inert" is a documented,
     /// recoverable state. With it, that same failure is a 500, because the
     /// sentence the user typed was only ever going to be written by that
-    /// operation. The 500 does **not** undo the create: the track and its cards
-    /// are already committed and nothing compensates for them (see the 500
-    /// description on `create_track`).
+    /// operation, so a 201 would claim a delivery the create did not make.
+    ///
+    /// The 500 does **not** undo the create: the track and its cards are
+    /// already committed and nothing compensates for them. Nor does it say the
+    /// message was not delivered — that depends on how far the start got, and
+    /// this endpoint cannot tell. A start that failed before the harness was
+    /// installed handed nothing to any agent; a start that failed *after* it
+    /// (the `Stuck` outcome) has already seeded the observation and fired the
+    /// turn, and nothing recalls it. So the 500 reports an unknown delivery and
+    /// asks the client to look at the track before resending, because resending
+    /// a message that did arrive delivers it twice (see the 500 description on
+    /// `create_track`). Teaching the endpoint to answer what actually happened
+    /// is #1384.
     ///
     /// This slice delivers the message; it does not make the create
     /// **retryable**. A client that retries a create carrying a
@@ -612,7 +622,7 @@ pub(crate) async fn get_track_detail(
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction.", body = Track),
         (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — an empty or over-long message. Decided before anything is minted.", body = ErrorBody),
-        (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness failed to start, the track, its cards and its workspace are already committed but the message was not delivered. Nothing is rolled back and the create is not retryable — read the track back from `GET /api/tracks` and send the message from the track itself. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.", body = ErrorBody),
+        (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back, nothing compensates, and the create is not retryable — read the track back from `GET /api/tracks` and look before resending, because resending a message that did arrive delivers it twice. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
@@ -1935,11 +1945,31 @@ async fn start_planner_harness(
 
     // #1299 S1 — a create that carried a `first_message` promised to deliver
     // it. The message is only ever written by the `planner-harness-start`
-    // operation, so if that operation did not run to success the sentence the
-    // user typed is gone, and a 201 would say it was delivered. Report the
-    // failure instead.
+    // operation, so if that operation did not run to success the create did not
+    // keep that promise, and a 201 would claim it did. Report the failure
+    // instead.
     //
-    // What this 5xx does NOT say: it does not say nothing happened. The track,
+    // What this 5xx does NOT say: it does not say the message was not
+    // delivered. The four bindings of `harness_start_failed` above do not agree
+    // on that, and this function cannot tell them apart from here:
+    //
+    // * submit failed, and `Failed` (`spawn_side_effect` itself errored, so
+    //   `fail_with_compensation` ran) — nothing was handed to any agent;
+    // * `Stuck` — the phase write failed *after* `spawn_side_effect` installed
+    //   a live harness, so the seeded observation is already in it and the turn
+    //   is already out. Compensation does not run on this path and could not
+    //   recall the turn if it did. Pinned by
+    //   `a_stuck_start_after_spawn_has_already_delivered_the_message`;
+    // * the `wait()` error — the operation is still in flight and will very
+    //   likely go on to deliver.
+    //
+    // So the text says what is actually known: the start did not complete, the
+    // outcome of the delivery is unknown, check the track before resending.
+    // Making the endpoint able to answer what really happened means reading the
+    // runtime back / persisting a delivery marker, which is #1384's shape, not
+    // this slice's.
+    //
+    // What this 5xx also does NOT say: it does not say nothing happened. The track,
     // its two cards, its folder claim and (on the managed path) its
     // materialized workspace are all already committed by the time this
     // function runs — `create_track_structure` returned before it was called.
@@ -1958,9 +1988,11 @@ async fn start_planner_harness(
         && carries_first_message
     {
         return Err(CalmError::Internal(format!(
-            "track create: the track was created but its planner harness did not start, so the \
-             first message was not delivered ({reason}). The track exists; send the message from \
-             the track itself."
+            "track create: the track was created but its planner harness start did not complete, \
+             so the server cannot tell whether the first message reached the agent ({reason}). \
+             Nothing is rolled back — the track, its cards and its workspace are already \
+             committed. Open the track and check before sending the message again; if it did \
+             arrive, sending it again delivers it twice."
         )));
     }
 

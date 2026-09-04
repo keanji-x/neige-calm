@@ -8,9 +8,11 @@
 //! 2. it arrives as a **`UserMessage` attributed to the human**, not as a
 //!    `TrackGoal` (different render, no hard-fire, no human attribution);
 //! 3. a rejected message leaves nothing behind;
-//! 4. a create that promised delivery and could not deliver says so — a
-//!    harness that fails to start turns the create into a 5xx instead of a
-//!    201 that quietly dropped the sentence.
+//! 4. a create that promised delivery and did not complete the start says so —
+//!    a harness that fails to start turns the create into a 5xx instead of a
+//!    201 that quietly dropped the sentence, and the 5xx's text reports an
+//!    *unknown* delivery, because on one of the four failure branches the
+//!    message has in fact already arrived.
 //!
 //! Plus the largest regression surface: a create WITHOUT `first_message` must
 //! behave exactly as it did before this slice, down to the operation payload
@@ -325,6 +327,22 @@ impl Boot {
         let detail: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         assert_eq!(status, StatusCode::OK, "track detail: {detail}");
         detail
+    }
+
+    /// Reject the `spawn_succeeded` phase write, so the driver's `set_phase`
+    /// errors *after* `spawn_side_effect` has already installed a live
+    /// harness. This is the only way to reach the `OperationOutcome::Stuck`
+    /// binding of `harness_start_failed` from a route test: the failure has to
+    /// land between the side effect and the record of it.
+    async fn reject_spawn_succeeded(&self) {
+        sqlx::query(
+            "CREATE TRIGGER reject_spawn_succeeded BEFORE UPDATE ON operations \
+             FOR EACH ROW WHEN NEW.phase = 'spawn_succeeded' \
+             BEGIN SELECT RAISE(ABORT, 'injected: spawn_succeeded write rejected'); END",
+        )
+        .execute(self.repo.pool())
+        .await
+        .unwrap();
     }
 
     async fn shutdown_harnesses(&self) {
@@ -745,11 +763,13 @@ async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
 //
 // Both drive the real route with `fail_next_thread_start_for_test`, which makes
 // the production adapter fail in `AppServerInteract`, i.e. the
-// `OperationOutcome::Failed` branch. The other three branches are not reachable
-// from a route test with an in-process runtime — they need the runtime itself
-// to misbehave — but they are not separately implemented either: all four write
-// one `harness_start_failed` binding that one `if` reads, so the branch under
-// test is the same code the other three reach.
+// `OperationOutcome::Failed` branch. A third case further down reaches the
+// `Stuck` branch by rejecting the `spawn_succeeded` phase write, which is the
+// branch that behaves differently in the one way that matters — the message is
+// already delivered. The remaining two (submit failed, `wait()` errored) are
+// not separately implemented: all four write one `harness_start_failed`
+// binding that one `if` reads, so the branch under test is the same code they
+// reach.
 // ---------------------------------------------------------------------------
 
 /// With a `first_message`, a harness that fails to start is a 5xx — and the
@@ -757,9 +777,15 @@ async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
 ///
 /// The second half is the part worth writing down. This is not a compensating
 /// handler: by the time `start_planner_harness` runs, the create transaction
-/// has committed and the workspace is materialized. The 5xx says "the message
-/// was not delivered", not "nothing happened", and this test pins both halves
-/// so nobody later reads the status as a rollback.
+/// has committed and the workspace is materialized. The 5xx says "the create
+/// did not keep its delivery promise", not "nothing happened", and this test
+/// pins both halves so nobody later reads the status as a rollback.
+///
+/// On *this* branch the message really did not arrive (asserted below), but
+/// that is a fact about this branch, not about the status code: see
+/// `a_stuck_start_after_spawn_has_already_delivered_the_first_message` for the
+/// branch where the same 5xx sits on top of a delivered message, which is why
+/// the response text asserts an unknown outcome rather than a failed one.
 #[tokio::test]
 async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
     let b = boot().await;
@@ -827,5 +853,81 @@ async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() 
     );
     assert_eq!(b.track_count().await, 1);
     assert_eq!(b.user_message_event_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+// ---------------------------------------------------------------------------
+// #1299 — what the 500 is allowed to SAY.
+//
+// Characterization, not an invariant. The four failure bindings the handler
+// collapses into one `harness_start_failed` do not agree about whether the
+// message arrived, and the case below is the one that proves it: the phase
+// write fails *after* `spawn_side_effect` installed a live harness, so the
+// seeded observation is already in it and the turn is already out, while the
+// response is still a 500. The 500 text therefore may not assert non-delivery
+// — a user who followed such a text and resent from the track would get two
+// copies.
+//
+// "Failing after the spawn means the message is already delivered" is a
+// consequence of today's driver semantics (spawn is the side effect, the
+// phase write only records it, and there is no compensation on this path), not
+// a property anyone promised. Teaching the endpoint to answer what actually
+// happened — a persisted delivery marker read back on the failure path — is
+// #1384. If #1384 lands, THIS TEST IS EXPECTED TO CHANGE; it is here to keep
+// the wording honest in the meantime, not to freeze the behaviour.
+// ---------------------------------------------------------------------------
+
+/// A start that fails *after* the spawn has already delivered the message —
+/// and the 500 must not claim otherwise.
+///
+/// Two halves, both needed:
+///
+/// * the observed behaviour (`copies_in_harness == 1` under a 500), which is
+///   the reason the wording has to be uncertain rather than negative;
+/// * the wording itself, asserted in both directions — the new text is present
+///   AND the old "was not delivered" claim is absent. Asserting only one of the
+///   two goes silently vacuous the next time somebody rewrites the sentence.
+#[tokio::test]
+async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
+    let b = boot().await;
+    // Reject the `spawn_succeeded` phase write, i.e. fail the operation at the
+    // one point that is past the side effect. This is the `OperationOutcome::
+    // Stuck` binding of `harness_start_failed`.
+    b.reject_spawn_succeeded().await;
+
+    let needle = "this sentence is already on its way";
+    let (status, body) = b.create_track(Some(needle)).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a create whose harness start did not complete still answers 5xx: body={body}"
+    );
+
+    // The observed fact that makes a "not delivered" 500 a lie: the harness is
+    // live and holding the sentence.
+    assert_eq!(
+        b.copies_in_harness(needle, 1).await,
+        1,
+        "the spawn succeeded before the phase write failed, so the seeded observation is in a \
+         live harness and the turn is out: body={body}"
+    );
+
+    let text = body.to_string();
+    // Positive: the text says the outcome is unknown…
+    assert!(
+        text.contains("cannot tell whether the first message reached the agent"),
+        "the 500 must report an unknown delivery, since it is unknown: {text}"
+    );
+    // …and negative: it does not assert the delivery failed. A user acting on
+    // that claim resends and ends up with two copies.
+    assert!(
+        !text.contains("not delivered"),
+        "the 500 must not claim the message was not delivered — on this path it was: {text}"
+    );
+    assert!(
+        !text.contains("send the message from the track itself"),
+        "…nor instruct an unconditional resend, which duplicates it on this path: {text}"
+    );
+
     b.shutdown_harnesses().await;
 }
