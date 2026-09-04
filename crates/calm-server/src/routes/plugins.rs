@@ -1303,6 +1303,28 @@ fn rotate_error_to_calm(id: &str, e: crate::plugin_host::HostError) -> CalmError
         // token row was NOT deleted and nothing was restarted; the identical
         // request will work once the holder finishes.
         busy @ HostError::LifecycleBusy(_) => CalmError::PluginBusy(busy.to_string()),
+        // #1226 — the same 409 `plugin_conflict` `spawn_error_to_calm` gives it,
+        // for the same reason: an operator's stored `enabled = false` is not a
+        // kernel fault.
+        //
+        // Reaching this arm is rare but NOT impossible, which is why it exists
+        // rather than a comment saying it cannot happen. Rotation itself checks
+        // the `enabled` bit before restarting, so the ordinary disabled-plugin
+        // rotation returns `Ok` and never gets here. What can still get here is
+        // the residual design §2.3 registers explicitly: the route layer holds
+        // an `Arc<dyn RouteRepo>` and can flip the row without going through
+        // the host, so a write landing between rotation's own read and the
+        // spawn door's (`config_for_spawn_or_unavailable`) makes the door
+        // refuse a restart rotation had already decided to make. 500 would be
+        // the wrong word for that.
+        //
+        // Known gap, deliberately not closed here: this endpoint's `utoipa`
+        // 409 description still names only `plugin_busy`. Widening it rewrites
+        // both `openapi.json`s and the five generated TypeScript artifacts,
+        // which is a Node-toolchain change this Rust bug fix does not carry.
+        disabled @ HostError::OperatorDisabled(_) => {
+            CalmError::PluginConflict(disabled.to_string())
+        }
         // `Disabled` deliberately falls through to the 500 below and that is a
         // documented pre-existing wart, not an oversight: it can only be reached
         // for a *registered app* named in `plugins_disabled`, i.e. after the
@@ -1596,5 +1618,17 @@ mod rotate_error_mapping_tests {
             matches!(&mapped, CalmError::Internal(m) if m.contains("rotate failed")),
             "got {mapped:?}"
         );
+    }
+
+    /// #1226 — the *row's* `enabled = false`, as distinct from the cell above
+    /// it, is a 409 `plugin_conflict`.
+    ///
+    /// Mutation witness: delete the `OperatorDisabled` arm from
+    /// `rotate_error_to_calm` and this reports `internal` / 500.
+    #[test]
+    fn operator_disabled_is_a_409_not_the_disabled_500() {
+        let mapped = rotate_error_to_calm("dev.app", HostError::OperatorDisabled("dev.app".into()));
+        assert_eq!(mapped.status(), StatusCode::CONFLICT);
+        assert_eq!(mapped.code(), "plugin_conflict");
     }
 }

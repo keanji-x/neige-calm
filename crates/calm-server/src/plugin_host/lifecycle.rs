@@ -511,6 +511,20 @@ pub(crate) fn spawn_error_to_calm(e: HostError) -> CalmError {
         // states a permanent kernel fault for a request that in fact did
         // nothing and can simply be repeated.
         busy @ HostError::LifecycleBusy(_) => CalmError::PluginBusy(busy.to_string()),
+        // #1226 — the spawn door refused because the plugin's row says
+        // `enabled = false`. 409 `plugin_conflict`, not the catch-all 500: the
+        // kernel is healthy, the request is well-formed, and the state it
+        // conflicts with is the operator's own — `POST /api/plugins/{id}/enable`
+        // is the whole remedy. A 500 would claim a kernel fault for a stored
+        // decision the caller made.
+        //
+        // Not `plugin_busy` (409 too, but transient — "retry the identical
+        // request" is exactly what will NOT work here), and not
+        // `service_unavailable` (503 says the plugin is trying and cannot; this
+        // one is not trying on purpose).
+        disabled @ HostError::OperatorDisabled(_) => {
+            CalmError::PluginConflict(disabled.to_string())
+        }
         other => CalmError::Internal(format!("spawn failed: {other}")),
     }
 }
@@ -633,5 +647,32 @@ mod spawn_error_mapping_tests {
             }));
         assert_eq!(mapped.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(mapped.code(), "plugin_kernel_too_old");
+    }
+
+    /// #1226 — the spawn door's `enabled = false` refusal is a 409
+    /// `plugin_conflict`, not the catch-all 500.
+    ///
+    /// Mutation witness: delete the `OperatorDisabled` arm from
+    /// `spawn_error_to_calm` and this test reports `internal` / 500.
+    #[test]
+    fn operator_disabled_maps_to_structured_409() {
+        let mapped = spawn_error_to_calm(HostError::OperatorDisabled("dev.app".into()));
+        assert!(
+            matches!(&mapped, CalmError::PluginConflict(msg)
+                if msg.contains("dev.app") && msg.contains("enabled")),
+            "expected PluginConflict naming the plugin and the bit, got {mapped:?}"
+        );
+        assert_eq!(mapped.status(), StatusCode::CONFLICT);
+        assert_eq!(mapped.code(), "plugin_conflict");
+    }
+
+    /// …and the *config* kill switch keeps its own, different answer. The two
+    /// stores must not collapse into one code: `plugins_disabled` is a file the
+    /// running kernel cannot change, so `enable` is NOT its remedy.
+    #[test]
+    fn config_disabled_is_not_the_same_cell_as_operator_disabled() {
+        let mapped = spawn_error_to_calm(HostError::Disabled("dev.app".into()));
+        assert_eq!(mapped.code(), "internal");
+        assert_eq!(mapped.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

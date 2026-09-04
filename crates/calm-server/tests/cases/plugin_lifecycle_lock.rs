@@ -894,17 +894,26 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 );
             }
 
-            // Holds for the `enabled`-aware pairs only. `spawn` / `restart` /
-            // `rotate_plugin_token` deliberately ignore the `enabled` bit (an
-            // operator may start a disabled plugin by hand), so "Running while
-            // disabled" is a legitimate terminal for any pair containing one of
-            // them and asserting against it would be asserting a falsehood.
-            let enabled_aware =
-                |op| matches!(op, Op::Enable | Op::Disable | Op::Reload | Op::Uninstall);
-            if enabled_aware(a)
-                && enabled_aware(b)
-                && let Some(p) = row.as_ref()
-            {
+            // #1226 — this used to hold for the `enabled`-aware pairs ONLY,
+            // because `spawn` / `restart` / `rotate_plugin_token` ignored the
+            // `enabled` bit, so "Running while disabled" was a legitimate
+            // terminal for any pair containing one of them and asserting
+            // against it would have been asserting a falsehood. It is not
+            // legitimate any more — the spawn door refuses an id whose row says
+            // `enabled = false` and rotation skips its restart on one — so the
+            // exclusion states something that is no longer true and the
+            // predicate is deleted rather than extended (an extended list is
+            // one more list to keep in sync).
+            //
+            // **Measured, not assumed: widening this does NOT make the matrix
+            // catch #1226.** Reverting both halves of the fix and re-running
+            // this test leaves it green — every pair here starts from an
+            // `enabled = true` row, and none of the interleavings the matrix
+            // actually produces reaches the disabled-then-spawned ordering.
+            // The gates for #1226 are the three dedicated tests at the foot of
+            // this file; what changes here is only that the cross-check no
+            // longer carries an exemption for a claim that has been withdrawn.
+            if let Some(p) = row.as_ref() {
                 assert!(
                     p.enabled || !running,
                     "{a:?} + {b:?} left a TORN terminal: the row says \
@@ -2672,4 +2681,424 @@ async fn two_wedged_app_plugins_cost_two_walls_not_one() {
             "{id}: the test still holds this guard; boot must not have taken it"
         );
     }
+}
+
+// ===========================================================================
+// #1226 — rotate-token must not resurrect an operator-disabled plugin, and the
+// `enabled` bit is carried by the spawn admission path rather than by one
+// caller remembering to ask.
+//
+// Root cause: `PluginHost::spawn` only ever consulted `config.plugins_disabled`
+// (`spawn_admission_check`), never the DB `plugins.enabled` bit, and
+// `rotate_plugin_token_under` restarted unconditionally after the token delete.
+// (Review round 2 moved the delete to after the branch and gave the disabled
+// branch a stop; see the two tests at the foot of this file.)
+// Rotating the token of a disabled plugin therefore STARTED it, and nothing
+// reconciled the result: the next boot's `autospawn_enabled` skips the plugin
+// precisely *because* `enabled = false`. Terminal state — DB `enabled = false`
+// beside a runtime `Running` — is the same tear `a17`/`a16` exist to prevent
+// one endpoint over.
+// ===========================================================================
+
+/// (a) The rotate half. Rotation's purpose is "give me a new token"; the
+/// restart is an implementation side effect, and on a disabled plugin that side
+/// effect turns on something the operator explicitly turned off.
+///
+/// The disabled state is reached through the **production** `disable` route, not
+/// by seeding a row: the point of the test is the state an operator can
+/// actually produce.
+///
+/// This case is the plugin that is **already stopped**; the one that is still
+/// running beside the disabled row is
+/// `rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row`, which
+/// is where the stop in this branch is pinned.
+///
+/// Mutation witness: delete the whole `if !enabled` early return from
+/// `rotate_plugin_token_under`, so the rotation always restarts → this test
+/// goes red. Note WHICH assertion it goes red on, because it is not the obvious
+/// one: with part (b) still in place the restart reaches the spawn door, the
+/// door refuses, and the rotation reports `OperatorDisabled` — so the `expect`
+/// on the rotation itself fires, not the `must not be Running` check below it.
+/// Part (a) is what keeps the rotation successful AND inert; (b) alone would
+/// only make it a 409 that stopped the plugin on its way to failing.
+#[tokio::test]
+async fn rotate_token_does_not_resurrect_an_operator_disabled_plugin() {
+    let fx = boot().await;
+
+    // Production route to "the operator turned this off".
+    let row = fx.host.disable(ID).await.expect("disable");
+    assert!(!row.enabled, "fixture: disable must have cleared the bit");
+    assert!(
+        fx.host.status(ID).await.is_none(),
+        "fixture: the plugin must not be running before the rotation"
+    );
+
+    // Rotation still succeeds — the operator asked for the token to be cleared
+    // and it is cleared. What is skipped is the restart; the branch's stop is a
+    // no-op here (`NotFound`) because this plugin is not running.
+    fx.host.rotate_plugin_token(ID).await.expect(
+        "rotating a disabled plugin's token is still Ok — the token is the \
+         request, the restart is only a side effect",
+    );
+
+    let live = fx.host.status(ID).await.map(|s| s.status);
+    assert!(
+        !matches!(
+            live,
+            Some(PluginRuntimeStatus::Running) | Some(PluginRuntimeStatus::Spawning)
+        ),
+        "rotate-token started a plugin the operator had disabled: runtime says \
+         {live:?}. Nothing reconciles that — the next boot's autospawn skips \
+         this plugin *because* its row says `enabled = false`"
+    );
+
+    let row = fx
+        .repo
+        .plugin_get_by_id(ID)
+        .await
+        .unwrap()
+        .expect("the row must survive a rotation");
+    assert!(
+        !row.enabled,
+        "rotation must not touch the `enabled` bit in either direction"
+    );
+
+    // …and the token slot really was cleared, so `enable` mints a fresh one on
+    // its next spawn. Skipping the restart may not turn the rotation into a
+    // no-op.
+    assert!(
+        fx.repo.plugin_token_get(ID).await.unwrap().is_none(),
+        "the token row must be deleted even though the restart is skipped — \
+         otherwise the caller's actual request went unserved"
+    );
+}
+
+/// (b) The structural half, positive arm: the refusal lives in the spawn
+/// admission path, so a caller that has not been taught about #1226 cannot
+/// re-open it.
+///
+/// Mutation witness: delete the `enabled == Some(false)` refusal from
+/// `config_for_spawn_or_unavailable` → this test goes red (the spawn succeeds).
+#[tokio::test]
+async fn spawn_refuses_an_id_whose_row_says_disabled() {
+    let fx = boot().await;
+    fx.host.disable(ID).await.expect("disable");
+
+    let err = fx
+        .host
+        .spawn(ID)
+        .await
+        .expect_err("spawn must refuse a plugin whose row says `enabled = false`");
+    assert!(
+        matches!(err, HostError::OperatorDisabled(_)),
+        "the refusal must be its own typed variant, not a kernel-fault claim. \
+         Got {err:?}"
+    );
+    assert!(
+        fx.host.status(ID).await.is_none(),
+        "a refused spawn leaves nothing behind"
+    );
+}
+
+/// (b) The structural half, boundary arm. **An absent row is NOT a disabled
+/// row**: a row that does not exist cannot say "disabled", so spawn admission
+/// lets it through exactly as before. This is deliberate — fail-open here is
+/// what keeps `plugin_config_delivery::
+/// a_plugin_with_no_stored_row_is_judged_against_its_manifest_defaults`
+/// reachable, since the config gate's row-less arm is only reachable through
+/// this door.
+///
+/// "As before" is asserted positively rather than as "did not answer
+/// `OperatorDisabled`": a row-less `app` cannot complete a spawn on this repo
+/// at all — `ensure_plugin_token` writes `plugin_tokens`, whose `plugin_id`
+/// `REFERENCES plugins(id)` — so the spawn gets all the way to the token mint
+/// and dies there on the foreign key. That failure IS the pre-#1226 behavior,
+/// and reaching it is the proof that admission did not intercept.
+///
+/// Mutation witness: widen the refusal to `enabled != Some(true)` → this test
+/// goes red with `OperatorDisabled` in place of the token-mint failure, and
+/// `plugin_config_delivery`'s row-less case goes red with it.
+#[tokio::test]
+async fn spawn_treats_an_absent_row_as_unchanged_not_as_disabled() {
+    let fx = boot_with(BootOpts {
+        seed: false,
+        ..Default::default()
+    })
+    .await;
+    assert!(
+        fx.repo.plugin_get_by_id(ID).await.unwrap().is_none(),
+        "fixture: this case is about an id with NO row"
+    );
+
+    let err = fx.host.spawn(ID).await.expect_err(
+        "fixture: a row-less app cannot finish a spawn on this repo — the \
+         token mint's foreign key is what stops it",
+    );
+    assert!(
+        !matches!(err, HostError::OperatorDisabled(_)),
+        "an absent row must not be read as a disabled row"
+    );
+    assert!(
+        matches!(&err, HostError::BadState(m) if m.contains("plugin_token_set")),
+        "the spawn must reach the token mint — i.e. it got past admission, past \
+         the min-kernel check, through the configuration gate and into the \
+         token mint exactly as it did before #1226. Got {err:?}"
+    );
+}
+
+// ===========================================================================
+// #1226 review round 2 — B1: the disabled branch must RECONCILE the tear, not
+// walk away from it; B2: a failed token delete is not a successful rotation.
+// ===========================================================================
+
+/// B1. Rotation on a plugin that is **running beside a `enabled = false` row**
+/// must leave it stopped.
+///
+/// Skipping the restart (the first round's fix) is right, but on its own it
+/// preserves exactly the torn state #1226 is about. Deleting the token row does
+/// not stop the orphan: the plugin token is checked once, at the `initialize`
+/// handshake, against the value the kernel holds in memory, and no callback
+/// path reads `plugin_tokens` afterwards — so the process keeps working
+/// indefinitely.
+///
+/// **Why the row is written directly here.** This state's only production
+/// producer was the unconditional restart that the first round of this fix
+/// removed, so it can no longer be constructed through a route. It is still
+/// reachable in the field: a deployment upgraded from a build predating the fix
+/// can already be in it, and the rotate an operator runs after the upgrade is
+/// where it has to be reconciled. The bypass write is the residual design §2.3
+/// registers explicitly (the route layer holds an `Arc<dyn RouteRepo>` and can
+/// write the row without going through the host); `a15b` uses the same one for
+/// the same reason.
+///
+/// Mutation witness: delete the `stop_under` call from the disabled branch of
+/// `rotate_plugin_token_under` → this test goes red on the "must no longer be
+/// Running" assertion.
+#[tokio::test]
+async fn rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row() {
+    let fx = boot().await;
+    fx.host.spawn(ID).await.expect("spawn");
+    assert!(
+        matches!(
+            fx.host.status(ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ),
+        "fixture: the plugin has to be running for this to be the torn state"
+    );
+
+    // The tear: the row says disabled while the process runs on.
+    fx.repo
+        .plugin_update_enabled(ID, false)
+        .await
+        .expect("bypass write");
+
+    fx.host
+        .rotate_plugin_token(ID)
+        .await
+        .expect("rotation still succeeds — the token is the request");
+
+    let live = fx.host.status(ID).await.map(|s| s.status);
+    assert!(
+        !matches!(
+            live,
+            Some(PluginRuntimeStatus::Running) | Some(PluginRuntimeStatus::Spawning)
+        ),
+        "rotate left an orphan running beside a row that says `enabled = false`: \
+         {live:?}. Deleting the token does not stop it — the token is verified \
+         once at the `initialize` handshake against an in-memory value and no \
+         callback path re-reads `plugin_tokens` — so the process would keep \
+         working indefinitely with nothing left to reconcile it"
+    );
+    assert!(
+        !fx.repo
+            .plugin_get_by_id(ID)
+            .await
+            .unwrap()
+            .expect("row")
+            .enabled,
+        "reconciling the runtime must not flip the operator's bit back"
+    );
+    assert!(
+        fx.repo.plugin_token_get(ID).await.unwrap().is_none(),
+        "…and the caller's actual request — clear the token — still happened"
+    );
+}
+
+/// B2 + C1. A failing `plugin_token_delete` means opposite things on the two
+/// branches, and the test has to say so branch by branch.
+///
+/// The break is a real one — a `BEFORE DELETE` trigger that aborts — so the row
+/// survives and can be read back, which is the half a `DROP TABLE` cannot show.
+///
+/// **Enabled branch: the rotation still happens, so refusing would be a lie.**
+/// `restart_under` → `spawn_under` → `ensure_plugin_token` writes through
+/// `plugin_token_set`, an `INSERT … ON CONFLICT DO UPDATE`
+/// (`calm-truth/src/db/sqlite/out_of_domain.rs:630`). It never DELETEs, so the
+/// hash is overwritten whether or not the DELETE landed. Round 2 of this fix
+/// propagated the error here and turned a working rotation into a 500 that did
+/// nothing; the fixture missed it because it never spawned the plugin, so no
+/// restart followed and there was nothing to re-mint. **This test therefore
+/// runs the enabled arm against a live plugin, and asserts the two things that
+/// prove the rotation really happened: the stored hash changed, and the pid
+/// changed.** Asserting `Ok` alone would pass on a rotation that did nothing.
+///
+/// **Disabled branch: nothing follows, so the delete IS the rotation.** The
+/// branch returns without restarting, so a swallowed failure is a 200 over an
+/// unchanged hash.
+///
+/// Mutation witnesses, one per branch (each applied alone):
+/// * put `?` back on the enabled branch's `plugin_token_delete` → the enabled
+///   arm goes red on "the rotation must still happen";
+/// * put `let _ =` back on the disabled branch's → the disabled arm goes red on
+///   "the disabled branch must report the failed delete".
+#[tokio::test]
+async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
+    let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let repo: Arc<dyn Repo> = sqlx_repo.clone();
+    let fx = boot_with(BootOpts {
+        repo: Some(repo),
+        ..Default::default()
+    })
+    .await;
+
+    // ---- enabled branch, against a LIVE plugin. -------------------------
+    fx.host.spawn(ID).await.expect("spawn");
+    let before_hash = fx
+        .repo
+        .plugin_token_get(ID)
+        .await
+        .unwrap()
+        .expect("the spawn minted a token")
+        .0;
+    let before_pid = fx
+        .host
+        .status(ID)
+        .await
+        .expect("running")
+        .pid
+        .expect("a live pid");
+
+    sqlx::query(
+        "CREATE TRIGGER block_token_delete BEFORE DELETE ON plugin_tokens \
+         BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+    )
+    .execute(sqlx_repo.pool())
+    .await
+    .expect("arm the failing delete");
+
+    fx.host.rotate_plugin_token(ID).await.expect(
+        "the rotation must still happen: the restart's UPSERT does not \
+                 need the DELETE, so refusing here would be a false 500",
+    );
+
+    let after_hash = fx
+        .repo
+        .plugin_token_get(ID)
+        .await
+        .unwrap()
+        .expect("the restart re-minted through the UPSERT")
+        .0;
+    assert_ne!(
+        before_hash, after_hash,
+        "the rotation must still happen even though the DELETE was refused — \
+         `ensure_plugin_token` overwrites the row through \
+         `INSERT … ON CONFLICT DO UPDATE` and never needs the delete"
+    );
+    let after_pid = fx
+        .host
+        .status(ID)
+        .await
+        .expect("still running after the rotation")
+        .pid
+        .expect("a live pid");
+    assert_ne!(
+        before_pid, after_pid,
+        "…and the restart half really ran: a rotation that left the same \
+         process behind would have handed the plugin a token it never \
+         handshook with"
+    );
+
+    // ---- disabled branch: nothing re-mints, so the delete is the whole
+    // ---- rotation and its failure is the rotation's failure.
+    fx.repo
+        .plugin_update_enabled(ID, false)
+        .await
+        .expect("bypass write");
+    let armed_hash = fx.repo.plugin_token_get(ID).await.unwrap().expect("row").0;
+
+    let err = fx
+        .host
+        .rotate_plugin_token(ID)
+        .await
+        .expect_err("the disabled branch must report the failed delete");
+    assert!(
+        err.to_string().contains("plugin_token_delete"),
+        "the failure must name what could not be done: {err}"
+    );
+    assert_eq!(
+        fx.repo.plugin_token_get(ID).await.unwrap().map(|t| t.0),
+        Some(armed_hash),
+        "the old hash is still there — which is exactly why answering `Ok` \
+         would have been a lie"
+    );
+    assert!(
+        fx.host.status(ID).await.is_none(),
+        "the branch still stopped the plugin before it tried the delete"
+    );
+}
+
+/// D1. The disabled branch's post-stop guard refuses on `Running` and **only**
+/// on `Running`, so a plugin with a live entry that has no live process behind
+/// it still gets its token cleared.
+///
+/// `PluginHost::status` is a snapshot of the runtime table, not a liveness
+/// check: it answers `Some` for `Crashed` (which may still carry a stale cached
+/// pid), `Unavailable` (no pid) and `Spawning` (no pid) just as readily as for
+/// `Running`. A guard written as "any `Some` means still alive" locks the token
+/// row out permanently on the first three.
+///
+/// **This is coverage, not a mutation witness, and the difference matters.**
+/// Widening the guard back to `is_some()` leaves this test green, because
+/// `stop_under`'s success path removes the live entry before the guard reads
+/// it — so `status` is `None` here whatever the guard says. The state that
+/// distinguishes the two guards is a live entry that *survives* the stop, which
+/// means `stopping = true`, which needs `process.stop` to fail; see the comment
+/// on the guard for why no test in this repo can produce that. What this test
+/// does pin is that the disabled branch handles a crashed plugin at all —
+/// nothing exercised that input before.
+#[tokio::test]
+async fn the_disabled_branch_clears_the_token_of_a_crashed_plugin() {
+    let fx = boot_with(BootOpts {
+        stub: CRASH_BIN,
+        ..Default::default()
+    })
+    .await;
+    let _ = fx.host.spawn(ID).await;
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().any(|s| s == "crashed"),
+        Duration::from_secs(15),
+    )
+    .await;
+
+    fx.repo
+        .plugin_update_enabled(ID, false)
+        .await
+        .expect("bypass write");
+
+    fx.host.rotate_plugin_token(ID).await.expect(
+        "a crashed plugin is not a running one — the rotation must not \
+                 be refused, and refusing would lock the token row out for good",
+    );
+    assert!(
+        fx.repo.plugin_token_get(ID).await.unwrap().is_none(),
+        "the token row must actually be cleared"
+    );
+    assert!(
+        !matches!(
+            fx.host.status(ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ),
+        "and nothing may have been started"
+    );
 }
