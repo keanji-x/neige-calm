@@ -45,7 +45,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{CalmError, Result};
-use crate::model::{AreaKind, TrackWorkspace, TrackWorkspaceKind};
+use crate::model::{AreaKind, Track, TrackWorkspace, TrackWorkspaceKind};
 
 /// Name of the trash directory under the workspace root. Leading dot so it can
 /// never collide with an area id (ids are never dot-prefixed) and so it does not
@@ -59,6 +59,22 @@ pub const TRASH_DIR_NAME: &str = ".trash";
 /// on one side and not the other turns those tests red rather than silently
 /// making every recycle refuse (or, far worse, every recycle accept).
 const OWNER_MARKER_RELATIVE: [&str; 2] = [".git", "neige-workspace"];
+
+/// Boot/lazy recovery fence for a managed runtime. Attached workspaces are
+/// never moved by deletion; a managed one is recoverable only when its original
+/// path still carries this track's ownership marker. This persists deletion
+/// quarantine across process restarts without trusting an in-memory seal.
+pub fn workspace_allows_runtime_recovery(track: &Track) -> bool {
+    if track.workspace.kind != TrackWorkspaceKind::Managed {
+        return true;
+    }
+    let marker = OWNER_MARKER_RELATIVE
+        .iter()
+        .fold(PathBuf::from(&track.workspace.path), |path, part| {
+            path.join(part)
+        });
+    std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == track.id.as_str())
+}
 
 /// How long a trashed workspace is retained before [`gc_trash`] removes it.
 ///
@@ -189,6 +205,44 @@ pub fn recycle_track_workspace(
         }
     }
     Ok(decision)
+}
+
+/// Compensate a successful trash rename when the database deletion that owns
+/// it later rolls back. Refused recycle decisions moved nothing and are no-ops.
+/// The original path must still be absent: replacing anything that appeared
+/// there after the move would trade a recoverable delete failure for data loss.
+pub fn restore_recycled_workspace(decision: &RecycleDecision) -> Result<()> {
+    let RecycleDecision::Trashed { from, to } = decision else {
+        return Ok(());
+    };
+    match std::fs::symlink_metadata(from) {
+        Ok(_) => {
+            return Err(CalmError::Internal(format!(
+                "cannot restore recycled workspace {}: original path is occupied",
+                from.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CalmError::Internal(format!(
+                "inspect original workspace path {} before restore: {error}",
+                from.display()
+            )));
+        }
+    }
+    std::fs::rename(to, from).map_err(|error| {
+        CalmError::Internal(format!(
+            "restore recycled workspace {} -> {}: {error}",
+            to.display(),
+            from.display()
+        ))
+    })?;
+    tracing::warn!(
+        from = %to.display(),
+        to = %from.display(),
+        "restored recycled workspace after track deletion rolled back"
+    );
+    Ok(())
 }
 
 fn decide_and_move(
@@ -540,7 +594,7 @@ pub struct RecycleTarget<'a> {
 }
 
 /// Report of an area-level recycle.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AreaRecycleReport {
     pub decisions: Vec<(String, RecycleDecision)>,
     /// `true` when `<root>/<area_id>/` was removed (it was empty afterwards).
@@ -568,22 +622,54 @@ pub fn recycle_area_workspaces(
 ) -> Result<AreaRecycleReport> {
     let mut report = AreaRecycleReport::default();
     for target in tracks {
-        let decision = recycle_track_workspace(
+        let decision = match recycle_track_workspace(
             workspace_root,
             area_kind,
             target.track_id,
             target.workspace,
             now_ms,
-        )?;
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                if let Err(restore_error) = restore_area_recycle_report(&report) {
+                    return Err(CalmError::Internal(format!(
+                        "area workspace recycle failed ({error}), and partial rollback failed: {restore_error}"
+                    )));
+                }
+                return Err(error);
+            }
+        };
         report
             .decisions
             .push((target.track_id.to_string(), decision));
     }
 
-    if area_kind == Some(AreaKind::User) {
-        report.area_dir_removed = remove_empty_area_dir(workspace_root, area_id);
-    }
+    let _ = area_id;
     Ok(report)
+}
+
+/// Reverse every successful move in an area recycle report. Restoration is
+/// best-effort across the whole batch: one occupied path must not prevent other
+/// workspaces from returning to their owners.
+pub fn restore_area_recycle_report(report: &AreaRecycleReport) -> Result<()> {
+    let mut errors = Vec::new();
+    for (_, decision) in report.decisions.iter().rev() {
+        if let Err(error) = restore_recycled_workspace(decision) {
+            errors.push(error.to_string());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CalmError::Internal(errors.join("; ")))
+    }
+}
+
+/// Cosmetic post-commit finalization. Keeping the area directory until the DB
+/// commit is confirmed means rollback never has to recreate a path whose
+/// parent could have changed underneath it.
+pub fn finalize_area_recycle(workspace_root: &Path, area_id: &str, report: &mut AreaRecycleReport) {
+    report.area_dir_removed = remove_empty_area_dir(workspace_root, area_id);
 }
 
 /// `rmdir <root>/<area_id>` when it is empty and canonically a direct child of

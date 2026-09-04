@@ -89,7 +89,7 @@ const mark = (name: string, value: string): Readonly<Record<string, string>> => 
 
 /**
  * What a painter needs from one of a row's actions: the payload id it carries,
- * and its two wording channels.
+ * and its three wording channels.
  *
  * The lookup returns `null` when the action is absent — and it is absent for two
  * different reasons that the painter deliberately does not distinguish: the view
@@ -97,7 +97,12 @@ const mark = (name: string, value: string): Readonly<Record<string, string>> => 
  * `paintModule` filtered it out against this painter's capability table. Both
  * mean the same thing here: draw no control, and therefore no marker.
  */
-type Control = Readonly<{ id: string; label: string | null; hint: string | null }>;
+type Control = Readonly<{
+  id: string;
+  label: string | null;
+  hint: string | null;
+  description: string | null;
+}>;
 
 function control(row: PanelRow, kind: RowAction['kind']): Control | null {
   for (const action of row.actions) {
@@ -106,18 +111,20 @@ function control(row: PanelRow, kind: RowAction['kind']): Control | null {
       id: action.kind === 'reveal-block' ? action.blockId : action.cardId,
       label: action.label,
       hint: action.hint,
+      description: action.description,
     };
   }
   return null;
 }
 
-/** `label` / `hint` are exact on both sides: `null` must emit no attribute at
+/** Wording channels are exact on both sides: `null` must emit no attribute at
  *  all, because a second accessible name overrides a control's visible text
  *  (WCAG 2.5.3) and the projection asserts the absence. */
 function wording(action: Control): Readonly<Record<string, string>> {
   return {
     ...(action.label === null ? {} : { 'aria-label': action.label }),
     ...(action.hint === null ? {} : { title: action.hint }),
+    ...(action.description === null ? {} : { 'aria-description': action.description }),
   };
 }
 
@@ -127,7 +134,9 @@ function wording(action: Control): Readonly<Record<string, string>> {
  *
  * Three carriers, unchanged. `data-nc-status` holds the **bare token**, which is
  * what the stylesheet keys colour off — folding the kernel's reason into it
- * would leave a failed row uncoloured. `title` holds the phrase a pointer gets.
+ * would leave a failed row uncoloured. `title` holds the phrase a pointer gets,
+ * except when a pending reason already gives the enclosing reveal its one
+ * native title; then the dot inherits that tooltip instead of replacing it.
  * `aria-label` holds `Status: ${phrase}`, and that prefix is **painter chrome**:
  * it is deliberately not part of `RowStatus.phrase` (see `core/view/panel.ts`),
  * and the projection reads the other two carriers only, which is what leaves the
@@ -137,7 +146,7 @@ function wording(action: Control): Readonly<Record<string, string>> {
  * reveal the block, and being a DOM child is what makes the click bubble, so the
  * dot owns its hover without owning the click. Its trailing position is CSS.
  */
-function statusDot(status: RowStatus): ReactNode {
+function statusDot(status: RowStatus, ownsTitle: boolean): ReactNode {
   return (
     <span
       key="status"
@@ -145,7 +154,7 @@ function statusDot(status: RowStatus): ReactNode {
       {...mark(MARKER.status, status.token)}
       role="img"
       aria-label={`Status: ${status.phrase}`}
-      title={status.phrase}
+      {...(ownsTitle ? { title: status.phrase } : {})}
     />
   );
 }
@@ -248,30 +257,32 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
+  const revealControl = (
+    <button
+      type="button"
+      className={styles.taskReveal}
+      {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
+      onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
+    >
+      {/* Mono: the key is the literal other reports and the kernel address
+          this task by (§2.2). */}
+      <span className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
+      {row.badges.map((badge) => (
+        <span
+          key={badge.id}
+          className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
+          {...mark(MARKER.badge, badge.id)}
+        >{badge.text}</span>
+      ))}
+      {row.status !== null && statusDot(
+        row.status,
+        row.status.token !== 'pending' || reveal === null || reveal.hint === null,
+      )}
+    </button>
+  );
   return (
     <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
-      <button
-        type="button"
-        className={styles.taskReveal}
-        {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
-        onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
-      >
-        {/* Mono: the key is the literal other reports and the kernel address
-            this task by (§2.2). */}
-        <span className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
-        {/* The declaration's own word — `Not ready`, `Withdrawn`, `Unreadable` —
-            and nothing else: the run is the dot. `struck` is the withdrawal, and
-            it is the view model's fact now rather than a second reading of
-            `task.state` here. */}
-        {row.badges.map((badge) => (
-          <span
-            key={badge.id}
-            className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
-            {...mark(MARKER.badge, badge.id)}
-          >{badge.text}</span>
-        ))}
-        {row.status !== null && statusDot(row.status)}
-      </button>
+      {revealControl}
       {/* The kind is a word either way — what changes is whether it is a
           control. `title` describes the destination without touching the
           accessible name, which stays the visible word (WCAG 2.5.3). */}

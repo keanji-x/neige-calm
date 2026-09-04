@@ -83,21 +83,24 @@ Resulting per-kind behavior on the currently-built surfaces:
 | --- | --- | --- |
 | `area.updated` | invalidate areas | area list is live |
 | `area.deleted` | invalidate areas + track overlays | |
-| `track.updated` | invalidate that area's track list + track detail | `track-files`/`tracks-range` parts drop (stubs) |
-| `track.lifecycle_changed` | same as `track.updated` | |
-| `track.deleted` | invalidate area's track list + track overlays; **remove** track detail | the detail can never resolve again |
-| `card.added` / `card.updated` | invalidate track detail + both conversation lists | |
-| `card.deleted` | invalidate track detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
+| `track.updated` | invalidate that area's track list + track detail + all active task verdicts | a root budget/policy change can alter descendant admission; `track-files`/`tracks-range` parts drop (stubs) |
+| `area.deleted` | invalidate area/track overlays + all task verdicts | block/card references from surviving areas change from cross-area to missing |
+| `track.lifecycle_changed` | invalidate that area's track list + track detail | the route normally pairs it with `track.updated`, but this event alone does not claim a task-policy change; `track-files`/`tracks-range` parts drop (stubs) |
+| `track.deleted` | invalidate area's track list + track overlays + surviving task verdicts; **remove** track detail and that track's verdict query | neither deleted query can resolve again, while deleting a tree member changes the survivors' B/N shares |
+| `card.added` | invalidate track detail + both conversation lists + all task verdicts | card existence may satisfy a cross-track `neige://card/*` reference |
+| `card.updated` | invalidate track detail + both conversation lists | |
+| `card.deleted` | invalidate track detail + all task verdicts | card disappearance may break a cross-track reference; knowingly no conversation-list key (dropping the deleted row is #1140's) |
 | `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
-| `track.report_edited` | invalidate that track's task verdicts | `track-files` and `track-backlinks` are still stubs |
+| `track.report_edited` | invalidate all task verdicts (cross-track refs can change dependents) | `track-files` and `track-backlinks` are still stubs |
+| `plan.updated` with string `agent_message` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | standalone pending-task cancellation carries the message and pending rows do not poll; projection companion events omit it and are no-ops here because their paired event already refreshes |
 | `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
 | `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
 | `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |
 | `harness.phase.changed` | invalidate planner run + both conversation lists | |
 | `harness.transcript.cleared` | invalidate harness items + planner run | a reset always emits `harness.phase.changed` too, which carries the lists |
 | `harness.user_message.enqueued` | invalidate harness items + planner run + both conversation lists | reset and enqueue cross the transcript/run boundary |
-| `plugin.*`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
+| `plugin.*`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a

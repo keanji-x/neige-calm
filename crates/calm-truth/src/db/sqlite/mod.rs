@@ -128,8 +128,8 @@ pub use task::{
     track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
-    BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
-    evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
+    BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,
+    WithdrawalEdge, evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use track::{
@@ -140,10 +140,11 @@ pub use track::{
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,
-    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_PLANNER_INVENTORY_SQL, TrackTreeTerm,
-    TrackTreeTermOutcome, TreeShare, can_add_tree_member, deterministic_share, track_tree_budget,
-    track_tree_member_count, track_tree_planner_inventory, track_tree_planner_inventory_by_member,
-    track_tree_term,
+    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL,
+    TRACK_TREE_PLANNER_INVENTORY_SQL, TrackTreeTerm, TrackTreeTermOutcome, TreeShare,
+    can_add_tree_member, deterministic_share, track_tree_budget, track_tree_member_count,
+    track_tree_planner_inventory, track_tree_planner_inventory_by_member, track_tree_term,
+    tree_share_from_member_inventory,
 };
 pub use track_workspace::{
     track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_write_tx,

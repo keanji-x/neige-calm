@@ -603,8 +603,8 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:98-105
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:213-241
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:113-123
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:225-253
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -616,37 +616,60 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `track.updated` / `track.lifecycle_changed` 必须失效四个面：所属 area 的 track 列表、
-    该 track 的 detail、该 track 的 track-files、以及全局 `['tracks-range']`。
+    `track.updated` / `track.lifecycle_changed` 都必须失效所属 area 的 track 列表、该 track
+    的 detail、该 track 的 track-files 与全局 `['tracks-range']`；只有 `track.updated`
+    额外广播失效 `['track-report']`，因为它承载 task budget / admission policy 变化。
   why: >
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
-    少一个就出现某一处静默陈旧。
-  source: web/src/app/invalidationPolicies.ts:108-113,137-150
-  authoritative_test: web/src/app/eventBridge.test.tsx:318
+    少一个就出现某一处静默陈旧。lifecycle 事件本身不证明 task policy 改变；把 report
+    刷新限定到 `track.updated` 可避免独立 lifecycle 消息触发昂贵的整份报告重算。
+  source: fe/core/events/invalidation-plan.ts:195-213
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:61-83
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: browser
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-033
   kind: capability
   family: app-invalidation-policy
   statement: >
     `track.deleted` 必须失效 area 的 track 列表 + track overlay 快照 + `['tracks-range']`，
-    并且必须 **removeQueries** 掉该 track 的 detail（而不是仅 invalidate）。
+    广播失效 `['track-report']` 前缀，并且必须 **removeQueries** 掉该 track 的 detail
+    与 `['track-report', id]`（而不是仅 invalidate）。
   why: >
     已删除的 track detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
-    继续作为 placeholder 上色。
-  source: web/src/app/invalidationPolicies.ts:140-147; web/src/app/eventBridge.tsx:252-253
-  authoritative_test: NONE
+    继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
+    所以仍存活的 task verdict 查询必须重新读取服务端重投影结果；删除目标自己的 report
+    endpoint 已经是 404，必须先从 cache 移除，不能被 prefix refetch 命中。
+  source: fe/core/events/invalidation-plan.ts:204-211; fe/web/src/app/events/query-invalidation-adapter.ts:91-104
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:300
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
+
+- id: CAP-APP-103
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    携带 `agent_message` 的 standalone `plan.updated` 必须按事件中的 track id 失效
+    `['track-report', trackId]`；投影伴随事件不得重复失效。
+  why: >
+    `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
+    缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
+  source: fe/core/events/invalidation-plan.ts:296-298
+  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:243-249
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-APP-034
   kind: invariant
@@ -659,8 +682,8 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:245-264
-  authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:265-283
+  authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -695,8 +718,8 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:166-173,211-213; fe/web/src/app/events/track-lookup.ts:7-17
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:44
+  source: fe/core/events/invalidation-plan.ts:177-184,231-233; fe/web/src/app/events/track-lookup.ts:7-17
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:155-167
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -708,18 +731,18 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `track.report_edited` 必须同时失效该 track 的 track-files、`track-report`、全局
+    `track.report_edited` 必须同时失效该 track 的 track-files、全局 `track-report` 前缀、全局
     `['track-backlinks']`，以及（#1253 PR2）`['today-launchpad']` 与该 track 的
     `['track', id]`。
   why: >
-    策略 reason 明写："报告编辑改变 track 文件投影，并且可能改变**任意** track 的反链"，
-    所以反链只能整片失效，不能按 track 收窄。
+    报告编辑可能删除另一个任务通过 `refs` 引用的 block，因此 task verdict 与反链都可能
+    跨 track 改变；两者只能整片失效，不能按被编辑 track 收窄。
     后两个键是 Today 文档的刷新链：`['track', id]` 是文档本身被读出的键，
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:241-244
-  authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
+  source: fe/core/events/invalidation-plan.ts:261-264
+  authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app

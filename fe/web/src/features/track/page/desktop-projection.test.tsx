@@ -75,12 +75,12 @@ const TASKS: readonly ReportTaskRow[] = [
      card, so the kind is a control and carries `open-card`. */
   {
     blockId: 'block-1', key: 'alpha-gate', state: 'ready', declaration: null,
-    status: 'running', statusDetail: 'step 2 of 3', kind: 'codex', workerCardId: 'card-1',
+    status: 'running', statusDetail: 'step 2 of 3', kind: 'codex', workerCardId: 'card-1', pendingReason: null,
   },
   /* Withdrawn: a struck declaration badge, no kind, no status. */
   {
     blockId: 'block-2', key: 'beta-gate', state: 'withdrawn', declaration: 'Withdrawn',
-    status: null, statusDetail: null, kind: null, workerCardId: null,
+    status: null, statusDetail: null, kind: null, workerCardId: null, pendingReason: null,
   },
   /* `status === ''` — not reachable through today's derivation, which
      normalises `undefined | null | ''` alike to `null` (`core/domain/report.ts`),
@@ -91,7 +91,7 @@ const TASKS: readonly ReportTaskRow[] = [
      row carries only `reveal-block`. */
   {
     blockId: 'block-3', key: 'gamma-gate', state: 'ready', declaration: 'Not ready',
-    status: '', statusDetail: null, kind: 'claude', workerCardId: null,
+    status: '', statusDetail: null, kind: 'claude', workerCardId: null, pendingReason: null,
   },
 ];
 

@@ -554,7 +554,7 @@ async fn turn_plan_updated_persists_rows_without_events() {
 }
 
 #[tokio::test]
-async fn phase_log_failure_keeps_last_phase_for_retry() {
+async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let (harness, _daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
@@ -570,13 +570,24 @@ async fn phase_log_failure_keeps_last_phase_for_retry() {
         .execute(repo.pool())
         .await
         .unwrap();
-    let err = harness
-        .persist_snapshot()
+    harness
+        .observe_user_message_durable("survive audit outage".into())
         .await
-        .expect_err("missing events table should fail phase event persistence");
+        .expect("the snapshot commit accepts input even when its follow-up phase audit fails");
+    let stored: Value = sqlx::query_scalar(
+        "SELECT handle_state_json FROM worker_sessions WHERE card_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .bind(&card_id)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    let stored = HarnessSnapshot::from_value_strict(stored);
     assert!(
-        err.to_string().contains("events"),
-        "expected events-table failure, got {err}"
+        stored.pending_queue.iter().any(|observation| matches!(
+            observation,
+            Observation::UserMessage { text } if text == "survive audit outage"
+        )),
+        "durably accepted input must remain in the committed snapshot"
     );
     sqlx::query("ALTER TABLE events_broken RENAME TO events")
         .execute(repo.pool())

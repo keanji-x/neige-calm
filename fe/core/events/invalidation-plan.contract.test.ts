@@ -28,7 +28,7 @@ describe('invalidation plan contract', () => {
     >;
     expect(invalidationPlanFor(event)).toEqual({
       invalidate: [
-        ['track-files', 'track-7'], ['track-report', 'track-7'], ['track-backlinks'],
+        ['track-files', 'track-7'], ['track-report'], ['track-backlinks'],
         ['today-launchpad'], ['track', 'track-7'],
       ],
       remove: [],
@@ -57,10 +57,51 @@ describe('invalidation plan contract', () => {
     expect(keys).toContainEqual(['track', 'lp']);
   });
 
-  it('pins track-report invalidation to exactly the derived kinds plus report edits', () => {
+  it('refreshes active task diagnostics when a budget or admission setting changes', () => {
+    const event = { ev: 'track.updated', data: { id: 'track-7', area_id: 'area-1' } } as Extract<
+      WireEvent,
+      { ev: 'track.updated' }
+    >;
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+  });
+
+  it('refreshes every dependent verdict when a referenced card appears or disappears', () => {
+    for (const ev of ['card.added', 'card.deleted'] as const) {
+      const event = { ev, data: { track_id: 'target' } } as Extract<WireEvent, { ev: typeof ev }>;
+      expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+    }
+  });
+
+  it('refreshes cross-area reference diagnostics after an area disappears', () => {
+    const event = { ev: 'area.deleted', data: { id: 'target-area' } } as Extract<
+      WireEvent,
+      { ev: 'area.deleted' }
+    >;
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+  });
+
+  it('refreshes diagnostics after pending-task cancellation and tree membership changes', () => {
+    const planUpdated = {
+      ev: 'plan.updated', data: { track_id: 'track-7', agent_message: 'canceled' },
+    } as Extract<
+      WireEvent,
+      { ev: 'plan.updated' }
+    >;
+    const trackDeleted = { ev: 'track.deleted', data: { id: 'child', area_id: 'area-1' } } as Extract<
+      WireEvent,
+      { ev: 'track.deleted' }
+    >;
+    expect(invalidationPlanFor(planUpdated).invalidate).toContainEqual(['track-report', 'track-7']);
+    expect(invalidationPlanFor(trackDeleted).invalidate).toContainEqual(['track-report']);
+  });
+
+  it('pins track-report invalidation to exactly the task-verdict invalidating kinds', () => {
     const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
-      { ev: kind, data: {} } as WireEvent,
+      {
+        ev: kind,
+        data: kind === 'plan.updated' ? { track_id: 'track-7', agent_message: 'canceled' } : {},
+      } as WireEvent,
     ).invalidate.some((key) => key[0] === 'track-report')));
     expect(actual).toEqual(new Set(taskVerdictInvalidatingKinds()));
     expectTypeOf<typeof TRACK_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<TrackFilesDerivedKind>();

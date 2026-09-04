@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -226,10 +226,84 @@ describe('EventBridge contracts', () => {
 
     emit(eventFrame(9, { ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }));
     expect(cursor.value).toBe(9);
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
-      ['tracks', 'c1'],
-      ['overlays', 'track'],
-    ]);
+    await waitFor(() => expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        ['tracks', 'c1'],
+        ['overlays', 'track'],
+        ['track-report'],
+      ]));
+  });
+
+  it('refreshes the affected task verdict after a pending task is canceled', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(10, {
+      ev: 'plan.updated',
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: 'canceled' },
+    }));
+    await waitFor(() => expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        ['track-report', 'w1'],
+      ]));
+  });
+
+  it('cancels an in-flight initial task-verdict read before refetching after plan.updated', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    type Verdict = Readonly<{ status: string }>;
+    const pending: Array<(value: readonly Verdict[]) => void> = [];
+    let calls = 0;
+    const observer = new QueryObserver(client, {
+      queryKey: ['track-report', 'w1'],
+      queryFn: () => new Promise<readonly Verdict[]>((resolve) => {
+        calls += 1;
+        pending.push(resolve);
+      }),
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await waitFor(() => expect(calls).toBe(1));
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(11, {
+      ev: 'plan.updated',
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: 'canceled' },
+    }));
+    await waitFor(() => expect(calls).toBe(2));
+    pending[0]([{ status: 'pending' }]);
+    pending[1]([{ status: 'canceled' }]);
+    await waitFor(() => expect(client.getQueryData(['track-report', 'w1']))
+      .toEqual([{ status: 'canceled' }]));
+    expect(calls).toBe(2);
+    unsubscribe();
+  });
+
+  it('removes the deleted track report before refreshing surviving reports', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = ['track-report', 'w1'] as const;
+    client.setQueryData(key, [{ status: 'pending' }]);
+    let calls = 0;
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      staleTime: Infinity,
+      queryFn: () => {
+        calls += 1;
+        return Promise.reject(new Error('deleted report returned 404'));
+      },
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    expect(calls).toBe(0);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(12, { ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }));
+    await waitFor(() => expect(client.getQueryState(key)).toBeUndefined());
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(calls).toBe(0);
+    unsubscribe();
   });
 
   it('resolves a runtime card through cached track detail before invalidating', async () => {
@@ -241,7 +315,8 @@ describe('EventBridge contracts', () => {
     await waitFor(() => expect(record.startCalls).toBe(1));
 
     emit(eventFrame(10, { ev: 'runtime.status_changed', data: { card_id: 'card-1' } }));
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['track', 'w1']);
+    await waitFor(() => expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey))
+      .toContainEqual(['track', 'w1']));
   });
 
   it('resumes from the persisted cursor rather than replaying from zero', async () => {

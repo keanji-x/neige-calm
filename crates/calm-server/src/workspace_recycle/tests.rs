@@ -562,7 +562,7 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
     let ws_two = Fixture::workspace(&two, TrackWorkspaceKind::Managed);
 
     // Only one of the two recycled: the area layer must survive.
-    let partial = recycle_area_workspaces(
+    let mut partial = recycle_area_workspaces(
         &f.root,
         "area-1",
         Some(AreaKind::User),
@@ -573,11 +573,12 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
         1_000_000,
     )
     .unwrap();
+    finalize_area_recycle(&f.root, "area-1", &mut partial);
     assert!(!partial.area_dir_removed);
     assert!(f.root.join("area-1").is_dir());
     assert!(two.join(".git").is_dir());
 
-    let full = recycle_area_workspaces(
+    let mut full = recycle_area_workspaces(
         &f.root,
         "area-1",
         Some(AreaKind::User),
@@ -588,6 +589,7 @@ fn the_area_directory_is_removed_only_once_it_is_empty() {
         1_000_001,
     )
     .unwrap();
+    finalize_area_recycle(&f.root, "area-1", &mut full);
     assert!(full.area_dir_removed);
     assert!(!f.root.join("area-1").exists());
 }
@@ -597,7 +599,7 @@ fn a_area_directory_holding_an_unrecycled_track_is_kept() {
     let f = Fixture::new();
     let attached_shaped = f.managed("area-1", "track-1");
     let ws = Fixture::workspace(&attached_shaped, TrackWorkspaceKind::Attached);
-    let report = recycle_area_workspaces(
+    let mut report = recycle_area_workspaces(
         &f.root,
         "area-1",
         Some(AreaKind::User),
@@ -608,8 +610,51 @@ fn a_area_directory_holding_an_unrecycled_track_is_kept() {
         1_000_000,
     )
     .unwrap();
+    finalize_area_recycle(&f.root, "area-1", &mut report);
     assert!(!report.area_dir_removed);
     assert!(attached_shaped.join(".git").is_dir());
+}
+
+#[test]
+fn a_late_area_recycle_error_restores_every_earlier_workspace() {
+    let f = Fixture::new();
+    let first = f.managed("area-1", "track-1");
+    let second = f.managed("area-1", "track-2");
+    let marker = OWNER_MARKER_RELATIVE
+        .iter()
+        .fold(second.clone(), |path, part| path.join(part));
+    std::fs::write(marker, "../escape").unwrap();
+    let first_workspace = Fixture::workspace(&first, TrackWorkspaceKind::Managed);
+    let second_workspace = Fixture::workspace(&second, TrackWorkspaceKind::Managed);
+
+    let error = recycle_area_workspaces(
+        &f.root,
+        "area-1",
+        Some(AreaKind::User),
+        &[
+            RecycleTarget {
+                track_id: "track-1",
+                workspace: &first_workspace,
+            },
+            RecycleTarget {
+                track_id: "../escape",
+                workspace: &second_workspace,
+            },
+        ],
+        1_000_000,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not form a single path segment")
+    );
+    assert!(
+        first.join(".git").is_dir(),
+        "the first move was not restored"
+    );
+    assert!(second.join(".git").is_dir(), "the failing target was moved");
 }
 
 // --------------------------------------------------------------------------

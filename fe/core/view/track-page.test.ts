@@ -29,6 +29,7 @@ function task(overrides: Partial<ReportTaskRow> = {}): ReportTaskRow {
     statusDetail: null,
     kind: null,
     workerCardId: null,
+    pendingReason: null,
     ...overrides,
   };
 }
@@ -96,15 +97,16 @@ describe('deriveTrackPageView cards', () => {
     expect(owned.actions.map((action) => action.kind)).toEqual(['open-card']);
     expect(user.actions.map((action) => action.kind)).toEqual(['open-card', 'delete-card']);
     expect(owned.actions).toEqual([
-      { kind: 'open-card', cardId: 'card-owned', label: null, hint: null },
+      { kind: 'open-card', cardId: 'card-owned', label: null, hint: null, description: null },
     ]);
     expect(user.actions).toEqual([
-      { kind: 'open-card', cardId: 'card-user', label: null, hint: null },
+      { kind: 'open-card', cardId: 'card-user', label: null, hint: null, description: null },
       {
         kind: 'delete-card',
         cardId: 'card-user',
         label: 'Delete card Main pane',
         hint: 'Delete card',
+        description: null,
       },
     ]);
   });
@@ -166,7 +168,8 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'block-3',
       label: null,
-      hint: 'Show gate-alpha in the report',
+      hint: null,
+      description: null,
     }]);
   });
 
@@ -182,15 +185,17 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'b-a',
       label: null,
-      hint: 'Show k-a in the report',
+      hint: null,
+      description: null,
     }]);
     expect(with_.actions).toEqual([
-      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: 'Show k-b in the report' },
+      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: null, description: null },
       {
         kind: 'open-card',
         cardId: 'card-9',
         label: null,
         hint: 'Open the worker card for k-b',
+        description: null,
       },
     ]);
   });
@@ -201,14 +206,14 @@ describe('deriveTrackPageView tasks', () => {
    * neither may carry an `aria-label`; each carries only a pointer `title`
    * naming its destination.
    */
-  it('gives each Task control a destination hint and no accessible name', () => {
+  it('keeps the task reveal quiet and gives only the worker control a destination hint', () => {
     const [row] = tasksModule([
       task({ key: 'gate-alpha', kind: 'codex', workerCardId: 'card-9' }),
     ]).rows;
     const [reveal, open] = row.actions;
 
     expect(reveal.label).toBeNull();
-    expect(reveal.hint).toBe('Show gate-alpha in the report');
+    expect(reveal.hint).toBeNull();
     expect(open.label).toBeNull();
     expect(open.hint).toBe('Open the worker card for gate-alpha');
   });
@@ -253,7 +258,8 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'b-k',
       label: null,
-      hint: 'Show k-k in the report',
+      hint: null,
+      description: null,
     }]);
   });
 
@@ -265,6 +271,21 @@ describe('deriveTrackPageView tasks', () => {
 
     expect(withdrawn.badges).toEqual([{ id: 'declaration', text: 'Withdrawn', struck: true }]);
     expect(unreadable.badges).toEqual([{ id: 'declaration', text: 'Unreadable', struck: false }]);
+  });
+
+  it('uses the server-provided pending reason as the reveal hover and not row copy', () => {
+    const [row] = tasksModule([task({
+      status: 'pending',
+      pendingReason: {
+        kind: 'budgetQueued',
+        message: 'Queued 1/1',
+        occupiedTaskBudget: 1,
+        effectiveTaskBudget: 1,
+      },
+    })]).rows;
+    expect(row.badges).toEqual([]);
+    expect(row.actions[0]?.hint).toBe('Queued 1/1');
+    expect(row.actions[0]?.description).toBe('pending — Queued 1/1');
   });
 
   /*

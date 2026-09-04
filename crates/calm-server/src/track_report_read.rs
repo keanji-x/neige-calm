@@ -42,6 +42,7 @@ pub struct ReportReadSnapshot {
 pub async fn load_report_read_snapshot(
     repo: &dyn RouteRepo,
     report_card_id: &str,
+    task_budget_default: i64,
 ) -> Result<ReportReadSnapshot, CalmError> {
     let (card, bytes) = repo
         .card_get_with_body_crdt(report_card_id)
@@ -65,7 +66,7 @@ pub async fn load_report_read_snapshot(
     let Some(bytes) = bytes else {
         let blocks = derive(&payload.body);
         let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks)
+            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
@@ -91,7 +92,7 @@ pub async fn load_report_read_snapshot(
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
         let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks)
+            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
@@ -117,7 +118,7 @@ pub async fn load_report_read_snapshot(
         derive(&body)
     };
     let task_diagnostics = repo
-        .task_diagnostics(card.track_id.as_str(), &blocks)
+        .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
         .await?;
     Ok(ReportReadSnapshot {
         updated_at: card.updated_at,
@@ -198,7 +199,10 @@ mod tests {
 
     async fn assert_first_write_preserves_read_ids(legacy_crdt: bool) {
         let (repo, track, card) = fixture(legacy_crdt).await;
-        let before = load_report_read_snapshot(&repo, "report").await.unwrap();
+        let before =
+            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
+                .await
+                .unwrap();
         let before_ids: Vec<_> = before.blocks.iter().map(|block| block.id.clone()).collect();
         let current: TrackReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
         let next = TrackReportPayload::new(current.summary.clone(), current.body.clone());
@@ -229,7 +233,10 @@ mod tests {
             .into_iter()
             .map(|block| block.id)
             .collect();
-        let after = load_report_read_snapshot(&repo, "report").await.unwrap();
+        let after =
+            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
+                .await
+                .unwrap();
         let after_ids: Vec<_> = after.blocks.into_iter().map(|block| block.id).collect();
         assert_eq!(before_ids, persisted_ids);
         assert_eq!(persisted_ids, after_ids);

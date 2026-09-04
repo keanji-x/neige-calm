@@ -187,6 +187,16 @@ enum ExitPersistWait {
     Timeout,
 }
 
+/// Evidence returned to destructive callers. `ExitPersisted` means the
+/// supervisor attach stream observed `Exited` and the reader completed its DB
+/// write; `Unverified` must keep the owning workspace in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RendererDropOutcome {
+    Missing,
+    ExitPersisted,
+    Unverified,
+}
+
 impl RendererEntry {
     pub fn config(&self) -> &RendererConfig {
         &self.config
@@ -429,13 +439,21 @@ impl TerminalRendererRegistry {
     /// batch cost is N × single-digit ms. If a fan-out ever becomes necessary,
     /// the unit to parallelise is this call, not the surrounding repo work.
     pub async fn drop_entry(&self, terminal_id: &str) {
+        let _ = self.drop_entry_with_outcome(terminal_id).await;
+    }
+
+    pub(crate) async fn drop_entry_for_deletion(&self, terminal_id: &str) -> RendererDropOutcome {
+        self.drop_entry_with_outcome(terminal_id).await
+    }
+
+    async fn drop_entry_with_outcome(&self, terminal_id: &str) -> RendererDropOutcome {
         let entry = self
             .entries
             .lock()
             .ok()
             .and_then(|mut entries| entries.remove(terminal_id));
         let Some(entry) = entry else {
-            return;
+            return RendererDropOutcome::Missing;
         };
 
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
@@ -475,6 +493,11 @@ impl TerminalRendererRegistry {
             );
         }
         entry.abort_tasks();
+        if outcome == ExitPersistWait::Persisted {
+            RendererDropOutcome::ExitPersisted
+        } else {
+            RendererDropOutcome::Unverified
+        }
     }
 }
 

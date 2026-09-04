@@ -251,12 +251,13 @@ async fn card_delete_reaps_terminal_process() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn track_delete_reaps_every_terminal_under_track() {
+async fn track_delete_refuses_unowned_live_pid_only_terminals() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → track with TWO terminal cards, each with a live child.
-    // The track-delete path must reap both.
+    // Seed: area → track with TWO terminal cards whose rows contain only raw
+    // live pids. There is no renderer-owned proc_id or persisted identity tuple,
+    // so deletion cannot prove either pid still names our child.
     let area = raw
         .area_create(NewArea {
             name: "c".into(),
@@ -349,25 +350,20 @@ async fn track_delete_reaps_every_terminal_under_track() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::NO_CONTENT,
-        "track delete should return 204"
-    );
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
-    // Post-delete: both processes gone, both
-    // terminal rows + both card rows + the track row removed.
-    await_child_killed(&mut child_a).await;
-    await_child_killed(&mut child_b).await;
-    assert!(state.repo.terminal_get(&term_a.id).await.unwrap().is_none());
-    assert!(state.repo.terminal_get(&term_b.id).await.unwrap().is_none());
+    // Fail closed: no bare-pid TERM/KILL, and no ownership rows disappear.
+    assert!(child_a.try_wait().unwrap().is_none());
+    assert!(child_b.try_wait().unwrap().is_none());
+    assert!(state.repo.terminal_get(&term_a.id).await.unwrap().is_some());
+    assert!(state.repo.terminal_get(&term_b.id).await.unwrap().is_some());
     assert!(
         state
             .repo
             .card_get(card_a.id.as_str())
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
     assert!(
         state
@@ -375,7 +371,7 @@ async fn track_delete_reaps_every_terminal_under_track() {
             .card_get(card_b.id.as_str())
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
     assert!(
         state
@@ -383,8 +379,12 @@ async fn track_delete_reaps_every_terminal_under_track() {
             .track_get(track.id.as_str())
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
+    child_a.kill().unwrap();
+    child_b.kill().unwrap();
+    let _ = child_a.wait();
+    let _ = child_b.wait();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -463,15 +463,12 @@ async fn track_delete_external_teardown_does_not_hold_the_sqlite_writer() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn area_delete_reaps_every_terminal_under_area() {
+async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
 
-    // Seed: area → track → terminal card → terminal row pointing at a
-    // real spawned process. The area-delete
-    // path walks tracks → cards → terminals and must reap the terminal
-    // before the structural delete fires (else `terminals.card_id`'s
-    // RESTRICT FK would trip).
+    // A raw live pid without a renderer-owned proc_id or persisted identity
+    // tuple cannot safely be signaled: the OS may already have recycled it.
     let area = raw
         .area_create(NewArea {
             name: "c".into(),
@@ -538,18 +535,11 @@ async fn area_delete_reaps_every_terminal_under_area() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::NO_CONTENT,
-        "area delete should return 204"
-    );
-
-    // Post-delete: child process gone and every row
-    // in the terminal/card/track/area subtree removed.
-    await_child_killed(&mut child).await;
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(child.try_wait().unwrap().is_none());
     assert!(
-        state.repo.terminal_get(&term.id).await.unwrap().is_none(),
-        "terminal row must be deleted with the area"
+        state.repo.terminal_get(&term.id).await.unwrap().is_some(),
+        "terminal row must survive a refused area delete"
     );
     assert!(
         state
@@ -557,8 +547,8 @@ async fn area_delete_reaps_every_terminal_under_area() {
             .card_get(card.id.as_str())
             .await
             .unwrap()
-            .is_none(),
-        "card row must be deleted with the area"
+            .is_some(),
+        "card row must survive a refused area delete"
     );
     assert!(
         state
@@ -566,8 +556,8 @@ async fn area_delete_reaps_every_terminal_under_area() {
             .track_get(track.id.as_str())
             .await
             .unwrap()
-            .is_none(),
-        "track row must be deleted with the area"
+            .is_some(),
+        "track row must survive a refused area delete"
     );
     assert!(
         state
@@ -575,9 +565,11 @@ async fn area_delete_reaps_every_terminal_under_area() {
             .area_get(area.id.as_str())
             .await
             .unwrap()
-            .is_none(),
-        "area row must be deleted"
+            .is_some(),
+        "area row must survive a refused delete"
     );
+    child.kill().unwrap();
+    let _ = child.wait();
 }
 
 // ---------------------------------------------------------------------------

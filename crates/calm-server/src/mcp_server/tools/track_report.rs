@@ -157,9 +157,13 @@ pub(crate) async fn report_read(
     // card id; the response body comes from ONE fresh row snapshot so
     // `summary`/`text`/`blocks` can never tear against each other.
     let (_, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
-    let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
+    let snapshot = load_report_read_snapshot(
+        ctx.repo.as_ref(),
+        report_card.id.as_str(),
+        ctx.task_budget_default,
+    )
+    .await
+    .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
     let text = if with_markers {
         snapshot
             .blocks

@@ -111,12 +111,12 @@ const PAINTED_TEXT: readonly string[] = ['Cards', 'Build log', 'harness'];
 const TASKS: readonly ReportTaskRow[] = [
   {
     blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
-    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null, pendingReason: null,
   },
   {
     blockId: 'block-2', key: 'beta-gate', state: 'not-ready', declaration: null,
     status: 'failed', statusDetail: 'not a git repository',
-    kind: 'terminal', workerCardId: 'card-9',
+    kind: 'terminal', workerCardId: 'card-9', pendingReason: null,
   },
 ];
 

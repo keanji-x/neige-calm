@@ -381,6 +381,7 @@ pub(crate) async fn boot() -> Boot {
         write: calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
     });
@@ -421,6 +422,7 @@ async fn current_doc_rev(boot: &Boot) -> u64 {
     calm_server::track_report_read::load_report_read_snapshot(
         boot.repo.as_ref(),
         boot.report_card_id.as_str(),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("read current document revision")

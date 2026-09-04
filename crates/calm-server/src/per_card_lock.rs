@@ -1,4 +1,4 @@
-//! Per-card async lock map.
+//! Self-cleaning keyed async lock map.
 //!
 //! Lifted from the private `PerCardMintLocks` machinery in
 //! `operation::planner_harness_start_adapter` (issue #649 i2) so the
@@ -13,40 +13,51 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-pub type PerCardLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+pub type KeyedLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+pub type PerCardLocks = KeyedLocks;
 
-pub fn new_per_card_locks() -> PerCardLocks {
+pub fn new_keyed_locks() -> KeyedLocks {
     Arc::new(DashMap::new())
 }
 
-pub struct PerCardLockGuard {
-    card_id: String,
+pub fn new_per_card_locks() -> PerCardLocks {
+    new_keyed_locks()
+}
+
+pub struct KeyedLockGuard {
+    key: String,
     lock: Arc<tokio::sync::Mutex<()>>,
-    locks: PerCardLocks,
+    locks: KeyedLocks,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
-impl Drop for PerCardLockGuard {
+pub type PerCardLockGuard = KeyedLockGuard;
+
+impl Drop for KeyedLockGuard {
     fn drop(&mut self) {
         let _ = self.guard.take();
-        self.locks.remove_if(&self.card_id, |_, existing| {
+        self.locks.remove_if(&self.key, |_, existing| {
             Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
         });
     }
 }
 
-pub async fn lock_card(locks: &PerCardLocks, card_id: &str) -> PerCardLockGuard {
+pub async fn lock_key(locks: &KeyedLocks, key: &str) -> KeyedLockGuard {
     let lock = locks
-        .entry(card_id.to_string())
+        .entry(key.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
     let guard = lock.clone().lock_owned().await;
-    PerCardLockGuard {
-        card_id: card_id.to_string(),
+    KeyedLockGuard {
+        key: key.to_string(),
         lock,
         locks: locks.clone(),
         guard: Some(guard),
     }
+}
+
+pub async fn lock_card(locks: &PerCardLocks, card_id: &str) -> KeyedLockGuard {
+    lock_key(locks, card_id).await
 }
 
 #[cfg(test)]

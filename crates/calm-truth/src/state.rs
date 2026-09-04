@@ -26,6 +26,17 @@ impl WriteContext {
         self.area_cache.area_of(track_id)
     }
 
+    /// Restore a cache binding after a surrounding database transaction rolled
+    /// back a track deletion that had already updated the write-through cache.
+    pub fn remember_track(&self, track_id: TrackId, area_id: AreaId) {
+        self.area_cache.insert(track_id, area_id);
+    }
+
+    /// Remove a committed track deletion from the authorization cache.
+    pub fn forget_track(&self, track_id: &TrackId) {
+        self.area_cache.remove(track_id);
+    }
+
     #[deprecated(
         since = "0.1.0",
         note = "use WriteContext::verify_role / verify_area; raw getters survive only for legacy db chain glue"

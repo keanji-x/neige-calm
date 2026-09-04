@@ -850,6 +850,46 @@ async fn planner_harness_user_message_folds_at_saturation() {
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn send_planner_input_reports_backpressure_when_the_persisted_queue_rejects_it() {
+    let boot = boot().await;
+    let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
+    harness.pause_issuance_for_dev();
+    for i in 0..255 {
+        harness
+            .observe_for_test(
+                Observation::UserMessage {
+                    text: format!("hard-{i}"),
+                },
+                None,
+            )
+            .await;
+    }
+    harness
+        .observe_for_test(
+            Observation::UserMessage {
+                // Production's fold cap. A one-character route message cannot
+                // merge into this tail, and every queued item is hard-fire, so
+                // the pending queue must reject it rather than evict intent.
+                text: "x".repeat(128 * 1024),
+            },
+            None,
+        )
+        .await;
+
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/planner/input", card.id),
+        json!({ "text": "y" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
+    assert_eq!(harness.pending_len_for_test().await, 256);
+
+    shutdown_seeded_harness(&boot, &runtime_id, harness).await;
+}
+
 #[tokio::test]
 async fn send_planner_input_emits_audit_event() {
     let boot = boot().await;

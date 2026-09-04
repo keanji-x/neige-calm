@@ -91,9 +91,10 @@ async fn area_outline(
             .await
             .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?
             .ok_or_else(|| RpcError::internal("area_outline: track vanished mid-read"))?;
-        let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
-            .await
-            .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
+        let snapshot =
+            load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str(), ctx.task_budget_default)
+                .await
+                .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
         let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK);
         if omitted > 0 {
             block_truncations.insert(track.id.as_str().to_string(), omitted);
@@ -303,9 +304,13 @@ async fn report_backlinks(
     let track_id = identity.track_id.ok_or_else(|| {
         RpcError::invalid_params("calm.report.links.backlinks requires a track-scoped caller")
     })?;
-    let page = crate::report_backlinks::backlinks_for_track(ctx.repo.as_ref(), &track_id)
-        .await
-        .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
+    let page = crate::report_backlinks::backlinks_for_track(
+        ctx.repo.as_ref(),
+        &track_id,
+        ctx.task_budget_default,
+    )
+    .await
+    .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
     Ok(crate::report_backlinks::mcp_payload(&page))
 }
 

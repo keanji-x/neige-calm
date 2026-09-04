@@ -1991,6 +1991,7 @@ mod tests {
             write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+            task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         })

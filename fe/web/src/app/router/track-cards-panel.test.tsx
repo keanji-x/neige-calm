@@ -370,7 +370,7 @@ describe('track route TASKS panel', () => {
   it('reveals the block from the row even when the task has an openable card', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     const row = await taskRow(/^has-adapter/);
-    expect(row.getAttribute('title')).toBe('Show has-adapter in the report');
+    expect(row.getAttribute('title')).toBeNull();
     await userEvent.click(row);
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
     expect(window.location.hash).toContain('b-term');
@@ -382,6 +382,44 @@ describe('track route TASKS panel', () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     expect(await taskRow(/^has-adapter.?Status: running$/)).toBeTruthy();
     expect(await taskRow(/^no-adapter.?Status: running$/)).toBeTruthy();
+  });
+
+  it('shows the server-provided dependency, budget, and admission reasons without deriving them', async () => {
+    setup(TASK_CARDS, { taskDiagnostics: [
+      {
+        blockId: 'b-term', key: 'has-adapter', schedulable: true, status: 'pending', diagnostics: [],
+        pendingReason: {
+          kind: 'dependencyBlocked', dependencies: ['foundation'],
+          message: 'Waiting for `foundation`',
+        },
+      },
+      {
+        blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: 'pending', diagnostics: [],
+        pendingReason: {
+          kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
+          message: 'Queued 1/1',
+        },
+      },
+      {
+        blockId: 'b-unknown', key: 'no-adapter', schedulable: false, diagnostics: [],
+        pendingReason: {
+          kind: 'notAdmitted', diagnosticCodes: ['planner_task_ceiling'],
+          actions: ['raise_planner_task_ceiling'],
+          message: 'Not admitted · planner ceiling',
+        },
+      },
+    ] });
+    const list = within(await tasks());
+    for (const [key, message] of [
+      ['has-adapter', 'Waiting for `foundation`'],
+      ['codex-adapter', 'Queued 1/1'],
+      ['no-adapter', 'Not admitted · planner ceiling'],
+    ] as const) {
+      const row = list.getByRole('button', { name: new RegExp(`^${key}`) });
+      expect(row.textContent).not.toContain(message);
+      expect(row.getAttribute('title')).toBe(message);
+      expect(list.queryByText(message)).toBeNull();
+    }
   });
 });
 

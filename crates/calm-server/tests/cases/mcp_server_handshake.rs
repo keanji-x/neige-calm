@@ -161,6 +161,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");
@@ -877,6 +878,7 @@ async fn spawn_refuses_to_steal_live_co_tenant_socket() {
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await;
 

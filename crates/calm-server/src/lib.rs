@@ -547,14 +547,21 @@ pub(crate) async fn probe_supervisor_for_terminal(
     state: &state::AppState,
     terminal_id: &str,
 ) -> anyhow::Result<bool> {
+    probe_supervisor_for_terminal_at(state.daemon.proc_supervisor_sock.as_deref(), terminal_id)
+        .await
+}
+
+pub(crate) async fn probe_supervisor_for_terminal_at(
+    configured_sock: Option<&std::path::Path>,
+    terminal_id: &str,
+) -> anyhow::Result<bool> {
     use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
     use calm_session::{read_frame, write_frame};
     use tokio::net::UnixStream;
 
-    let sock =
-        crate::proc_supervisor::resolve_control_sock(state.daemon.proc_supervisor_sock.as_deref())
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let sock = crate::proc_supervisor::resolve_control_sock(configured_sock)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut stream = UnixStream::connect(&sock)
         .await
         .map_err(|e| anyhow::anyhow!("connect proc supervisor {}: {e}", sock.display()))?;

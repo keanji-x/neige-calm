@@ -200,6 +200,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");

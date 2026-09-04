@@ -123,6 +123,33 @@ fn gate_eq(actual: &Option<String>, expected: &Option<GateInput>) -> Result<bool
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[schema(rename_all = "camelCase")]
+pub enum TaskPendingReason {
+    DependencyBlocked {
+        message: String,
+        dependencies: Vec<String>,
+    },
+    BudgetQueued {
+        message: String,
+        #[schema(rename = "occupiedTaskBudget")]
+        occupied_task_budget: i64,
+        #[schema(rename = "effectiveTaskBudget")]
+        effective_task_budget: i64,
+    },
+    NotAdmitted {
+        message: String,
+        #[schema(rename = "diagnosticCodes")]
+        diagnostic_codes: Vec<String>,
+        actions: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockVerdict {
     pub block_id: String,
@@ -148,6 +175,12 @@ pub struct BlockVerdict {
     pub child_track_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_track_deleted: Option<bool>,
+    /// Server-owned explanation for a task that has not started. The tagged
+    /// variants keep dependency readiness, scheduler budget, and projection
+    /// admission distinct so clients never need to reconstruct scheduler
+    /// policy from `schedulable`, diagnostics, or environment defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_reason: Option<TaskPendingReason>,
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
@@ -165,6 +198,7 @@ struct TaskReadState {
     context_stale_at_ms: Option<i64>,
     context_closure_truncated: i64,
     claim_context_json: Option<String>,
+    depends_on: Vec<String>,
 }
 
 /// Live (non-tombstoned) declaration block ids per key, in document order.
@@ -355,6 +389,167 @@ fn attach_task_read_state(
     }
 }
 
+fn readable_action(action: &str) -> String {
+    match action {
+        "raise_planner_task_ceiling" => "raise planner ceiling".into(),
+        "raise_tree_task_budget" => "raise tree budget".into(),
+        "add_gate_or_reason" => "add gate or reason".into(),
+        "edit_dependencies" => "edit dependencies".into(),
+        "release_task" => "release task".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// Mutually exclusive relationship between a declaration verdict and the
+/// persisted task row sharing its key. Pending explanations are derived from
+/// this state, never from independent nullable status/row-presence checks.
+enum TaskVerdictRowState<'a> {
+    Absent,
+    Pending(&'a TaskReadState),
+    RejectedPending,
+    Owned,
+    Ambiguous,
+}
+
+fn task_verdict_row_state<'a>(
+    verdict: &BlockVerdict,
+    by_key: &BTreeMap<&str, &'a TaskReadState>,
+) -> TaskVerdictRowState<'a> {
+    match (
+        verdict.status.as_deref(),
+        by_key.get(verdict.key.as_str()).copied(),
+    ) {
+        (Some("pending"), Some(row)) if verdict.schedulable => TaskVerdictRowState::Pending(row),
+        (Some("pending"), Some(_)) => TaskVerdictRowState::RejectedPending,
+        (Some(_), _) => TaskVerdictRowState::Owned,
+        (None, Some(_)) => TaskVerdictRowState::Ambiguous,
+        (None, None) => TaskVerdictRowState::Absent,
+    }
+}
+
+/// Finish the read verdict with the scheduler-facing explanation. All inputs
+/// come from `track_projection_state`'s one statement: the nullable track
+/// override, every task status, and every persisted dependency list. The only
+/// outside value is the already server-resolved environment default.
+fn attach_task_pending_reasons(
+    state: &TrackProjectionState,
+    declarations: &[TaskDeclaration],
+    task_budget_default: i64,
+    verdicts: &mut [BlockVerdict],
+) {
+    let by_key: BTreeMap<_, _> = state
+        .task_read_state
+        .iter()
+        .map(|row| (row.key.as_str(), row))
+        .collect();
+    let done: BTreeSet<_> = state
+        .task_read_state
+        .iter()
+        .filter(|row| row.status == "done")
+        .map(|row| row.key.as_str())
+        .collect();
+    let occupied = state
+        .task_read_state
+        .iter()
+        .filter(|row| matches!(row.status.as_str(), "dispatched" | "running" | "verifying"))
+        .count() as i64;
+    let effective_budget = state.task_budget.unwrap_or(task_budget_default).max(0);
+
+    for (index, verdict) in verdicts.iter_mut().enumerate() {
+        match task_verdict_row_state(verdict, &by_key) {
+            TaskVerdictRowState::Pending(row) => {
+                let mut seen_dependencies = BTreeSet::new();
+                let dependencies: Vec<String> = row
+                    .depends_on
+                    .iter()
+                    .filter(|dependency| {
+                        !done.contains(dependency.as_str())
+                            && seen_dependencies.insert(dependency.as_str())
+                    })
+                    .cloned()
+                    .collect();
+                if !dependencies.is_empty() {
+                    let terminal_dependencies: Vec<_> = dependencies
+                        .iter()
+                        .filter_map(|dependency| {
+                            let status = by_key.get(dependency.as_str())?.status.as_str();
+                            matches!(status, "failed" | "canceled")
+                                .then_some((dependency.as_str(), status))
+                        })
+                        .collect();
+                    let message = match terminal_dependencies.as_slice() {
+                        [] => match dependencies.as_slice() {
+                            [dependency] => format!("Waiting for `{dependency}`"),
+                            many => format!("Waiting for {} dependencies", many.len()),
+                        },
+                        [(dependency, status)] => {
+                            format!("Blocked by `{dependency}` ({status}); revise dependencies")
+                        }
+                        many => format!(
+                            "Blocked by {} terminal dependencies; revise dependencies",
+                            many.len()
+                        ),
+                    };
+                    verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
+                        message,
+                        dependencies,
+                    });
+                } else if occupied >= effective_budget {
+                    verdict.pending_reason = Some(TaskPendingReason::BudgetQueued {
+                        message: format!("Queued {occupied}/{effective_budget}"),
+                        occupied_task_budget: occupied,
+                        effective_task_budget: effective_budget,
+                    });
+                }
+                continue;
+            }
+            TaskVerdictRowState::Owned | TaskVerdictRowState::Ambiguous => continue,
+            TaskVerdictRowState::Absent | TaskVerdictRowState::RejectedPending => {}
+        }
+
+        let Some(declaration) = declarations.get(index) else {
+            continue;
+        };
+        if verdict.schedulable
+            || !declaration.ready
+            || declaration.tombstone
+            || verdict.diagnostics.is_empty()
+        {
+            continue;
+        }
+        let diagnostic_codes = verdict
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect::<Vec<_>>();
+        let actions = verdict
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.action.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let explanation = if actions.is_empty() {
+            verdict
+                .diagnostics
+                .first()
+                .map(|diagnostic| diagnostic.code.replace('_', " "))
+                .unwrap_or_else(|| "inspect diagnostics".into())
+        } else {
+            actions
+                .iter()
+                .map(|action| readable_action(action))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        };
+        verdict.pending_reason = Some(TaskPendingReason::NotAdmitted {
+            message: format!("Not admitted · {explanation}"),
+            diagnostic_codes,
+            actions,
+        });
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TaskProjectionOutcome {
     pub changed_keys: Vec<String>,
@@ -539,6 +734,7 @@ struct TrackProjectionState {
     source_area: String,
     inflight: Vec<InflightTaskRow>,
     task_read_state: Vec<TaskReadState>,
+    task_budget: Option<i64>,
     frozen: Vec<FrozenDeclarationRow>,
     reference_targets: BTreeMap<String, ReferenceTargetRow>,
 }
@@ -551,6 +747,7 @@ struct TrackProjectionStateRow {
     area_id: String,
     inflight_json: String,
     task_read_state_json: String,
+    task_budget: Option<i64>,
     frozen_json: String,
     reference_targets_json: String,
 }
@@ -570,7 +767,8 @@ struct TrackProjectionStateRow {
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
 /// The in-flight key set, ceiling occupancy, orphan candidates, frozen
-/// declarations and reference targets are captured by the same statement.
+/// declarations, task-budget override, dependency rows, and reference targets
+/// are captured by the same statement.
 async fn track_projection_state(
     conn: &mut SqliteConnection,
     track_id: &str,
@@ -590,6 +788,7 @@ async fn track_projection_state(
                  FROM json_each(?2)
            )
            SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
+                  w.task_budget,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -607,7 +806,19 @@ async fn track_projection_state(
                          THEN 1 ELSE 0 END,
                        'context_stale_at_ms', t.context_stale_at_ms,
                        'context_closure_truncated', t.context_closure_truncated,
-                        'claim_context_json', t.claim_context_json))
+                        'claim_context_json', t.claim_context_json,
+                        'depends_on', CASE
+                          WHEN NOT json_valid(t.depends_on_json) THEN json('[]')
+                          ELSE CASE
+                            WHEN json_type(t.depends_on_json)='array'
+                             AND NOT EXISTS(
+                               SELECT 1 FROM json_each(t.depends_on_json) dependency
+                                WHERE dependency.type!='text'
+                             )
+                            THEN json(t.depends_on_json)
+                            ELSE json('[]')
+                          END
+                        END))
                      FROM tasks t WHERE t.track_id = w.id)
                    ELSE '[]' END AS task_read_state_json,
                    (SELECT json_group_array(json_array(
@@ -665,6 +876,7 @@ async fn track_projection_state(
         source_area: row.area_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
+        task_budget: row.task_budget,
         frozen: serde_json::from_str(&row.frozen_json)?,
         reference_targets,
     })
@@ -716,10 +928,46 @@ pub async fn evaluate_schedulability(
         track_id,
         declarations,
         block_local_diags,
-        include_read_state,
         tree.term,
+        TaskReadOptions {
+            include_state: include_read_state,
+            task_budget_default: None,
+        },
     )
     .await
+}
+
+/// Read-side form of [`evaluate_schedulability`]. `task_budget_default` is the
+/// server-resolved `NEIGE_TRACK_TASK_BUDGET` value; the repository combines it
+/// with the nullable per-track override and returns the finished diagnosis.
+/// Write paths intentionally call the sibling above because pending reasons
+/// are presentation metadata, never projection inputs.
+pub async fn evaluate_schedulability_with_task_budget_default(
+    conn: &mut SqliteConnection,
+    track_id: &str,
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+    task_budget_default: i64,
+) -> Result<Vec<BlockVerdict>> {
+    let tree = super::track_tree::track_tree_term(&mut *conn, track_id).await?;
+    evaluate_schedulability_with_tree_term(
+        conn,
+        track_id,
+        declarations,
+        block_local_diags,
+        tree.term,
+        TaskReadOptions {
+            include_state: true,
+            task_budget_default: Some(task_budget_default),
+        },
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct TaskReadOptions {
+    include_state: bool,
+    task_budget_default: Option<i64>,
 }
 
 async fn evaluate_schedulability_with_tree_term(
@@ -727,16 +975,16 @@ async fn evaluate_schedulability_with_tree_term(
     track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
-    include_read_state: bool,
     tree_term: TrackTreeTerm,
+    read: TaskReadOptions,
 ) -> Result<Vec<BlockVerdict>> {
     evaluate_schedulability_with_tree_term_after_snapshot(
         conn,
         track_id,
         declarations,
         block_local_diags,
-        include_read_state,
         tree_term,
+        read,
         std::future::ready(()),
     )
     .await
@@ -761,8 +1009,11 @@ pub(super) async fn evaluate_schedulability_after_snapshot_for_test(
         track_id,
         declarations,
         block_local_diags,
-        include_read_state,
         tree.term,
+        TaskReadOptions {
+            include_state: include_read_state,
+            task_budget_default: None,
+        },
         after_snapshot,
     )
     .await
@@ -773,8 +1024,8 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     track_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
-    include_read_state: bool,
     tree_term: TrackTreeTerm,
+    read: TaskReadOptions,
     after_snapshot: impl std::future::Future<Output = ()>,
 ) -> Result<Vec<BlockVerdict>> {
     let references_by_declaration = declarations
@@ -796,12 +1047,11 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     let state = track_projection_state(
         &mut *conn,
         track_id,
-        include_read_state,
+        read.include_state,
         &reference_requests,
         after_snapshot,
     )
     .await?;
-    let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
     // share)` where `share` is this track's deterministic slice of the root's
     // `tree_task_budget`, split over the tree's tracks in `(created_at, id)`
@@ -824,8 +1074,8 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         TrackTreeTerm::Share(share) => (Some(share.clone()), false),
     };
     let require_gates = state.require_gates;
-    let source_area = state.source_area;
-    let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
+    let source_area = state.source_area.as_str();
+    let effective_wait = state.policy.as_deref() == Some("declare-and-wait");
     // unknown_deps knows every in-flight key in the track.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
@@ -916,7 +1166,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                     destination_track.clone(),
                 )),
                 (Some(target_area), Some(target_kind), _)
-                    if target_area != source_area.as_str() && target_kind != "system" =>
+                    if target_area != source_area && target_kind != "system" =>
                 {
                     diagnostics.push(reference_diagnostic(
                         "reference_cross_area",
@@ -956,6 +1206,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             worker_card_id: None,
             child_track_id: None,
             child_track_deleted: None,
+            pending_reason: None,
             diagnostics,
             withdrawal: None,
         });
@@ -966,7 +1217,8 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     // produce a new live row.
     let frozen_by_key: BTreeMap<_, _> = state
         .frozen
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|row| (row.1.clone(), row))
         .collect();
     for (declaration, verdict) in declarations.iter().zip(&mut verdicts) {
@@ -1059,6 +1311,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 worker_card_id: None,
                 child_track_id: None,
                 child_track_deleted: None,
+                pending_reason: None,
                 withdrawal: None,
             });
         }
@@ -1237,13 +1490,16 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         }
         verdicts[index].schedulable = false;
     }
-    if include_read_state {
+    if read.include_state {
         attach_task_read_state(
             &state.task_read_state,
             track_id,
             declarations,
             &mut verdicts,
         );
+        if let Some(task_budget_default) = read.task_budget_default {
+            attach_task_pending_reasons(&state, declarations, task_budget_default, &mut verdicts);
+        }
     }
     Ok(verdicts)
 }
@@ -1271,8 +1527,11 @@ pub async fn project_tasks_tx(
         track_id,
         declarations,
         block_local_diags,
-        false,
         tree.term,
+        TaskReadOptions {
+            include_state: false,
+            task_budget_default: None,
+        },
     )
     .await?;
     project_tasks_from_verdicts_tx(tx, track_id, declarations, verdicts, tree_cte_queries).await
@@ -1293,8 +1552,11 @@ pub async fn project_tasks_with_tree_term_tx(
         track_id,
         declarations,
         block_local_diags,
-        false,
         tree_term,
+        TaskReadOptions {
+            include_state: false,
+            task_budget_default: None,
+        },
     )
     .await?;
     project_tasks_from_verdicts_tx(tx, track_id, declarations, verdicts, 0).await
@@ -1436,6 +1698,7 @@ async fn project_tasks_from_verdicts_tx(
                         worker_card_id: None,
                         child_track_id: None,
                         child_track_deleted: None,
+                        pending_reason: None,
                         withdrawal: None,
                     });
                 }
@@ -1996,10 +2259,15 @@ mod tests {
         );
 
         let mut conn = repo.pool.acquire().await.unwrap();
-        let verdicts =
-            evaluate_schedulability(&mut conn, &track, &declarations, &block_local_diags, true)
-                .await
-                .unwrap();
+        let verdicts = evaluate_schedulability_with_task_budget_default(
+            &mut conn,
+            &track,
+            &declarations,
+            &block_local_diags,
+            1,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(verdicts.len(), 2);
         for verdict in &verdicts {
@@ -2009,6 +2277,10 @@ mod tests {
                 verdict.block_id
             );
             assert_eq!(verdict.worker_card_id, None);
+            assert_eq!(
+                verdict.pending_reason, None,
+                "a hidden contested run is not an unadmitted task"
+            );
         }
     }
 

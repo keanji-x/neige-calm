@@ -622,6 +622,7 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
+            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
         )
     }
 
@@ -650,6 +651,7 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
+            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
         )
     }
 
@@ -694,6 +696,7 @@ impl Dispatcher {
             shared_codex_appserver,
             operation_runtime,
             permits,
+            Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
         )
     }
 
@@ -710,6 +713,7 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
+        task_budget_default: i64,
     ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
@@ -720,12 +724,13 @@ impl Dispatcher {
         // Issue #644 PR-B — the scheduler lives at the dispatcher
         // construction site: same `Weak<OperationRuntime>` discipline,
         // same global spawn semaphore (§5.3).
-        let scheduler = Scheduler::new(
+        let scheduler = Scheduler::new_with_task_budget_default(
             repo.clone(),
             events.clone(),
             write.clone(),
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
+            task_budget_default,
         );
         let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
             repo.clone(),

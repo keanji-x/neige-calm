@@ -628,6 +628,10 @@ pub struct SharedCodexAppServer {
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
     active_turns: Arc<DashMap<String, String>>,
+    /// Threads whose owning track/area is being deleted. A late turn/start
+    /// response or notification is interrupted instead of becoming active
+    /// after the owning workspace has been recycled.
+    sealed_turn_threads: Arc<DashMap<String, ()>>,
     restart_backoff: BackoffState,
     /// #949 — cold-start deadline for a freshly spawned child to bind its
     /// socket and answer `initialize`. Codex may spend minutes backfilling
@@ -704,17 +708,76 @@ pub struct SharedCodexAppServer {
     fake: Option<Arc<FakeSharedCodexAppServer>>,
 }
 
+/// Owns deletion-time thread seals until the caller has completed a whole
+/// quiesce step. Dropping an unfinished step (error, cancellation, or panic)
+/// rolls every seal back; `retain` transfers the successfully-quiesced ids to
+/// the filesystem/transaction half of the deletion saga.
+pub(crate) struct DeletionThreadSeals {
+    daemon: Arc<SharedCodexAppServer>,
+    thread_ids: Vec<String>,
+    rollback_on_drop: bool,
+}
+
+impl DeletionThreadSeals {
+    pub(crate) fn new(daemon: Arc<SharedCodexAppServer>) -> Self {
+        Self {
+            daemon,
+            thread_ids: Vec::new(),
+            rollback_on_drop: true,
+        }
+    }
+
+    pub(crate) fn seal(&mut self, thread_id: impl Into<String>) {
+        let thread_id = thread_id.into();
+        if self
+            .thread_ids
+            .iter()
+            .any(|existing| existing == &thread_id)
+        {
+            return;
+        }
+        self.daemon.seal_turn_thread_for_deletion(&thread_id);
+        self.thread_ids.push(thread_id);
+    }
+
+    pub(crate) fn retain(mut self) -> Vec<String> {
+        self.thread_ids.sort();
+        self.thread_ids.dedup();
+        self.rollback_on_drop = false;
+        std::mem::take(&mut self.thread_ids)
+    }
+}
+
+impl Drop for DeletionThreadSeals {
+    fn drop(&mut self) {
+        if self.rollback_on_drop {
+            for thread_id in &self.thread_ids {
+                self.daemon.unseal_turn_thread_after_rollback(thread_id);
+            }
+        }
+    }
+}
+
 #[cfg(feature = "fixtures")]
 pub type StartedThreadParam = (Option<String>, bool, Option<CardRole>);
+
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct TurnStartReturnHook {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
 
 #[cfg(feature = "fixtures")]
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
+    fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
+    turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
 }
 
 #[cfg(feature = "fixtures")]
@@ -724,9 +787,11 @@ impl FakeSharedCodexAppServer {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             fail_next_thread_start: AtomicBool::new(false),
+            fail_turn_interrupt: AtomicBool::new(false),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
+            turn_start_return_hook: std::sync::Mutex::new(None),
         }
     }
 }
@@ -863,6 +928,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
+            sealed_turn_threads: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
             stop_grace: Duration::from_secs(60),
@@ -919,6 +985,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
+            sealed_turn_threads: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
@@ -1200,6 +1267,11 @@ impl SharedCodexAppServer {
     /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
     /// are non-harness boot/operation paths or lower-level tests.
     pub async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<TurnId> {
+        if self.sealed_turn_threads.contains_key(thread_id) {
+            return Err(CalmError::Conflict(format!(
+                "thread {thread_id} is sealed because its track is being deleted"
+            )));
+        }
         if !self.thread_cache.contains_key(thread_id) {
             tracing::warn!(
                 target = "shared_codex_daemon::mapping_miss",
@@ -1216,12 +1288,29 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex started turns mutex poisoned")
                 .push((thread_id.to_string(), items.clone()));
+            let hook = fake
+                .turn_start_return_hook
+                .lock()
+                .expect("fake shared codex turn-start hook mutex poisoned")
+                .take();
+            if let Some(hook) = hook {
+                hook.entered.notify_one();
+                hook.release.notified().await;
+            }
             self.active_turns
                 .insert(thread_id.to_string(), turn_id.clone());
             let _ = self.notifications.send(Notification::TurnStarted {
                 thread_id: thread_id.to_string(),
                 turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
             });
+            if self.sealed_turn_threads.contains_key(thread_id) {
+                self.turn_interrupt(thread_id, &turn_id).await?;
+                self.active_turns
+                    .remove_if(thread_id, |_, active| active == &turn_id);
+                return Err(CalmError::Conflict(format!(
+                    "thread {thread_id} was sealed while turn/start was in flight"
+                )));
+            }
             return Ok(turn_id);
         }
         let client = self.connected_client().await?;
@@ -1232,7 +1321,27 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
         self.active_turns
             .insert(thread_id.to_string(), turn_id.clone());
+        if self.sealed_turn_threads.contains_key(thread_id) {
+            self.turn_interrupt(thread_id, &turn_id).await?;
+            self.active_turns
+                .remove_if(thread_id, |_, active| active == &turn_id);
+            return Err(CalmError::Conflict(format!(
+                "thread {thread_id} was sealed while turn/start was in flight"
+            )));
+        }
         Ok(turn_id)
+    }
+
+    pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {
+        self.sealed_turn_threads.insert(thread_id.to_string(), ());
+    }
+
+    pub fn unseal_turn_thread_after_rollback(&self, thread_id: &str) {
+        self.sealed_turn_threads.remove(thread_id);
+    }
+
+    pub(crate) fn turn_thread_is_sealed(&self, thread_id: &str) -> bool {
+        self.sealed_turn_threads.contains_key(thread_id)
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -1242,6 +1351,11 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex interrupted turns mutex poisoned")
                 .push((thread_id.to_string(), turn_id.to_string()));
+            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "fixture: turn/interrupt failed".into(),
+                ));
+            }
             self.active_turns
                 .remove_if(thread_id, |_, active| active == turn_id);
             return Ok(());
@@ -1673,7 +1787,7 @@ impl SharedCodexAppServer {
                     process_start_time: start_time,
                     started_at,
                 };
-                self.install_client(notifications).await;
+                self.install_client(client.clone(), notifications).await;
                 let watcher_self = Arc::downgrade(self);
                 let watcher_runtime = runtime.clone();
                 let handle = tokio::spawn(async move {
@@ -2457,7 +2571,7 @@ impl SharedCodexAppServer {
         }
         let child = spawn_guard.disarm();
         let client = Arc::new(client);
-        self.install_client(notifications).await;
+        self.install_client(client.clone(), notifications).await;
         let watcher_self = Arc::downgrade(self);
         let handle = tokio::spawn(async move {
             Self::watch_spawned_child(watcher_self).await;
@@ -3114,7 +3228,11 @@ impl SharedCodexAppServer {
 
 // ===================== Notification routing & thread cache =====================
 impl SharedCodexAppServer {
-    async fn install_client(&self, mut notifications: crate::codex_appserver::NotificationStream) {
+    async fn install_client(
+        &self,
+        client: Arc<CodexAppServer>,
+        mut notifications: crate::codex_appserver::NotificationStream,
+    ) {
         // #741 §1.3 — stamp the daemon (re)connect wall-clock. This is the
         // common path for BOTH fresh-spawn and hot-takeover connects, so the
         // 741-3 reaper's REBUILD_GRACE is reset on every reconnect. Always-on
@@ -3126,6 +3244,7 @@ impl SharedCodexAppServer {
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
         let active_turns = self.active_turns.clone();
+        let sealed_turn_threads = self.sealed_turn_threads.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
@@ -3153,7 +3272,30 @@ impl SharedCodexAppServer {
                         }
                     }
                 }
-                track_active_turn(&active_turns, &notification);
+                if let Some((thread_id, turn_id)) =
+                    track_active_turn(&active_turns, &sealed_turn_threads, &notification)
+                {
+                    let client = client.clone();
+                    let active_turns = active_turns.clone();
+                    tokio::spawn(async move {
+                        match client.turn_interrupt(&thread_id, &turn_id).await {
+                            Ok(()) => {
+                                active_turns.remove_if(&thread_id, |_, active| active == &turn_id);
+                            }
+                            Err(error) => {
+                                // Keep the id in `active_turns`: deletion's
+                                // strict quiesce can retry and must not mistake
+                                // a failed best-effort interrupt for absence.
+                                tracing::warn!(
+                                    thread_id,
+                                    turn_id,
+                                    error = %error,
+                                    "failed to interrupt late turn on deletion-sealed thread"
+                                );
+                            }
+                        }
+                    });
+                }
                 if let Some(thread_id) = turn_completed_thread_id(&notification) {
                     kernel_initiated_threads.lock().await.remove(thread_id);
                 }
@@ -3325,9 +3467,31 @@ impl SharedCodexAppServer {
     }
 
     #[cfg(feature = "fixtures")]
+    pub fn install_turn_start_return_hook_for_test(&self, hook: TurnStartReturnHook) {
+        if let Some(fake) = self.fake.as_ref() {
+            *fake
+                .turn_start_return_hook
+                .lock()
+                .expect("fake shared codex turn-start hook mutex poisoned") = Some(hook);
+        }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn turn_thread_is_sealed_for_test(&self, thread_id: &str) -> bool {
+        self.turn_thread_is_sealed(thread_id)
+    }
+
+    #[cfg(feature = "fixtures")]
     pub fn fail_next_thread_start_for_test(&self) {
         if let Some(fake) = self.fake.as_ref() {
             fake.fail_next_thread_start.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn fail_turn_interrupt_for_test(&self, fail: bool) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_turn_interrupt.store(fail, Ordering::SeqCst);
         }
     }
 
@@ -3884,11 +4048,22 @@ pub fn other_thread_id(params: &serde_json::Value) -> Option<&str> {
     params.get("threadId").and_then(serde_json::Value::as_str)
 }
 
-fn track_active_turn(active_turns: &DashMap<String, String>, notification: &Notification) {
+fn track_active_turn(
+    active_turns: &DashMap<String, String>,
+    sealed_turn_threads: &DashMap<String, ()>,
+    notification: &Notification,
+) -> Option<(String, String)> {
     match notification {
         Notification::TurnStarted { thread_id, turn } => {
             if let Some(turn_id) = turn_id(turn) {
+                if sealed_turn_threads.contains_key(thread_id) {
+                    active_turns.insert(thread_id.clone(), turn_id.to_string());
+                    return Some((thread_id.clone(), turn_id.to_string()));
+                }
                 active_turns.insert(thread_id.clone(), turn_id.to_string());
+                if sealed_turn_threads.contains_key(thread_id) {
+                    return Some((thread_id.clone(), turn_id.to_string()));
+                }
             }
         }
         Notification::TurnCompleted { thread_id, turn } => {
@@ -3909,6 +4084,7 @@ fn track_active_turn(active_turns: &DashMap<String, String>, notification: &Noti
         }
         _ => {}
     }
+    None
 }
 
 enum ThreadStartedHandling {

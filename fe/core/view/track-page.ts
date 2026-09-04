@@ -138,7 +138,7 @@ function cardRow(card: CardWire): PanelRow {
   const title = card.title;
   const name = title ?? card.kind;
   const actions: RowAction[] = [
-    { kind: 'open-card', cardId: card.id, label: null, hint: null },
+    { kind: 'open-card', cardId: card.id, label: null, hint: null, description: null },
   ];
   if (card.deletable) {
     actions.push({
@@ -146,6 +146,7 @@ function cardRow(card: CardWire): PanelRow {
       cardId: card.id,
       label: `Delete card ${name}`,
       hint: 'Delete card',
+      description: null,
     });
   }
   return {
@@ -200,10 +201,11 @@ function cardRow(card: CardWire): PanelRow {
  * `panel.ts`'s `RowStatus`), not wording the view model owns.
  *
  * **Both controls here have visible text and so take no `aria-label`**: the
- * reveal button wraps the task key and the kind button shows the kind. Each
- * gets only a pointer `title` naming where it goes —
- * `Show ${key} in the report` and `Open the worker card for ${key}`. Note that
- * this second sentence is `open-card`'s wording *on a Task row only*; the
+ * reveal button wraps the task key and the kind button shows the kind. The
+ * reveal gets no generic "Show …" tooltip: when the server supplied a pending
+ * reason, that compact reason is its one pointer `title`; otherwise it stays
+ * silent. The worker control keeps `Open the worker card for ${key}`. Note that
+ * this sentence is `open-card`'s wording *on a Task row only*; the
  * Cards row's `open-card` has no wording at all, which is why `RowAction`
  * carries its sentences per row rather than per `kind`.
  */
@@ -212,11 +214,18 @@ function taskRow(task: ReportTaskRow): PanelRow {
   const badges: RowBadge[] = task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
+  const status = task.status !== null
+    ? { token: task.status, phrase: taskStatusPhrase(task.status, task.statusDetail) }
+    : null;
+  const reason = task.pendingReason?.message ?? null;
   const actions: RowAction[] = [{
     kind: 'reveal-block',
     blockId: task.blockId,
     label: null,
-    hint: `Show ${task.key} in the report`,
+    hint: reason,
+    description: reason === null
+      ? status?.phrase ?? null
+      : (status === null ? reason : `${status.phrase} — ${reason}`),
   }];
   if (task.kind !== null && workerCardId !== null) {
     actions.push({
@@ -224,6 +233,7 @@ function taskRow(task: ReportTaskRow): PanelRow {
       cardId: workerCardId,
       label: null,
       hint: `Open the worker card for ${task.key}`,
+      description: null,
     });
   }
   return {
@@ -231,9 +241,7 @@ function taskRow(task: ReportTaskRow): PanelRow {
     title: task.key,
     kind: task.kind,
     badges,
-    status: task.status !== null
-      ? { token: task.status, phrase: taskStatusPhrase(task.status, task.statusDetail) }
-      : null,
+    status,
     actions,
   };
 }

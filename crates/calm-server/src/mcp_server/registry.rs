@@ -220,6 +220,9 @@ pub struct AppContext {
     /// directory the gate runner writes — a `--data-dir` flag without
     /// `CALM_DATA_DIR` must not split the two.
     pub gate_logs_dir: std::path::PathBuf,
+    /// Same boot-resolved value used by scheduler admission. Report reads use
+    /// it to explain effective budgets without consulting process-global env.
+    pub task_budget_default: i64,
     /// Late-bound plugin host handle. MCP server boot intentionally happens
     /// before plugin host construction; plugin-tool discovery/routing reads
     /// this cell at dispatch time once `AppState::new` has populated it.
@@ -533,6 +536,7 @@ mod tests {
             write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: std::env::temp_dir().join("neige-registry-test-gate-logs"),
+            task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         })

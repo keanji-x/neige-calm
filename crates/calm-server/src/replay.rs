@@ -624,6 +624,7 @@ pub async fn force_planner_phase(
             state.track_area_cache.clone(),
             state.shared_codex_appserver.clone(),
             &state.harness,
+            state.track_delete_locks(),
             runtime.clone(),
             crate::harness::ClaimMode::Replace,
         )

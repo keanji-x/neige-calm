@@ -680,6 +680,7 @@ impl RepoRead for SqlxRepo {
         &self,
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
+        task_budget_default: i64,
     ) -> Result<Vec<super::BlockVerdict>> {
         // No explicit transaction (#1016, #1027). `evaluate_schedulability`
         // normalizes the declarations' data-dependent references into one JSON
@@ -694,9 +695,14 @@ impl RepoRead for SqlxRepo {
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
-        let diagnostics =
-            super::evaluate_schedulability(&mut conn, track_id, &declarations, &local, true)
-                .await?;
+        let diagnostics = super::task_projection::evaluate_schedulability_with_task_budget_default(
+            &mut conn,
+            track_id,
+            &declarations,
+            &local,
+            task_budget_default,
+        )
+        .await?;
         Ok(diagnostics)
     }
 

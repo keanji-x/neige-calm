@@ -58,9 +58,24 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  it('invalidates all four track projections for track updates', () => {
+  it('invalidates track projections and pending diagnostics for track updates', () => {
     expect(invalidationPlanFor(event({ ev: 'track.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range']],
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range'],
+        ['track-report'],
+      ],
+      remove: [],
+      writeThrough: [],
+    });
+  });
+
+  it('keeps a lifecycle event to the base track projections on its own', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'track.lifecycle_changed', data: { id: 'w1', area_id: 'c1' },
+    }))).toEqual({
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range'],
+      ],
       remove: [],
       writeThrough: [],
     });
@@ -68,21 +83,49 @@ describe('invalidation plan behavior', () => {
 
   it('removes deleted track detail after invalidating its remaining projections', () => {
     expect(invalidationPlanFor(event({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range']],
-      remove: [['track', 'w1']],
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report'],
+      ],
+      remove: [['track', 'w1'], ['track-report', 'w1']],
       writeThrough: [],
     });
+  });
+
+  it('refreshes pending diagnostics after a task plan mutation', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'plan.updated',
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: 'canceled' },
+    }))).toEqual({
+      invalidate: [['track-report', 'w1']],
+      remove: [],
+      writeThrough: [],
+    });
+  });
+
+  it('does not duplicate the companion event that already invalidates a projection change', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'plan.updated', data: { track_id: 'w1', changed_keys: ['task-1'] },
+    })).invalidate).toEqual([]);
   });
 
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { track_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['track', 'w1'], ['track-files', 'w1'], ['track-conversations', 'w1'],
+        ['track', 'w1'], ['track-files', 'w1'], ['track-report'],
+        ['track-conversations', 'w1'],
       ],
       remove: [],
       writeThrough: [],
     });
   });
+
+  it.each(['card.added', 'card.deleted'] as const)(
+    'broadly refreshes cross-track card references after %s',
+    (ev) => {
+      const keys = invalidationPlanFor(event({ ev, data: { track_id: 'target' } })).invalidate;
+      expect(keys).toContainEqual(['track-report']);
+    },
+  );
 
   /*
    * The track list is keyed BY TRACK, and that is the assertion — not "a

@@ -146,6 +146,7 @@ impl McpServer {
         plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
         operation_runtime: Arc<tokio::sync::OnceCell<Arc<OperationRuntime>>>,
         gate_logs_dir: PathBuf,
+        task_budget_default: i64,
     ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
             && !parent.exists()
@@ -199,6 +200,7 @@ impl McpServer {
             write,
             daemon_token_hash,
             gate_logs_dir,
+            task_budget_default,
             plugin_host,
             operation_runtime,
         });

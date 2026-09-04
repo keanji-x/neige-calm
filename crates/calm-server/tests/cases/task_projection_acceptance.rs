@@ -279,6 +279,298 @@ fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
     })
 }
 
+fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
+    read["taskDiagnostics"]
+        .as_array()
+        .expect("taskDiagnostics array")
+        .iter()
+        .find(|verdict| verdict["key"] == key)
+        .unwrap_or_else(|| panic!("task verdict for {key}"))
+}
+
+/// #1260 — one read must distinguish the three states that used to collapse
+/// into a bare `pending`/blank row. The fixture is one real projection:
+///
+/// * `dependency-blocked` has a row but waits for running `occupier`;
+/// * `budget-queued` has a row and ready dependencies, but the explicit 1-slot
+///   task budget is occupied;
+/// * `not-admitted` is the fourth ready declaration under a planner ceiling of
+///   three, so it deliberately has no `tasks` row.
+///
+/// Both public reads are asserted because the FE consumes REST while planners
+/// consume MCP; they must not tell two stories about the same track.
+#[tokio::test]
+async fn pending_reasons_distinguish_dependency_budget_and_admission() {
+    let boot = new_boot().await;
+    sqlx::query("UPDATE tracks SET planner_task_ceiling=3,task_budget=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    upsert(&boot, None, task("occupier")).await;
+    let mut dependency_blocked = task("dependency-blocked");
+    dependency_blocked["depends_on"] = json!(["occupier"]);
+    upsert(&boot, None, dependency_blocked).await;
+    upsert(&boot, None, task("budget-queued")).await;
+    upsert(&boot, None, task("not-admitted")).await;
+
+    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='occupier'")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let dependency = &task_verdict(&response, "dependency-blocked")["pendingReason"];
+        assert_eq!(dependency["kind"], "dependencyBlocked", "{surface}");
+        assert_eq!(dependency["dependencies"], json!(["occupier"]), "{surface}");
+        assert!(
+            dependency["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("occupier")),
+            "{surface}: {dependency}"
+        );
+
+        let queued = &task_verdict(&response, "budget-queued")["pendingReason"];
+        assert_eq!(queued["kind"], "budgetQueued", "{surface}");
+        assert_eq!(queued["occupiedTaskBudget"], 1, "{surface}");
+        assert_eq!(queued["effectiveTaskBudget"], 1, "{surface}");
+        assert_eq!(queued["message"], "Queued 1/1");
+
+        let rejected = &task_verdict(&response, "not-admitted")["pendingReason"];
+        assert_eq!(rejected["kind"], "notAdmitted", "{surface}");
+        assert!(
+            rejected["diagnosticCodes"]
+                .as_array()
+                .is_some_and(|codes| codes.iter().any(|code| code == "planner_task_ceiling")),
+            "{surface}: {rejected}"
+        );
+        assert!(
+            rejected["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Not admitted")),
+            "{surface}: {rejected}"
+        );
+    }
+
+    sqlx::query("UPDATE tracks SET task_budget=NULL WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let with_default = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        1,
+    )
+    .await
+    .unwrap();
+    let default_reason = with_default
+        .task_diagnostics
+        .iter()
+        .find(|verdict| verdict.key == "budget-queued")
+        .and_then(|verdict| verdict.pending_reason.as_ref())
+        .expect("server default produces a budget reason");
+    assert!(matches!(
+        default_reason,
+        calm_server::db::sqlite::TaskPendingReason::BudgetQueued {
+            occupied_task_budget: 1,
+            effective_task_budget: 1,
+            ..
+        }
+    ));
+
+    let with_room = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        2,
+    )
+    .await
+    .unwrap();
+    assert!(
+        with_room
+            .task_diagnostics
+            .iter()
+            .find(|verdict| verdict.key == "budget-queued")
+            .is_some_and(|verdict| verdict.pending_reason.is_none()),
+        "an environment default with a free slot must not diagnose budget queueing"
+    );
+
+    sqlx::query("UPDATE tracks SET task_budget=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let override_wins = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        9,
+    )
+    .await
+    .unwrap();
+    assert!(override_wins.task_diagnostics.iter().any(|verdict| {
+        verdict.key == "budget-queued"
+            && matches!(
+                verdict.pending_reason.as_ref(),
+                Some(calm_server::db::sqlite::TaskPendingReason::BudgetQueued {
+                    effective_task_budget: 1,
+                    ..
+                })
+            )
+    }));
+}
+
+#[tokio::test]
+async fn malformed_persisted_dependency_shape_keeps_report_reads_available() {
+    let boot = new_boot().await;
+    upsert(&boot, None, task("legacy-shape")).await;
+    sqlx::query("UPDATE tasks SET depends_on_json='{}' WHERE track_id=?1 AND key='legacy-shape'")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let verdict = task_verdict(&response, "legacy-shape");
+        assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
+        assert!(verdict["pendingReason"].is_null(), "{surface}: {verdict}");
+    }
+}
+
+#[tokio::test]
+async fn syntactically_invalid_persisted_dependencies_also_degrade_to_empty() {
+    let boot = new_boot().await;
+    upsert(&boot, None, task("corrupt-dependencies")).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints=ON")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE tasks SET depends_on_json='not-json' WHERE track_id=?1 AND key='corrupt-dependencies'",
+    )
+    .bind(boot.track_id.as_str())
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints=OFF")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let verdict = task_verdict(&response, "corrupt-dependencies");
+        assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
+        assert!(verdict["pendingReason"].is_null(), "{surface}: {verdict}");
+    }
+}
+
+#[tokio::test]
+async fn fresh_reference_error_overrides_an_existing_pending_rows_old_queue_reason() {
+    let boot = new_boot().await;
+    let source = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let target = boot
+        .repo
+        .track_create(calm_server::model::NewTrack {
+            template_input: None,
+            area_id: source.area_id,
+            title: "target".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let target_block = ReportBlock {
+        id: "b_dead".into(),
+        kind: "prose".into(),
+        rev: 1,
+        payload: json!({"markdown": "target"}),
+    };
+    let target_report = boot
+        .repo
+        .card_create(calm_server::model::NewCard {
+            track_id: target.id.clone(),
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+            title: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.body','target','$.blocks',json(?1)) WHERE id=?2",
+    )
+    .bind(serde_json::to_string(&vec![target_block]).unwrap())
+    .bind(target_report.id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let mut declaration = task("source-task");
+    declaration["refs"] = json!([format!("neige://wave/{}#b_dead", target.id)]);
+    upsert(&boot, None, declaration).await;
+    assert!(keys(&boot).await.iter().any(|key| key == "source-task"));
+
+    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json('[]')) WHERE id=?1")
+        .bind(target_report.id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let verdict = task_verdict(&response, "source-task");
+        assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
+        assert_eq!(
+            verdict["pendingReason"]["kind"], "notAdmitted",
+            "{surface}: {verdict}"
+        );
+        assert!(
+            verdict["pendingReason"]["diagnosticCodes"]
+                .as_array()
+                .is_some_and(|codes| codes.iter().any(|code| code == "reference_missing")),
+            "{surface}: {verdict}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
+    let boot = new_boot().await;
+    upsert(&boot, None, task("failed-first")).await;
+    let mut blocked = task("blocked-next");
+    blocked["depends_on"] = json!(["failed-first", "failed-first"]);
+    upsert(&boot, None, blocked).await;
+    sqlx::query("UPDATE tasks SET status='failed' WHERE track_id=?1 AND key='failed-first'")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let reason = &task_verdict(&response, "blocked-next")["pendingReason"];
+        assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
+        assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
+        let message = reason["message"].as_str().unwrap();
+        assert!(message.contains("failed"), "{surface}: {message}");
+        assert!(
+            message.contains("revise dependencies"),
+            "{surface}: {message}"
+        );
+        assert!(!message.starts_with("Waiting"), "{surface}: {message}");
+    }
+}
+
 #[tokio::test]
 async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
     for require_gates in [false, true] {

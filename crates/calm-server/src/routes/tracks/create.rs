@@ -502,6 +502,13 @@ pub(super) async fn resume_prior_attempt(
     resume: ResumeFirstMessage,
 ) -> Result<Response> {
     let ResumeFirstMessage { plan, prior } = resume;
+    // Direct replay materialization bypasses OperationRuntime, so take the
+    // same per-track fence as lazy harness recovery. It is released before the
+    // operation is submitted, preserving the operation-drive → track-delete
+    // order used by DELETE while preventing a replay from recreating a path
+    // already being moved to trash.
+    let track_delete_guard =
+        crate::per_card_lock::lock_key(&s.track_delete_locks, &prior.track_id).await;
     // Fail closed. A 201 here would have to mint a replacement track under a key
     // that already means "that track", i.e. answer a byte-identical request with
     // a *different* track. The binding row deliberately has no `ON DELETE
@@ -570,6 +577,7 @@ pub(super) async fn resume_prior_attempt(
             track.id
         ))
     })?;
+    drop(track_delete_guard);
     // The one place the two arms diverge. See `PriorArm`: a replay owes the
     // caller the selected operation's payload byte for byte, a genuine retry
     // owes it the world as it is now.

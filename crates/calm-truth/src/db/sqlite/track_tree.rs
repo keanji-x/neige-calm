@@ -105,7 +105,7 @@ pub const TRACK_TREE_MEMBERS_SQL: &str = concat!(
 /// The outer correlated count preserves the same recursive shape/order while
 /// detecting a member already above its deterministic share. Pending rows are
 /// excluded because they re-enter projection as candidates.
-const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
+pub const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
        WHERE t.track_id=w.id AND t.declared_by='spec' \
@@ -242,7 +242,9 @@ fn tree_share_from_members(
     tree_share_from_members_with_freeze(root_id, track_id, budget, members, false, None)
 }
 
-fn tree_share_from_member_inventory(
+/// Build one member's share and the tree-wide admission-freeze state from a
+/// single ordered snapshot of `(id, depth, fixed planner occupancy)` rows.
+pub fn tree_share_from_member_inventory(
     root_id: String,
     track_id: &str,
     budget: i64,

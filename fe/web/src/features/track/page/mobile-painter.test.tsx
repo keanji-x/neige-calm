@@ -38,8 +38,11 @@ const titled: PanelRow = {
   badges: [],
   status: null,
   actions: [
-    { kind: 'open-card', cardId: 'card-1', label: null, hint: null },
-    { kind: 'delete-card', cardId: 'card-1', label: 'Delete card Build log', hint: 'Delete card' },
+    { kind: 'open-card', cardId: 'card-1', label: null, hint: null, description: null },
+    {
+      kind: 'delete-card', cardId: 'card-1', label: 'Delete card Build log',
+      hint: 'Delete card', description: null,
+    },
   ],
 };
 
@@ -51,7 +54,7 @@ const untitled: PanelRow = {
   kind: null,
   badges: [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
   status: null,
-  actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null }],
+  actions: [{ kind: 'open-card', cardId: 'card-2', label: null, hint: null, description: null }],
 };
 
 const cardsModule: RowModuleView = {
@@ -77,7 +80,9 @@ const ready: PanelRow = {
   kind: 'codex',
   badges: [],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-1', label: null, hint: 'Show alpha-impl in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-1', label: null, hint: null, description: null,
+  }],
 };
 
 /** Dispatched, with a reason: a status supersedes the readiness word, and the
@@ -89,8 +94,15 @@ const dispatched: PanelRow = {
   badges: [],
   status: { token: 'failed', phrase: 'failed — track /tmp/alpha is not a git repository' },
   actions: [
-    { kind: 'reveal-block', blockId: 'block-2', label: null, hint: 'Show beta-gate in the report' },
-    { kind: 'open-card', cardId: 'card-9', label: null, hint: 'Open the worker card for beta-gate' },
+    {
+      kind: 'reveal-block', blockId: 'block-2', label: null,
+      hint: 'Show beta-gate in the report',
+      description: 'failed — track /tmp/alpha is not a git repository',
+    },
+    {
+      kind: 'open-card', cardId: 'card-9', label: null,
+      hint: 'Open the worker card for beta-gate', description: null,
+    },
   ],
 };
 
@@ -102,7 +114,9 @@ const withdrawn: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Withdrawn', struck: true }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: 'Show gamma-planner in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-3', label: null, hint: null, description: null,
+  }],
 };
 
 /** Unreadable: an ordinary, unstruck declaration beside the withdrawn one. */
@@ -112,7 +126,9 @@ const unreadable: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Unreadable', struck: false }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-4', label: null, hint: 'Show delta-doc in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-4', label: null, hint: null, description: null,
+  }],
 };
 
 /** Declared but not ready, and never dispatched: **the one row that carries a
@@ -126,7 +142,9 @@ const notReady: PanelRow = {
   kind: 'codex',
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-5', label: null, hint: 'Show epsilon-fix in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-5', label: null, hint: null, description: null,
+  }],
 };
 
 /**
@@ -148,6 +166,18 @@ const namedReveal: PanelRow = {
   status: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-6', label: 'Reveal zeta-audit', hint: null,
+    description: null,
+  }],
+};
+
+const hintedReveal: PanelRow = {
+  ...namedReveal,
+  id: 'block-6-hint',
+  title: 'zeta-hinted',
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-6-hint', label: null,
+    hint: 'A pointer-only hint',
+    description: null,
   }],
 };
 
@@ -180,7 +210,10 @@ const bareStatus: PanelRow = {
   kind: 'terminal',
   badges: [],
   status: { token: 'running', phrase: 'running' },
-  actions: [{ kind: 'reveal-block', blockId: 'block-7', label: null, hint: 'Show eta-run in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-7', label: null,
+    hint: 'Show eta-run in the report', description: 'running',
+  }],
 };
 
 /** **A badge and a status at once.** `deriveTrackPageView` reads `declaration`
@@ -194,7 +227,11 @@ const declaredAndRunning: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
   status: { token: 'failed', phrase: 'failed — the worker exited before it reported' },
-  actions: [{ kind: 'reveal-block', blockId: 'block-8', label: null, hint: 'Show theta-check in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-8', label: null,
+    hint: 'Show theta-check in the report',
+    description: 'failed — the worker exited before it reported',
+  }],
 };
 
 /** **An empty token.** `deriveReportTasks` folds `''` into `null` today, but
@@ -210,7 +247,37 @@ const emptyToken: PanelRow = {
   kind: 'claude',
   badges: [],
   status: { token: '', phrase: 'the kernel has not named this state' },
-  actions: [{ kind: 'reveal-block', blockId: 'block-9', label: null, hint: 'Show iota-probe in the report' }],
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-9', label: null,
+    hint: 'Show iota-probe in the report', description: 'the kernel has not named this state',
+  }],
+};
+
+/** A pending status plus the server-owned reason on the row action. The status
+ * stays visible and described, but must not introduce a second native title. */
+const pendingReason: PanelRow = {
+  id: 'block-10',
+  title: 'kappa-queued',
+  kind: 'codex',
+  badges: [],
+  status: { token: 'pending', phrase: 'pending' },
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-10', label: null,
+    hint: 'Queued 1/1', description: 'pending — Queued 1/1',
+  }],
+};
+
+const notAdmittedReason: PanelRow = {
+  id: 'block-11',
+  title: 'lambda-rejected',
+  kind: 'codex',
+  badges: [],
+  status: null,
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-11', label: null,
+    hint: 'Not admitted · raise planner ceiling',
+    description: 'Not admitted · raise planner ceiling',
+  }],
 };
 
 const boundaryTasks: RowModuleView = {
@@ -367,6 +434,32 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
     expect(status?.getAttribute('data-nc-status')).toBe('');
     expect(status?.getAttribute('title')).toBe('the kernel has not named this state');
   });
+
+  it('uses only the row reason title when a pending task has one', () => {
+    const container = paint({ ...tasksModule, rows: [pendingReason] });
+    const row = container.querySelector('[data-nc-row="block-10"]')!;
+    const status = row.querySelector('[data-nc-status="pending"]')!;
+    expect(status.textContent).toBe('pending');
+    expect(status.hasAttribute('title')).toBe(false);
+    expect(Array.from(row.querySelectorAll('[title]'))).toEqual([]);
+    expect(row.getAttribute('title')).toBe('Queued 1/1');
+    expect(Array.from(container.querySelectorAll('[title]'))).toEqual([row]);
+    const control = row.querySelector('button')!;
+    const described = control.getAttribute('aria-describedby')!;
+    expect(container.ownerDocument.getElementById(described)?.textContent)
+      .toBe('pending — Queued 1/1');
+  });
+
+  it('describes a statusless not-admitted row without showing the reason in its body', () => {
+    const container = paint({ ...tasksModule, rows: [notAdmittedReason] });
+    const row = container.querySelector('[data-nc-row="block-11"]')!;
+    const control = row.querySelector('button')!;
+    const described = control.getAttribute('aria-describedby')!;
+    expect(container.ownerDocument.getElementById(described)?.textContent)
+      .toBe('Not admitted · raise planner ceiling');
+    expect(control.textContent).toBe('lambda-rejected');
+    expect(row.querySelector('[data-nc-status]')).toBeNull();
+  });
 });
 
 /*
@@ -441,9 +534,9 @@ describe('what the painted Tasks module puts on screen', () => {
      `label` is null so no accessible name may be fabricated over the visible
      one (WCAG 2.5.3). */
   it('puts the action hint on the row root and emits no aria-label', () => {
-    const container = paint(tasksModule);
-    const row = container.querySelector('[data-nc-row="block-1"]');
-    expect(row?.getAttribute('title')).toBe('Show alpha-impl in the report');
+    const container = paint({ ...tasksModule, rows: [hintedReveal] });
+    const row = container.querySelector('[data-nc-row="block-6-hint"]');
+    expect(row?.getAttribute('title')).toBe('A pointer-only hint');
     expect(row?.hasAttribute('aria-label')).toBe(false);
   });
 
@@ -470,10 +563,11 @@ describe('what the painted Tasks module puts on screen', () => {
     expect(text).toContain('Not ready');
   });
 
-  /* The status carriers the projection reads, spelled out: the attribute holds
-     the bare token, so the projection can compare it by exact equality, and
-     `title` holds the phrase, which is strictly more — the kernel's reason is
-     appended, never substituted. (Colour is a desktop-only affair: the
+  /* The ordinary status carriers the projection reads, spelled out: the
+     attribute holds the bare token, so the projection can compare it by exact
+     equality, and `title` holds the phrase, which is strictly more — the
+     kernel's reason is appended, never substituted. Pending reasons are tested
+     separately above because their row root owns the single title. (Colour is a desktop-only affair: the
      stylesheet keys `.taskDot[data-nc-status=…]`, and this surface prints the
      word instead.) */
   it('writes the bare token into the marker and the whole phrase into the title', () => {

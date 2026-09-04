@@ -90,6 +90,19 @@ async fn patch(
         .unwrap()
 }
 
+async fn delete(state: AppState, track_id: &str) -> axum::http::Response<Body> {
+    app(state)
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tracks/{track_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 async fn columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, Option<String>) {
     sqlx::query_as("SELECT planner_task_ceiling, automation_policy FROM tracks WHERE id = ?1")
         .bind(track_id)
@@ -321,6 +334,16 @@ async fn write_report_task(
     track_id: &str,
     key: &str,
 ) -> String {
+    write_report_block(state, repo, track_id, report_task_block(key)).await
+}
+
+async fn write_report_block(
+    state: &AppState,
+    repo: &Arc<dyn Repo>,
+    track_id: &str,
+    block: calm_types::track_report::ReportBlock,
+) -> String {
+    let key = block.payload["key"].as_str().unwrap().to_owned();
     let track = repo.track_get(track_id).await.unwrap().unwrap();
     let report = if let Some(report) = repo
         .cards_by_track(track_id)
@@ -343,7 +366,7 @@ async fn write_report_task(
     };
     let current: TrackReportPayload = serde_json::from_value(report.payload.clone()).unwrap();
     let mut blocks = current.blocks.clone().unwrap_or_default();
-    blocks.push(report_task_block(key));
+    blocks.push(block);
     let body = blocks
         .iter()
         .map(calm_types::report_blocks::flat_text)
@@ -678,6 +701,83 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
     assert_eq!(plan_events, 1);
 }
 
+/// Gate policy is an admission input just like the planner ceiling. Tightening
+/// it must remove an already-pending ungated row before the scheduler poke can
+/// claim it, announce the changed projection, and leave the read verdict with
+/// the server-owned NotAdmitted explanation.
+#[tokio::test]
+async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeup() {
+    let (state, track_id, repo) = boot().await;
+    let response = patch(
+        state.clone(),
+        &track_id,
+        None,
+        json!({"require_task_gates": false}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut block = report_task_block("needs-gate");
+    block
+        .payload
+        .as_object_mut()
+        .unwrap()
+        .remove("no_gate_reason");
+    let task_id = write_report_block(&state, &repo, &track_id, block).await;
+    let before_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(before_status, "pending");
+    let before_events = event_count(&repo).await;
+
+    let response = patch(state, &track_id, None, json!({"require_task_gates": true})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "the newly forbidden pending row remained claimable"
+    );
+    let plan_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE id>?1 AND kind='plan.updated' \
+         AND json_extract(payload,'$.track_id')=?2",
+    )
+    .bind(before_events)
+    .bind(&track_id)
+    .fetch_one(&repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(plan_events, 1);
+
+    let report_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(&track_id)
+            .fetch_one(&repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let snapshot = calm_server::track_report_read::load_report_read_snapshot(
+        repo.as_ref(),
+        &report_id,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    )
+    .await
+    .unwrap();
+    assert!(snapshot.task_diagnostics.iter().any(|verdict| {
+        verdict.key == "needs-gate"
+            && matches!(
+                verdict.pending_reason.as_ref(),
+                Some(calm_server::db::sqlite::TaskPendingReason::NotAdmitted {
+                    diagnostic_codes,
+                    ..
+                }) if diagnostic_codes.iter().any(|code| code == "gate_required")
+            )
+    }));
+}
+
 /// The root budget determines every descendant's share. The PATCH transaction
 /// must therefore invalidate descendant projections too; otherwise this old
 /// pending row remains directly claimable without any later child edit.
@@ -725,6 +825,89 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         "a task admitted under the old descendant share remained claimable"
     );
     tx.rollback().await.unwrap();
+}
+
+/// Removing a leaf changes N in the root's B/N split. The delete transaction
+/// must reproject the surviving members so a declaration whose share grows is
+/// admitted immediately, without waiting for another report edit or restart.
+#[tokio::test]
+async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
+    let (state, root_id, repo) = boot().await;
+    let root = repo.track_get(&root_id).await.unwrap().unwrap();
+    let victim = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: root.area_id.clone(),
+            title: "victim".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let survivor = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: root.area_id,
+            title: "survivor".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=2 WHERE id=?1")
+        .bind(&root_id)
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
+        .bind(&root_id)
+        .bind(victim.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
+        .bind(&root_id)
+        .bind(survivor.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let task_id = write_report_task(&state, &repo, survivor.id.as_str(), "newly-admitted").await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(before, 0, "premise: the third member has zero share at B=2");
+
+    let response = delete(state, victim.id.as_str()).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    let plan_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE kind='plan.updated' \
+         AND json_extract(payload,'$.track_id')=?1",
+    )
+    .bind(survivor.id.as_str())
+    .fetch_one(&repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(
+        plan_events, 1,
+        "the newly admitted survivor was not announced"
+    );
 }
 
 /// Pending overage is removable, but already-dispatched work is not. A budget

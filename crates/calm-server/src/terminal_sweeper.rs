@@ -69,7 +69,7 @@ use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::Terminal;
 use crate::state::AppState;
-use crate::terminal_renderer::TerminalRendererRegistry;
+use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 
 /// Actor stamped on every event the sweeper produces. Distinct from
@@ -274,6 +274,114 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "SIGTERM failed (likely already exited)"
         );
     }
+}
+
+/// Destructive deletion fence: signal the terminal, then prove its recorded
+/// process is gone before its workspace may move. A missing/invalid pid cannot
+/// name a live process and is treated as quiesced; a known lingering process is
+/// a hard error rather than a best-effort warning.
+pub async fn quiesce_terminal_artifacts_for_deletion(
+    renderer: Option<&TerminalRendererRegistry>,
+    supervisor_sock: Option<&std::path::Path>,
+    term: &Terminal,
+) -> crate::error::Result<()> {
+    // A renderer entry gives us a supervisor-owned `proc_id`; its TERM/KILL
+    // sequence targets that registered child rather than trusting a recycled
+    // numeric pid. Without the entry, the legacy terminal row has no persisted
+    // `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
+    // and fail closed instead of signaling an arbitrary live pid.
+    let renderer_outcome = match renderer {
+        Some(registry) => registry.drop_entry_for_deletion(&term.id).await,
+        None => RendererDropOutcome::Missing,
+    };
+    if renderer_outcome == RendererDropOutcome::ExitPersisted {
+        return Ok(());
+    }
+    if let Some(pid) = term.pid {
+        match wait_for_pid_exit_passively(pid, Duration::from_secs(2)).await {
+            PassivePidExit::Exited | PassivePidExit::InvalidPid => {}
+            verdict @ (PassivePidExit::StillAlive | PassivePidExit::Unsupported) => {
+                return Err(crate::error::CalmError::Internal(format!(
+                    "terminal {} did not quiesce before deletion ({verdict:?}; \
+                     renderer_outcome={renderer_outcome:?}); refusing an unverified pid signal",
+                    term.id,
+                )));
+            }
+        }
+    } else if let Some(supervisor_sock) = supervisor_sock {
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::probe_supervisor_for_terminal_at(Some(supervisor_sock), &term.id),
+        )
+        .await
+        {
+            Ok(Ok(false)) => {}
+            Ok(Ok(true)) => {
+                return Err(crate::error::CalmError::Internal(format!(
+                    "terminal {} is still running in the process supervisor; refusing to move its workspace",
+                    term.id
+                )));
+            }
+            Ok(Err(error)) => {
+                return Err(crate::error::CalmError::Internal(format!(
+                    "terminal {} has no persisted pid and supervisor absence could not be proven: {error}",
+                    term.id
+                )));
+            }
+            Err(_) => {
+                return Err(crate::error::CalmError::Internal(format!(
+                    "terminal {} supervisor absence probe timed out; refusing to move its workspace",
+                    term.id
+                )));
+            }
+        }
+    } else if renderer_outcome == RendererDropOutcome::Unverified {
+        return Err(crate::error::CalmError::Internal(format!(
+            "terminal {} renderer shutdown was not verified and no persisted pid is available; refusing to move its workspace",
+            term.id
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassivePidExit {
+    Exited,
+    InvalidPid,
+    StillAlive,
+    Unsupported,
+}
+
+#[cfg(unix)]
+async fn wait_for_pid_exit_passively(pid: i64, timeout: Duration) -> PassivePidExit {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    use tokio::time::Instant;
+
+    let Ok(raw) = valid_raw_pid(pid) else {
+        return PassivePidExit::InvalidPid;
+    };
+    let pid = Pid::from_raw(raw);
+    let deadline = Instant::now() + timeout;
+    loop {
+        match kill(pid, None) {
+            Ok(()) if pid_has_finished_shutdown(raw) => return PassivePidExit::Exited,
+            Ok(()) => {}
+            Err(Errno::ESRCH) => return PassivePidExit::Exited,
+            Err(_) => return PassivePidExit::Unsupported,
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return PassivePidExit::StillAlive;
+        }
+        tokio::time::sleep(std::cmp::min(Duration::from_millis(50), deadline - now)).await;
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_pid_exit_passively(_pid: i64, _timeout: Duration) -> PassivePidExit {
+    PassivePidExit::Unsupported
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

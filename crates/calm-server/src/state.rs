@@ -98,6 +98,9 @@ pub struct RouteState {
     /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
     /// request time.
     pub workspace_root: PathBuf,
+    /// Server-resolved default used by both scheduler admission and report
+    /// diagnostics. Read once at boot; request handlers never consult env.
+    pub task_budget_default: i64,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -169,6 +172,19 @@ pub struct RouteState {
     ///      and `/planner/reset` take only the recovery lock and never enter
     ///      conversation create); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
+    /// Per-track fence shared by single-track deletion and direct runtime
+    /// recovery/reattach paths that bypass `OperationRuntime`. Once DELETE owns
+    /// this lock, those paths cannot install a runtime behind its teardown
+    /// snapshot; the guard transfers to the owned deletion saga and survives
+    /// request cancellation through commit or compensation.
+    ///
+    /// The deployment contract is one calm-server per SQLite data directory.
+    /// Multi-process serving would require a durable database fence.
+    pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
+    /// Serializes a user-area delete with the ordinary track-create route.
+    /// The creator holds it through workspace materialization and planner
+    /// startup; deletion therefore snapshots a closed member set.
+    pub(crate) area_delete_locks: crate::per_card_lock::KeyedLocks,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -207,6 +223,7 @@ pub struct BootState {
     /// when the state drops instead of accumulating a git repository per test
     /// run under the system temp dir.
     pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
+    pub task_budget_default: i64,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -239,6 +256,7 @@ impl BootState {
         let route = RouteState {
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
+            task_budget_default: self.task_budget_default,
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -248,6 +266,8 @@ impl BootState {
             hook_ingest_cache,
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
+            track_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            area_delete_locks: crate::per_card_lock::new_keyed_locks(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),
@@ -611,6 +631,10 @@ impl AppState {
         &self.route.workspace_root
     }
 
+    pub(crate) fn track_delete_locks(&self) -> &crate::per_card_lock::KeyedLocks {
+        &self.route.track_delete_locks
+    }
+
     /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
     /// defaults to a per-`AppState` directory under the system temp dir so no
     /// test can silently materialize repositories into the developer's real
@@ -696,6 +720,7 @@ impl AppState {
             self.track_area_cache.clone(),
             self.shared_codex_appserver.clone(),
             &self.harness,
+            &self.route.track_delete_locks,
         )
         .await
     }
@@ -717,6 +742,7 @@ impl AppState {
                 track_area_cache: self.track_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
                 registry: self.harness.clone(),
+                track_delete_locks: self.route.track_delete_locks.clone(),
                 #[cfg(feature = "fixtures")]
                 post_eligibility_hook: None,
             },
@@ -858,6 +884,9 @@ impl AppState {
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
+        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
+            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        );
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -880,6 +909,7 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 Dispatcher::permits_from_env(8),
+                task_budget_default,
             ),
         );
         let worker_flow = WorkerFlowDriver::from_state_parts(
@@ -896,6 +926,7 @@ impl AppState {
             // wants to *inspect* the tree calls `with_workspace_root`.
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             workspace_root_guard: Some(workspace_root_sandbox),
+            task_budget_default,
             events,
             daemon,
             terminal_renderer,
@@ -1077,6 +1108,9 @@ impl AppState {
         }
 
         let events = EventBus::new();
+        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
+            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        );
 
         // PR3 (#136) — boot-time role cache. Seed from the cards table
         // *after* migrations have run (which `SqlxRepo::open` did) and
@@ -1183,6 +1217,7 @@ impl AppState {
             plugin_host_cell.clone(),
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
+            task_budget_default,
         )
         .await?;
         if let Err(e) = codex
@@ -1289,6 +1324,7 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
+                task_budget_default,
             ),
         );
 
@@ -1340,6 +1376,7 @@ impl AppState {
             workspace_root,
             // Production: the root is the user's real directory, never swept.
             workspace_root_guard: None,
+            task_budget_default,
             events,
             daemon,
             terminal_renderer,

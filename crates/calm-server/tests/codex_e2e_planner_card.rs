@@ -249,6 +249,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("boot test mcp server");
