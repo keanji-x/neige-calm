@@ -3,31 +3,6 @@ use sqlx::Transaction;
 
 use crate::error::{CalmError, Result};
 use crate::model::*;
-use crate::validation::{
-    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-};
-
-/// True when the kernel view/template overlay is present for `track_id`.
-pub async fn track_has_template_overlay_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track_id: &str,
-) -> Result<bool> {
-    let found: Option<i64> = sqlx::query_scalar(
-        r#"SELECT 1 FROM overlays
-           WHERE plugin_id = ?1
-             AND entity_kind = ?2
-             AND entity_id = ?3
-             AND kind = ?4
-           LIMIT 1"#,
-    )
-    .bind(OVERLAY_TEMPLATE_PLUGIN_ID)
-    .bind(OVERLAY_TEMPLATE_ENTITY_KIND)
-    .bind(track_id)
-    .bind(OVERLAY_TEMPLATE_KIND)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(found.is_some())
-}
 
 pub async fn overlay_upsert_tx(tx: &mut Transaction<'_, Sqlite>, p: NewOverlay) -> Result<Overlay> {
     let now = now_ms();

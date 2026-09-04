@@ -16,9 +16,8 @@
 //!      `already_named` and does not change the row or emit anything.
 //!   3. Role gate — Worker / Assistant / ReportCard identities are refused by
 //!      `require_role` before any write.
-//!   4. Template tracks refuse (`template_track`).
-//!   5. Area-chat tracks refuse (`chat_track`).
-//!   6. Whitespace-only / missing titles are argument errors, and a title is
+//!   4. Area-chat tracks refuse (`chat_track`).
+//!   5. Whitespace-only / missing titles are argument errors, and a title is
 //!      stored trimmed.
 
 use std::sync::Arc;
@@ -35,13 +34,9 @@ use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_rename::TOOL_TRACK_RENAME;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewArea, NewCard, NewOverlay, NewTrack};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
-use calm_server::validation::{
-    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    template_overlay_payload,
-};
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -471,40 +466,12 @@ async fn non_planner_roles_are_forbidden() {
 }
 
 // ---------------------------------------------------------------------------
-// The two track classes whose names are not the agent's to write
+// The track class whose name is not the agent's to write
+//
+// #1318 S2 removed the second one: `template_track` refused renames on tracks
+// carrying the kernel view/template overlay, and that overlay no longer has a
+// writer or a reader anywhere in the kernel.
 // ---------------------------------------------------------------------------
-
-/// Template tracks are a catalogue the user curates; the names ARE the
-/// catalogue entries. The overlay is written through the same
-/// `overlay_upsert` production uses on the `as_template` create branch.
-#[tokio::test]
-async fn template_track_refuses_rename() {
-    let boot = boot_unnamed().await;
-    boot.repo
-        .overlay_upsert(NewOverlay {
-            plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
-            entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
-            entity_id: boot.track_id.as_str().to_string(),
-            kind: OVERLAY_TEMPLATE_KIND.into(),
-            payload: template_overlay_payload(),
-        })
-        .await
-        .expect("mark the track as a template");
-
-    let out = call_tool(
-        &boot,
-        TOOL_TRACK_RENAME,
-        planner_identity(&boot),
-        json!({ "title": "renaming a template" }),
-    )
-    .await
-    .expect("refusal is a value");
-    assert_eq!(
-        out.get("refused").and_then(Value::as_str),
-        Some("template_track")
-    );
-    assert_eq!(track_title(&boot).await, "");
-}
 
 /// The per-area chat track's name is kernel-owned — the same reason its
 /// lifecycle is not user-drivable (`routes::tracks::update_track`).

@@ -358,23 +358,28 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
 /// #1297: the `view` / `system` entity kinds are kernel-reserved, so the
 /// public endpoint refuses them however well-formed the payload is.
 ///
-/// These three payloads used to be this file's coverage of the `template`
-/// payload validator via the route. They can no longer reach it — the route
-/// stops them a step earlier — so their shape assertions now live where they
-/// are still reachable: `calm_truth::validation`'s unit tests for
-/// `validate_overlay_payload("template", …)`, which already cover the same
-/// missing / extra-field / wrong-version trio. What is proven *here* is the
-/// property those tests cannot see: the gate runs **before** the validator,
-/// so a valid payload and a malformed one are indistinguishable from outside.
+/// The carrier is `layout`, the kernel-owned kind that still lives under the
+/// `view` namespace. It used to be `template`; #1318 S2 retired that kind
+/// along with the whole template-overlay mechanism, and a retired kind has no
+/// validator left, which would have made "regardless of payload validity"
+/// vacuous — every payload would be accepted by the (absent) validator, so a
+/// 403 would prove nothing about ordering. `layout` keeps the property
+/// falsifiable: the first payload below is valid and the rest are not, and
+/// they are indistinguishable from outside because the gate runs **before**
+/// the validator.
+///
+/// The second half — a refused write must not land — came from
+/// `track_template_overlay::overlay_post_cannot_mark_an_existing_track_as_template`,
+/// deleted with that file. A 403 that still wrote the row would be worse than
+/// no gate at all, and no other case asserts it.
 #[tokio::test]
-async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
-    let (state, track_id) = boot().await;
+async fn post_reserved_view_overlay_is_forbidden_regardless_of_payload_validity() {
+    let (state, track_id, repo) = boot_with_repo().await;
     for payload in [
-        json!({ "schemaVersion": 1 }),
-        json!({ "schemaVersion": 1, "template_key": "issue-development" }),
+        json!({ "positions": { "c": { "x": 0, "y": 0, "w": 4, "h": 3 } } }),
         json!({}),
-        json!({ "schemaVersion": 1, "extra": true }),
-        json!({ "schemaVersion": 99 }),
+        json!({ "positions": { "c": { "x": 0, "y": 0, "w": 4, "h": 3 } }, "extra": true }),
+        json!({ "schemaVersion": 99, "positions": {} }),
     ] {
         let resp = post_overlay(
             app(state.clone()),
@@ -382,7 +387,7 @@ async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
                 "plugin_id": "kernel",
                 "entity_kind": "view",
                 "entity_id": track_id,
-                "kind": "template",
+                "kind": "layout",
                 "payload": payload
             }),
         )
@@ -391,6 +396,17 @@ async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
         let body = body_to_json(resp).await;
         assert_eq!(body["code"], "forbidden", "payload={payload:?}");
     }
+    // The seeded track is minted through `Repo::track_create`, which writes no
+    // overlays at all, so "nothing under `view`" is the exact statement here —
+    // no kernel-authored `layout` row to except.
+    let overlays = repo
+        .overlays_for("view", &track_id)
+        .await
+        .expect("overlays for the seeded track");
+    assert!(
+        overlays.is_empty(),
+        "refused writes must not land: {overlays:?}"
+    );
 }
 
 /// The two reserved namespaces are independent: neither one alone lets a
@@ -401,7 +417,7 @@ async fn post_template_overlay_is_forbidden_regardless_of_payload_validity() {
 async fn post_overlay_reserved_namespaces_are_independently_enforced() {
     let (state, track_id) = boot().await;
     let cases = [
-        ("p1", "view", "template", json!({ "schemaVersion": 1 })),
+        ("p1", "view", "layout", json!({ "positions": {} })),
         ("p1", "system", "status", json!({ "state": "ok" })),
         ("kernel", "track", "status", json!({ "state": "ok" })),
     ];
@@ -463,7 +479,7 @@ async fn delete_overlay_rejects_reserved_namespaces() {
                             "plugin_id": plugin_id,
                             "entity_kind": entity_kind,
                             "entity_id": track_id,
-                            "kind": "template"
+                            "kind": "layout"
                         })
                         .to_string(),
                     ))

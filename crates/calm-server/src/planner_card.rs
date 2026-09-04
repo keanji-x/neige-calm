@@ -117,8 +117,8 @@ writes are transactional.
      of the user's first sentence. Naming is name-once: if the track already \
      has a title the call returns \
      `{\"ok\": false, \"refused\": \"already_named\"}` and changes nothing — \
-     that is not an error, leave the name alone and move on. Template tracks \
-     and the per-area chat track refuse the same way. \
+     that is not an error, leave the name alone and move on. The per-area \
+     chat track refuses the same way. \
      Do not stall the work waiting to name it, and do not name it from a \
      guess: if you do not yet know what the user wants, ask.
    * Maintain task declarations as report `task` blocks. Read the report with \

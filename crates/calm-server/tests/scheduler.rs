@@ -50,8 +50,8 @@ use calm_server::mcp_server::tools::track_report_blocks::{
 use calm_server::mcp_server::tools::track_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewArea, NewCard, NewOverlay, NewTerminal, NewTrack, RequestTheme, Task, TaskKind,
-    TaskStatus, TrackLifecycle, TrackPatch, new_id, now_ms,
+    CardRole, NewArea, NewCard, NewTerminal, NewTrack, RequestTheme, Task, TaskKind, TaskStatus,
+    TrackLifecycle, TrackPatch, new_id, now_ms,
 };
 use calm_server::operation::child_track_adapter::ChildTrackAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
@@ -1504,143 +1504,6 @@ async fn draft_track_is_not_scheduled() {
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Pending);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
-}
-
-/// INV-1110-001: a template track with a `ready:true` task produces zero
-/// `TaskDispatched` / worker. A non-template control in the same test still
-/// dispatches, so the scheduler is not just broken.
-#[tokio::test]
-async fn inv_1110_001_template_track_does_not_dispatch() {
-    let boot = boot().await;
-    set_lifecycle(&boot, TrackLifecycle::Working).await;
-    seed_projected_task(
-        &boot,
-        plan_task(&boot.track_id, "control", TaskKind::Codex, &[]),
-    )
-    .await;
-
-    let template_track = boot
-        .repo
-        .track_create(NewTrack {
-            template_input: None,
-            area_id: boot.area_id.clone(),
-            title: "template-track".into(),
-            sort: None,
-            cwd: String::new(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    boot.repo
-        .track_update(
-            template_track.id.as_str(),
-            TrackPatch {
-                require_task_gates: Some(false),
-                lifecycle: Some(TrackLifecycle::Working),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("template track Working + ungated");
-    boot.track_area_cache
-        .insert(template_track.id.clone(), boot.area_id.clone());
-    let template_planner = boot
-        .repo
-        .card_create(NewCard {
-            track_id: template_track.id.clone(),
-            title: None,
-            kind: "planner".into(),
-            sort: None,
-            payload: Value::Null,
-        })
-        .await
-        .unwrap();
-    boot.card_role_cache.insert(
-        template_planner.id.clone(),
-        CardRole::Planner,
-        template_track.id.clone(),
-    );
-    support::mcp::set_persisted_card_role(
-        boot.repo.as_ref(),
-        template_planner.id.as_str(),
-        CardRole::Planner,
-    )
-    .await;
-    seed_runtime_session_in_pool(
-        &boot.repo.sqlite_pool().expect("sqlite pool"),
-        template_planner.id.as_str(),
-        "template-planner-session",
-        "template-planner-thread",
-    )
-    .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'template-planner-session' WHERE id = ?1")
-        .bind(template_track.id.as_str())
-        .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
-        .await
-        .expect("mark template planner session as track root");
-    boot.repo
-        .overlay_upsert(NewOverlay {
-            plugin_id: "kernel".into(),
-            entity_kind: "view".into(),
-            entity_id: template_track.id.to_string(),
-            kind: "template".into(),
-            payload: json!({ "schemaVersion": 1 }),
-        })
-        .await
-        .expect("template overlay");
-    let template_identity = ToolCallIdentity {
-        card_id: template_planner.id.as_str().to_string(),
-        role: CardRole::Planner,
-        provider: AgentProvider::Codex,
-        session_id: "template-planner-session".to_string(),
-        track_id: Some(template_track.id.as_str().to_string()),
-        area_id: boot.area_id.as_str().to_string(),
-        thread_id: "template-planner-thread".into(),
-    };
-    seed_projected_task_for(
-        &boot,
-        template_track.id.as_str(),
-        template_identity,
-        plan_task(&template_track.id, "template-ready", TaskKind::Codex, &[]),
-    )
-    .await;
-
-    let (_runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-        })],
-    );
-    scheduler.schedule_track(boot.track_id.clone()).await;
-    scheduler.schedule_track(template_track.id.clone()).await;
-
-    assert_eq!(
-        task_row(&boot, "control").await.status,
-        TaskStatus::Running,
-        "non-template control must still dispatch"
-    );
-    let template_task = boot
-        .repo
-        .task_get(&format!("{}:template-ready", template_track.id.as_str()))
-        .await
-        .expect("task_get")
-        .expect("template task row");
-    assert_eq!(
-        template_task.status,
-        TaskStatus::Pending,
-        "INV-1110-001: template ready task must stay pending"
-    );
-    let dispatched = event_rows(&boot, "task.dispatched").await;
-    assert_eq!(
-        dispatched.len(),
-        1,
-        "only the control track may emit TaskDispatched; got {dispatched:?}"
-    );
-    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }
 
 // ---------------------------------------------------------------------------

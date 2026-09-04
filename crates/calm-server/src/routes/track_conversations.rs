@@ -93,7 +93,7 @@ pub(crate) async fn list_track_conversations(
     request_body = NewTrackConversationBody,
     responses(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
-        (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
+        (status = 400, description = "Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
         (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),

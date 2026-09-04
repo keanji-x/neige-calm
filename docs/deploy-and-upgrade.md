@@ -530,6 +530,17 @@ extractor before the handler runs: `422 Unprocessable Entity`, plain-text body
 success. Browser bundles are covered by the `minWebCompatVersion`
 floor and will show the refresh curtain instead of issuing such a request.
 
+#1318 S2 removed a third field from the same body by the same mechanism:
+`as_template`. It used to mint a hidden `kernel`/`view`/`template` overlay row
+on the created track; that row, its writer and all six of its readers are
+retired, so the field is gone rather than ignored. An out-of-repo script still
+sending `{"as_template": true}` therefore gets the same extractor rejection —
+`422 Unprocessable Entity`, `unknown field \`as_template\`` — where it
+previously got a `201`. Neither frontend ever sent the field; the only place it
+survived was the generated OpenAPI artifacts, which this release regenerates.
+No data migration: the production `overlays` table held zero `kind='template'`
+rows.
+
 **Scan your installed plugins before upgrading.** Run this in the plugin
 install root; any output names a plugin this release will break. It reports
 all three failure modes: a manifest still carrying the retired `workflows` key

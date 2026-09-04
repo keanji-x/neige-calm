@@ -39,11 +39,9 @@
 //! <the title that is already there>}`. The right agent behaviour on refusal
 //! is "leave it alone and get on with the work", so a refusal is ordinary
 //! information, not a fault: a `-32603` would read as "the kernel broke" and
-//! invite a retry loop. The three reasons are:
+//! invite a retry loop. The two reasons are:
 //!
 //! * `already_named` — the track has a non-empty title.
-//! * `template_track` — template tracks are a catalogue the user curates; the
-//!   names ARE the catalogue entries.
 //! * `chat_track` — the per-area chat track's name is kernel-owned
 //!   (`purpose = "area-chat"`), the same reason its lifecycle is not
 //!   user-drivable.
@@ -58,7 +56,7 @@
 //! named this track, because "who named it" is exactly the question a user
 //! asks when a name surprises them.
 
-use crate::db::sqlite::{track_has_template_overlay_tx, track_update_tx};
+use crate::db::sqlite::track_update_tx;
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -109,8 +107,8 @@ fn track_rename_descriptor() -> ToolDescriptor {
              it), the call returns `{\"ok\": false, \"refused\": \
              \"already_named\", \"title\": <current title>}` and changes \
              nothing — that is not an error, just leave the name alone. \
-             Template tracks and the per-area chat track refuse the same way \
-             (`template_track` / `chat_track`). Optional `message` is a short \
+             The per-area chat track refuses the same way (`chat_track`). \
+             Optional `message` is a short \
              human-readable rationale persisted on the event."
             .into(),
         input_schema: json!({
@@ -219,9 +217,6 @@ async fn track_rename(
                 }
                 if current.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
                     return Err(refusal("chat_track", &current.title));
-                }
-                if track_has_template_overlay_tx(tx, track_id.as_str()).await? {
-                    return Err(refusal("template_track", &current.title));
                 }
                 let updated = track_update_tx(
                     tx,

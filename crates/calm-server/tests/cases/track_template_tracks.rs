@@ -32,10 +32,6 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
-use calm_server::validation::{
-    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    OVERLAY_TEMPLATE_SCHEMA_VERSION,
-};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -217,10 +213,9 @@ fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
 /// digest is stable. Deliberately **not** a hand-maintained list of tables or
 /// of overlay entity kinds: the failure mode these tests exist to catch is "a
 /// read quietly wrote something", and a snapshot that enumerates what it looks
-/// at silently stops covering whatever is added next. `template_key_overlays`
-/// below
-/// is the opposite shape — it only sees `kind == "template"` overlays — which
-/// is why these tests do not reuse it.
+/// at silently stops covering whatever is added next.
+/// `kernel_template_overlays` below is the opposite shape — it only sees
+/// `kind == "template"` overlays — which is why these tests do not reuse it.
 ///
 /// (The #1209 design predicted this had to be assembled from `Repo` trait
 /// accessors because tests "cannot write raw SQL". Not so in this file:
@@ -261,32 +256,39 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     snapshot
 }
 
-/// Every overlay carrying a `template_key`, as `(key, track_id)`.
+/// Every `kernel` / `view` / `template` overlay, whatever its payload shape,
+/// as `(entity_id, payload)`.
 ///
 /// #1300 — before S2 this measured "which of the three hidden template tracks
-/// has been seeded", and the tests below asserted it was non-empty. It is kept,
-/// renamed, for the opposite job: nothing in the kernel writes a `template_key`
-/// any more (`template_overlay_payload_with_key` is deleted), so this is how
-/// "creating from a template mints no hidden track" is *observed* rather than
-/// assumed. A removal with no assertion that it happened is not a removal
-/// anyone can keep.
-async fn template_key_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
+/// has been seeded", and the tests below asserted it was non-empty. It is kept
+/// for the opposite job: nothing in the kernel writes this row any more, so
+/// this is how "creating from a template mints no hidden track" is *observed*
+/// rather than assumed. A removal with no assertion that it happened is not a
+/// removal anyone can keep.
+///
+/// #1318 S2 (第一轮评审 A2) — it used to be called `template_key_overlays` and
+/// skipped every row without a `template_key`, while its comment already
+/// claimed it observed "a template overlay of any shape". That gap was not
+/// theoretical: the payload the retired `as_template` branch wrote was
+/// `{"schemaVersion": 1}` with no `template_key` at all, so writing the retired
+/// row back onto the create path left every caller below green. The filter is
+/// now the row's identity only — plugin `kernel`, entity kind `view`, kind
+/// `template` — and the payload is returned rather than inspected, so no
+/// payload shape can slip past. The strings stay literals here deliberately:
+/// the constants they used to come from are deleted, and a test that names a
+/// row production can no longer mint must spell it out itself.
+async fn kernel_template_overlays(repo: &Arc<dyn Repo>) -> Vec<(String, Value)> {
     let overlays = repo
         .overlays_by_kind("view")
         .await
         .expect("template overlays");
-    let mut keyed = Vec::new();
-    for overlay in overlays {
-        if overlay.plugin_id != "kernel" || overlay.kind != "template" {
-            continue;
-        }
-        let Some(key) = overlay.payload.get("template_key").and_then(Value::as_str) else {
-            continue;
-        };
-        keyed.push((key.to_string(), overlay.entity_id));
-    }
-    keyed.sort_by(|left, right| left.0.cmp(&right.0));
-    keyed
+    let mut found: Vec<(String, Value)> = overlays
+        .into_iter()
+        .filter(|overlay| overlay.plugin_id == "kernel" && overlay.kind == "template")
+        .map(|overlay| (overlay.entity_id, overlay.payload))
+        .collect();
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    found
 }
 
 fn report_card_payload(detail: &Value) -> TrackReportPayload {
@@ -391,8 +393,10 @@ async fn creating_from_a_template_mints_no_hidden_track() {
         );
 
         assert!(
-            template_key_overlays(&boot.repo).await.is_empty(),
-            "{leg}: a `template_key` overlay was minted; the kernel has no writer for one"
+            kernel_template_overlays(&boot.repo).await.is_empty(),
+            "{leg}: a kernel/view/template overlay was minted; the kernel has \
+             no writer for one: {:?}",
+            kernel_template_overlays(&boot.repo).await
         );
         assert!(
             boot.repo.area_get_system().await.unwrap().is_none(),
@@ -945,8 +949,8 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
     }
 }
 
-/// A forged `template_key` in the user's own area cannot influence what
-/// `template_id` produces.
+/// A forged `template_key` overlay in the user's own area cannot influence
+/// what `template_id` produces.
 ///
 /// ## What this used to test, and why the property had to be restated
 ///
@@ -972,20 +976,25 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
 /// system-area issue-development`. That one did not go vacuous, it went red,
 /// which is how this case surfaced: it was two properties in one test, and only
 /// one of them was about the attack.)
+///
+/// #1318 S2 kept it again, for the same reason. The forgery's *vehicle*
+/// changed — `as_template` is gone, so the planted track is an ordinary one —
+/// but the property under test never depended on the vehicle: template content
+/// comes from the Rust constant, and no row in the database can supply any of
+/// it. Reintroducing a database lookup for template content still turns this
+/// red.
 #[tokio::test]
 async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     let boot = boot().await;
 
-    // The forgery, exactly as before: an `as_template` track in the *user's*
-    // area, wearing the `issue-development` key, holding recognizable content.
+    // The forgery: a track in the *user's* area, wearing the
+    // `issue-development` key, holding recognizable content. Before #1318 S2
+    // it was created with `as_template: true`; that field is gone, and the
+    // planted overlay below is what the forgery ever rested on anyway.
     let (status, stolen) = post(
         boot.app.clone(),
         "/api/tracks",
-        create_body(
-            &boot.area_id,
-            "forged-template",
-            json!({ "as_template": true }),
-        ),
+        create_body(&boot.area_id, "forged-template", json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={stolen}");
@@ -1007,23 +1016,24 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={refused}");
 
-    // Then plant the stolen key anyway, through the kernel-internal writer,
-    // so the deeper invariant this test exists for still gets exercised: even
-    // a row that *did* land — via a future internal bug, a restored backup, or
-    // a row predating #1297 — must not hijack the auto-fork lookup, because
-    // that lookup also requires the track to live in the system area.
+    // Then plant the stolen key anyway, bypassing the route entirely, so the
+    // deeper invariant this test exists for still gets exercised: even a row
+    // that *did* land — via a future internal bug, a restored backup, or a row
+    // predating #1297 — must not reach the created report.
+    //
+    // Every field is spelled out rather than built from a constant: #1300
+    // deleted the kernel's last writer of `template_key` and #1318 S2 deleted
+    // the `kernel`/`view`/`template` constants themselves, so reviving either
+    // as a test-only constructor would put a shape production cannot mint back
+    // into the tree.
     boot.repo
         .overlay_upsert(NewOverlay {
-            plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
-            entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
+            plugin_id: "kernel".into(),
+            entity_kind: "view".into(),
             entity_id: stolen_id.clone(),
-            kind: OVERLAY_TEMPLATE_KIND.into(),
-            // Spelled out rather than built by a helper: #1300 deleted
-            // `template_overlay_payload_with_key` along with the kernel's last
-            // writer of `template_key`, and reviving it as a test-only
-            // constructor would put the forged shape back in production code.
+            kind: "template".into(),
             payload: json!({
-                "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
+                "schemaVersion": 1,
                 "template_key": ISSUE_DEVELOPMENT,
             }),
         })
@@ -1077,6 +1087,78 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
         payload.body, expected_body,
         "a forged template_key must not reach the created report"
     );
+}
+
+/// #1318 S2 — `tracks.template_id` stores the **roster's** key.
+///
+/// ## What this pins, and what it deliberately cannot
+///
+/// The create route overwrites `NewTrack::template_id` with `admission.key`
+/// before the insert, so the column and the recipe lookup read the same value.
+/// This case asserts the column, for every roster key, against the key
+/// spelled out in this file rather than echoed back from the request body —
+/// so "the row carries the roster's identity for this template" stays pinned
+/// no matter what the caller sent.
+///
+/// It is **not** a discriminating test of the overwrite itself, and saying so
+/// is the point. `admit_template` admits an id iff `template_by_key` matches
+/// it *exactly*, so the caller's string and `admission.key` are equal byte for
+/// byte on every input that reaches the insert; deleting the overwrite line
+/// leaves this case green. That was verified by running the mutation, not
+/// assumed. No input can separate the two today — a case-only variant like
+/// `"SMALL-CHANGE"` 400s at admission and never reaches the column at all.
+///
+/// The half that *is* discriminating lives at the source, where the two
+/// values are still distinguishable: `templates::tests::
+/// template_by_key_returns_the_rosters_own_borrow` asserts by pointer
+/// identity that the admitted key is the roster's `&'static str` and not a
+/// value derived from the caller's argument. Together they say: the route
+/// stores `admission.key`, and `admission.key` is the roster's. Neither on its
+/// own would survive the admission rule loosening, which is the exact moment
+/// the overwrite starts changing a stored value.
+#[tokio::test]
+async fn create_stores_the_roster_key_as_template_id() {
+    let boot = boot().await;
+    for key in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            create_body(&boot.area_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let track_id = body["id"].as_str().expect("track id").to_string();
+        let track = boot
+            .repo
+            .track_get(&track_id)
+            .await
+            .expect("track_get")
+            .expect("created track row");
+        assert_eq!(
+            track.template_id.as_deref(),
+            Some(key),
+            "{key}: tracks.template_id must carry the roster key"
+        );
+    }
+
+    // A create with no `template_id` must still store NULL — without this the
+    // overwrite could be widened to "always stamp something" and the loop
+    // above would not notice.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        create_body(&boot.area_id, "no template", json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().expect("track id").to_string();
+    let track = boot
+        .repo
+        .track_get(&track_id)
+        .await
+        .expect("track_get")
+        .expect("created track row");
+    assert_eq!(track.template_id, None, "unbound create must store NULL");
 }
 
 #[tokio::test]
@@ -1401,7 +1483,7 @@ async fn assert_pre_transaction_4xx_does_not_seed(
     let (status, body) = post(boot.app.clone(), "/api/tracks", body_json).await;
     assert_eq!(status, expected, "{name}: body={body}");
     assert!(
-        template_key_overlays(&boot.repo).await.is_empty(),
+        kernel_template_overlays(&boot.repo).await.is_empty(),
         "{name}: a pre-transaction 4xx seeded template tracks"
     );
     assert_eq!(
@@ -1534,7 +1616,7 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             .collect();
         let roster_ids: Vec<&str> = calm_server::templates::TEMPLATES
             .iter()
-            .map(|template| template.key)
+            .map(|template| template.key())
             .collect();
         assert_eq!(
             listed_ids, roster_ids,
@@ -1578,10 +1660,37 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
 // #1209 PR-2 test #16 — the write side knows exactly one spelling.
 // ---------------------------------------------------------------------------
 
-/// Shared body of the three legs below. Asserts the request is rejected at the
+/// Shared body of the legs below — the two pre-rename spellings (#1209) and
+/// the retired `as_template` (#1318 S2). The mechanism under test is the
 /// **serde extractor**: `CreateTrackRequest` carries
-/// `#[serde(deny_unknown_fields)]`, so the pre-rename key is an unknown field
-/// and the handler is never entered — `admit_template` does not run.
+/// `#[serde(deny_unknown_fields)]`, so a key it does not declare is an unknown
+/// field.
+///
+/// What the assertions below actually establish, and nothing wider
+/// (#1318 S2 第二轮评审 MINOR-2, narrowed again 第三轮): the response has the
+/// **shape** of serde's unknown-field rejection — status 422, the substring
+/// `unknown field`, and the retired key named — it does **not** carry the
+/// admission wording, and each table's all-column value digest is unchanged
+/// before and after.
+///
+/// Two things that phrasing deliberately stops short of. First, three string
+/// and status checks cannot establish *which component authored* the response;
+/// they are consistent with serde's rejection and would also pass for any
+/// other producer of the same shape. Second, `db_snapshot` is not a byte
+/// image: it is a per-table digest of every column rendered through SQLite's
+/// `quote()`, with row order normalized by `ORDER BY 1`, so it sees values and
+/// not storage. An
+/// earlier version of this comment went on to claim the handler "is never
+/// entered" and that `admit_template` "does not run" — that is a statement
+/// about control flow, and neither a response body nor a database snapshot
+/// observes control flow. It also would not have been safe to widen from the
+/// snapshot even if it were about writes: `calm_truth::db::sqlite::track::
+/// track_create_tx` writes `TrackAreaCache` *before* its transaction commits,
+/// and its own doc admits a rolled-back create leaves a stale in-memory entry
+/// behind, so "the database is unchanged" does not mean "no path wrote
+/// anything". The absent admission wording is the strongest evidence here
+/// about the handler, and it is evidence about the *rejection's shape*, not a
+/// proof of non-entry.
 ///
 /// **Status is 422, not 400.** The #1209 design predicted 400; the observed
 /// behaviour is axum's `JsonRejection::JsonDataError`, which is
@@ -1615,13 +1724,13 @@ async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, un
     );
     assert!(
         !text.contains("known track template"),
-        "{leg}: the old spelling must not reach `admit_template` — reaching it \
-         means `CreateTrackRequest` declares the old key again, body={text}"
+        "{leg}: an admission-flavoured rejection would mean \
+         `CreateTrackRequest` declares the old key again, body={text}"
     );
     assert_eq!(
         db_snapshot(&boot.repo).await,
         before,
-        "{leg}: a rejected create must not write"
+        "{leg}: a rejected create must not leave a persisted row behind"
     );
 }
 
@@ -1670,6 +1779,35 @@ async fn old_template_input_spelling_is_an_unknown_field() {
             "workflow_input": { "issue_url": "https://example.invalid/1" },
         }),
         "workflow_input",
+    )
+    .await;
+}
+
+/// #1318 S2 (第一轮评审 A1) — the retired `as_template` field.
+///
+/// S2 deleted the field from `CreateTrackRequest`, which is a breaking API
+/// change, and the commit stated the consequence without pinning it. This is
+/// the pin, and it pins the **observed** status: `422`, not the `400` the
+/// deletion commit first claimed. The rejection happens in axum's `Json`
+/// extractor (`JsonRejection::JsonDataError`) because of
+/// `#[serde(deny_unknown_fields)]`, exactly like the two pre-rename spellings
+/// above, so it reuses their assertion body — including "no write happened",
+/// which is what says the retired field cannot mint a track by any path.
+///
+/// Mutation: give `CreateTrackRequest` an `as_template: bool` field back and
+/// this goes red on the status assertion (the body would be accepted, 201).
+#[tokio::test]
+async fn retired_as_template_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "#1318 S2: as_template retired",
+        json!({
+            "area_id": "",
+            "title": "retired as_template",
+            "attach_folder": false,
+            "theme": theme(),
+            "as_template": true,
+        }),
+        "as_template",
     )
     .await;
 }

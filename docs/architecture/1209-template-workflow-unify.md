@@ -1925,6 +1925,12 @@ v2 的「#1209 不依赖它被修好」这句话**字面为真但不足**：#120
    （`workflow_templates.rs:25-38`），`admit_template` 只认名册，
    自建的 `as_template` track 不会出现在 `GET /api/track-templates` 里，也不能作为
    `workflow_id` 传入。
+
+   > **#1318 S2 补记（本条的前提已消失）。** 上面两句现在时的陈述在今天的树上都是假的：
+   > `as_template` 已从 `CreateTrackRequest` 删除（发过去是未知字段 ⇒ 422），
+   > `kernel`/`view`/`template` overlay 那条路连同它的写口与六个读者全部退休，
+   > 所以「已经存在一半」的那一半也没有了。**结论没变**（仍然不做用户自建 template），
+   > 变的是理由：不是「接上一半」，而是「那一半被拆掉了」。
 2. **模板 CRUD（新建/删除）。** #1230 只做「编辑已有三个」；本设计不扩。
    而且 system area 的 track 通过 API 不可删（`tracks.rs:3060-3092`，判定在 `:3085-3092`，
    2026-09-01 裁定）。

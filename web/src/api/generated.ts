@@ -1436,11 +1436,6 @@ export interface components {
         };
         CreateTrackRequest: {
             area_id: string;
-            /**
-             * @description When true, upsert the kernel view/template overlay in the same create
-             *     transaction as the layout overlay and do not start the planner harness.
-             */
-            as_template?: boolean;
             attach_folder?: boolean;
             /**
              * @description Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
@@ -6709,7 +6704,7 @@ export interface operations {
                     "application/json": components["schemas"]["TrackConversationSummary"];
                 };
             };
-            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the track carries the kernel view/template overlay — `PlannerHarnessStartAdapter::validate` refuses template tracks with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
+            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400. */
             400: {
                 headers: {
                     [name: string]: unknown;
