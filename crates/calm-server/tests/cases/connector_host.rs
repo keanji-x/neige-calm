@@ -140,6 +140,15 @@ struct StubServer {
     /// `Authorization` header values seen, in order — the slot the credential
     /// rides in since #1194. Empty string when the header was absent.
     seen_auth: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `(JSON-RPC method, Authorization value)` for each request, recorded as
+    /// ONE push from the connection task that knows both.
+    ///
+    /// `seen_methods` and `seen_auth` are two vectors filled from concurrent
+    /// per-connection tasks, so zipping them is not sound — and the pairing is
+    /// exactly what an auth assertion needs, because the client spends two
+    /// different `Phase`s and a defect can live in only one of them. See
+    /// `Self::auth_by_method`.
+    seen_auth_by_method: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     /// Whole request targets (path AND query), so #1284 S3b can prove a
     /// configured PATH reached the wire — `seen_queries` drops the path, which
     /// is exactly the half the url slots fill.
@@ -222,6 +231,7 @@ impl StubServer {
         let addr = listener.local_addr().expect("local addr");
         let seen_queries = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_auth = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_auth_by_method = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_targets = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let tools_list_received = Arc::new(AtomicBool::new(false));
@@ -229,6 +239,7 @@ impl StubServer {
         let targets = Arc::clone(&seen_targets);
         let queries = Arc::clone(&seen_queries);
         let auths = Arc::clone(&seen_auth);
+        let auth_by_method = Arc::clone(&seen_auth_by_method);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
         // Wrapped so each per-connection task can take it. Connections are
@@ -244,6 +255,7 @@ impl StubServer {
                 };
                 let queries = Arc::clone(&queries);
                 let auths = Arc::clone(&auths);
+                let auth_by_method = Arc::clone(&auth_by_method);
                 let targets = Arc::clone(&targets);
                 let methods = Arc::clone(&methods);
                 let received = Arc::clone(&received);
@@ -268,6 +280,10 @@ impl StubServer {
                         .unwrap_or_default()
                         .to_string();
                     methods.lock().unwrap().push(method.clone());
+                    auth_by_method
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), auth.clone()));
                     let id = req.get("id").cloned().unwrap_or(json!(1));
 
                     if method == "tools/list" {
@@ -369,6 +385,7 @@ impl StubServer {
             addr,
             seen_queries,
             seen_auth,
+            seen_auth_by_method,
             seen_targets,
             seen_methods,
             tools_list_received,
@@ -391,6 +408,12 @@ impl StubServer {
     /// `Authorization` header values seen, in order.
     fn auth_headers(&self) -> Vec<String> {
         self.seen_auth.lock().unwrap().clone()
+    }
+
+    /// `(method, Authorization)` per request — the pairing an auth assertion
+    /// needs in order to say anything about a specific `Phase`.
+    fn auth_by_method(&self) -> Vec<(String, String)> {
+        self.seen_auth_by_method.lock().unwrap().clone()
     }
 
     fn targets(&self) -> Vec<String> {
@@ -866,13 +889,33 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
     // bug `bearer` exists to fix is that `header:<name>` sets the value to the
     // RAW credential, and a presence-only check passes on exactly that bug.
     //
-    // **Mutation witness** — change the `ApiKeyIn::Bearer` arm in
-    // `HttpMcpClient::new` to send the bare key. This goes red with
-    // `the API key must ride as `Bearer <key>`, got ["sk-super-secret-do-not-leak-8213", …]`.
-    let auths = stub.auth_headers();
+    // **It is `all`, paired with the method, and that is not pedantry.** An
+    // `any` over the recorded values was the first cut, and a review channel
+    // produced the mutation that walks through it: strip the `Bearer ` prefix
+    // in `HttpMcpClient::request` only when `phase == Phase::Call`, leaving
+    // bring-up correct. That mutation was RUN — it survived all 157 tests in
+    // this suite and all 33 `http_mcp` unit tests, because bring-up's two
+    // requests satisfied the `any` on their own and no assertion anywhere
+    // looked at the `tools/call` request's credential. The client spends two
+    // `Phase`s; an assertion that does not name them cannot see a defect in
+    // one of them.
+    //
+    // **Mutation witnesses** — (a) the `ApiKeyIn::Bearer` arm in
+    // `HttpMcpClient::new` sends the bare key: every row goes wrong.
+    // (b) the phase split above: only the `tools/call` row does.
+    let by_method = stub.auth_by_method();
+    let expected = format!("Bearer {SECRET_VALUE}");
+    for (method, auth) in &by_method {
+        assert_eq!(
+            auth, &expected,
+            "every request must carry `Bearer <key>`; `{method}` did not: {by_method:?}"
+        );
+    }
+    // …and the `tools/call` request really is among them, so the loop above is
+    // not quantifying over bring-up alone.
     assert!(
-        auths.iter().any(|a| a == &format!("Bearer {SECRET_VALUE}")),
-        "the API key must ride as `Bearer <key>`, got {auths:?}"
+        by_method.iter().any(|(m, _)| m == "tools/call"),
+        "the `tools/call` phase must be covered by the assertion above: {by_method:?}"
     );
     // …and nowhere near the URL. #1194's whole point: the credential is not in
     // the one string `ureq::Error`'s `Display` prints.

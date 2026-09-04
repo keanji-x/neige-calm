@@ -1309,6 +1309,28 @@ impl McpHttpBlock {
                 ),
             ));
         }
+        // The retired placement is refused BEFORE the `(secret, in)` match,
+        // and that placement is deliberate. Inside the match it would sit under
+        // an `api_key_secret.is_some()` arm, and the `(None, _)` arm would let
+        // `{"url": …, "api_key_in": "query:api_key"}` — no secret named —
+        // through: the closed set would then be closed only for manifests that
+        // happen to configure a credential. It is the SET that is closed, not
+        // the set-when-a-key-is-present, so the check is unconditional and the
+        // three doc sentences that say so are true as written.
+        //
+        // Fail-closed on purpose: a plugin whose manifest still puts the
+        // credential in the URL must not load. Silently downgrading it to "send
+        // nothing" would turn a leak into a mystery 401, and silently promoting
+        // it to `bearer` would send the credential somewhere the operator never
+        // wrote.
+        if let Some(api_key_in) = self.api_key_in.as_deref()
+            && ApiKeyIn::is_retired_query(api_key_in)
+        {
+            return Err(ManifestError::invalid(
+                "mcp_http.api_key_in",
+                RETIRED_QUERY_HINT,
+            ));
+        }
         match (self.api_key_secret.as_deref(), self.api_key_in.as_deref()) {
             (Some(secret), _) if secret.trim().is_empty() => {
                 return Err(ManifestError::invalid(
@@ -1320,17 +1342,6 @@ impl McpHttpBlock {
                 return Err(ManifestError::invalid(
                     "mcp_http.api_key_in",
                     "required whenever `api_key_secret` is set",
-                ));
-            }
-            (Some(_), Some(api_key_in)) if ApiKeyIn::is_retired_query(api_key_in) => {
-                // Fail-closed on purpose: a plugin whose manifest still puts the
-                // credential in the URL must not load. Silently downgrading it
-                // to "send nothing" would turn a leak into a mystery 401, and
-                // silently promoting it to `bearer` would send the credential
-                // somewhere the operator never wrote.
-                return Err(ManifestError::invalid(
-                    "mcp_http.api_key_in",
-                    RETIRED_QUERY_HINT,
                 ));
             }
             (Some(_), Some(api_key_in)) => match ApiKeyIn::parse(api_key_in) {
@@ -4357,6 +4368,58 @@ mod connector_kind_tests {
                 "`{retired}` must name both replacements: {err}"
             );
         }
+    }
+
+    /// E2 — the closed set is closed **unconditionally**, not only for
+    /// manifests that also name a credential.
+    ///
+    /// The first cut of this slice put the retirement inside the
+    /// `(api_key_secret, api_key_in)` match, under an arm that required
+    /// `Some(secret)`. Review executed the counter-example below and it PARSED:
+    /// `{"url": …, "api_key_in": "query:api_key"}` with no `api_key_secret`
+    /// went through the `(None, _)` arm untouched. A closed set that is only
+    /// closed when a key happens to be configured is not a closed set, and the
+    /// three doc sentences saying `query:<name>` is rejected would have needed
+    /// a hedge to stay true.
+    ///
+    /// **Mutation witness** — move the `is_retired_query` check back inside the
+    /// match as `(Some(_), Some(x)) if is_retired_query(x)`. This test goes red
+    /// on `a keyless manifest must be refused, but it parsed`; the
+    /// keyed-manifest test above stays GREEN, which is exactly why that test
+    /// alone could not catch it.
+    #[test]
+    fn a_retired_query_placement_is_rejected_even_without_a_credential() {
+        for retired in ["query:api_key", "query:", "query"] {
+            let mut block = mcp_http_block();
+            block.as_object_mut().unwrap().remove("api_key_secret");
+            block["api_key_in"] = json!(retired);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                &format!("keyless `{retired}`"),
+            )
+            .to_string();
+            assert!(err.contains("mcp_http.api_key_in"), "`{retired}`: {err}");
+            assert!(err.contains("retired"), "`{retired}`: {err}");
+        }
+
+        // Positive control: a keyless manifest that says nothing about
+        // `api_key_in` still parses, so the rule above is about the retired
+        // value and not about keyless manifests in general.
+        let mut ok = mcp_http_block();
+        let obj = ok.as_object_mut().unwrap();
+        obj.remove("api_key_secret");
+        obj.remove("api_key_in");
+        Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": ok })))
+            .expect("a keyless connector with no api_key_in must still parse");
+
+        // …and a keyless manifest naming a SURVIVING form parses too. (It sends
+        // nothing, having no secret to send — `HttpMcpClient::new` only reaches
+        // the auth branch inside `if let Some(key)`.)
+        let mut ok2 = mcp_http_block();
+        ok2.as_object_mut().unwrap().remove("api_key_secret");
+        ok2["api_key_in"] = json!("bearer");
+        Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": ok2 })))
+            .expect("a keyless `bearer` is not what this rule is about");
     }
 
     #[test]
