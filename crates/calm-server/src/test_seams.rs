@@ -63,6 +63,46 @@ pub async fn prepare_workspace_lease_target_for_test(
     .map(|target| target.repo_root)
 }
 
+/// #1318 S3 — take a *whole* first-worker workspace lease from an integration
+/// test: `prepare_workspace_lease_target_tx` → commit →
+/// `provision_workspace_worktree`, in that order.
+///
+/// Why the pair and not just the first half: the seam above stops one step
+/// short of where a materialized workspace is actually *used*. Production runs
+/// both (`operation::codex_adapter` provisions from the prepared target after
+/// the tx commits; `decision_sink`'s own harness does the same), and every
+/// existing assertion on a materialized workspace stopped at "`.git` exists and
+/// `HEAD` resolves" — which a `git branch -m neige` inside a freshly
+/// materialized workspace satisfies while making the first
+/// `git worktree add -b neige/<track>/<card>` fail on a `refs/heads/neige`
+/// file/directory conflict. Only running the second half sees that.
+///
+/// Returns the provisioned worktree path (`target.path`). `WorkspaceLeaseTarget`
+/// is `pub(crate)`, so the seam does the sequencing rather than handing the
+/// target out — which also keeps the ordering itself in production-adjacent
+/// code instead of being re-stated (and drifting) per test.
+///
+/// `fixtures`-only, like the rest of this module.
+#[cfg(feature = "fixtures")]
+pub async fn provision_workspace_lease_for_test(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+    card_id: &str,
+    workspace_root: &std::path::Path,
+) -> crate::error::Result<std::path::PathBuf> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let target = crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
+        &mut tx,
+        track_id,
+        card_id,
+        workspace_root,
+    )
+    .await?;
+    tx.commit().await?;
+    crate::operation::workspace_lease::provision_workspace_worktree(&target)?;
+    Ok(target.path)
+}
+
 /// #1147 S3 — reach the production workspace-lease *acquisition* from an
 /// integration test.
 ///
