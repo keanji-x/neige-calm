@@ -6,7 +6,7 @@ use calm_types::report_blocks::tasks::{
     Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
     gate_rule_violations, json_eq, opt_json_eq, task_diagnostic_action, unknown_deps,
 };
-use calm_types::report_links::{parse_destination, scan_links};
+use calm_types::report_links::{format_track_destination, parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
@@ -503,7 +503,7 @@ fn declaration_references(declaration: &TaskDeclaration) -> Vec<String> {
     {
         references.extend(scan_links(text).links.into_iter().filter_map(|link| {
             link.dst_block_id
-                .map(|block| format!("neige://wave/{}#{block}", link.dst_track_id))
+                .map(|block| format_track_destination(&link.dst_track_id, Some(&block)))
         }));
     }
     references.sort();

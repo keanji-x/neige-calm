@@ -9,6 +9,9 @@ use utoipa::ToSchema;
 pub const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
+/// Frozen persisted author value for planner-authored task declarations.
+pub const PLANNER_DECLARATION_AUTHOR: &str = "spec";
+
 /// Diagnostic paths that make a keyed task declaration unschedulable.
 ///
 /// `path` is the §6.5 withdrawal predicate carrier, not a compatibility-only
@@ -787,7 +790,7 @@ pub fn project_task_declarations(
             // `"spec"` (migration 0083's header says why); this fallback feeds
             // a diagnostic that is compared against those blocks.
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
-            .unwrap_or("spec");
+            .unwrap_or(PLANNER_DECLARATION_AUTHOR);
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
             block.kind == super::KIND_TASK
                 && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())

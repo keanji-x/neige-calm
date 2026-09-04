@@ -9,60 +9,72 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_types::report_blocks::tasks::TaskDeclaration;
+use calm_types::report_blocks::tasks::{
+    PLANNER_DECLARATION_AUTHOR, TaskDeclaration, project_task_declarations,
+};
+use calm_types::report_links::format_track_destination;
+use calm_types::track_report::ReportBlock;
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::{
-    SqlxRepo, evaluate_schedulability,
-    task_projection::evaluate_schedulability_after_snapshot_for_test,
+    SqlxRepo, begin_immediate_tx, evaluate_schedulability, project_tasks_tx, task_claim_pending_tx,
+    task_mark_running_tx, task_projection::evaluate_schedulability_after_snapshot_for_test,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn declaration(index: usize, key: &str, goal: &str) -> TaskDeclaration {
+    let block = ReportBlock {
+        id: format!("b_{index:04x}"),
+        kind: calm_types::report_blocks::KIND_TASK.into(),
+        rev: 0,
+        payload: json!({
+            "key": key,
+            "kind": "codex",
+            "goal": goal,
+            "ready": true,
+            "no_gate_reason": "not needed",
+            "declared_by": PLANNER_DECLARATION_AUTHOR
+        }),
+    };
+    let (mut declarations, diagnostics) = project_task_declarations(&[block]);
+    assert!(
+        diagnostics.iter().all(Vec::is_empty),
+        "test declaration must be valid: {diagnostics:?}"
+    );
+    declarations.remove(0)
+}
+
 fn changed_declaration() -> TaskDeclaration {
-    TaskDeclaration {
-        block_index: Some(0),
-        block_id: "b_changed".into(),
-        key: "running-key".into(),
-        kind: "codex".into(),
-        goal: "changed goal".into(),
-        acceptance: None,
-        gate: None,
-        no_gate_reason: Some("not needed".into()),
-        depends_on: Vec::new(),
-        context: json!({}),
-        cwd: None,
-        priority: 0,
-        refs: vec!["neige://card/reference-blocker".into()],
-        declared_by: "spec".into(),
-        released_by_user: false,
-        spawn: "in-wave".into(),
-        tombstoned_by: None,
-        ready: true,
-        tombstone: false,
-    }
+    let mut declaration = declaration(0, "running-key", "changed goal");
+    declaration.refs = vec!["neige://card/reference-blocker".into()];
+    declaration
 }
 
 fn reference_declaration() -> TaskDeclaration {
-    TaskDeclaration {
-        block_id: "b_reference".into(),
-        key: "new-key".into(),
-        goal: "reference goal".into(),
-        ..changed_declaration()
-    }
+    let mut declaration = declaration(0, "new-key", "reference goal");
+    declaration.refs = vec!["neige://card/reference-blocker".into()];
+    declaration
 }
 
-fn declaration_with_reference(index: usize, key: &str, reference: &str) -> TaskDeclaration {
-    TaskDeclaration {
-        block_index: Some(index),
-        block_id: format!("b_{index:04x}"),
-        key: key.into(),
-        goal: format!("goal {key}"),
-        refs: vec![reference.into()],
-        ..changed_declaration()
-    }
+fn declaration_with_reference(
+    index: usize,
+    key: &str,
+    reference: impl Into<String>,
+) -> TaskDeclaration {
+    let mut declaration = declaration(index, key, &format!("goal {key}"));
+    declaration.refs = vec![reference.into()];
+    declaration
+}
+
+fn legacy_block_reference(track_id: &str, block_id: &str) -> String {
+    format_track_destination(track_id, Some(block_id))
+}
+
+fn legacy_track_reference(track_id: &str) -> String {
+    format_track_destination(track_id, None)
 }
 
 async fn setup() -> Arc<SqlxRepo> {
@@ -104,17 +116,40 @@ async fn setup() -> Arc<SqlxRepo> {
     .execute(repo.pool())
     .await
     .expect("seed reference card");
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,\
-         status,declared_by,claim_context_json,context_closure_truncated,decl_ready,\
-         decl_released_by_user,context_verify_failures,spawn,created_at_ms,updated_at_ms) \
-         VALUES('snapshot-task','snapshot-track','running-key','codex','persisted goal','{}','[]',0,\
-         'running','spec',NULL,0,1,0,0,'in-wave',0,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed in-flight task");
+    let persisted = declaration(0, "running-key", "persisted goal");
+    let mut tx = begin_immediate_tx(repo.pool()).await.expect("seed task tx");
+    project_tasks_tx(&mut tx, "snapshot-track", &[persisted], &[vec![]])
+        .await
+        .expect("project pending task");
+    let task_id: String =
+        sqlx::query_scalar("SELECT id FROM tasks WHERE track_id='snapshot-track'")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("projected task id");
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task_id, 0, &[], false)
+            .await
+            .expect("claim task"),
+        1
+    );
+    assert_eq!(
+        task_mark_running_tx(&mut tx, &task_id, None, 0, 1_000)
+            .await
+            .expect("mark task running"),
+        1
+    );
+    tx.commit().await.expect("commit running task");
     repo
+}
+
+async fn delete_seeded_task(repo: &SqlxRepo) {
+    let deleted =
+        sqlx::query("DELETE FROM tasks WHERE track_id='snapshot-track' AND key='running-key'")
+            .execute(repo.pool())
+            .await
+            .expect("delete seeded task")
+            .rows_affected();
+    assert_eq!(deleted, 1, "the t0/t1 mutation must change one row");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -146,10 +181,7 @@ async fn diagnostics_never_mix_inflight_state_with_a_later_frozen_scan() {
         .await
         .expect("predicate must finish its fact statement")
         .expect("reader task must stay alive");
-    sqlx::query("DELETE FROM tasks WHERE id='snapshot-task'")
-        .execute(repo.pool())
-        .await
-        .expect("delete task between the fact snapshot and verdict evaluation");
+    delete_seeded_task(repo.as_ref()).await;
     resume_tx.send(()).expect("reader still listening");
     let verdicts = timeout(TEST_TIMEOUT, reader)
         .await
@@ -172,10 +204,7 @@ async fn diagnostics_never_mix_inflight_state_with_a_later_frozen_scan() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn diagnostics_never_mix_source_area_with_later_reference_targets() {
     let repo = setup().await;
-    sqlx::query("DELETE FROM tasks WHERE id='snapshot-task'")
-        .execute(repo.pool())
-        .await
-        .expect("leave capacity empty");
+    delete_seeded_task(repo.as_ref()).await;
     let reader_repo = Arc::clone(&repo);
     let (snapshot_loaded_tx, snapshot_loaded_rx) = oneshot::channel();
     let (resume_tx, resume_rx) = oneshot::channel();
@@ -235,10 +264,7 @@ async fn diagnostics_never_mix_source_area_with_later_reference_targets() {
 #[tokio::test]
 async fn snapshot_reference_materialization_preserves_reference_diagnostics() {
     let repo = setup().await;
-    sqlx::query("DELETE FROM tasks WHERE id='snapshot-task'")
-        .execute(repo.pool())
-        .await
-        .expect("leave capacity empty");
+    delete_seeded_task(repo.as_ref()).await;
     sqlx::query("UPDATE tracks SET planner_task_ceiling=20 WHERE id='snapshot-track'")
         .execute(repo.pool())
         .await
@@ -282,23 +308,39 @@ async fn snapshot_reference_materialization_preserves_reference_diagnostics() {
     let declarations = vec![
         declaration_with_reference(0, "card-present", "neige://card/reference-blocker"),
         declaration_with_reference(1, "card-missing", "neige://card/gone"),
-        declaration_with_reference(2, "block-present", "neige://wave/destination-track#b_1234"),
-        declaration_with_reference(3, "block-missing", "neige://wave/destination-track#b_dead"),
-        declaration_with_reference(4, "track-missing", "neige://wave/gone#b_1234"),
-        declaration_with_reference(5, "block-unspecified", "neige://wave/destination-track"),
+        declaration_with_reference(
+            2,
+            "block-present",
+            legacy_block_reference("destination-track", "b_1234"),
+        ),
+        declaration_with_reference(
+            3,
+            "block-missing",
+            legacy_block_reference("destination-track", "b_dead"),
+        ),
+        declaration_with_reference(4, "track-missing", legacy_block_reference("gone", "b_1234")),
+        declaration_with_reference(
+            5,
+            "block-unspecified",
+            legacy_track_reference("destination-track"),
+        ),
         declaration_with_reference(6, "cross-user-card", "neige://card/cross-user-card"),
         declaration_with_reference(
             7,
             "cross-user-block",
-            "neige://wave/cross-user-track#b_1234",
+            legacy_block_reference("cross-user-track", "b_1234"),
         ),
         declaration_with_reference(
             8,
             "cross-user-missing-block",
-            "neige://wave/cross-user-track#b_dead",
+            legacy_block_reference("cross-user-track", "b_dead"),
         ),
         declaration_with_reference(9, "system-card", "neige://card/system-card"),
-        declaration_with_reference(10, "system-block", "neige://wave/system-track#b_1234"),
+        declaration_with_reference(
+            10,
+            "system-block",
+            legacy_block_reference("system-track", "b_1234"),
+        ),
     ];
     let mut conn = repo.pool().acquire().await.expect("reader connection");
     let verdicts = evaluate_schedulability(

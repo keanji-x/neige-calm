@@ -321,6 +321,18 @@ pub fn parse_destination(destination: &str) -> Option<(String, Option<String>)> 
     Some((track_id.to_string(), block_id.map(str::to_string)))
 }
 
+/// Build the canonical internal destination for a track or one of its blocks.
+/// Keeping the released wire prefix here gives callers one construction source
+/// alongside [`parse_destination`] and [`rewrite_track_destination`].
+pub fn format_track_destination(track_id: &str, block_id: Option<&str>) -> String {
+    let mut destination = format!("{TRACK_LINK_PREFIX}{track_id}");
+    if let Some(block_id) = block_id {
+        destination.push('#');
+        destination.push_str(block_id);
+    }
+    destination
+}
+
 pub fn is_block_id(id: &str) -> bool {
     id.len() == 6
         && id.starts_with("b_")
@@ -344,6 +356,18 @@ mod tests {
 
     fn copied(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn formatted_destinations_round_trip_through_the_parser() {
+        assert_eq!(
+            parse_destination(&format_track_destination("track", Some("b_1234"))),
+            Some(("track".into(), Some("b_1234".into())))
+        );
+        assert_eq!(
+            parse_destination(&format_track_destination("track", None)),
+            Some(("track".into(), None))
+        );
     }
 
     fn collect_links(markdown: &str) -> Vec<ReportLinkRef> {
