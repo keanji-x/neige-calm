@@ -244,26 +244,71 @@ impl ConnectorKind {
 }
 
 /// Where the API key rides on an outbound `mcp-http` request. Closed set:
-/// `query:<name>` or `header:<name>` (§2.2).
+/// `bearer` or `header:<name>` (§2.2).
+///
+/// **`query:<name>` was retired by #1194** and is now a validation error, not a
+/// third variant. The credential rode in the request URL, which is the one
+/// string `ureq::Error`'s `Display` prints first — so every error path in
+/// `http_mcp` had to be shaped around never formatting one, and an upstream
+/// quoting the request line back at us echoed the credential by construction.
+/// Retiring it is what collapses that machinery; see [`RETIRED_QUERY_HINT`] for
+/// the operator-facing migration, and `http_mcp`'s module header for what the
+/// retirement structurally closed.
+///
+/// The two survivors differ in VALUE SHAPE, not just in location, and that is
+/// the whole reason [`Self::Bearer`] exists rather than being spelled
+/// `header:Authorization`:
+///
+/// * [`Self::Bearer`] sends `Authorization: Bearer <credential>`;
+/// * [`Self::Header`] sends `<name>: <credential>` **verbatim**, no prefix.
+///
+/// Measured 2026-09 against `https://mcp.wisburg.com/mcp`, the one real
+/// consumer: `Authorization: Bearer <key>` is accepted, `Authorization: <key>`
+/// without the prefix is rejected with `No API key provided`. So a manifest
+/// migrated from `query:api_key` to `header:Authorization` would have failed at
+/// REQUEST time, not at validation time. `header:<name>` is kept unchanged for
+/// the `X-API-Key`-style servers that want the bare credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiKeyIn {
-    Query(String),
+    /// `Authorization: Bearer <credential>`.
+    Bearer,
+    /// `<name>: <credential>`, verbatim.
     Header(String),
 }
 
+/// What an operator must do when their manifest still says `query:<name>`.
+///
+/// Rejection is deliberate and fail-closed: such a plugin must refuse to load
+/// loudly rather than quietly keep putting the credential in a URL.
+pub const RETIRED_QUERY_HINT: &str = "`query:<name>` was retired (#1194): the credential must not ride in the \
+     request URL, where transport errors and upstream echoes reproduce it. Use \
+     `bearer` (sends `Authorization: Bearer <credential>`) or, for a server \
+     that wants the bare credential under its own header name, \
+     `header:<name>` (sends `<name>: <credential>` verbatim)";
+
 impl ApiKeyIn {
     /// Parse the manifest's `api_key_in` string. `None` for anything outside
-    /// the closed set — the caller turns that into a validation error.
+    /// the closed set — the caller turns that into a validation error, and
+    /// gives the retired `query:` spelling its own message.
     pub fn parse(s: &str) -> Option<Self> {
+        if s == "bearer" {
+            return Some(Self::Bearer);
+        }
         let (scheme, name) = s.split_once(':')?;
         if name.trim().is_empty() {
             return None;
         }
         match scheme {
-            "query" => Some(Self::Query(name.to_string())),
             "header" => Some(Self::Header(name.to_string())),
             _ => None,
         }
+    }
+
+    /// Does `s` name the retired query placement? Answered on the SCHEME, so
+    /// `query:`, `query:api_key` and `query:a=b` all get the migration message
+    /// rather than the generic closed-set one.
+    pub fn is_retired_query(s: &str) -> bool {
+        s == "query" || s.starts_with("query:")
     }
 }
 
@@ -316,7 +361,8 @@ pub struct McpHttpBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_secret: Option<String>,
 
-    /// `query:<name>` | `header:<name>`. Required when `api_key_secret` is set.
+    /// `bearer` | `header:<name>`. Required when `api_key_secret` is set.
+    /// `query:<name>` was retired by #1194 and is rejected — see [`ApiKeyIn`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_in: Option<String>,
 
@@ -1276,11 +1322,22 @@ impl McpHttpBlock {
                     "required whenever `api_key_secret` is set",
                 ));
             }
+            (Some(_), Some(api_key_in)) if ApiKeyIn::is_retired_query(api_key_in) => {
+                // Fail-closed on purpose: a plugin whose manifest still puts the
+                // credential in the URL must not load. Silently downgrading it
+                // to "send nothing" would turn a leak into a mystery 401, and
+                // silently promoting it to `bearer` would send the credential
+                // somewhere the operator never wrote.
+                return Err(ManifestError::invalid(
+                    "mcp_http.api_key_in",
+                    RETIRED_QUERY_HINT,
+                ));
+            }
             (Some(_), Some(api_key_in)) => match ApiKeyIn::parse(api_key_in) {
                 None => {
                     return Err(ManifestError::invalid(
                         "mcp_http.api_key_in",
-                        "must be `query:<name>` or `header:<name>`",
+                        "must be `bearer` or `header:<name>`",
                     ));
                 }
                 // A header name that is not an RFC 9110 field-name would be
@@ -1293,21 +1350,6 @@ impl McpHttpBlock {
                         format!(
                             "`{name}` is not a legal HTTP header name \
                              (RFC 9110 token: alphanumerics and any of `!#$%&'*+-.^_`|~`)"
-                        ),
-                    ));
-                }
-                // A query parameter name with characters that would have to be
-                // percent-encoded is legal but confusing; `=` and `&` would
-                // actively re-shape the query, so refuse them outright.
-                Some(ApiKeyIn::Query(name))
-                    if name.contains(['=', '&', '#', '?'])
-                        || name.contains(char::is_whitespace) =>
-                {
-                    return Err(ManifestError::invalid(
-                        "mcp_http.api_key_in",
-                        format!(
-                            "query parameter name `{name}` must not contain \
-                             whitespace or any of `=`, `&`, `#`, `?`"
                         ),
                     ));
                 }
@@ -1580,13 +1622,19 @@ impl CliQueryTool {
 /// #1164 §2.2 — real parse of `mcp_http.url`.
 ///
 /// The previous check was `starts_with("http://") || starts_with("https://")`,
-/// which accepted a bare `https://`, a malformed authority, and — the one that
-/// is actively harmful — a **fragment**. `HttpMcpClient::new` appends the query
-/// auth AFTER whatever the manifest said, so `https://h/mcp#x` becomes
-/// `https://h/mcp#x?api_key=…`: the key lands inside the fragment and is never
-/// transmitted, and the connector fails authentication with no hint why.
+/// which accepted a bare `https://`, a malformed authority, and a **fragment**.
 ///
-/// Rejecting at manifest-parse time means the failure names the field.
+/// The fragment's original sharp edge is gone with #1194: `HttpMcpClient::new`
+/// used to append `?api_key=…` after whatever the manifest said, so
+/// `https://h/mcp#x` became `https://h/mcp#x?api_key=…` and the credential
+/// landed inside the fragment, never transmitted, with the connector failing
+/// authentication and no hint why. Nothing is appended any more.
+///
+/// It is still refused, on the reason that always also applied: a fragment is
+/// never sent to a server by anyone, so an endpoint written with one does not
+/// address what its author wrote — the path/query the server sees silently
+/// stops at the `#`. Rejecting at manifest-parse time means that failure names
+/// the field instead of surfacing as a puzzling 404.
 fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     let field = "mcp_http.url";
     // WHATWG normalization is too forgiving for a *manifest*: it turns
@@ -1660,8 +1708,8 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     if parsed.fragment().is_some() {
         return Err(ManifestError::invalid(
             field,
-            "must not carry a `#fragment`: the API key is appended to the query \
-             string after it, so it would never be transmitted",
+            "must not carry a `#fragment`: a fragment is never sent to the \
+             server, so the endpoint contacted is not the one written here",
         ));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -1887,15 +1935,18 @@ fn json_value_type_name(v: &Value) -> &'static str {
 ///   owner/dev, so nothing crosses a trust boundary. What the keyed tier
 ///   protects is the opposite arrangement — a secret placed in `secrets.json`
 ///   over SSH being redirected by someone who only holds a UI session.
-/// * *A keyed connector's query slot can inject a second `api_key=`.* The value
-///   `a&api_key=zz` renders into the query, and
-///   [`crate::plugin_host::http_mcp::HttpMcpClient::new`] then appends the real
-///   key after it; most servers read the first occurrence, so an operator can
-///   degrade or break this connector's own authentication. The credential still
-///   goes only to the locked origin — nothing is exfiltrated — so this is a
-///   self-inflicted denial of service by the one role that could disable the
-///   plugin outright, and it is left as such rather than met with a query
-///   grammar of our own.
+/// * *A keyed connector's query slot can write anything into the query.* This
+///   used to be sharper than it now is: the value `a&api_key=zz` rendered into
+///   the query, [`crate::plugin_host::http_mcp::HttpMcpClient::new`] appended
+///   the real key after it, and most servers read the first occurrence — so an
+///   operator could degrade this connector's own authentication. #1194 retired
+///   the query placement, so there is no appended `api_key=` left to shadow.
+///   What remains is the general case: an operator with a url slot can send
+///   query parameters of their choosing to the locked origin. The credential
+///   still goes only to that origin — nothing is exfiltrated — so this stays a
+///   self-inflicted problem for the one role that could disable the plugin
+///   outright, and it is left as such rather than met with a query grammar of
+///   our own.
 ///
 /// **Why the asymmetry** (§2.3(c), v5). Re-running [`validate_mcp_http_url`]
 /// only proves the result is a well-formed URL: it refuses an empty authority,
@@ -3414,7 +3465,7 @@ mod connector_kind_tests {
         json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "WISBURG_API_KEY",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
             "tools_allow": ["list_reports"],
             "request_timeout_ms": 10000,
         })
@@ -3715,9 +3766,11 @@ mod connector_kind_tests {
     }
 
     /// Prefix matching on `http://` accepted all of these. The FRAGMENT case
-    /// is the one that is actively harmful: `HttpMcpClient::new` appends
-    /// `?api_key=…` after whatever the manifest said, so the credential lands
-    /// inside the fragment and is never transmitted.
+    /// used to be the actively harmful one — `HttpMcpClient::new` appended
+    /// `?api_key=…` after whatever the manifest said, so the credential landed
+    /// inside the fragment and was never transmitted. #1194 removed the append;
+    /// the fragment is still refused because it is never sent to the server at
+    /// all, so the endpoint contacted is not the one the author wrote.
     #[test]
     fn mcp_http_url_is_really_parsed() {
         for bad in [
@@ -4002,7 +4055,7 @@ mod connector_kind_tests {
         let block = McpHttpBlock {
             url: "https://user{{config.endpoint}}@h.example/mcp".to_string(),
             api_key_secret: Some("API_KEY".to_string()),
-            api_key_in: Some("query:api_key".to_string()),
+            api_key_in: Some("bearer".to_string()),
             tools_allow: vec!["quote".to_string()],
             request_timeout_ms: None,
             bringup_timeout_ms: None,
@@ -4265,16 +4318,44 @@ mod connector_kind_tests {
         }
     }
 
+    /// #1194 — `query:<name>` is retired, and the refusal must TELL the
+    /// operator what to write instead. Every spelling of the scheme lands on
+    /// the migration message, not the generic closed-set one: an operator whose
+    /// manifest says `query:api_key` reads "switch to `bearer`", not "must be
+    /// `bearer` or `header:<name>`" with no clue that this used to work.
+    ///
+    /// **Mutation witness** — delete the `is_retired_query` arm from
+    /// `McpHttpBlock::validate`. `query:api_key` and `query:a=b` then reach
+    /// `ApiKeyIn::parse`, which returns `None`, and the generic message ships:
+    /// this test goes red on the `retired` assertion for every row. Delete
+    /// `is_retired_query` AND make `parse` accept `query:` again and the first
+    /// assertion (`must be rejected, but it parsed`) fires.
     #[test]
-    fn query_api_key_name_must_not_reshape_the_query() {
-        for bad in ["a=b", "a&b", "a?b", "a#b", "a b"] {
+    fn a_retired_query_placement_is_rejected_with_a_migration_message() {
+        for retired in [
+            "query:api_key",
+            "query:key",
+            "query:",
+            "query",
+            "query:a=b",
+            "query:a b",
+        ] {
             let mut block = mcp_http_block();
-            block["api_key_in"] = json!(format!("query:{bad}"));
+            block["api_key_in"] = json!(retired);
             let err = expect_reject(
                 Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
-                bad,
+                retired,
+            )
+            .to_string();
+            assert!(err.contains("api_key_in"), "`{retired}`: {err}");
+            assert!(
+                err.contains("retired"),
+                "`{retired}` must be refused AS retired, not as an unknown scheme: {err}"
             );
-            assert!(err.to_string().contains("api_key_in"), "`{bad}`: {err}");
+            assert!(
+                err.contains("`bearer`") && err.contains("`header:<name>`"),
+                "`{retired}` must name both replacements: {err}"
+            );
         }
     }
 
@@ -4296,18 +4377,26 @@ mod connector_kind_tests {
     }
 
     #[test]
-    fn api_key_in_parses_both_locations() {
-        assert_eq!(
-            ApiKeyIn::parse("query:api_key"),
-            Some(ApiKeyIn::Query("api_key".into()))
-        );
+    fn api_key_in_parses_both_surviving_forms() {
+        assert_eq!(ApiKeyIn::parse("bearer"), Some(ApiKeyIn::Bearer));
         assert_eq!(
             ApiKeyIn::parse("header:x-api-key"),
             Some(ApiKeyIn::Header("x-api-key".into()))
         );
-        assert_eq!(ApiKeyIn::parse("query:"), None);
+        // `bearer` takes no argument: it is a value SHAPE, not a location, so
+        // there is nothing for a `:<name>` to name.
+        assert_eq!(ApiKeyIn::parse("bearer:x"), None);
+        assert_eq!(ApiKeyIn::parse("Bearer"), None);
+        assert_eq!(ApiKeyIn::parse("header:"), None);
         assert_eq!(ApiKeyIn::parse("cookie:k"), None);
         assert_eq!(ApiKeyIn::parse("api_key"), None);
+        // Retired, and `parse` is the wrong layer to say so — the validator
+        // owns the migration message.
+        assert_eq!(ApiKeyIn::parse("query:api_key"), None);
+        assert!(ApiKeyIn::is_retired_query("query:api_key"));
+        assert!(ApiKeyIn::is_retired_query("query"));
+        assert!(!ApiKeyIn::is_retired_query("queryish:x"));
+        assert!(!ApiKeyIn::is_retired_query("header:x"));
     }
 
     #[test]
