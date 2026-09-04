@@ -825,6 +825,47 @@ async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspac
     assert_eq!(survivor_status, "running");
 }
 
+/// The workspace move precedes the short delete transaction by design. If a
+/// surviving member cannot be reprojected, that transaction rolls back; the
+/// filesystem rename and process-local track cache must be compensated too.
+#[tokio::test]
+async fn failed_tree_reprojection_restores_the_recycled_workspace_and_track_cache() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (root_id, _) = managed_track(&b, &area_id, "root").await;
+    let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
+    let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
+        .bind(&root_id)
+        .bind(&victim_id)
+        .bind(&survivor_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    let corrupted =
+        sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
+            .bind(b"not-an-automerge-document".as_slice())
+            .bind(&survivor_id)
+            .execute(b.repo.pool())
+            .await
+            .unwrap()
+            .rows_affected();
+    assert_eq!(corrupted, 1);
+    let before = fingerprint(&victim_path);
+
+    let (status, body) = delete_track(&b, &victim_id).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    assert!(b.repo.track_get(&victim_id).await.unwrap().is_some());
+    assert!(victim_path.exists());
+    assert!(diff(&before, &fingerprint(&victim_path)).is_empty());
+    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_none());
+    assert_eq!(
+        b.tracks
+            .area_of(&calm_server::ids::TrackId::from(victim_id.clone())),
+        Some(area_id.into())
+    );
+}
+
 /// Drive the production child-track creation path. Copied in shape from
 /// `today_launchpad.rs`: the parent task row is seeded directly because the
 /// adapter only reads frozen task fields from it, while every decision about

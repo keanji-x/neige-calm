@@ -138,11 +138,11 @@ function taskBadge(badge: RowBadge): ReactNode {
  * nowhere in it, while the desktop's reveal button *encloses* its status dot and
  * therefore names `Status: failed — track … is not a git repository` in full.
  * That asymmetry is missing information, not a wording choice, so `taskRow`
- * hands the same `phrase` to `MobileListItem`'s `accessibleDescription` channel:
- * the name stays the visible key, and the reason arrives as the control's
- * description. It is emitted whenever there is a status — including when
- * `phrase === token`, where it is the *only* way the status reaches a reader who
- * is on the button, since the visible word is outside it.
+ * hands the same `phrase` to `MobileListItem`'s `accessibleDescription` channel.
+ * When the row action also carries a server-owned pending reason, `taskRow`
+ * appends it there (or uses it alone for statusless NotAdmitted): the name stays
+ * the visible key, the reason stays out of the body, and the focused button can
+ * still announce it on a surface with no hover.
  *
  * `RowStatus.phrase` is not this file's to word — `core/view/track-page.ts` owns
  * it, and that is the whole reason the mobile surface stopped re-wording state.
@@ -213,7 +213,9 @@ function reveal(
  * shape is "no attribute"; that is the view model's call, not a rule this file
  * writes down. `hint` travels through the primitive's `hint` channel to the
  * `<li>`'s `title` — not through its visible `title` prop, which is the row's
- * name.
+ * name. For pending/NotAdmitted rows it is also folded into the generated
+ * button's non-visible description; a parent `title` is neither focusable nor
+ * inherited by assistive technology.
  *
  * The `open-card` action the derivation offers on a worker-card task never
  * reaches here: this painter declares it unsupported, so `paintModule` filters it
@@ -222,6 +224,11 @@ function reveal(
  */
 function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
   const action = reveal(row);
+  const reason = action?.hint ?? null;
+  const accessibleDescription = reason !== null
+    && (row.status === null || row.status.token === 'pending')
+    ? (row.status === null ? reason : `${row.status.phrase} — ${reason}`)
+    : (row.status?.phrase ?? null);
   const meta: readonly ReactNode[] = [
     ...row.badges.map(taskBadge),
     ...(row.status === null ? [] : [statusWord(
@@ -238,7 +245,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
       title={row.title}
       rowMarker={row.id}
       titleFieldMarker={FIELD.title}
-      {...(row.status === null ? {} : { accessibleDescription: row.status.phrase })}
+      {...(accessibleDescription === null ? {} : { accessibleDescription })}
       {...(action === null ? {} : {
         rowActionMarker: 'reveal-block' satisfies RowAction['kind'],
         onSelect: () => deps.onOpenTask?.(action.blockId),

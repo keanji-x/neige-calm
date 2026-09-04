@@ -49,8 +49,8 @@ use crate::model::{
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
-    release_workspace_leases_for_track_tx, sweep_workspace_worktrees_for_tracks_repo,
-    track_has_active_forge_action,
+    WorkspaceTrackSweep, release_workspace_leases_for_track_tx,
+    sweep_workspace_worktrees_for_tracks_repo, track_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
@@ -3568,7 +3568,7 @@ async fn finish_track_deletion(
     s: &RouteState,
     plan: TrackDeletePlan,
     actor: ActorId,
-) -> Result<()> {
+) -> Result<Vec<WorkspaceTrackSweep>> {
     let write_for_tx = s.write.clone();
     let track_id = plan.track_id.clone();
     let area_id = plan.area_id.clone();
@@ -3648,8 +3648,7 @@ async fn finish_track_deletion(
             })
         })
         .await?;
-    sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
-    Ok(())
+    Ok(sweeps)
 }
 
 /// #1147 S5 — reclaim this track's managed workspace, between teardown and the
@@ -3661,6 +3660,11 @@ async fn finish_track_deletion(
 /// both intact and the request retryable. The reverse order (row first) would
 /// turn a rename failure into "the track is gone, its repository is not", which
 /// is unretryable and needs a human.
+///
+/// The following database transaction may still reject the deletion (for
+/// example, an unresolved tree or unreadable surviving report). Its caller
+/// compensates a successful trash rename before returning that error, so the
+/// retained track row never points at a missing workspace.
 ///
 /// Recycling is not conditional on that ordering being observed elsewhere: the
 /// guards in [`workspace_recycle`] are what make the delete safe, not the
@@ -3677,8 +3681,8 @@ fn recycle_track_workspace_for_delete(
     s: &RouteState,
     track: &Track,
     area_kind: Option<AreaKind>,
-) -> Result<()> {
-    workspace_recycle::recycle_track_workspace(
+) -> Result<workspace_recycle::RecycleDecision> {
+    let decision = workspace_recycle::recycle_track_workspace(
         &s.workspace_root,
         area_kind,
         track.id.as_str(),
@@ -3686,7 +3690,7 @@ fn recycle_track_workspace_for_delete(
         crate::model::now_ms(),
     )?;
     workspace_recycle::gc_trash_best_effort(&s.workspace_root, crate::model::now_ms());
-    Ok(())
+    Ok(decision)
 }
 
 #[utoipa::path(
@@ -3817,8 +3821,27 @@ pub(crate) async fn delete_track(
 
     let plan = snapshot_track_deletion(&s, &pool, &track).await?;
     teardown_track_deletion(&s, &w, &cs, &plan).await?;
-    recycle_track_workspace_for_delete(&s, &track, owning_area.map(|c| c.kind))?;
-    finish_track_deletion(&s, plan, actor.to_actor_id()).await?;
+    let recycled = recycle_track_workspace_for_delete(&s, &track, owning_area.map(|c| c.kind))?;
+    let sweeps = match finish_track_deletion(&s, plan, actor.to_actor_id()).await {
+        Ok(sweeps) => sweeps,
+        Err(error) => {
+            // `track_delete_tx` updates this process-local cache before the
+            // surrounding transaction commits. A later projection/error rolls
+            // SQLite back but cannot roll the cache or filesystem back for us.
+            s.write
+                .area_cache()
+                .insert(track.id.clone(), track.area_id.clone());
+            if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&recycled) {
+                return Err(CalmError::Internal(format!(
+                    "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+    // This sweep is post-commit. A failure here must not restore the workspace:
+    // the track row is already gone and the trash path is now authoritative.
+    sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

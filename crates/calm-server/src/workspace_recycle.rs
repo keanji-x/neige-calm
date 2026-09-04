@@ -191,6 +191,35 @@ pub fn recycle_track_workspace(
     Ok(decision)
 }
 
+/// Compensate a successful trash rename when the database deletion that owns
+/// it later rolls back. Refused recycle decisions moved nothing and are no-ops.
+/// The original path must still be absent: replacing anything that appeared
+/// there after the move would trade a recoverable delete failure for data loss.
+pub fn restore_recycled_workspace(decision: &RecycleDecision) -> Result<()> {
+    let RecycleDecision::Trashed { from, to } = decision else {
+        return Ok(());
+    };
+    if from.exists() {
+        return Err(CalmError::Internal(format!(
+            "cannot restore recycled workspace {}: original path is occupied",
+            from.display()
+        )));
+    }
+    std::fs::rename(to, from).map_err(|error| {
+        CalmError::Internal(format!(
+            "restore recycled workspace {} -> {}: {error}",
+            to.display(),
+            from.display()
+        ))
+    })?;
+    tracing::warn!(
+        from = %to.display(),
+        to = %from.display(),
+        "restored recycled workspace after track deletion rolled back"
+    );
+    Ok(())
+}
+
 fn decide_and_move(
     workspace_root: &Path,
     area_kind: Option<AreaKind>,

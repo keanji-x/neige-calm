@@ -77,7 +77,7 @@ const ready: PanelRow = {
   kind: 'codex',
   badges: [],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-1', label: null, hint: 'Show alpha-impl in the report' }],
+  actions: [{ kind: 'reveal-block', blockId: 'block-1', label: null, hint: null }],
 };
 
 /** Dispatched, with a reason: a status supersedes the readiness word, and the
@@ -102,7 +102,7 @@ const withdrawn: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Withdrawn', struck: true }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: 'Show gamma-planner in the report' }],
+  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: null }],
 };
 
 /** Unreadable: an ordinary, unstruck declaration beside the withdrawn one. */
@@ -112,7 +112,7 @@ const unreadable: PanelRow = {
   kind: null,
   badges: [{ id: 'declaration', text: 'Unreadable', struck: false }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-4', label: null, hint: 'Show delta-doc in the report' }],
+  actions: [{ kind: 'reveal-block', blockId: 'block-4', label: null, hint: null }],
 };
 
 /** Declared but not ready, and never dispatched: **the one row that carries a
@@ -126,7 +126,7 @@ const notReady: PanelRow = {
   kind: 'codex',
   badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
   status: null,
-  actions: [{ kind: 'reveal-block', blockId: 'block-5', label: null, hint: 'Show epsilon-fix in the report' }],
+  actions: [{ kind: 'reveal-block', blockId: 'block-5', label: null, hint: null }],
 };
 
 /**
@@ -148,6 +148,16 @@ const namedReveal: PanelRow = {
   status: null,
   actions: [{
     kind: 'reveal-block', blockId: 'block-6', label: 'Reveal zeta-audit', hint: null,
+  }],
+};
+
+const hintedReveal: PanelRow = {
+  ...namedReveal,
+  id: 'block-6-hint',
+  title: 'zeta-hinted',
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-6-hint', label: null,
+    hint: 'A pointer-only hint',
   }],
 };
 
@@ -222,6 +232,18 @@ const pendingReason: PanelRow = {
   badges: [],
   status: { token: 'pending', phrase: 'pending' },
   actions: [{ kind: 'reveal-block', blockId: 'block-10', label: null, hint: 'Queued 1/1' }],
+};
+
+const notAdmittedReason: PanelRow = {
+  id: 'block-11',
+  title: 'lambda-rejected',
+  kind: 'codex',
+  badges: [],
+  status: null,
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-11', label: null,
+    hint: 'Not admitted · raise planner ceiling',
+  }],
 };
 
 const boundaryTasks: RowModuleView = {
@@ -388,6 +410,21 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
     expect(Array.from(row.querySelectorAll('[title]'))).toEqual([]);
     expect(row.getAttribute('title')).toBe('Queued 1/1');
     expect(Array.from(container.querySelectorAll('[title]'))).toEqual([row]);
+    const control = row.querySelector('button')!;
+    const described = control.getAttribute('aria-describedby')!;
+    expect(container.ownerDocument.getElementById(described)?.textContent)
+      .toBe('pending — Queued 1/1');
+  });
+
+  it('describes a statusless not-admitted row without showing the reason in its body', () => {
+    const container = paint({ ...tasksModule, rows: [notAdmittedReason] });
+    const row = container.querySelector('[data-nc-row="block-11"]')!;
+    const control = row.querySelector('button')!;
+    const described = control.getAttribute('aria-describedby')!;
+    expect(container.ownerDocument.getElementById(described)?.textContent)
+      .toBe('Not admitted · raise planner ceiling');
+    expect(control.textContent).toBe('lambda-rejected');
+    expect(row.querySelector('[data-nc-status]')).toBeNull();
   });
 });
 
@@ -463,9 +500,9 @@ describe('what the painted Tasks module puts on screen', () => {
      `label` is null so no accessible name may be fabricated over the visible
      one (WCAG 2.5.3). */
   it('puts the action hint on the row root and emits no aria-label', () => {
-    const container = paint(tasksModule);
-    const row = container.querySelector('[data-nc-row="block-1"]');
-    expect(row?.getAttribute('title')).toBe('Show alpha-impl in the report');
+    const container = paint({ ...tasksModule, rows: [hintedReveal] });
+    const row = container.querySelector('[data-nc-row="block-6-hint"]');
+    expect(row?.getAttribute('title')).toBe('A pointer-only hint');
     expect(row?.hasAttribute('aria-label')).toBe(false);
   });
 
