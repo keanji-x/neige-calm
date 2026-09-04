@@ -2288,7 +2288,6 @@ async fn start_planner_harness(
                         error = %last_error,
                         "planner harness start operation failed; track created but planner agent is inert"
                     );
-
                 }
                 OperationOutcome::Stuck { reason, from_phase } => {
                     tracing::warn!(
@@ -2298,7 +2297,6 @@ async fn start_planner_harness(
                         reason,
                         "planner harness start operation stuck; track created but planner agent is inert"
                     );
-
                 }
             },
             Err(e) => {
@@ -2308,7 +2306,6 @@ async fn start_planner_harness(
                     error = %e,
                     "planner harness start wait failed; track created but planner agent may be inert"
                 );
-
             }
         },
         Err(e) => {
@@ -2318,7 +2315,6 @@ async fn start_planner_harness(
                 error = %e,
                 "planner harness start submission failed; track created but planner agent is inert"
             );
-
         }
     }
 

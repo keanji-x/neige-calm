@@ -633,13 +633,11 @@ pub async fn track_create_idempotency_get_pool(
     .bind(idempotency_key)
     .fetch_optional(pool)
     .await?;
-    Ok(
-        row.map(
-            |(track_id, planner_card_id, report_card_id)| TrackCreateBinding {
-                track_id,
-                planner_card_id,
-                report_card_id,
-            },
-        ),
-    )
+    Ok(row.map(
+        |(track_id, planner_card_id, report_card_id)| TrackCreateBinding {
+            track_id,
+            planner_card_id,
+            report_card_id,
+        },
+    ))
 }

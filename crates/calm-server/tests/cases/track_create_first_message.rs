@@ -522,7 +522,9 @@ impl Boot {
 #[tokio::test]
 async fn the_first_message_reaches_the_agent_exactly_once() {
     let b = boot().await;
-    let (status, body) = b.create_track(Some("idem-headline"), Some("refactor the parser")).await;
+    let (status, body) = b
+        .create_track(Some("idem-headline"), Some("refactor the parser"))
+        .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     // "Exactly once", written so it actually says that. `copies_in_harness`
@@ -561,7 +563,9 @@ async fn the_first_message_reaches_the_agent_exactly_once() {
 #[tokio::test]
 async fn the_first_message_is_a_user_message_attributed_to_the_human() {
     let b = boot().await;
-    let (status, body) = b.create_track(Some("idem-attrib"), Some("please rename the track")).await;
+    let (status, body) = b
+        .create_track(Some("idem-attrib"), Some("please rename the track"))
+        .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let turns = b.started_turn_text("User says:").await;
@@ -681,13 +685,16 @@ async fn a_template_create_delivers_the_first_message() {
     // count cannot be satisfied by the seeded report travelling into the turn.
     let needle = "check the p99 on the way out";
     let (status, body) = b
-        .post_create(Some("idem-template"), json!({
-            "area_id": b.area_id,
-            "title": "",
-            "template_id": "small-change",
-            "first_message": needle,
-            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-        }))
+        .post_create(
+            Some("idem-template"),
+            json!({
+                "area_id": b.area_id,
+                "title": "",
+                "template_id": "small-change",
+                "first_message": needle,
+                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+            }),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let track_id = body["id"].as_str().unwrap().to_string();
@@ -788,13 +795,16 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
     // cannot be satisfied by the instantiated report travelling into the turn.
     let needle = "watch the p99 while it stages";
     let (status, body) = b
-        .post_create(Some("idem-recipe"), json!({
-            "area_id": b.area_id,
-            "title": "",
-            "recipe_id": recipe_id,
-            "first_message": needle,
-            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-        }))
+        .post_create(
+            Some("idem-recipe"),
+            json!({
+                "area_id": b.area_id,
+                "title": "",
+                "recipe_id": recipe_id,
+                "first_message": needle,
+                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+            }),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let track_id = body["id"].as_str().unwrap().to_string();
@@ -877,13 +887,16 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
 async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
     let b = boot().await;
     let (status, body) = b
-        .post_create(Some("idem-missing-recipe"), json!({
-            "area_id": b.area_id,
-            "title": "",
-            "recipe_id": "recipe-does-not-exist",
-            "first_message": "this must not be delivered anywhere",
-            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-        }))
+        .post_create(
+            Some("idem-missing-recipe"),
+            json!({
+                "area_id": b.area_id,
+                "title": "",
+                "recipe_id": "recipe-does-not-exist",
+                "first_message": "this must not be delivered anywhere",
+                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+            }),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(
@@ -961,7 +974,9 @@ async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
 
-    let (status, body) = b.create_track(Some("idem-failed-start"), Some("do not lose this sentence")).await;
+    let (status, body) = b
+        .create_track(Some("idem-failed-start"), Some("do not lose this sentence"))
+        .await;
     assert!(
         status.is_server_error(),
         "a create that promised to deliver a message must not answer 2xx when the harness that \
@@ -1506,7 +1521,11 @@ async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
         !failed.is_success(),
         "the injected thread/start failure must surface: status={failed} body={failed_body}"
     );
-    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "the failed attempt left its track"
+    );
 
     let (retry, retry_body) = b
         .create_track(Some("idem-retry"), Some("second time lucky"))
@@ -1559,7 +1578,11 @@ async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
         !failed.is_success(),
         "the injected thread/start failure must surface: status={failed} body={failed_body}"
     );
-    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "the failed attempt left its track"
+    );
 
     let (retry, retry_body) = b
         .create_track(
@@ -1745,7 +1768,11 @@ async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_vali
         !failed.is_success(),
         "premise: the injected thread/start failure must surface: status={failed} body={failed_body}"
     );
-    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "the failed attempt left its track"
+    );
     let track_id: String = sqlx::query_scalar("SELECT id FROM tracks")
         .fetch_one(b.repo.pool())
         .await
@@ -1915,7 +1942,11 @@ async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
         "one key, one track — the retry must adopt the track the first attempt already minted, \
          not mint another one"
     );
-    assert_eq!(b.card_count().await, 2, "its planner and report cards, once");
+    assert_eq!(
+        b.card_count().await,
+        2,
+        "its planner and report cards, once"
+    );
     assert_eq!(
         b.binding_count().await,
         1,
@@ -1985,7 +2016,9 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
     .unwrap();
     assert_eq!(b.binding_count().await, 0, "premise: no binding row");
 
-    let (status, body) = b.create_track(Some(key), Some("this must mint nothing")).await;
+    let (status, body) = b
+        .create_track(Some(key), Some("this must mint nothing"))
+        .await;
     assert!(
         status.is_server_error(),
         "an unreachable state must fail closed rather than mint: status={status} body={body}"
@@ -2291,7 +2324,9 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
         "first_message": "ship the thing",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
     });
-    let (created, body) = b.post_create(Some("idem-source"), with_recipe.clone()).await;
+    let (created, body) = b
+        .post_create(Some("idem-source"), with_recipe.clone())
+        .await;
     assert_eq!(created, StatusCode::CREATED, "body={body}");
     let mut without_recipe = with_recipe.clone();
     without_recipe.as_object_mut().unwrap().remove("recipe_id");
