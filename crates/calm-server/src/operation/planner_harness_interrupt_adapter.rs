@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use crate::db::sqlite::session_projection_by_id_tx;
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
-use crate::session_projection_repo::RuntimeId;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
@@ -32,7 +31,7 @@ impl PlannerHarnessInterruptAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessInterruptOperationPayload {
-    pub runtime_id: RuntimeId,
+    pub runtime_id: String,
     pub reason: String,
 }
 

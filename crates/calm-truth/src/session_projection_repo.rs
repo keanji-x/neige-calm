@@ -10,7 +10,7 @@ use std::fmt;
 // re-exported at the old paths. Source definitions live in calm-types;
 // do NOT re-declare them here.
 pub use calm_types::runtime::{
-    AgentProvider, RuntimeId, TimestampMs, WorkerSessionKind, WorkerSessionProjection,
+    AgentProvider, TimestampMs, WorkerSessionKind, WorkerSessionProjection,
 };
 pub use calm_types::worker::WorkerSessionState;
 
@@ -24,7 +24,7 @@ pub enum WorkerSessionProjectionRepoError {
         message: String,
     },
     IllegalStatusTransition {
-        id: RuntimeId,
+        id: String,
         attempted: WorkerSessionState,
     },
 }
@@ -47,7 +47,7 @@ impl Error for WorkerSessionProjectionRepoError {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadAttribution {
-    pub runtime_id: RuntimeId,
+    pub runtime_id: String,
     pub provider: AgentProvider,
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
@@ -56,7 +56,7 @@ pub struct ThreadAttribution {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkerSessionInit {
-    pub id: RuntimeId,
+    pub id: String,
     pub card_id: CardId,
     pub kind: WorkerSessionKind,
     pub agent_provider: Option<AgentProvider>,
@@ -120,10 +120,7 @@ pub trait WorkerSessionProjectionRepo {
         kind: WorkerSessionKind,
     ) -> Result<Vec<WorkerSessionProjection>>;
 
-    async fn session_projection_by_id(
-        &self,
-        id: &RuntimeId,
-    ) -> Result<Option<WorkerSessionProjection>>;
+    async fn session_projection_by_id(&self, id: &str) -> Result<Option<WorkerSessionProjection>>;
 
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and

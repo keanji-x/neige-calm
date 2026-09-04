@@ -10,8 +10,8 @@ use super::{
 use crate::error::CalmError;
 use crate::ids::{CardId, TrackId};
 use crate::session_projection_repo::{
-    Result as WorkerSessionProjectionResult, RuntimeId, ThreadAttribution,
-    Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
+    Result as WorkerSessionProjectionResult, ThreadAttribution, Tx as WorkerSessionProjectionTx,
+    WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
     WorkerSessionProjectionRepoError,
 };
 use calm_types::worker::{
@@ -19,7 +19,7 @@ use calm_types::worker::{
 };
 
 pub(super) fn ensure_runtime_status_transition(
-    id: &RuntimeId,
+    id: &str,
     from: &WorkerSessionState,
     to: &WorkerSessionState,
 ) -> WorkerSessionProjectionResult<()> {
@@ -27,7 +27,7 @@ pub(super) fn ensure_runtime_status_transition(
         Ok(())
     } else {
         Err(WorkerSessionProjectionRepoError::IllegalStatusTransition {
-            id: id.clone(),
+            id: id.to_owned(),
             attempted: *to,
         })
     }
@@ -322,7 +322,7 @@ pub async fn session_prepare_deferred_planner_tx(
 
 pub async fn session_supersede_active_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
@@ -357,7 +357,7 @@ pub async fn session_start_runtime_tx(
 
 pub async fn session_supersede_and_start_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    old_id: &RuntimeId,
+    old_id: &String,
     new_init: WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<WorkerSessionProjection> {
     session_supersede_active_tx(tx, old_id, new_init.now_ms).await?;
@@ -366,7 +366,7 @@ pub async fn session_supersede_and_start_tx(
 
 pub async fn session_delete_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<()> {
     sqlx::query("UPDATE tracks SET root_session_id = NULL WHERE root_session_id = ?1")
         .bind(id)
@@ -381,11 +381,11 @@ pub async fn session_delete_tx(
 
 pub(super) async fn session_set_status_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &str,
     status: WorkerSessionState,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
-    session_state_transition_at_tx(tx, &WorkerSessionId(id.clone()), status, now, None)
+    session_state_transition_at_tx(tx, &WorkerSessionId(id.to_owned()), status, now, None)
         .await
         .map(|_| ())
         .map_err(runtime_session_error)
@@ -393,13 +393,13 @@ pub(super) async fn session_set_status_mirror_tx(
 
 pub(super) async fn session_complete_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &str,
     terminal_status: WorkerSessionState,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
     session_state_transition_at_tx(
         tx,
-        &WorkerSessionId(id.clone()),
+        &WorkerSessionId(id.to_owned()),
         terminal_status,
         now,
         Some(now),
@@ -411,7 +411,7 @@ pub(super) async fn session_complete_mirror_tx(
 
 pub(super) async fn session_bind_attribution_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     attr: &ThreadAttribution,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
@@ -438,7 +438,7 @@ pub(super) async fn session_bind_attribution_mirror_tx(
 
 pub(super) async fn session_clear_terminal_run_id_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
     let res = sqlx::query(
@@ -459,7 +459,7 @@ pub(super) async fn session_clear_terminal_run_id_mirror_tx(
 
 pub(super) async fn session_set_handle_state_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     state_text: &Option<String>,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
@@ -480,7 +480,7 @@ pub(super) async fn session_set_handle_state_mirror_tx(
 
 pub(super) async fn session_set_active_turn_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     turn_id: Option<&str>,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
@@ -503,7 +503,7 @@ pub(super) async fn session_set_active_turn_mirror_tx(
 
 pub(super) async fn session_set_harness_observation_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
@@ -530,7 +530,7 @@ pub(super) async fn session_set_harness_observation_tx(
 
 pub(super) async fn session_fail_if_active_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
@@ -550,7 +550,7 @@ pub(super) async fn session_fail_if_active_tx(
 
 pub(super) async fn session_mark_superseded_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
     sqlx::query(
@@ -569,7 +569,7 @@ pub(super) async fn session_mark_superseded_tx(
 
 async fn session_get_required_for_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     context: &str,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
     session_get_tx(tx, &WorkerSessionId(id.clone()))
@@ -580,7 +580,7 @@ async fn session_get_required_for_runtime_tx(
 
 pub(super) async fn session_restore_from_superseded_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     status: WorkerSessionState,
     now: i64,
 ) -> WorkerSessionProjectionResult<WorkerSession> {

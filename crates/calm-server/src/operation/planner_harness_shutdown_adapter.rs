@@ -7,7 +7,6 @@ use crate::db::Repo;
 use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
-use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
 use super::{
@@ -44,7 +43,7 @@ impl PlannerHarnessShutdownAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessShutdownOperationPayload {
-    pub runtime_id: RuntimeId,
+    pub runtime_id: String,
 }
 
 #[async_trait]

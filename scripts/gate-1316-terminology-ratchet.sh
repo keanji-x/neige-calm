@@ -239,12 +239,26 @@
 #   A raise that cannot produce that list is not this case; it is drift.
 #
 # `runtime_id` — the RETIRED-ID sense ONLY (#1316 B class, narrowed at S0)
-#   `runtime` matches 7307 lines in scope; only 1496 are this. The umbrella
-#   issue originally said "Runtime 退役", which was too wide for its carrier and
-#   is now narrowed: the verified claim is `crates/calm-types/src/runtime.rs:18`
-#   `pub type RuntimeId = String;` immediately above
-#   `WorkerSessionProjection { id: RuntimeId }` — the runtime id IS the worker
-#   session id, two spellings in one file. Everything else spelled `Runtime` is
+#   `runtime` is far wider than this sense in scope. The umbrella issue
+#   originally said "Runtime 退役", which was too wide for its carrier and is
+#   now narrowed: the verified claim is that the runtime id IS the worker
+#   session id. The single citation for that: `harness/mod.rs` declares
+#   `spawn_recovered_harness(runtime: WorkerSessionProjection)` and binds
+#   `let runtime_id = runtime.id.clone()`. Both sit outside this file's only
+#   `#[cfg(test)]`, and `WorkerSessionProjection.id` is `worker_sessions.id`
+#   (`0045_worker_sessions.sql`, `id TEXT PRIMARY KEY`).
+#
+#   This paragraph deliberately carries ONE citation, and every attempt to make
+#   it carry more has produced a falsehood. S4b-0 (#1415) deleted the citation it
+#   used to carry (`pub type RuntimeId = String;`); the replacement drafted for
+#   it pointed instead at `decision_sink.rs`'s `WorkerSessionId::from(..)` and
+#   asserted the harness's value flows into it — there is no reference to
+#   `PlannerHarnessAgentReactor` anywhere under `harness/`, so that was false.
+#   The version after THAT added a caller census which was also false.
+#   If this citation ever dies too, DELETE the sentence rather than reach for a
+#   second one — the narrowing decision stands on its own.
+#
+#   Everything else spelled `Runtime` is
 #   a DIFFERENT concept and is not scanned: `PluginRuntimeStatus` (plugin
 #   process state), `OperationRuntime` (`operation/driver.rs`), `ProcRuntime`,
 #   `runtime_layer`, and ordinary English "fails at runtime".

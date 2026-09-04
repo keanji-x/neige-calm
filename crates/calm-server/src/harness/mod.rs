@@ -385,8 +385,7 @@ pub async fn recover_harnesses_on_boot(
 /// runtime AFTER the per-runtime eligibility check and BEFORE the
 /// `try_reserve` claim.
 #[cfg(feature = "fixtures")]
-pub type PostEligibilityHook =
-    std::sync::Arc<dyn Fn(&crate::session_projection_repo::RuntimeId) + Send + Sync>;
+pub type PostEligibilityHook = std::sync::Arc<dyn Fn(&String) + Send + Sync>;
 
 /// #953 §5 — everything the deferred (post-heal) harness recovery task
 /// needs. Cloned out of `AppState` at arm time so the task owns its parts.

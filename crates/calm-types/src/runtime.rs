@@ -15,7 +15,6 @@ use utoipa::ToSchema;
 
 use crate::worker::WorkerSessionState;
 
-pub type RuntimeId = String;
 pub type TimestampMs = i64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -43,7 +42,7 @@ pub enum AgentProvider {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionProjection {
-    pub id: RuntimeId,
+    pub id: String,
     pub card_id: String,
     pub kind: WorkerSessionKind,
     pub agent_provider: Option<AgentProvider>,

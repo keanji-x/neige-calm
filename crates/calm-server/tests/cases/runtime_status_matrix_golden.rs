@@ -298,7 +298,7 @@ async fn running_codex_fixture() -> (
     SqlxRepo,
     calm_server::model::Card,
     calm_server::model::Terminal,
-    calm_server::session_projection_repo::RuntimeId,
+    String,
 ) {
     let repo = fresh_repo().await;
     let track = make_track(&repo).await;

@@ -16,7 +16,6 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
-use crate::session_projection_repo::RuntimeId;
 use crate::state::WriteContext;
 use crate::track_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
@@ -575,13 +574,13 @@ impl DecisionSink for CardDecisionSink {
 /// the existing turn queue and is deliberately not wired to this stub.
 #[derive(Clone, Debug)]
 pub struct PlannerHarnessAgentReactor {
-    runtime_id: RuntimeId,
+    runtime_id: String,
     track_id: TrackId,
     area_id: AreaId,
 }
 
 impl PlannerHarnessAgentReactor {
-    pub fn new(runtime_id: RuntimeId, track_id: TrackId, area_id: AreaId) -> Self {
+    pub fn new(runtime_id: String, track_id: TrackId, area_id: AreaId) -> Self {
         Self {
             runtime_id,
             track_id,

@@ -1335,7 +1335,7 @@ async fn review_round_recovers_into_pending_queue() {
 
     let runtime = fx
         .repo
-        .session_projection_by_id(&PLANNER_SESSION_ID.to_string())
+        .session_projection_by_id(PLANNER_SESSION_ID)
         .await
         .expect("query planner runtime")
         .expect("planner runtime");
