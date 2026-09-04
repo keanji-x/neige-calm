@@ -574,6 +574,77 @@ mod tests {
         (investigation_report, investigation_tasks),
     ];
 
+    /// [`RECIPE_AND_TASKS`] covers exactly the roster's recipes.
+    ///
+    /// #1321 S3 (评审 MAJOR) — without this the table is a *silent* subset. The
+    /// tests that consume it (`the_body_projection_matches_the_constant_task_list`
+    /// and `listed_tasks_are_exactly_the_report_task_blocks`) used to iterate
+    /// [`TEMPLATES`] and got their coverage from the roster for free; keying the
+    /// table on builders instead bought "no third copy of key→recipe" at the
+    /// price of an arity nobody checks. A fourth roster entry forces
+    /// `[Template; 3]` to `[Template; 4]` — a compile error the author must
+    /// fix — but forces nothing here: `; 3` keeps compiling and both consumers
+    /// quietly test three of four recipes, all green.
+    ///
+    /// Compared as **sets of recipes**, both directions, so this reintroduces no
+    /// key→recipe association: it is recipes against recipes. Set equality
+    /// rather than `len()` on purpose — a table that listed one recipe twice and
+    /// dropped another has the right length, and shows up here as the dropped
+    /// one missing.
+    ///
+    /// Identity is the whole `(summary, body)`, not the summary alone: two
+    /// entries could share a summary, and then a swapped body would be invisible
+    /// to a summary-only comparison. Only the summary is printed, because the
+    /// bodies are kilobytes.
+    ///
+    /// Two things it does not catch, both following from comparing recipes and
+    /// nothing else. A fourth roster entry added *together with* its pair here
+    /// passes, which is the same accepted residue as the roster's other
+    /// hand-maintained oracle (`track_template_tracks::
+    /// listed_template_keys_create_their_exact_recipes`): this stops the
+    /// one-sided add, not a coordinated one. And a fourth entry whose
+    /// `build_recipe` is one of the existing three passes too — the two sets
+    /// stay equal because the new key contributes no new recipe. Recipe
+    /// identity cannot see that; what would is a key-keyed table, i.e. exactly
+    /// the third copy of the mapping this slice deleted.
+    #[test]
+    fn the_recipe_and_tasks_table_covers_every_roster_recipe() {
+        let paired: BTreeSet<(String, String)> = RECIPE_AND_TASKS
+            .iter()
+            .map(|(build_recipe, _)| {
+                let recipe = build_recipe();
+                (recipe.summary, recipe.body)
+            })
+            .collect();
+        let roster: BTreeSet<(String, String)> = TEMPLATES
+            .iter()
+            .map(|template| {
+                let recipe = template.recipe();
+                (recipe.summary, recipe.body)
+            })
+            .collect();
+
+        let missing: Vec<&str> = roster
+            .difference(&paired)
+            .map(|(summary, _)| summary.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "roster recipes with no RECIPE_AND_TASKS pair, so nothing in this \
+             module tests them: {missing:?}"
+        );
+
+        let extra: Vec<&str> = paired
+            .difference(&roster)
+            .map(|(summary, _)| summary.as_str())
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "RECIPE_AND_TASKS pairs whose recipe is not on the roster, so they \
+             test something no template can instantiate: {extra:?}"
+        );
+    }
+
     /// #1230 — reading a task block out of a body and rendering it back must be
     /// an **identity on the payload**, not merely agree on the fields some
     /// struct happens to model. The first cut deserialized into
