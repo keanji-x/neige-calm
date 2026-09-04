@@ -3198,7 +3198,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — an empty or over-long message. Decided before anything is minted.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — an empty or over-long message. Decided before anything is minted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5327,14 +5327,14 @@
               "string",
               "null"
             ],
-            "description": "One-time creation instruction: copy this track's report snapshot into\nthe new report inside the track-create transaction."
+            "description": "One-time creation instruction: copy this track's report snapshot into\nthe new report inside the track-create transaction.\n\n#1321 S2 — a third starting point, mutually exclusive with the two\nabove. It used to *win* over both: a create naming a `template_id` and\na fork source silently took the fork while the row still recorded the\ntemplate id and its plugin owner, so `tracks.template_id` claimed a\nprovenance the report did not have (#1321 「已观察事实」§3). It is now a\n400 naming both fields."
           },
           "recipe_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the track start path later\nresolves against running plugins' manifests to recover a bound\ntemplate descriptor. A recipe id has no manifest to resolve against,\nso putting one there would make every recipe-created track log a\nresolution failure while starting — an error record for an entirely\nnormal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing."
+            "description": "A user-defined recipe (`track_recipes` row, #1292) to start from.\n\nDeliberately **not** folded into `template_id`. That field's value\nlands on `tracks.template_id`, which the track start path later\nresolves against running plugins' manifests to recover a bound\ntemplate descriptor. A recipe id has no manifest to resolve against,\nso putting one there would make every recipe-created track log a\nresolution failure while starting — an error record for an entirely\nnormal situation.\n\nSupplying both is a 400: two starting points is not a preference to\nresolve, it is a request that does not name one thing. #1321 S2 extends\nthat from this one pair to every pair."
           },
           "sort": {
             "type": [
@@ -5347,7 +5347,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "A built-in roster template (#1209) to instantiate the new track's report\nfrom — the caller's spelling, admitted against the roster before\nanything is minted; `tracks.template_id` then stores the roster's own\nkey. It is also what binds the track to a plugin (`plugin_scope`) and\nwhat makes `template_input` acceptable.\n\nOne of the three mutually exclusive starting points (`template_id`,\n`recipe_id`, `fork_report_from`); naming two of them is a 400 that names\nboth. Naming none is the ordinary blank create."
           },
           "template_input": {
             "type": [

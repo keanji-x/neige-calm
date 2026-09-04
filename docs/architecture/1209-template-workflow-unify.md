@@ -1122,6 +1122,20 @@ P2. planner-harness start      tracks.rs:1660-1676   → 运行期失败降级�
    ——包括「一个插件都没注册」这个退化情形，它和「注册了但没 running / 没 trusted」
    在 `resolve_trusted_workflow`（`tracks.rs:937-950`）眼里是同一个 `None`。
 
+> **#1321 S2 补记（前提 4 的后半句「显式给了就永远赢」已经作废）。**
+> 前提 4 是**整张矩阵的默认假设**，不是某一行的脚注：所有「+ fork 模板」的行都以它为前提。
+> 它的前半句在今天仍然成立（除行 17 外，各行都不显式给 `fork_report_from`，
+> 所以各行只考察自己那一个变量），**后半句不成立**——#1321 S2 把「三个起点字段两两互斥」
+> 落地了：`template_id` / `recipe_id` / `fork_report_from` 里同时给两个，
+> 在请求体解构的那一刻（`routes/tracks.rs` 的 `NamedSource::from_request`）就是 400，
+> 报文点名冲突的那两个字段。**没有优先级规则了**，因而也没有「谁赢」这回事；
+> 那条优先级 `match`（连同它的兜底臂）已随本切片删除。
+> 原文引的那条 pin 测试（旧的 `explicit_fork_report_from_is_not_overwritten`）也已删除，
+> 承接它的是 `tests/cases/track_template_tracks.rs` 的
+> `a_template_and_an_explicit_fork_source_are_a_400`。
+> **矩阵其余各行不受影响**：它们的前提是「没显式给」，那一半没变。
+> 受影响的只有行 17，见该行下方的补记。
+
 > **⚠️ v5 把「统一后」这一列拆成两列（通道 B M5 的尾巴，判定成立）。**
 > v4 的矩阵只有「今天 / 统一后」两组列，而 v4 同时又把切片切成了两个 PR，
 > 于是「统一后」在同一张表里同时指 **PR-1 之后**（概念统一、字段仍叫 `workflow_id`）
@@ -1156,6 +1170,22 @@ P2. planner-harness start      tracks.rs:1660-1676   → 运行期失败降级�
 | 16 | 同上，但插件 schema required 非空且没给 input | 400（`tracks.rs:977-990`） | ``…requires `workflow_input` `` | 400 | `…known track template` | 同，字段名变 | 状态码不变，**拒绝理由与正文变**（更早在准入处拒） |
 | 17 | **破前提 4**：名册内 key + **显式** `fork_report_from` 指向不存在的 track（或跨 area 且源不在 system area） | 400（**阶段 2 事务内**：`tracks.rs:1410-1418` / `:1424-1430`），**且模板已被播种** | ``…fork source track `X` does not exist`` / ``…must be in the target area or the system area`` | 同 | 同 | 同（正文不含本字段） | **无变化**（搬位改不掉它：判定在事务内、播种在事务外，见 §4.2 的裁决） |
 | **P1** | **（v5 新增）** 任何合法 create，但工作区物化失败 | **非 2xx**，**且 track / cards / events 已提交**（`tracks.rs:1620-1633`，在 `:1609` 提交之后） | 含 `materialize workspace` | 同 | 同 | 同 | **无变化**；本行的作用是钉住「非 201 ⇒ 无副作用」**永远为假**。已有 pin：`track_workspace_materialize.rs:270-313` |
+
+> **#1321 S2 补记（行 17 的状态码理由、正文、副作用三列都已经作废）。**
+> 行 17 是矩阵里唯一「破前提 4」的一行：名册内 key + **显式** `fork_report_from`。
+> 该行记的是「400（**阶段 2 事务内**）、正文 `` fork source track `X` does not exist ``、
+> **且模板已被播种**」。这三件事今天都不发生：这个组合根本进不了事务——
+> `NamedSource::from_request` 在请求体解构时就以**歧义**为由 400
+> （正文点名 `template_id` 与 `fork_report_from` 两个字段），
+> 在任何 DB 写入之前。**「无法解析的 fork 源」这条判定本身仍在事务内**
+> （`tracks.rs` 的 fork 臂），只是行 17 的输入再也到不了那里；
+> 要触发它得发**只有** `fork_report_from` 的请求，那是矩阵里没有的一行。
+> 状态码 400 这个结果没变，变的是**理由、正文与副作用**三列。
+> 承接的 pin：`tests/cases/track_template_tracks.rs` 的
+> `a_template_and_an_explicit_fork_source_are_a_400`（它还把 400 夹在两次全库快照之间，
+> 断言事务前零 DB 写入），以及 `tests/cases/track_recipe_instantiate.rs` 的
+> `a_recipe_and_an_explicit_fork_source_are_a_400` 与
+> `template_id_and_recipe_id_with_a_fork_source_are_still_a_400`。
 
 > **#1321 S1 补记（行 8 的「误导性不变」已经作废）。** 上表行 8
 > （名册内 template + 绑定插件 stopped/untrusted + 带 input）在「PR-2 后」一列
@@ -2358,6 +2388,39 @@ artifact**。检查方式：release 前确认两个 PR 的 commit 都在待发�
 | 16 | **NEW（v4，§3.5）**：写口只认识一个拼写 | **PROPOSED** `old_field_spelling_is_an_unknown_field` | 新增到 `tests/cases/track_workflow_templates.rs` | — | 给 `CreateTrackRequest` 加回一个 `workflow_id` 字段（哪怕只是 `#[serde(alias)]`）⇒ 必须红。参数化到矩阵行 18/19/20 三种输入。**这是 §3.5 整个拒绝策略的唯一 pin**（v4 把它从 PR-2 的内容栏里漏了） |
 | 17 | **NEW（v5，§3.3）**：`RENAME COLUMN` 真的保值 | **PROPOSED** `rename_migration_preserves_column_values` | 新增到 `crates/calm-truth` 的迁移测试族（形状抄 `track_plugin_scope_migration_tests.rs` 的「停在某个版本」配方，但**停在 `0078`**） | — | 停在 `0078` → 写入两列**非 NULL** 的旧列值 → 应用 `0079` → 断言新列值逐字保留 ∧ 旧列不存在。**变异**：把迁移写成 `ADD COLUMN` + `DROP COLUMN`（丢值）⇒ 必须红；只 rename 一列 ⇒ 必须红。**没有这条，「迁移不丢数据」这句话在本设计里没有载体** |
 | 18 | **NEW（v5，§3.3，本轮 BLOCKER 的 pin）**：Today launchpad 的两条字面 SQL 都还能跑 | **PROPOSED** `today_launchpad_survives_the_column_rename`（两条腿） | 新增到 `routes/today.rs` 的路由测试 | — | (a) 空库 ⇒ 走 `today.rs:162` 的 INSERT；(b) 预置一个 `purpose IS NULL AND title='Today'` 的旧行 ⇒ 走 `:149` 的 UPDATE。**变异**：只把两处中的**一处**留成旧列名 ⇒ **恰好一条腿红**。这条成对性本身就是「必须测两条腿」的证明 |
+
+> **#1321 S2 补记（不变量 #7「显式 `fork_report_from` 优先」整条作废）。**
+> 该行钉的不变量与它引的测试 `explicit_fork_report_from_is_not_overwritten` 都不存在了：
+> #1321 S2 把三个起点字段两两互斥落地，优先级规则连同它的 `match` 一起删除，
+> 于是「优先」这条不变量没有了被优先的对象。该测试已改写为
+> `tests/cases/track_template_tracks.rs` 的
+> `a_template_and_an_explicit_fork_source_are_a_400`，钉的是**相反**的性质
+> （同一组合是 400，且事务前零 DB 写入）。原「生产侧变异 ⇒ 变红」那一列
+> （「把 `if fork_report_from.is_none()` 改成无条件赋值」）随之失效：那个 `if` 已不存在。
+> 旧测试里**仍然成立**的那一半——fork 的正文确实来自源 track 的当前报告——
+> 以 fork-only 请求的形式保留为新测试的第二条腿。
+>
+> **第二轮评审 MAJOR-2 —— 上面最后那句归属写反了，且漏了行 3。**
+> 本行「生产侧变异」列引的 `if fork_report_from.is_none()`，在本切片的基线
+> `97108cfb` 上**就已经不存在**（`git show 97108cfb:crates/calm-server/src/routes/tracks.rs`
+> 里该串零命中；当时的优先级是 `let init = match (&admission, recipe_id, fork_report_from)`
+> 的**臂序**——`(_, _, Some(source_track_id)) => TrackInit::Fork` 排在模板臂之前）。
+> 所以那一处失效**不是本切片造成的**，早于本切片；本切片消灭的是那条优先级规则本身，
+> 也就是这一行的不变量。
+>
+> **真正被本切片删掉的是行 3 的变异**：「删掉 `p.plugin_scope = bound_plugin.map(..)` 那行」
+> 逐字位于 `97108cfb:crates/calm-server/src/routes/tracks.rs:764`，其 `bound_plugin` 在 `:742`，
+> 本切片把这两处**一起**删除。行 3 的不变量（有绑定 template ⇒ `plugin_scope` 落库）
+> 与它钉的测试都还在，失效的只是变异的写法；今天的等价变异是
+> **让 `CreationSource::stamp`（`routes/tracks.rs`）的 `TrackInit::Template` 臂把
+> `plugin_scope` 交回 `None`，或删掉其后的 `p.plugin_scope = plugin_scope;`**。
+>
+> 本补记只核过这两行（行 7、行 3）。能对其余各行机械说的只有一句：本切片改动的**生产**代码
+> 只有 `crates/calm-server/src/routes/tracks.rs` 一个文件（`git diff --stat 97108cfb..71924805`：
+> 其余改动是两个测试文件、三份生成的前端契约产物、`fe/core/domain/track.ts` 的一段
+> 文档注释，以及本文档与 `deploy-and-upgrade.md`），
+> 所以任何不引用该文件的行不可能被本切片影响；引用它的各行**本轮未逐条复核**。
+> 原来那句「本行以外的各行不受影响」是没核过的全称，行 3 自己就是它的反例。
 
 #### 关于 #8 的测试设计（最重要的一条）
 

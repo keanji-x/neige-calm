@@ -3,9 +3,10 @@
 //! A matching `template_id` initializes the new track's report from a **Rust
 //! constant recipe** (`calm_server::templates`) inside the create transaction:
 //! no hidden track is minted, no overlay is written, and nothing is read from
-//! the database to find the content. An explicit `fork_report_from` still wins
-//! over `template_id`, and an unknown `template_id` is a 400 decided before any
-//! write.
+//! the database to find the content. An unknown `template_id` is a 400 decided
+//! before any write, and so — since #1321 S2 — is a `template_id` sent
+//! alongside a `fork_report_from`: each names a starting point, and naming two
+//! is refused rather than resolved by priority.
 //!
 //! #1110 S6 wrote this file against the opposite implementation — three seeded
 //! system-area template tracks, discovered through a `template_key` overlay and
@@ -327,82 +328,73 @@ fn task_blocks(payload: &TrackReportPayload) -> Vec<&Value> {
 /// would still be green, because the rest of the suite only ever looks at the
 /// track the caller asked for. So the case is inverted rather than dropped.
 ///
-/// ## Both success paths, because they used to differ
+/// ## One success path, where there used to be two
 ///
-/// `template_id` alone is the obvious one. `template_id` **plus** an explicit
-/// `fork_report_from` is the one worth naming: before #1300 the route seeded
-/// unconditionally on admission and only *then* checked whether an explicit
-/// fork had already claimed the report source (`tracks.rs`, the
+/// This loop used to have a second leg: `template_id` **plus** an explicit
+/// `fork_report_from`. It was worth naming because before #1300 the route
+/// seeded unconditionally on admission and only *then* checked whether an
+/// explicit fork had already claimed the report source (`tracks.rs`, the
 /// `if fork_report_from.is_none()` after `ensure_templates`), so that
-/// combination minted three tracks it did not use. Only checking the plain path
-/// would leave that one covered by nothing.
+/// combination minted three tracks it did not use.
 ///
-/// `explicit_fork_report_from_is_not_overwritten` remains the test of *which*
-/// report wins; this is the test of what the losing branch costs.
+/// #1321 S2 made that combination a 400 — two named starting points are refused
+/// rather than resolved — so it is no longer a create at all and cannot be a leg
+/// of a "what did this create mint" loop. What replaced it is stronger than
+/// "it mints no hidden track": `a_template_and_an_explicit_fork_source_are_a_400`
+/// below asserts the whole database is byte-for-byte unchanged.
+///
+/// 第一轮评审 NIT-4 (#1321 S2) — with one leg left, the `for` over a
+/// single-element array and its `leg` label were scaffolding for a second leg
+/// that no longer exists. Flattened; the create is written out once.
 #[tokio::test]
 async fn creating_from_a_template_mints_no_hidden_track() {
     let boot = boot().await;
 
-    // A fork source in the user's own area, so the second leg can pass an
-    // explicit `fork_report_from` alongside a `template_id`.
-    let (status, source) = post(
+    let tracks_before = boot
+        .repo
+        .tracks_window(None, None, None)
+        .await
+        .unwrap()
+        .len();
+
+    let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
-        create_body(&boot.area_id, "fork-source", json!({})),
+        create_body(
+            &boot.area_id,
+            "template only",
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
+        ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "source={source}");
-    let source_id = source["id"].as_str().expect("source track id").to_string();
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let created = body["id"].as_str().expect("track id").to_string();
 
-    for (leg, extra) in [
-        ("template only", json!({ "template_id": ISSUE_DEVELOPMENT })),
-        (
-            "template plus an explicit fork",
-            json!({ "template_id": ISSUE_DEVELOPMENT, "fork_report_from": source_id }),
-        ),
-    ] {
-        let tracks_before = boot
-            .repo
-            .tracks_window(None, None, None)
-            .await
-            .unwrap()
-            .len();
+    // Exactly one new track, and it is the one the caller asked for. A
+    // count alone would pass if the create minted one hidden track and
+    // failed to mint the requested one.
+    let after = boot.repo.tracks_window(None, None, None).await.unwrap();
+    assert_eq!(
+        after.len(),
+        tracks_before + 1,
+        "created {} tracks, not 1",
+        after.len() - tracks_before
+    );
+    assert!(
+        after.iter().any(|track| track.id.as_str() == created),
+        "the requested track is not among them"
+    );
 
-        let (status, body) = post(
-            boot.app.clone(),
-            "/api/tracks",
-            create_body(&boot.area_id, leg, extra),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
-        let created = body["id"].as_str().expect("track id").to_string();
-
-        // Exactly one new track, and it is the one the caller asked for. A
-        // count alone would pass if the create minted one hidden track and
-        // failed to mint the requested one.
-        let after = boot.repo.tracks_window(None, None, None).await.unwrap();
-        assert_eq!(
-            after.len(),
-            tracks_before + 1,
-            "{leg}: created {} tracks, not 1",
-            after.len() - tracks_before
-        );
-        assert!(
-            after.iter().any(|track| track.id.as_str() == created),
-            "{leg}: the requested track is not among them"
-        );
-
-        assert!(
-            kernel_template_overlays(&boot.repo).await.is_empty(),
-            "{leg}: a kernel/view/template overlay was minted; the kernel has \
-             no writer for one: {:?}",
-            kernel_template_overlays(&boot.repo).await
-        );
-        assert!(
-            boot.repo.area_get_system().await.unwrap().is_none(),
-            "{leg}: creating from a template must not mint the system area either"
-        );
-    }
+    assert!(
+        kernel_template_overlays(&boot.repo).await.is_empty(),
+        "a kernel/view/template overlay was minted; the kernel has \
+         no writer for one: {:?}",
+        kernel_template_overlays(&boot.repo).await
+    );
+    assert!(
+        boot.repo.area_get_system().await.unwrap().is_none(),
+        "creating from a template must not mint the system area either"
+    );
 }
 
 /// Two tracks from one template are independent documents with the same content.
@@ -851,8 +843,112 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
     );
 }
 
+/// #1321 S2 — `template_id` + `fork_report_from` is a 400, and the database is
+/// untouched when it is refused.
+///
+/// ## What this case is, and what it replaced
+///
+/// It replaces `explicit_fork_report_from_is_not_overwritten`, which pinned the
+/// behaviour this slice deletes: that combination used to be a 201 in which the
+/// fork silently won the report while the row still recorded `template_id` and
+/// `plugin_scope`. That property is gone with the behaviour and is not
+/// rewritten into something else — a priority rule cannot be preserved once the
+/// input it ranked is refused.
+///
+/// One half of what that case established does survive, because it never
+/// depended on naming two sources: **the fork really does copy the source
+/// track's current report**, so a create is not quietly given a default or a
+/// template plan instead. That half is the second leg below, sent as a
+/// fork-only create. It is kept here rather than left to `track_report_fork.rs`
+/// for one reason the fixture makes cheap: this file's source track carries a
+/// report the user *edited away* from anything a template would produce, so the
+/// leg discriminates between "the fork arrived" and "some other initialization
+/// arrived that happens to be non-empty".
+///
+/// ## Why the whole-database snapshot, and what it is worth
+///
+/// #1321's acceptance is "a stable 400 **and no DB write before the
+/// transaction**". A status assertion cannot see a write, so the refusal is
+/// bracketed by `db_snapshot` (every user table, every column, `quote()`d).
+///
+/// Mutation-verified (`MUTATION-1321S2-1`): deferring the exclusivity decision
+/// until after `create_track_with_planner_harness` has committed — the fork
+/// wins as it did before this slice, the create commits, and *then* the same
+/// 400 with the same message is returned — leaves this file's whole filtered
+/// suite green **except this case**, and inside it the failure is the snapshot
+/// assertion ("an ambiguous-source 400 must not write anything"; `left` carried
+/// a freshly committed `tracks`/`cards`/`area_folders` row set) while every
+/// status and message assertion above it passed. That is the discrimination the
+/// snapshot exists for: without it, the mutation is invisible.
+///
+/// The command, verbatim, so the numbers below are reproducible:
+///
+/// ```text
+/// env -u NEIGE_CODEX_BIN cargo nextest run --workspace --locked \
+///   --features calm-server/codex-e2e \
+///   -E 'test(recipe_instantiate) or test(template_tracks) or test(report_fork) or test(first_message)' \
+///   --test-threads 8 --no-fail-fast
+/// ```
+///
+/// Baseline **66 tests run, 66 passed**; under `MUTATION-1321S2-1`, **66 run,
+/// 65 passed, 1 failed**. (第一轮评审 NIT-1 — this block used to say 65/64/1
+/// and did not record the command. The filterset is matched on test *names*, so
+/// it also picks up `calm-truth`'s
+/// `events_prune::tests::first_message_dedup_kind_is_never_prunable` via
+/// `test(first_message)`; that 66th test is unrelated to this file and is
+/// green throughout. A recorded mutation number whose command is missing is
+/// not evidence, and this block's entire value is that it is.)
+///
+/// (`MUTATION-1321S2-2`, the coarser one — no exclusivity at all, last field
+/// named wins — turns four cases red on the same filter (66 run, 62 passed, 4
+/// failed): this one, `a_recipe_and_an_explicit_fork_source_are_a_400`,
+/// `template_id_and_recipe_id_together_are_a_400` and
+/// `template_id_and_recipe_id_with_a_fork_source_are_still_a_400`. It is the
+/// weaker evidence: it moves the status code, so it says nothing about the
+/// snapshot leg.)
+///
+/// What the snapshot is *not*: a proof that no code wrote anything. It is a
+/// per-table value digest with row order normalized, so it sees values, not
+/// storage — and `track_create_tx` writes `TrackAreaCache` (in memory, outside
+/// the transaction) on a path that a rollback does not undo. Same caveat as
+/// `assert_old_spelling_is_an_unknown_field`'s.
+///
+/// 第一轮评审 (#1321 S2) — the same blindness covers the **filesystem**: two
+/// snapshots of the SQLite tables would see nothing at all of a directory
+/// minted and left behind. So the leg's claim is "no *database* write before
+/// the transaction", which is what #1321's acceptance asks for — not "no side
+/// effect of any kind", a statement this file has no instrument for.
+///
+/// 第二轮评审 MAJOR-1 (#1321 S2) — that blindness is stated as a **limit of
+/// the instrument**, not as an observation, because in *this* case there is no
+/// directory to be blind to, and the reason is structural rather than
+/// measured-once:
+///
+/// * `create_body` (`:194-208`) sends `"cwd"` + `"attach_folder": true`
+///   unconditionally, and all three of this case's `POST /api/tracks` calls
+///   (the source, leg 1's refused one, leg 2's fork) go through it;
+/// * an explicit `cwd` is `cwd_omitted == false` in `routes/tracks.rs`, whose
+///   `workspace_plan` is then `TrackWorkspacePlan::AttachedFromCwd` (the
+///   `ManagedUnder` branch is the *omitted*-`cwd` one);
+/// * `workspace_materialize.rs`'s `materialize_workspace` answers
+///   `TrackWorkspaceKind::Attached => Ok(())` — attached workspaces point at
+///   directories the user owns, so that arm performs no filesystem operation
+///   whatsoever.
+///
+/// The branch that mints a server-owned directory is **managed**, and no
+/// create in this file takes it: `"cwd"` appears exactly three times here —
+/// `create_body`'s, and the two deliberately-bad ones in
+/// `pre_transaction_400_relative_cwd_with_template_does_not_seed` /
+/// `pre_transaction_400_non_repo_cwd_with_template_does_not_seed`, both of
+/// which 400 before any create. An earlier revision of this block asserted the
+/// opposite — that under `MUTATION-1321S2-1` `materialize_workspace` "really
+/// does mint the workspace directory, which then survives the 400" — which no
+/// run of that mutation supports and the three facts above contradict. Pinning
+/// the filesystem half would take a managed-workspace leg plus an instrument
+/// that looks at the workspace root; this file has neither, and says so rather
+/// than claiming the coverage.
 #[tokio::test]
-async fn explicit_fork_report_from_is_not_overwritten() {
+async fn a_template_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;
     let (status, source) = post(
         boot.app.clone(),
@@ -888,12 +984,14 @@ async fn explicit_fork_report_from_is_not_overwritten() {
     .await
     .expect("stamp custom source report");
 
+    // Leg 1 — naming both is refused, and nothing is written deciding that.
+    let before = db_snapshot(&boot.repo).await;
     let (status, body) = post(
         boot.app.clone(),
         "/api/tracks",
         create_body(
             &boot.area_id,
-            "explicit-fork",
+            "template-plus-explicit-fork",
             json!({
                 "template_id": ISSUE_DEVELOPMENT,
                 "fork_report_from": source_id,
@@ -901,19 +999,57 @@ async fn explicit_fork_report_from_is_not_overwritten() {
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    // `code` separates the refusal from a panic body: a `500`/`internal` would
+    // also be a non-201 and would otherwise read as a pass.
+    assert_eq!(body["code"], json!("bad_request"), "body={body}");
+    let error = body["error"].as_str().unwrap_or("");
+    // The caller has to be able to tell *which two* fields collided; a generic
+    // "conflicting parameters" would leave a three-field request unactionable.
+    assert!(
+        error.contains("`template_id`") && error.contains("`fork_report_from`"),
+        "the 400 must name both offending fields; body={body}"
+    );
+    assert!(
+        !error.contains("`recipe_id`"),
+        "it must name the fields that were actually sent; body={body}"
+    );
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "an ambiguous-source 400 must not write anything"
+    );
+
+    // Leg 2 — the surviving half: a fork-only create really does copy the
+    // source's edited report, so leg 1's refusal did not take a working
+    // behaviour with it.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        create_body(
+            &boot.area_id,
+            "explicit-fork",
+            json!({ "fork_report_from": source_id }),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert!(
+        body["template_id"].is_null(),
+        "a fork create records no template provenance; body={body}"
+    );
     let track_id = body["id"].as_str().expect("track id");
     let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::OK, "detail={detail}");
     let payload = report_card_payload(&detail);
     assert!(
         payload.body.contains("not-the-issue-development-plan"),
-        "explicit fork_report_from must win; body={}",
+        "the fork must carry the source's edited report; body={}",
         payload.body
     );
     assert!(
         !payload.body.contains("inspect-issue"),
-        "issue-development plan must not replace an explicit fork; body={}",
+        "no template plan may be grafted onto a fork; body={}",
         payload.body
     );
 }
