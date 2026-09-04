@@ -57,13 +57,13 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
 use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
-use crate::routes::cards::interrupt_shared_card_active_turn;
+use crate::routes::cards::quiesce_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, template_by_key};
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{track_get_tx, validate_transition};
 use crate::track_report::{
@@ -83,7 +83,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 #[cfg(feature = "fixtures")]
@@ -104,22 +106,26 @@ struct TrackDeletePlan {
     area_id: crate::ids::AreaId,
     cards: Vec<Card>,
     terminals: Vec<crate::model::Terminal>,
-    active_runtime_ids: Vec<String>,
 }
 
 struct PreparedTrackDeletion {
     track: Track,
     area_kind: Option<AreaKind>,
     plan: TrackDeletePlan,
+    turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
     _operation_guard: tokio::sync::OwnedMutexGuard<()>,
     _delete_guard: crate::per_card_lock::KeyedLockGuard,
 }
 
-struct QuiescedTrackDeletion(PreparedTrackDeletion);
+struct QuiescedTrackDeletion {
+    prepared: PreparedTrackDeletion,
+    sealed_thread_ids: Vec<String>,
+}
 
 struct RecycledTrackDeletion {
     prepared: PreparedTrackDeletion,
     decision: workspace_recycle::RecycleDecision,
+    sealed_thread_ids: Vec<String>,
 }
 
 #[cfg(feature = "fixtures")]
@@ -134,6 +140,7 @@ pub struct TrackDeleteTeardownHook {
 pub struct TrackDeleteCommitHook {
     pub entered: std::sync::Arc<Notify>,
     pub release: std::sync::Arc<Notify>,
+    pub panic_after_release: bool,
 }
 
 #[cfg(feature = "fixtures")]
@@ -182,7 +189,7 @@ async fn wait_at_track_delete_teardown_hook(track_id: &str) {
     let _ = track_id;
 }
 
-async fn wait_at_track_delete_commit_hook(track_id: &str) {
+async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
     #[cfg(feature = "fixtures")]
     {
         let hook = track_delete_commit_hooks()
@@ -192,10 +199,12 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) {
         if let Some(hook) = hook {
             hook.entered.notify_one();
             hook.release.notified().await;
+            return hook.panic_after_release;
         }
     }
     #[cfg(not(feature = "fixtures"))]
     let _ = track_id;
+    false
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -982,6 +991,12 @@ pub(crate) async fn create_track(
     headers: HeaderMap,
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
+    // Common area lifecycle fence for legacy mint, first-message mint, and
+    // idempotent replay. Holding it through workspace materialization and
+    // operation submission makes area deletion snapshot a closed member set.
+    let create_area_id = request.area_id.clone();
+    let _area_delete_guard =
+        crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
     // #1299 S1 / #1384 — first, before every other check in this handler and
     // therefore before every mint it can reach. A rejected first message (blank,
     // over-long, missing `Idempotency-Key`, exhausted key) must leave no track,
@@ -1808,6 +1823,10 @@ async fn create_track_with_planner_harness(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
+    let area_id = options.body_area_id.clone();
+    if s.repo.area_get(&area_id).await?.is_none() {
+        return Err(CalmError::NotFound(format!("area {area_id}")));
+    }
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
     start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
@@ -3568,11 +3587,7 @@ pub(crate) async fn update_track(
     Ok(Json(track).into_response())
 }
 
-async fn snapshot_track_deletion(
-    s: &RouteState,
-    pool: &sqlx::SqlitePool,
-    track: &Track,
-) -> Result<TrackDeletePlan> {
+async fn snapshot_track_deletion(s: &RouteState, track: &Track) -> Result<TrackDeletePlan> {
     let cards = s.repo.cards_by_track(track.id.as_str()).await?;
     let mut terminals = Vec::new();
     for card in &cards {
@@ -3580,19 +3595,11 @@ async fn snapshot_track_deletion(
             terminals.push(terminal);
         }
     }
-    let active_runtime_ids = sqlx::query_scalar(
-        "SELECT id FROM worker_sessions WHERE track_id=?1 \
-         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
-    )
-    .bind(track.id.as_str())
-    .fetch_all(pool)
-    .await?;
     Ok(TrackDeletePlan {
         track_id: track.id.clone(),
         area_id: track.area_id.clone(),
         cards,
         terminals,
-        active_runtime_ids,
     })
 }
 
@@ -3601,21 +3608,31 @@ async fn teardown_track_deletion(
     w: &WorkerState,
     cs: &CodexShellState,
     plan: &TrackDeletePlan,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     wait_at_track_delete_teardown_hook(plan.track_id.as_str()).await;
+    let mut seals =
+        crate::shared_codex_appserver::DeletionThreadSeals::new(cs.shared_codex_appserver.clone());
     for card in &plan.cards {
-        interrupt_shared_card_active_turn(s.repo.as_ref(), cs, card).await;
-    }
-    for terminal in &plan.terminals {
-        reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), terminal).await;
-    }
-    for runtime_id in &plan.active_runtime_ids {
-        if let Some(harness) = w.harness.get(runtime_id) {
-            harness.shutdown().await?;
-            let _ = w.harness.remove(runtime_id);
+        if let Some(thread_id) = quiesce_shared_card_active_turn(s.repo.as_ref(), cs, card).await? {
+            seals.seal(thread_id);
         }
     }
-    Ok(())
+    for terminal in &plan.terminals {
+        quiesce_terminal_artifacts_for_deletion(
+            Some(w.terminal_renderer.as_ref()),
+            w.daemon.proc_supervisor_sock.as_deref(),
+            terminal,
+        )
+        .await?;
+    }
+    for thread_id in w
+        .harness
+        .shutdown_track(&plan.track_id, cs.shared_codex_appserver.clone())
+        .await?
+    {
+        seals.seal(thread_id);
+    }
+    Ok(seals.retain())
 }
 
 async fn surviving_root_before_leaf_removal(
@@ -3785,27 +3802,68 @@ impl PreparedTrackDeletion {
         worker: &WorkerState,
         codex: &CodexShellState,
     ) -> Result<QuiescedTrackDeletion> {
-        teardown_track_deletion(route, worker, codex, &self.plan).await?;
-        Ok(QuiescedTrackDeletion(self))
+        let sealed_thread_ids = teardown_track_deletion(route, worker, codex, &self.plan).await?;
+        Ok(QuiescedTrackDeletion {
+            prepared: self,
+            sealed_thread_ids,
+        })
     }
 }
 
 impl QuiescedTrackDeletion {
     fn recycle(self, route: &RouteState) -> Result<RecycledTrackDeletion> {
-        let decision = recycle_track_workspace_for_delete(route, &self.0.track, self.0.area_kind)?;
-        Ok(RecycledTrackDeletion {
-            prepared: self.0,
-            decision,
-        })
+        let Self {
+            prepared,
+            sealed_thread_ids,
+        } = self;
+        let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            recycle_track_workspace_for_delete(route, &prepared.track, prepared.area_kind)
+        }));
+        match recycled {
+            Ok(Ok(decision)) => Ok(RecycledTrackDeletion {
+                prepared,
+                decision,
+                sealed_thread_ids,
+            }),
+            Ok(Err(error)) => {
+                if workspace_recycle::workspace_allows_runtime_recovery(&prepared.track) {
+                    for thread_id in &sealed_thread_ids {
+                        prepared
+                            .turn_daemon
+                            .unseal_turn_thread_after_rollback(thread_id);
+                    }
+                }
+                Err(error)
+            }
+            Err(_) => {
+                if workspace_recycle::workspace_allows_runtime_recovery(&prepared.track) {
+                    for thread_id in &sealed_thread_ids {
+                        prepared
+                            .turn_daemon
+                            .unseal_turn_thread_after_rollback(thread_id);
+                    }
+                }
+                Err(CalmError::Internal(format!(
+                    "track deletion saga for {} panicked during workspace recycle",
+                    prepared.track.id
+                )))
+            }
+        }
     }
 }
 
 impl RecycledTrackDeletion {
     #[allow(deprecated)]
     async fn commit(self, route: &RouteState, actor: ActorId) -> Result<()> {
-        let Self { prepared, decision } = self;
+        let Self {
+            prepared,
+            decision,
+            sealed_thread_ids,
+        } = self;
         let track = &prepared.track;
-        wait_at_track_delete_commit_hook(track.id.as_str()).await;
+        if wait_at_track_delete_commit_hook(track.id.as_str()).await {
+            panic!("fixture: panic track deletion after recycle");
+        }
         let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
             Ok(sweeps) => sweeps,
             Err(error) => {
@@ -3822,14 +3880,19 @@ impl RecycledTrackDeletion {
                 // surrounding transaction commits. A later projection/error
                 // rolls SQLite back but cannot roll the cache or filesystem
                 // back for us.
-                route
-                    .write
-                    .remember_track(track.id.clone(), track.area_id.clone());
                 if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
                 {
                     return Err(CalmError::Internal(format!(
                         "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
                     )));
+                }
+                route
+                    .write
+                    .remember_track(track.id.clone(), track.area_id.clone());
+                for thread_id in &sealed_thread_ids {
+                    prepared
+                        .turn_daemon
+                        .unseal_turn_thread_after_rollback(thread_id);
                 }
                 return Err(error);
             }
@@ -3849,20 +3912,98 @@ impl RecycledTrackDeletion {
 /// await. Axum may cancel a request future when the client disconnects; a Tokio
 /// task spawned here is detached when its `JoinHandle` is dropped and therefore
 /// still commits or runs `RecycledTrackDeletion::commit`'s compensation path.
-async fn finish_recycled_track_deletion_owned(
-    route: RouteState,
+async fn run_recycled_track_deletion(
+    route: &RouteState,
     actor: ActorId,
     deletion: RecycledTrackDeletion,
 ) -> Result<()> {
-    let track_id = deletion.prepared.track.id.clone();
-    tokio::spawn(async move { deletion.commit(&route, actor).await })
+    let recovery_track = deletion.prepared.track.clone();
+    let recovery_decision = deletion.decision.clone();
+    let recovery_thread_ids = deletion.sealed_thread_ids.clone();
+    let recovery_turn_daemon = deletion.prepared.turn_daemon.clone();
+    match std::panic::AssertUnwindSafe(deletion.commit(route, actor))
+        .catch_unwind()
         .await
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "owned deletion task for track {} failed: {error}",
-                track_id.as_str()
-            ))
-        })?
+    {
+        Ok(result) => result,
+        Err(_) => {
+            if route
+                .repo
+                .track_get(recovery_track.id.as_str())
+                .await?
+                .is_some()
+            {
+                workspace_recycle::restore_recycled_workspace(&recovery_decision)?;
+                route
+                    .write
+                    .remember_track(recovery_track.id.clone(), recovery_track.area_id.clone());
+                for thread_id in &recovery_thread_ids {
+                    recovery_turn_daemon.unseal_turn_thread_after_rollback(thread_id);
+                }
+            }
+            Err(CalmError::Internal(format!(
+                "track deletion saga for {} panicked",
+                recovery_track.id
+            )))
+        }
+    }
+}
+
+#[allow(deprecated)]
+async fn finish_prepared_track_deletion_owned(
+    route: RouteState,
+    worker: WorkerState,
+    codex: CodexShellState,
+    actor: ActorId,
+    prepared: PreparedTrackDeletion,
+) -> Result<()> {
+    let track_id = prepared.track.id.clone();
+    let recovery_track_ids = HashSet::from([track_id.clone()]);
+    let task_track_id = track_id.clone();
+    tokio::spawn(async move {
+        let workflow = std::panic::AssertUnwindSafe(async {
+            let recycled = prepared
+                .quiesce(&route, &worker, &codex)
+                .await?
+                .recycle(&route)?;
+            run_recycled_track_deletion(&route, actor, recycled).await
+        })
+        .catch_unwind()
+        .await;
+        let result = match workflow {
+            Ok(result) => result,
+            Err(_) => Err(CalmError::Internal(format!(
+                "track deletion saga for {task_track_id} panicked before recycle"
+            ))),
+        };
+        let recovery = crate::harness::HarnessRecoveryContext::new(
+            worker.repo.clone(),
+            route.events.clone(),
+            route.write.role_cache().clone(),
+            route.write.area_cache().clone(),
+            codex.shared_codex_appserver.clone(),
+            worker.harness.clone(),
+            route.track_delete_locks.clone(),
+        );
+        if result.is_err()
+            && let Err(error) =
+                crate::harness::recover_harnesses_for_tracks(&recovery, &recovery_track_ids).await
+        {
+            tracing::error!(
+                track_id = %task_track_id,
+                error = %error,
+                "aborted track deletion could not recover its planner harness"
+            );
+        }
+        result
+    })
+    .await
+    .map_err(|error| {
+        CalmError::Internal(format!(
+            "owned deletion task for track {} failed: {error}",
+            track_id.as_str()
+        ))
+    })?
 }
 
 #[utoipa::path(
@@ -4006,14 +4147,14 @@ pub(crate) async fn delete_track(
     preflight_track_deletion_reprojection(&pool, &track_id).await?;
 
     let prepared = PreparedTrackDeletion {
-        plan: snapshot_track_deletion(&s, &pool, &track).await?,
+        plan: snapshot_track_deletion(&s, &track).await?,
+        turn_daemon: cs.shared_codex_appserver.clone(),
         track,
         area_kind: owning_area.map(|area| area.kind),
         _operation_guard: operation_guard,
         _delete_guard: delete_guard,
     };
-    let recycled = prepared.quiesce(&s, &w, &cs).await?.recycle(&s)?;
-    finish_recycled_track_deletion_owned(s, actor.to_actor_id(), recycled).await?;
+    finish_prepared_track_deletion_owned(s, w, cs, actor.to_actor_id(), prepared).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -28,7 +28,7 @@ describe('invalidation plan contract', () => {
     >;
     expect(invalidationPlanFor(event)).toEqual({
       invalidate: [
-        ['track-files', 'track-7'], ['track-report', 'track-7'], ['track-backlinks'],
+        ['track-files', 'track-7'], ['track-report'], ['track-backlinks'],
         ['today-launchpad'], ['track', 'track-7'],
       ],
       remove: [],
@@ -61,6 +61,21 @@ describe('invalidation plan contract', () => {
     const event = { ev: 'track.updated', data: { id: 'track-7', area_id: 'area-1' } } as Extract<
       WireEvent,
       { ev: 'track.updated' }
+    >;
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+  });
+
+  it('refreshes every dependent verdict when a referenced card appears or disappears', () => {
+    for (const ev of ['card.added', 'card.deleted'] as const) {
+      const event = { ev, data: { track_id: 'target' } } as Extract<WireEvent, { ev: typeof ev }>;
+      expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+    }
+  });
+
+  it('refreshes cross-area reference diagnostics after an area disappears', () => {
+    const event = { ev: 'area.deleted', data: { id: 'target-area' } } as Extract<
+      WireEvent,
+      { ev: 'area.deleted' }
     >;
     expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
   });

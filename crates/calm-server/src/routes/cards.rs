@@ -17,7 +17,7 @@ use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
-use crate::harness::{HarnessPhaseTag, Observation, TokenUsage, is_harness_snapshot_value};
+use crate::harness::{HarnessPhaseTag, TokenUsage, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     Card, CardPatch, CardRole, HarnessItem, NewCard, Track, TrackLifecycle, new_id,
@@ -190,6 +190,37 @@ pub(crate) async fn interrupt_shared_card_active_turn(
             "failed to interrupt active shared codex turn during card teardown"
         );
     }
+}
+
+/// Deletion-grade form of [`interrupt_shared_card_active_turn`]. Every lookup
+/// and interrupt failure is propagated; a destructive workspace move may only
+/// follow a confirmed quiesce, never a best-effort warning.
+pub(crate) async fn quiesce_shared_card_active_turn(
+    repo: &dyn RouteRepo,
+    cs: &CodexShellState,
+    card: &Card,
+) -> Result<Option<String>> {
+    let active_runtime = repo
+        .session_projection_active_for_card(&card.id.to_string())
+        .await?;
+    if card_is_shared_planner(card, active_runtime.as_ref()) {
+        let thread_id = active_runtime
+            .as_ref()
+            .and_then(crate::harness::effective_runtime_thread_id);
+        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
+            cs.shared_codex_appserver.clone(),
+        );
+        if let Some(thread_id) = thread_id.clone() {
+            seals.seal(thread_id);
+        }
+        if let Some(thread_id) = thread_id.as_deref() {
+            cs.shared_codex_appserver
+                .interrupt_active_turn(thread_id)
+                .await?;
+        }
+        return Ok(seals.retain().pop());
+    }
+    Ok(None)
 }
 
 pub fn router() -> Router<AppState> {
@@ -936,7 +967,7 @@ pub(crate) async fn send_planner_input(
     };
 
     let text = body.text;
-    harness.observe(Observation::UserMessage { text })?;
+    harness.observe_user_message_durable(text).await?;
 
     tracing::info!(
         actor = %actor.as_str(),
@@ -946,7 +977,8 @@ pub(crate) async fn send_planner_input(
         "planner harness user message enqueued"
     );
 
-    s.repo
+    if let Err(error) = s
+        .repo
         .log_pure_event(
             audit_actor,
             scope,
@@ -961,7 +993,18 @@ pub(crate) async fn send_planner_input(
                 char_count: char_count as u32,
             },
         )
-        .await?;
+        .await
+    {
+        // The user message is already durably accepted. Returning 500 here
+        // would invite a retry and execute the same intent twice; keep the
+        // accepted response and surface the audit failure operationally.
+        tracing::error!(
+            card_id = %card.id,
+            runtime_id = %runtime.id,
+            error = %error,
+            "planner input was accepted but its audit event failed"
+        );
+    }
 
     Ok(Json(SendPlannerInputResponse {
         card_id: card.id,

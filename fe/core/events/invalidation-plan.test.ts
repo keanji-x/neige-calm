@@ -111,12 +111,21 @@ describe('invalidation plan behavior', () => {
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { track_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['track', 'w1'], ['track-files', 'w1'], ['track-conversations', 'w1'],
+        ['track', 'w1'], ['track-files', 'w1'], ['track-report'],
+        ['track-conversations', 'w1'],
       ],
       remove: [],
       writeThrough: [],
     });
   });
+
+  it.each(['card.added', 'card.deleted'] as const)(
+    'broadly refreshes cross-track card references after %s',
+    (ev) => {
+      const keys = invalidationPlanFor(event({ ev, data: { track_id: 'target' } })).invalidate;
+      expect(keys).toContainEqual(['track-report']);
+    },
+  );
 
   /*
    * The track list is keyed BY TRACK, and that is the assertion — not "a

@@ -937,6 +937,7 @@ async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
     let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        panic_after_release: false,
     };
     calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track_id, hook.clone());
 
@@ -968,6 +969,41 @@ async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
     assert_eq!(
         b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
         None
+    );
+}
+
+#[tokio::test]
+async fn panicking_track_commit_restores_the_owned_workspace_and_cache() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "panic-safe").await;
+    let runtime_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .bind(&track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let before = fingerprint(&path);
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        panic_after_release: true,
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track_id, hook.clone());
+    hook.release.notify_one();
+
+    let (status, _) = delete_track(&b, &track_id).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
+    assert!(diff(&before, &fingerprint(&path)).is_empty());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
+        Some(area_id.into())
+    );
+    assert!(
+        b.harness.get(&runtime_id).is_some(),
+        "aborted track deletion did not recover its planner harness"
     );
 }
 
@@ -1040,6 +1076,162 @@ async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
     );
 }
 
+/// Registry membership is the teardown source of truth. A failed DB status
+/// does not prove the in-memory run loop exited.
+#[tokio::test]
+async fn deletion_shuts_down_a_live_harness_even_when_its_session_is_failed() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, _) = managed_track(&b, &area_id, "failed but live").await;
+    let runtime_id = install_live_harness(&b, &track_id).await;
+    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+        .bind(&runtime_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    assert!(b.harness.get(&runtime_id).is_some());
+
+    let (status, body) = delete_track(&b, &track_id).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.harness.get(&runtime_id).is_none());
+}
+
+/// A turn/start RPC can be accepted before its id is returned. Deletion seals
+/// the thread and waits for issuance, so the late id is interrupted before the
+/// workspace or owning row disappears.
+#[tokio::test]
+async fn deletion_interrupts_a_turn_whose_start_response_arrives_late() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, _) = managed_track(&b, &area_id, "late turn").await;
+    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+        "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 \
+         AND thread_id IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .bind(&track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let harness = b
+        .harness
+        .get(&runtime_id)
+        .expect("create must install the planner harness");
+    let hook = calm_server::shared_codex_appserver::TurnStartReturnHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    b.shared_codex
+        .install_turn_start_return_hook_for_test(hook.clone());
+    harness
+        .observe(calm_server::harness::Observation::TrackGoal {
+            text: "issue now".into(),
+        })
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), hook.entered.notified())
+        .await
+        .expect("turn/start must reach the delayed-return hook");
+
+    let delete_app = b.app.clone();
+    let delete_id = track_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !delete_task.is_finished(),
+        "delete must wait for in-flight turn issuance"
+    );
+
+    hook.release.notify_one();
+    let (status, body) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(
+        b.shared_codex
+            .interrupted_turns_for_test()
+            .iter()
+            .any(|(thread, turn)| thread == &thread_id && turn.starts_with("fake-turn-")),
+        "the late accepted turn was not interrupted"
+    );
+    assert!(
+        b.shared_codex
+            .active_turn_id_for_thread(&thread_id)
+            .is_none()
+    );
+    assert!(b.harness.get(&runtime_id).is_none());
+}
+
+/// A failed interrupt must keep the late turn id available for retry and roll
+/// back every pre-recycle seal. The DELETE fails closed with the row and owned
+/// workspace intact instead of moving a directory under a live writer.
+#[tokio::test]
+async fn failed_late_turn_interrupt_aborts_delete_and_releases_pre_recycle_seals() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "late turn failure").await;
+    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+        "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 \
+         AND thread_id IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .bind(&track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let harness = b.harness.get(&runtime_id).expect("planner harness");
+    let hook = calm_server::shared_codex_appserver::TurnStartReturnHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    b.shared_codex
+        .install_turn_start_return_hook_for_test(hook.clone());
+    b.shared_codex.fail_turn_interrupt_for_test(true);
+    harness
+        .observe(calm_server::harness::Observation::TrackGoal {
+            text: "issue now".into(),
+        })
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), hook.entered.notified())
+        .await
+        .expect("turn/start must reach the delayed-return hook");
+
+    let delete_app = b.app.clone();
+    let delete_id = track_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    hook.release.notify_one();
+
+    let (status, _) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
+    assert!(
+        path.exists(),
+        "failed quiesce must not recycle the workspace"
+    );
+    assert!(
+        b.shared_codex
+            .active_turn_id_for_thread(&thread_id)
+            .is_some(),
+        "failed interrupt must retain the late turn id for retry"
+    );
+    assert!(
+        !b.shared_codex.turn_thread_is_sealed_for_test(&thread_id),
+        "pre-recycle failure must roll back the deletion seal"
+    );
+}
+
 /// Area deletion uses the same operation fence as a track saga. It cannot
 /// erase ownership rows while a failed track transaction is deciding whether
 /// to restore its recycled workspace.
@@ -1060,6 +1252,7 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        panic_after_release: false,
     };
     calm_server::routes::tracks::install_track_delete_commit_hook_for_test(
         &victim_id,
@@ -1119,6 +1312,258 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
         b.tracks
             .area_of(&calm_server::ids::TrackId::from(victim_id)),
         None
+    );
+}
+
+/// Once an area has moved any workspace, request cancellation cannot drop the
+/// only owner of the remaining commit/rollback decisions.
+#[tokio::test]
+async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "owned area saga").await;
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: false,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+
+    let app = b.app.clone();
+    let delete_id = area_id.clone();
+    let request_task = tokio::spawn(async move {
+        request(app, "DELETE", &format!("/api/areas/{delete_id}"), None).await
+    });
+    hook.entered.notified().await;
+    assert!(!path.exists(), "workspace must already be recycled");
+
+    request_task.abort();
+    assert!(request_task.await.unwrap_err().is_cancelled());
+    hook.release.notify_one();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if b.repo.area_get(&area_id).await.unwrap().is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached area deletion must finish after request cancellation");
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    assert!(!path.exists());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
+        None
+    );
+}
+
+/// The area guard covers the complete direct-create unit: row, workspace and
+/// planner start. A creator arriving after deletion's snapshot must wait and
+/// then observe that the area is gone.
+#[tokio::test]
+async fn first_message_track_create_cannot_commit_behind_an_area_deletion_snapshot() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let _ = managed_track(&b, &area_id, "existing").await;
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: false,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+
+    let delete_app = b.app.clone();
+    let delete_id = area_id.clone();
+    let area_delete = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/areas/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+
+    let create_app = b.app.clone();
+    let create_area_id = area_id.clone();
+    let track_create = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/tracks")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "area-delete-race")
+            .body(Body::from(
+                json!({
+                "area_id": create_area_id,
+                "title": "too late",
+                "first_message": "start after create",
+                "theme": theme(),
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = create_app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !track_create.is_finished(),
+        "track creation bypassed the area deletion fence"
+    );
+
+    hook.release.notify_one();
+    let (delete_status, delete_body) = area_delete.await.unwrap();
+    assert_eq!(delete_status, StatusCode::NO_CONTENT, "body={delete_body}");
+    let (create_status, _) = track_create.await.unwrap();
+    assert_eq!(create_status, StatusCode::NOT_FOUND);
+    assert!(b.repo.tracks_by_area(&area_id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn area_commit_failure_restores_every_recycled_workspace() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (first_id, first_path) = managed_track(&b, &area_id, "first").await;
+    let (second_id, second_path) = managed_track(&b, &area_id, "second").await;
+    let first_before = fingerprint(&first_path);
+    let second_before = fingerprint(&second_path);
+    let active_before = b.harness.len_active();
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: true,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+    hook.release.notify_one();
+
+    let (status, _) = delete_area(&b, &area_id).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(b.repo.area_get(&area_id).await.unwrap().is_some());
+    assert!(b.repo.track_get(&first_id).await.unwrap().is_some());
+    assert!(b.repo.track_get(&second_id).await.unwrap().is_some());
+    assert!(diff(&first_before, &fingerprint(&first_path)).is_empty());
+    assert!(diff(&second_before, &fingerprint(&second_path)).is_empty());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(first_id)),
+        Some(area_id.clone().into())
+    );
+    assert_eq!(
+        b.tracks
+            .area_of(&calm_server::ids::TrackId::from(second_id)),
+        Some(area_id.into())
+    );
+    assert_eq!(
+        b.harness.len_active(),
+        active_before,
+        "aborted area deletion did not recover all planner harnesses"
+    );
+}
+
+#[tokio::test]
+async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "restore blocked").await;
+    let (runtime_id, thread_id): (String, String) = sqlx::query_as(
+        "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 AND thread_id IS NOT NULL LIMIT 1",
+    )
+    .bind(&track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: true,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+    let app = b.app.clone();
+    let delete_id = area_id.clone();
+    let deletion = tokio::spawn(async move {
+        request(app, "DELETE", &format!("/api/areas/{delete_id}"), None).await
+    });
+    hook.entered.notified().await;
+    assert!(!path.exists());
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("occupied"), b"not the restored workspace").unwrap();
+    hook.release.notify_one();
+
+    let (status, body) = deletion.await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    assert!(b.repo.area_get(&area_id).await.unwrap().is_some());
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
+    assert!(
+        b.shared_codex.turn_thread_is_sealed_for_test(&thread_id),
+        "a surviving runtime must not resume against an unrestored workspace"
+    );
+    assert_eq!(
+        b.harness.len_active(),
+        0,
+        "unsafe sealed runtime must not be recovered"
+    );
+    // Process restart loses the in-memory seal. The managed ownership marker
+    // is the durable quarantine: the occupied original path must still make the
+    // common boot/lazy recovery boundary abstain.
+    let runtime = b
+        .repo
+        .session_projection_by_id(&runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let reboot_registry = calm_server::harness::HarnessRegistry::new();
+    let repo: Arc<dyn Repo> = b.repo.clone();
+    let reboot_daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let outcome = calm_server::harness::spawn_recovered_harness(
+        repo,
+        EventBus::new(),
+        b.roles.clone(),
+        b.tracks.clone(),
+        reboot_daemon,
+        &reboot_registry,
+        &calm_server::harness::new_track_delete_locks(),
+        runtime,
+        calm_server::harness::ClaimMode::Replace,
+    )
+    .await
+    .unwrap();
+    assert!(
+        outcome.installed().is_none(),
+        "boot recovery ignored the durable managed-workspace quarantine"
+    );
+}
+
+#[tokio::test]
+async fn panicking_area_commit_restores_every_owned_workspace() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let (track_id, path) = managed_track(&b, &area_id, "panic-safe area").await;
+    let before = fingerprint(&path);
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: false,
+        panic_after_release: true,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+    hook.release.notify_one();
+
+    let (status, _) = delete_area(&b, &area_id).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(b.repo.area_get(&area_id).await.unwrap().is_some());
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
+    assert!(diff(&before, &fingerprint(&path)).is_empty());
+    assert_eq!(
+        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
+        Some(area_id.into())
     );
 }
 

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
 use crate::card_role_cache::CardRoleCache;
@@ -65,7 +65,7 @@ pub(super) struct Inner {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
-    observations: mpsc::Sender<HarnessObservationDelivery>,
+    observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
     pending_queue: Mutex<VecDeque<Observation>>,
@@ -88,6 +88,17 @@ pub(super) struct Inner {
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     shutdown: broadcast::Sender<()>,
     shutting_down: Arc<AtomicBool>,
+    /// Synchronous ingress/shutdown linearization for the non-awaiting event
+    /// producers. `observe_delivery` holds this through `try_send`; shutdown
+    /// closes it under the same mutex before notifying the run loop.
+    observations_closed: StdMutex<bool>,
+    /// User input has no replay payload, so it is folded and persisted before
+    /// the HTTP request returns. Shutdown waits behind this lock before closing.
+    durable_observation: Mutex<()>,
+    /// Linearizes `turn/start` with shutdown. A request may have reached Codex
+    /// before the daemon returns a turn id; shutdown waits for that response,
+    /// then interrupts the now-known turn before aborting the run loop.
+    issuance: Mutex<()>,
     /// Issue #682 review — issuance kill-switch for dev-forced harnesses.
     /// Checked at the top of [`maybe_issue_turn`]; observations still
     /// enqueue normally, the harness just never calls `turn_start`. Only
@@ -120,6 +131,20 @@ pub struct HarnessObservationDelivery {
     pub envelope_id: Option<i64>,
 }
 
+enum HarnessObservationCommand {
+    Delivery(HarnessObservationDelivery),
+    Durable {
+        delivery: HarnessObservationDelivery,
+        persisted: oneshot::Sender<Result<()>>,
+    },
+}
+
+enum ObservationIngress {
+    Running(mpsc::Sender<HarnessObservationCommand>),
+    #[cfg(feature = "fixtures")]
+    Unstarted(mpsc::Sender<HarnessObservationDelivery>),
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct DebounceState {
     first_pending_at: Option<Instant>,
@@ -127,13 +152,37 @@ struct DebounceState {
     hard_fire: bool,
 }
 
+struct DurableUserMessageCheckpoint {
+    pending_queue: VecDeque<Observation>,
+    pending_envelope_ids: VecDeque<Option<i64>>,
+    debounce: DebounceState,
+}
+
+async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageCheckpoint {
+    DurableUserMessageCheckpoint {
+        pending_queue: inner.pending_queue.lock().await.clone(),
+        pending_envelope_ids: inner.pending_envelope_ids.lock().await.clone(),
+        debounce: *inner.debounce.lock().await,
+    }
+}
+
+async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMessageCheckpoint) {
+    *inner.pending_queue.lock().await = checkpoint.pending_queue;
+    *inner.pending_envelope_ids.lock().await = checkpoint.pending_envelope_ids;
+    *inner.debounce.lock().await = checkpoint.debounce;
+}
+
 impl PlannerHarness {
+    pub fn track_id(&self) -> &TrackId {
+        &self.inner.track_id
+    }
+
     pub fn run(params: PlannerHarnessParams) -> Self {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let notifications = params.daemon.subscribe_notifications();
-        let inner = inner_from_params(params, obs_tx, shutdown_tx);
+        let inner = inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
         let handle = Self {
             inner: Arc::clone(&inner),
         };
@@ -158,7 +207,7 @@ impl PlannerHarness {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
-        let inner = inner_from_params(params, obs_tx, shutdown_tx);
+        let inner = inner_from_params(params, ObservationIngress::Unstarted(obs_tx), shutdown_tx);
         (Self { inner }, obs_rx)
     }
 
@@ -177,10 +226,70 @@ impl PlannerHarness {
     }
 
     fn observe_delivery(&self, delivery: HarnessObservationDelivery) -> Result<()> {
-        self.inner
-            .observations
-            .try_send(delivery)
-            .map_err(map_observation_send_error)
+        let closed = self
+            .inner
+            .observations_closed
+            .lock()
+            .expect("planner harness observation gate mutex poisoned");
+        if *closed {
+            return Err(CalmError::Conflict(
+                "planner harness is shutting down; refusing new observation".into(),
+            ));
+        }
+        let result = match &self.inner.observations {
+            ObservationIngress::Running(sender) => sender
+                .try_send(HarnessObservationCommand::Delivery(delivery))
+                .map_err(map_observation_send_error),
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(sender) => sender
+                .try_send(delivery)
+                .map_err(map_observation_send_error),
+        };
+        drop(closed);
+        result
+    }
+
+    /// Fold and persist non-replayable user intent before acknowledging it.
+    pub async fn observe_user_message_durable(&self, text: String) -> Result<()> {
+        let _durable_guard = self.inner.durable_observation.lock().await;
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict(
+                "planner harness is shutting down; refusing new observation".into(),
+            ));
+        }
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (persisted, confirmation) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::Durable {
+                        delivery: HarnessObservationDelivery {
+                            observation: Observation::UserMessage { text },
+                            envelope_id: None,
+                        },
+                        persisted,
+                    })
+                    .map_err(map_observation_send_error)?;
+                confirmation.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "planner harness runtime shut down before persistence".into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => {
+                let checkpoint = checkpoint_durable_user_message(&self.inner).await;
+                if !on_observation(&self.inner, Observation::UserMessage { text }, None).await {
+                    return Err(CalmError::ServiceUnavailable(
+                        "planner harness pending queue full, retry shortly".into(),
+                    ));
+                }
+                if let Err(error) = persist_snapshot(&self.inner).await {
+                    restore_durable_user_message(&self.inner, checkpoint).await;
+                    return Err(error);
+                }
+                Ok(())
+            }
+        }
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
@@ -188,10 +297,46 @@ impl PlannerHarness {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.inner.shutting_down.store(true, Ordering::SeqCst);
+        self.shutdown_inner(false, false).await
+    }
+
+    /// Quiesce an owner that is preparing for deletion and return its retained
+    /// thread seal. An error/panic releases the seal through the local guard;
+    /// the caller owns it only after strict interruption succeeds.
+    pub async fn shutdown_for_deletion(&self) -> Result<Option<String>> {
+        let thread_id = self.inner.thread_id.read().await.clone();
+        let mut seals =
+            crate::shared_codex_appserver::DeletionThreadSeals::new(self.inner.daemon.clone());
+        if let Some(thread_id) = thread_id.clone() {
+            seals.seal(thread_id);
+        }
+        self.shutdown_inner(false, true).await?;
+        Ok(seals.retain().pop())
+    }
+
+    async fn shutdown_inner(&self, seal_thread: bool, strict_interrupt: bool) -> Result<()> {
+        let _durable_guard = self.inner.durable_observation.lock().await;
+        {
+            let mut closed = self
+                .inner
+                .observations_closed
+                .lock()
+                .expect("planner harness observation gate mutex poisoned");
+            *closed = true;
+            self.inner.shutting_down.store(true, Ordering::SeqCst);
+        }
+        let thread_id = self.inner.thread_id.read().await.clone();
+        if seal_thread && let Some(thread_id) = thread_id.as_deref() {
+            self.inner.daemon.seal_turn_thread_for_deletion(thread_id);
+        }
         let _ = self.inner.shutdown.send(());
+        // If turn/start is already in flight, wait until its id is recorded in
+        // the shared daemon cache. If shutdown won first, maybe_issue_turn sees
+        // `shutting_down` under this same mutex and never calls the daemon.
+        let _issuance_guard = self.inner.issuance.lock().await;
         self.persist_snapshot().await?;
-        if let Some(thread_id) = self.inner.thread_id.read().await.clone() {
+        let mut interrupt_error = None;
+        if let Some(thread_id) = thread_id {
             let last_turn_id = self.inner.last_turn_id.lock().await.clone();
             let active_turn_id = self.inner.daemon.active_turn_id_for_thread(&thread_id);
             if let Err(e) = self.inner.daemon.interrupt_active_turn(&thread_id).await {
@@ -200,6 +345,7 @@ impl PlannerHarness {
                     error = %e,
                     "planner harness shutdown thread interrupt failed"
                 );
+                interrupt_error = Some(e);
             }
             if active_turn_id.is_none()
                 && let Some(last_turn_id) = last_turn_id
@@ -215,6 +361,7 @@ impl PlannerHarness {
                     error = %e,
                     "planner harness shutdown last-known turn interrupt failed"
                 );
+                interrupt_error = Some(e);
             }
         }
         let abort = self
@@ -225,6 +372,9 @@ impl PlannerHarness {
             .take();
         if let Some(abort) = abort {
             abort.abort();
+        }
+        if strict_interrupt && let Some(error) = interrupt_error {
+            return Err(error);
         }
         Ok(())
     }
@@ -262,7 +412,7 @@ impl PlannerHarness {
 
     #[cfg(feature = "fixtures")]
     pub async fn observe_for_test(&self, obs: Observation, envelope_id: Option<i64>) {
-        on_observation(&self.inner, obs, envelope_id).await;
+        let _ = on_observation(&self.inner, obs, envelope_id).await;
     }
 
     /// Issue #682 — dev-only seam for the replay binary's
@@ -395,9 +545,7 @@ impl PlannerHarness {
     }
 }
 
-fn map_observation_send_error(
-    e: mpsc::error::TrySendError<HarnessObservationDelivery>,
-) -> CalmError {
+fn map_observation_send_error<T>(e: mpsc::error::TrySendError<T>) -> CalmError {
     match e {
         // Backpressure: server is temporarily saturated, client should retry.
         mpsc::error::TrySendError::Full(_) => CalmError::ServiceUnavailable(
@@ -414,7 +562,7 @@ fn map_observation_send_error(
 
 fn inner_from_params(
     params: PlannerHarnessParams,
-    observations: mpsc::Sender<HarnessObservationDelivery>,
+    observations: ObservationIngress,
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
     let mut snapshot = params.snapshot;
@@ -461,6 +609,9 @@ fn inner_from_params(
         interrupt_deadline: Mutex::new(None),
         shutdown,
         shutting_down: Arc::new(AtomicBool::new(false)),
+        observations_closed: StdMutex::new(false),
+        durable_observation: Mutex::new(()),
+        issuance: Mutex::new(()),
         issuance_paused: AtomicBool::new(false),
         abort_handle: StdMutex::new(None),
         config: params.config,
@@ -530,18 +681,46 @@ fn recent_hook_keys_from_pending_queue(
 
 async fn run_loop(
     inner: Arc<Inner>,
-    mut observations: mpsc::Receiver<HarnessObservationDelivery>,
+    mut observations: mpsc::Receiver<HarnessObservationCommand>,
     mut shutdown: broadcast::Receiver<()>,
     mut notifications: broadcast::Receiver<Notification>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     loop {
         tokio::select! {
-            delivery = observations.recv() => {
-                let Some(delivery) = delivery else { break };
-                on_observation(&inner, delivery.observation, delivery.envelope_id).await;
-                if let Err(e) = persist_snapshot(&inner).await {
-                    tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
+            command = observations.recv() => {
+                let Some(command) = command else { break };
+                match command {
+                    HarnessObservationCommand::Delivery(delivery) => {
+                        let _accepted =
+                            on_observation(&inner, delivery.observation, delivery.envelope_id).await;
+                        if let Err(e) = persist_snapshot(&inner).await {
+                            tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
+                        }
+                    }
+                    HarnessObservationCommand::Durable { delivery, persisted } => {
+                        let checkpoint = checkpoint_durable_user_message(&inner).await;
+                        let result = if on_observation(
+                            &inner,
+                            delivery.observation,
+                            delivery.envelope_id,
+                        )
+                        .await
+                        {
+                            match persist_snapshot(&inner).await {
+                                Ok(()) => Ok(()),
+                                Err(error) => {
+                                    restore_durable_user_message(&inner, checkpoint).await;
+                                    Err(error)
+                                }
+                            }
+                        } else {
+                            Err(CalmError::ServiceUnavailable(
+                                "planner harness pending queue full, retry shortly".into(),
+                            ))
+                        };
+                        let _ = persisted.send(result);
+                    }
                 }
             }
             notif = notifications.recv() => {
@@ -572,17 +751,17 @@ async fn run_loop(
     }
 }
 
-async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Option<i64>) {
+async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Option<i64>) -> bool {
     if let Some(envelope_id) = envelope_id {
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
     }
     if suppress_duplicate_hook_stop(inner, &obs).await {
-        return;
+        return false;
     }
     let hard_fire = obs.is_hard_fire();
     if !enqueue_pending_observation(inner, obs.clone(), envelope_id).await {
-        return;
+        return false;
     }
     if let Some(hash) = obs.report_sha256() {
         *inner.last_report_body_sha256.lock().await = Some(hash.to_string());
@@ -594,6 +773,7 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     }
     debounce.last_pending_at = Some(now);
     debounce.hard_fire |= hard_fire;
+    true
 }
 
 fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
@@ -1432,6 +1612,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
+    let _issuance_guard = inner.issuance.lock().await;
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
         runtime_id = %inner.runtime_id,
@@ -2016,9 +2200,13 @@ async fn persist_snapshot_inner(
                 ?old_phase,
                 ?new_phase,
                 error = %e,
-                "planner harness phase event persist failed; retaining previous phase for retry"
+                "planner harness phase event persist failed after snapshot commit; retaining previous phase for retry"
             );
-            return Err(e.into());
+            // The snapshot transaction above is already committed. Phase audit
+            // is intentionally retryable/best-effort here: reporting failure
+            // would make durable ingress roll back memory after its message was
+            // durably accepted, allowing a later snapshot to erase it.
+            return Ok(());
         }
         *last_phase = new_phase;
     }

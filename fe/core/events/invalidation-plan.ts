@@ -138,11 +138,13 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
  * scheduler moving a task. It does change the workspace, so it keeps its
  * `track-files` key.
  *
- * Three non-derived events deliberately join the list. `track.updated` carries
+ * Six non-derived events deliberately join the list. `track.updated` carries
  * task budget, planner ceiling, and root tree budget changes. `track.deleted`
  * changes the surviving tree's membership and therefore its effective budget.
  * Both use the broad report prefix because their effect can reach child or
- * sibling tracks. A `plan.updated` carrying `agent_message` is the standalone
+ * sibling tracks. Area deletion changes cross-area references into missing
+ * targets; card add/delete changes the existence of `neige://card/*` reference
+ * targets in any track. A `plan.updated` carrying `agent_message` is the standalone
  * pending-task cancellation path and can use its explicit track id; projection
  * events omit that field and ride with one of the broader events above.
  *
@@ -162,7 +164,8 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
 export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   return [
     ...TRACK_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
-    'track.report_edited', 'track.updated', 'track.deleted', 'plan.updated',
+    'track.report_edited', 'track.updated', 'track.deleted', 'area.deleted',
+    'card.added', 'card.deleted', 'plan.updated',
   ];
 }
 
@@ -193,7 +196,7 @@ function policies(): PolicyMap {
     [],
     [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
-  'area.deleted': plan(() => result([['areas'], ['overlays', 'track']])),
+  'area.deleted': plan(() => result([['areas'], ['overlays', 'track'], ['track-report']])),
   /* `track.updated` carries the task-budget / planner-ceiling PATCH event.
      The report key is deliberately broad: a root track's tree budget changes
      the admission diagnosis of its child tracks, but the event carries only
@@ -215,7 +218,7 @@ function policies(): PolicyMap {
   ])),
   'card.added': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
-    ...conversationLists(event.data.track_id),
+    ['track-report'], ...conversationLists(event.data.track_id),
   ])),
   'card.updated': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
@@ -223,7 +226,9 @@ function policies(): PolicyMap {
   ])),
   /* No conversation key, and not an oversight — see the note on
      `conversationLists`. Dropping the deleted row is #1140's. */
-  'card.deleted': plan((event) => result([['track', event.data.track_id], ['track-files', event.data.track_id]])),
+  'card.deleted': plan((event) => result([
+    ['track', event.data.track_id], ['track-files', event.data.track_id], ['track-report'],
+  ])),
   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
@@ -255,7 +260,7 @@ function policies(): PolicyMap {
    * `invalidation-plan.contract.test.ts` is the only guard there is.
    */
   'track.report_edited': plan((event) => result([
-    ['track-files', event.data.track_id], ['track-report', event.data.track_id], ['track-backlinks'],
+    ['track-files', event.data.track_id], ['track-report'], ['track-backlinks'],
     ['today-launchpad'], ['track', event.data.track_id],
   ])),
   'overlay.set': plan((event, context) => {

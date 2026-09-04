@@ -406,6 +406,7 @@ fn readable_action(action: &str) -> String {
 enum TaskVerdictRowState<'a> {
     Absent,
     Pending(&'a TaskReadState),
+    RejectedPending,
     Owned,
     Ambiguous,
 }
@@ -418,7 +419,8 @@ fn task_verdict_row_state<'a>(
         verdict.status.as_deref(),
         by_key.get(verdict.key.as_str()).copied(),
     ) {
-        (Some("pending"), Some(row)) => TaskVerdictRowState::Pending(row),
+        (Some("pending"), Some(row)) if verdict.schedulable => TaskVerdictRowState::Pending(row),
+        (Some("pending"), Some(_)) => TaskVerdictRowState::RejectedPending,
         (Some(_), _) => TaskVerdictRowState::Owned,
         (None, Some(_)) => TaskVerdictRowState::Ambiguous,
         (None, None) => TaskVerdictRowState::Absent,
@@ -502,7 +504,7 @@ fn attach_task_pending_reasons(
                 continue;
             }
             TaskVerdictRowState::Owned | TaskVerdictRowState::Ambiguous => continue,
-            TaskVerdictRowState::Absent => {}
+            TaskVerdictRowState::Absent | TaskVerdictRowState::RejectedPending => {}
         }
 
         let Some(declaration) = declarations.get(index) else {
@@ -805,7 +807,18 @@ async fn track_projection_state(
                        'context_stale_at_ms', t.context_stale_at_ms,
                        'context_closure_truncated', t.context_closure_truncated,
                         'claim_context_json', t.claim_context_json,
-                        'depends_on', json(t.depends_on_json)))
+                        'depends_on', CASE
+                          WHEN NOT json_valid(t.depends_on_json) THEN json('[]')
+                          ELSE CASE
+                            WHEN json_type(t.depends_on_json)='array'
+                             AND NOT EXISTS(
+                               SELECT 1 FROM json_each(t.depends_on_json) dependency
+                                WHERE dependency.type!='text'
+                             )
+                            THEN json(t.depends_on_json)
+                            ELSE json('[]')
+                          END
+                        END))
                      FROM tasks t WHERE t.track_id = w.id)
                    ELSE '[]' END AS task_read_state_json,
                    (SELECT json_group_array(json_array(

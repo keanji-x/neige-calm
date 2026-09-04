@@ -27,14 +27,14 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
-use crate::model::{Area, AreaKind, AreaPatch, NewArea};
+use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
     sweep_workspace_worktrees_for_tracks_repo,
 };
-use crate::routes::cards::interrupt_shared_card_active_turn;
+use crate::routes::cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::workspace_materialize::validate_attached_workspace;
 use crate::workspace_recycle;
 use axum::{
@@ -43,11 +43,19 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use futures::FutureExt;
 use serde::Deserialize;
+use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 use super::area_folders::normalize_path;
 use crate::templates::template_by_key;
+#[cfg(feature = "fixtures")]
+use std::collections::HashMap;
+#[cfg(feature = "fixtures")]
+use std::sync::{Mutex as StdMutex, OnceLock};
+#[cfg(feature = "fixtures")]
+use tokio::sync::Notify;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -357,6 +365,394 @@ pub(crate) async fn update_area(
     Ok(Json(area))
 }
 
+struct PreparedAreaDeletion {
+    id: String,
+    area_kind: Option<AreaKind>,
+    tracks: Vec<Track>,
+    actor: ActorId,
+    turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    _area_guard: crate::per_card_lock::KeyedLockGuard,
+    _operation_guard: tokio::sync::OwnedMutexGuard<()>,
+    _track_guards: Vec<crate::per_card_lock::KeyedLockGuard>,
+}
+
+struct QuiescedAreaDeletion {
+    prepared: PreparedAreaDeletion,
+    terminal_ids: Vec<String>,
+    sealed_thread_ids: Vec<String>,
+}
+
+struct RecycledAreaDeletion {
+    quiesced: QuiescedAreaDeletion,
+    recycle_report: workspace_recycle::AreaRecycleReport,
+}
+
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct AreaDeleteCommitHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+    pub fail_after_release: bool,
+    pub panic_after_release: bool,
+}
+
+#[cfg(feature = "fixtures")]
+fn area_delete_commit_hooks() -> &'static StdMutex<HashMap<String, AreaDeleteCommitHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, AreaDeleteCommitHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_area_delete_commit_hook_for_test(area_id: &str, hook: AreaDeleteCommitHook) {
+    area_delete_commit_hooks()
+        .lock()
+        .expect("area delete commit hook mutex")
+        .insert(area_id.to_string(), hook);
+}
+
+async fn wait_at_area_delete_commit_hook(area_id: &str) -> (bool, bool) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = area_delete_commit_hooks()
+            .lock()
+            .expect("area delete commit hook mutex")
+            .remove(area_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+            return (hook.fail_after_release, hook.panic_after_release);
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = area_id;
+    (false, false)
+}
+
+impl PreparedAreaDeletion {
+    async fn quiesce(
+        self,
+        route: &RouteState,
+        worker: &WorkerState,
+        codex: &CodexShellState,
+    ) -> Result<QuiescedAreaDeletion> {
+        let mut terminal_ids = Vec::new();
+        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
+            codex.shared_codex_appserver.clone(),
+        );
+        for track in &self.tracks {
+            let cards = route.repo.cards_by_track(track.id.as_str()).await?;
+            for card in &cards {
+                if let Some(thread_id) =
+                    quiesce_shared_card_active_turn(route.repo.as_ref(), codex, card).await?
+                {
+                    seals.seal(thread_id);
+                }
+                if let Some(terminal) = route.repo.terminal_get_by_card(card.id.as_str()).await? {
+                    quiesce_terminal_artifacts_for_deletion(
+                        Some(worker.terminal_renderer.as_ref()),
+                        worker.daemon.proc_supervisor_sock.as_deref(),
+                        &terminal,
+                    )
+                    .await?;
+                    terminal_ids.push(terminal.id);
+                }
+            }
+            for thread_id in worker
+                .harness
+                .shutdown_track(&track.id, codex.shared_codex_appserver.clone())
+                .await?
+            {
+                seals.seal(thread_id);
+            }
+        }
+        Ok(QuiescedAreaDeletion {
+            prepared: self,
+            terminal_ids,
+            sealed_thread_ids: seals.retain(),
+        })
+    }
+}
+
+impl QuiescedAreaDeletion {
+    fn recycle(self, route: &RouteState) -> Result<RecycledAreaDeletion> {
+        let Self {
+            prepared,
+            terminal_ids,
+            sealed_thread_ids,
+        } = self;
+        let targets = prepared
+            .tracks
+            .iter()
+            .map(|track| workspace_recycle::RecycleTarget {
+                track_id: track.id.as_str(),
+                workspace: &track.workspace,
+            })
+            .collect::<Vec<_>>();
+        let now = crate::model::now_ms();
+        let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            workspace_recycle::recycle_area_workspaces(
+                &route.workspace_root,
+                &prepared.id,
+                prepared.area_kind,
+                &targets,
+                now,
+            )
+        }));
+        drop(targets);
+        match recycled {
+            Ok(Ok(recycle_report)) => {
+                workspace_recycle::gc_trash_best_effort(&route.workspace_root, now);
+                Ok(RecycledAreaDeletion {
+                    quiesced: QuiescedAreaDeletion {
+                        prepared,
+                        terminal_ids,
+                        sealed_thread_ids,
+                    },
+                    recycle_report,
+                })
+            }
+            Ok(Err(error)) => {
+                if prepared
+                    .tracks
+                    .iter()
+                    .all(workspace_recycle::workspace_allows_runtime_recovery)
+                {
+                    for thread_id in &sealed_thread_ids {
+                        prepared
+                            .turn_daemon
+                            .unseal_turn_thread_after_rollback(thread_id);
+                    }
+                }
+                Err(error)
+            }
+            Err(_) => {
+                if prepared
+                    .tracks
+                    .iter()
+                    .all(workspace_recycle::workspace_allows_runtime_recovery)
+                {
+                    for thread_id in &sealed_thread_ids {
+                        prepared
+                            .turn_daemon
+                            .unseal_turn_thread_after_rollback(thread_id);
+                    }
+                }
+                Err(CalmError::Internal(format!(
+                    "area deletion saga for {} panicked during workspace recycle",
+                    prepared.id
+                )))
+            }
+        }
+    }
+}
+
+async fn finish_area_deletion(
+    route: &RouteState,
+    id: String,
+    terminal_ids: Vec<String>,
+    actor: ActorId,
+) -> Result<(
+    Vec<crate::operation::workspace_lease::WorkspaceTrackSweep>,
+    Vec<String>,
+)> {
+    let scope = EventScope::Area {
+        area: id.clone().into(),
+    };
+    let ((sweeps, deleted_track_ids), _event_ids) = write_with_actor_events_typed(
+        route.repo.as_ref(),
+        None,
+        &route.events,
+        &route.write,
+        move |tx| {
+            Box::pin(async move {
+                for terminal_id in &terminal_ids {
+                    match terminal_delete_tx(tx, terminal_id)
+                        .await
+                        .map_err(CalmError::from)
+                    {
+                        Ok(()) | Err(CalmError::NotFound(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                overlay_delete_subtree_by_area_tx(tx, &id).await?;
+                overlay_delete_by_entity_tx(tx, "area", &id).await?;
+                let mut events = Vec::new();
+                let mut sweeps = Vec::new();
+                let deleted_track_ids: Vec<String> =
+                    sqlx::query_scalar("SELECT id FROM tracks WHERE area_id = ?1 ORDER BY id")
+                        .bind(&id)
+                        .fetch_all(&mut **tx)
+                        .await?;
+                for track_id in &deleted_track_ids {
+                    let release = release_workspace_leases_for_track_tx(tx, track_id).await?;
+                    events.extend(release.events);
+                    if let Some(sweep) = release.sweep {
+                        sweeps.push(sweep);
+                    }
+                }
+                area_delete_tx(tx, &id).await?;
+                events.push((actor, scope, Event::AreaDeleted { id: id.into() }));
+                Ok(((sweeps, deleted_track_ids), events))
+            })
+        },
+    )
+    .await?;
+    Ok((sweeps, deleted_track_ids))
+}
+
+impl RecycledAreaDeletion {
+    async fn commit(mut self, route: &RouteState) -> Result<()> {
+        let area_id = self.quiesced.prepared.id.clone();
+        let (fail_for_test, panic_for_test) = wait_at_area_delete_commit_hook(&area_id).await;
+        if panic_for_test {
+            panic!("fixture: panic area deletion after recycle");
+        }
+        let result = if fail_for_test {
+            Err(CalmError::Internal(
+                "fixture: fail area deletion after recycle".into(),
+            ))
+        } else {
+            finish_area_deletion(
+                route,
+                area_id.clone(),
+                self.quiesced.terminal_ids.clone(),
+                self.quiesced.prepared.actor.clone(),
+            )
+            .await
+        };
+        let (sweeps, deleted_track_ids) = match result {
+            Ok(committed) => committed,
+            Err(error) => {
+                if let Err(restore_error) =
+                    workspace_recycle::restore_area_recycle_report(&self.recycle_report)
+                {
+                    return Err(CalmError::Internal(format!(
+                        "area deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
+                    )));
+                }
+                for thread_id in &self.quiesced.sealed_thread_ids {
+                    self.quiesced
+                        .prepared
+                        .turn_daemon
+                        .unseal_turn_thread_after_rollback(thread_id);
+                }
+                return Err(error);
+            }
+        };
+        for track_id in deleted_track_ids {
+            route
+                .write
+                .forget_track(&crate::ids::TrackId::from(track_id));
+        }
+        workspace_recycle::finalize_area_recycle(
+            &route.workspace_root,
+            &area_id,
+            &mut self.recycle_report,
+        );
+        sweep_workspace_worktrees_for_tracks_repo(route.repo.as_ref(), &route.events, sweeps)
+            .await?;
+        Ok(())
+    }
+}
+
+async fn run_recycled_area_deletion(
+    route: &RouteState,
+    deletion: RecycledAreaDeletion,
+) -> Result<()> {
+    let recovery_report = deletion.recycle_report.clone();
+    let recovery_tracks = deletion.quiesced.prepared.tracks.clone();
+    let recovery_thread_ids = deletion.quiesced.sealed_thread_ids.clone();
+    let recovery_turn_daemon = deletion.quiesced.prepared.turn_daemon.clone();
+    let recovery_area_id = deletion.quiesced.prepared.id.clone();
+    match std::panic::AssertUnwindSafe(deletion.commit(route))
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            if route.repo.area_get(&recovery_area_id).await?.is_some() {
+                workspace_recycle::restore_area_recycle_report(&recovery_report)?;
+                for thread_id in &recovery_thread_ids {
+                    recovery_turn_daemon.unseal_turn_thread_after_rollback(thread_id);
+                }
+            } else {
+                for track in &recovery_tracks {
+                    route.write.forget_track(&track.id);
+                }
+                let mut committed_report = recovery_report;
+                workspace_recycle::finalize_area_recycle(
+                    &route.workspace_root,
+                    &recovery_area_id,
+                    &mut committed_report,
+                );
+            }
+            Err(CalmError::Internal(format!(
+                "area deletion saga for {recovery_area_id} panicked"
+            )))
+        }
+    }
+}
+
+#[allow(deprecated)]
+async fn finish_prepared_area_deletion_owned(
+    route: RouteState,
+    worker: WorkerState,
+    codex: CodexShellState,
+    prepared: PreparedAreaDeletion,
+) -> Result<()> {
+    let area_id = prepared.id.clone();
+    let recovery_track_ids: HashSet<_> = prepared
+        .tracks
+        .iter()
+        .map(|track| track.id.clone())
+        .collect();
+    let task_area_id = area_id.clone();
+    tokio::spawn(async move {
+        let workflow = std::panic::AssertUnwindSafe(async {
+            let recycled = prepared
+                .quiesce(&route, &worker, &codex)
+                .await?
+                .recycle(&route)?;
+            run_recycled_area_deletion(&route, recycled).await
+        })
+        .catch_unwind()
+        .await;
+        let result = match workflow {
+            Ok(result) => result,
+            Err(_) => Err(CalmError::Internal(format!(
+                "area deletion saga for {task_area_id} panicked before recycle"
+            ))),
+        };
+        let recovery = crate::harness::HarnessRecoveryContext::new(
+            worker.repo.clone(),
+            route.events.clone(),
+            route.write.role_cache().clone(),
+            route.write.area_cache().clone(),
+            codex.shared_codex_appserver.clone(),
+            worker.harness.clone(),
+            route.track_delete_locks.clone(),
+        );
+        if result.is_err()
+            && let Err(error) =
+                crate::harness::recover_harnesses_for_tracks(&recovery, &recovery_track_ids).await
+        {
+            tracing::error!(
+                area_id = %task_area_id,
+                error = %error,
+                "aborted area deletion could not recover every planner harness"
+            );
+        }
+        result
+    })
+    .await
+    .map_err(|error| {
+        CalmError::Internal(format!(
+            "owned deletion task for area {area_id} failed: {error}"
+        ))
+    })?
+}
+
 #[utoipa::path(
     delete,
     path = "/api/areas/{id}",
@@ -391,6 +787,10 @@ pub(crate) async fn delete_area(
     // #1147 S5 — also the input to recycle guard 4. `None` (no such area)
     // stays `None` and makes every recycle below refuse; the row delete still
     // runs and 404s naturally in `area_delete_tx`.
+    // Lock order is area delete → operation drive → sorted track delete.
+    // The normal track-create route takes this area lock before entering the
+    // operation driver, so neither side can invert the pair.
+    let area_delete_guard = crate::per_card_lock::lock_key(&s.area_delete_locks, &id).await;
     let area_kind = s.repo.area_get(&id).await?.map(|area| area.kind);
     if area_kind == Some(AreaKind::System) {
         return Err(CalmError::Forbidden(format!(
@@ -401,7 +801,7 @@ pub(crate) async fn delete_area(
     // OperationRuntime is the common funnel for normal runtime/process starts.
     // Track DELETE holds this same guard through commit or compensation, so an
     // area deletion cannot erase the rows underneath a workspace restoration.
-    let _operation_guard = s.operation_runtime.lock_for_track_delete().await;
+    let operation_guard = s.operation_runtime.lock_for_track_delete().await;
 
     let tracks = s.repo.tracks_by_area(&id).await?;
     let mut guarded_track_ids = tracks
@@ -412,9 +812,9 @@ pub(crate) async fn delete_area(
     // Direct harness recovery and websocket terminal reattach bypass the
     // operation driver. Lock every member in stable order before teardown so
     // those paths either finish before this snapshot or observe deleted rows.
-    let mut _track_delete_guards = Vec::with_capacity(guarded_track_ids.len());
+    let mut track_delete_guards = Vec::with_capacity(guarded_track_ids.len());
     for track_id in &guarded_track_ids {
-        _track_delete_guards
+        track_delete_guards
             .push(crate::per_card_lock::lock_key(&s.track_delete_locks, track_id).await);
     }
     let track_ids = guarded_track_ids
@@ -434,103 +834,16 @@ pub(crate) async fn delete_area(
         )));
     }
 
-    // Issue #197 — eager teardown for every terminal under the area.
-    // `terminals.card_id` is `ON DELETE RESTRICT` (migration 0011), so
-    // an area delete that would orphan a terminal row aborts the
-    // surrounding txn unless we drain the table first. Walk
-    // tracks → cards → terminal_get_by_card; reap the daemon + socket
-    // for each; collect the terminal ids for the in-txn row delete. The
-    // overlay sweep derives current track/card ids inside the write txn.
-    let mut terminal_ids: Vec<String> = Vec::new();
-    for track in &tracks {
-        let cards = s.repo.cards_by_track(track.id.as_str()).await?;
-        for card in &cards {
-            interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
-            if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-                reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
-                terminal_ids.push(t.id);
-            }
-        }
-        let active_runtime_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM worker_sessions WHERE track_id=?1 \
-             AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
-        )
-        .bind(track.id.as_str())
-        .fetch_all(&pool)
-        .await?;
-        for runtime_id in active_runtime_ids {
-            if let Some(harness) = w.harness.get(&runtime_id) {
-                harness.shutdown().await?;
-                let _ = w.harness.remove(&runtime_id);
-            }
-        }
-    }
-
-    // #1147 S5 — reclaim every managed workspace under this area, plus the
-    // `<root>/<area_id>/` layer, before the rows go away.
-    //
-    // Until this slice, deleting an area released leases and swept worktrees but
-    // left every managed repository on disk with no database row pointing at
-    // it: an orphan tree that nothing could ever find again, let alone reclaim.
-    //
-    // Same ordering rationale as `delete_track`: terminals are already reaped,
-    // and a failure here aborts the DELETE with rows and directories both
-    // intact. Per-track refusals are not failures — they leave that one
-    // directory (and therefore the area directory) in place, visibly.
-    let now = crate::model::now_ms();
-    let targets: Vec<workspace_recycle::RecycleTarget<'_>> = tracks
-        .iter()
-        .map(|track| workspace_recycle::RecycleTarget {
-            track_id: track.id.as_str(),
-            workspace: &track.workspace,
-        })
-        .collect();
-    workspace_recycle::recycle_area_workspaces(&s.workspace_root, &id, area_kind, &targets, now)?;
-    workspace_recycle::gc_trash_best_effort(&s.workspace_root, now);
-
-    let scope = EventScope::Area {
-        area: id.clone().into(),
+    let prepared = PreparedAreaDeletion {
+        id,
+        area_kind,
+        tracks,
+        actor: actor.to_actor_id(),
+        turn_daemon: cs.shared_codex_appserver.clone(),
+        _area_guard: area_delete_guard,
+        _operation_guard: operation_guard,
+        _track_guards: track_delete_guards,
     };
-    let delete_actor = actor.to_actor_id();
-    let (sweeps, _ids) =
-        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
-            Box::pin(async move {
-                // Drop terminal rows first; tolerate NotFound on each
-                // (a racing sweeper tick may have beaten us to one).
-                for tid in &terminal_ids {
-                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
-                        Ok(()) => {}
-                        Err(CalmError::NotFound(_)) => {}
-                        Err(e) => return Err(e),
-                    }
-                }
-                overlay_delete_subtree_by_area_tx(tx, &id).await?;
-                overlay_delete_by_entity_tx(tx, "area", &id).await?;
-                let mut events = Vec::new();
-                let mut sweeps = Vec::new();
-                let track_ids: Vec<String> =
-                    sqlx::query_scalar("SELECT id FROM tracks WHERE area_id = ?1")
-                        .bind(&id)
-                        .fetch_all(&mut **tx)
-                        .await?;
-                for track_id in &track_ids {
-                    let release =
-                        release_workspace_leases_for_track_tx(tx, track_id.as_str()).await?;
-                    events.extend(release.events);
-                    if let Some(sweep) = release.sweep {
-                        sweeps.push(sweep);
-                    }
-                }
-                area_delete_tx(tx, &id).await?;
-                events.push((delete_actor, scope, Event::AreaDeleted { id: id.into() }));
-                Ok((sweeps, events))
-            })
-        })
-        .await?;
-    for track_id in &guarded_track_ids {
-        s.write
-            .forget_track(&crate::ids::TrackId::from(track_id.clone()));
-    }
-    sweep_workspace_worktrees_for_tracks_repo(s.repo.as_ref(), &s.events, sweeps).await?;
+    finish_prepared_area_deletion_owned(s, w, cs, prepared).await?;
     Ok(StatusCode::NO_CONTENT)
 }

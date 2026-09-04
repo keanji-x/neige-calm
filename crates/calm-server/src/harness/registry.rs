@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 
 use crate::harness::PlannerHarness;
+use crate::ids::TrackId;
 
 /// #953 §5 — registry-local monotonic reservation identity. Minted by a
 /// checked increment (panic on exhaustion — the clean anti-ABA invariant;
@@ -210,6 +211,40 @@ impl HarnessRegistry {
             },
             Entry::Vacant(_) => None,
         }
+    }
+
+    /// Snapshot every installed handle owned by a track. Deletion holds the
+    /// track's recovery fence while consuming this list, so no direct recovery
+    /// can install behind it; operation-driven installs are stopped by the
+    /// operation drive fence. Registry membership, not DB status, is the source
+    /// of truth here because a failed session can still have a live run loop.
+    pub fn live_for_track(&self, track_id: &TrackId) -> Vec<(String, PlannerHarness)> {
+        self.0
+            .map
+            .iter()
+            .filter_map(|entry| match entry.value() {
+                Slot::Live(handle) if handle.track_id() == track_id => {
+                    Some((entry.key().clone(), handle.clone()))
+                }
+                Slot::Live(_) | Slot::Reserved(_) => None,
+            })
+            .collect()
+    }
+
+    pub async fn shutdown_track(
+        &self,
+        track_id: &TrackId,
+        daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    ) -> crate::error::Result<Vec<String>> {
+        let handles = self.live_for_track(track_id);
+        let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(daemon);
+        for (runtime_id, handle) in handles {
+            if let Some(thread_id) = handle.shutdown_for_deletion().await? {
+                seals.seal(thread_id);
+            }
+            let _ = self.remove(&runtime_id);
+        }
+        Ok(seals.retain())
     }
 
     /// Issue #682 review — remove and return every registered Live harness

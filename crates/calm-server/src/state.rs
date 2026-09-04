@@ -181,6 +181,10 @@ pub struct RouteState {
     /// The deployment contract is one calm-server per SQLite data directory.
     /// Multi-process serving would require a durable database fence.
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
+    /// Serializes a user-area delete with the ordinary track-create route.
+    /// The creator holds it through workspace materialization and planner
+    /// startup; deletion therefore snapshots a closed member set.
+    pub(crate) area_delete_locks: crate::per_card_lock::KeyedLocks,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -263,6 +267,7 @@ impl BootState {
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            area_delete_locks: crate::per_card_lock::new_keyed_locks(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),

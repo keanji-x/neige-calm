@@ -7,12 +7,13 @@ pub mod snapshot;
 pub mod state;
 pub mod token_usage;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::dispatcher;
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::event::{Event, EventBus};
 use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
@@ -102,6 +103,22 @@ async fn install_or_shutdown(
     }
 }
 
+pub(crate) fn effective_runtime_thread_id(runtime: &WorkerSessionProjection) -> Option<String> {
+    runtime
+        .thread_id
+        .clone()
+        .filter(|thread_id| !thread_id.trim().is_empty())
+        .or_else(|| {
+            runtime
+                .handle_state_json
+                .as_ref()
+                .and_then(|snapshot| snapshot.get("last_thread_id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|thread_id| !thread_id.trim().is_empty())
+                .map(str::to_owned)
+        })
+}
+
 // The boot/user/deferred callers already thread these independently-owned
 // AppState parts. The explicit delete fence is load-bearing: a caller cannot
 // accidentally recover a runtime without choosing which server instance's
@@ -122,24 +139,36 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
-    if role == Some(CardRole::Planner) {
-        let track = repo
-            .track_get(card.track_id.as_str())
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
-        if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
-            tracing::warn!(
-                runtime_id = %runtime.id,
-                card_id = %card.id,
-                track_id = %track.id,
-                "recovered planner harness is disabled for area chat track; skipping runtime"
-            );
-            return Ok(RecoveryOutcome::Skipped);
-        }
+    let Some(track) = repo.track_get(card.track_id.as_str()).await? else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if !crate::workspace_recycle::workspace_allows_runtime_recovery(&track) {
+        tracing::warn!(
+            runtime_id = %runtime.id,
+            track_id = %track.id,
+            "refusing harness recovery: managed workspace is not restored at its owned path"
+        );
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    if role == Some(CardRole::Planner) && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
+    {
+        tracing::warn!(
+            runtime_id = %runtime.id,
+            card_id = %card.id,
+            track_id = %track.id,
+            "recovered planner harness is disabled for area chat track; skipping runtime"
+        );
+        return Ok(RecoveryOutcome::Skipped);
     }
     let Some(state_json) = runtime.handle_state_json.clone() else {
         return Ok(RecoveryOutcome::Skipped);
     };
+    if effective_runtime_thread_id(&runtime)
+        .as_deref()
+        .is_some_and(|thread_id| daemon.turn_thread_is_sealed(thread_id))
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // #1189 — the catch-up replay is a PLANNER-push catch-up, and it belongs to
     // the planner card alone. `replay_harness_events_since` filters with
@@ -247,16 +276,7 @@ pub async fn spawn_recovered_harness(
         // fallback chain: a row with `thread_id = ''` would otherwise win as
         // `Some("")` over the snapshot's valid `last_thread_id`, and the
         // recovered harness would issue turns against an empty thread.
-        thread_id: runtime
-            .thread_id
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .or_else(|| {
-                snapshot
-                    .last_thread_id
-                    .clone()
-                    .filter(|t| !t.trim().is_empty())
-            }),
+        thread_id: effective_runtime_thread_id(&runtime),
         repo,
         events,
         card_role_cache,
@@ -412,6 +432,89 @@ pub async fn recover_harnesses_on_boot(
                 runtime_id = %runtime_id,
                 error = %error,
                 "boot harness recovery: runtime recovery failed; continuing"
+            ),
+        }
+    }
+    Ok(recovered)
+}
+
+#[derive(Clone)]
+pub struct HarnessRecoveryContext {
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    track_area_cache: TrackAreaCache,
+    daemon: Arc<SharedCodexAppServer>,
+    registry: HarnessRegistry,
+    track_delete_locks: KeyedLocks,
+}
+
+impl HarnessRecoveryContext {
+    pub fn new(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        card_role_cache: CardRoleCache,
+        track_area_cache: TrackAreaCache,
+        daemon: Arc<SharedCodexAppServer>,
+        registry: HarnessRegistry,
+        track_delete_locks: KeyedLocks,
+    ) -> Self {
+        Self {
+            repo,
+            events,
+            card_role_cache,
+            track_area_cache,
+            daemon,
+            registry,
+            track_delete_locks,
+        }
+    }
+}
+
+/// Reinstall recoverable harnesses for surviving tracks after an aborted
+/// destructive saga. Deletion guards must be dropped before calling: the
+/// common recovery boundary acquires each track's direct-recovery fence.
+/// Sealed threads are skipped because their workspace could not be restored.
+pub async fn recover_harnesses_for_tracks(
+    context: &HarnessRecoveryContext,
+    track_ids: &HashSet<TrackId>,
+) -> Result<usize> {
+    let runtimes = context
+        .repo
+        .session_projection_recover_harnesses_on_boot()
+        .await?;
+    let mut recovered = 0;
+    for runtime in runtimes {
+        let Some(card) = context.repo.card_get(&runtime.card_id).await? else {
+            continue;
+        };
+        if !track_ids.contains(&card.track_id)
+            || effective_runtime_thread_id(&runtime)
+                .as_deref()
+                .is_some_and(|thread_id| context.daemon.turn_thread_is_sealed(thread_id))
+        {
+            continue;
+        }
+        let runtime_id = runtime.id.clone();
+        match spawn_recovered_harness(
+            context.repo.clone(),
+            context.events.clone(),
+            context.card_role_cache.clone(),
+            context.track_area_cache.clone(),
+            context.daemon.clone(),
+            &context.registry,
+            &context.track_delete_locks,
+            runtime,
+            ClaimMode::Replace,
+        )
+        .await
+        {
+            Ok(RecoveryOutcome::Installed(_)) => recovered += 1,
+            Ok(RecoveryOutcome::Skipped | RecoveryOutcome::DaemonIneligible) => {}
+            Err(error) => tracing::warn!(
+                runtime_id = %runtime_id,
+                error = %error,
+                "aborted deletion: harness recovery failed; continuing"
             ),
         }
     }

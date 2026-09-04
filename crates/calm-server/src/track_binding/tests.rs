@@ -428,6 +428,7 @@ impl Boot {
             gate_logs_dir: std::env::temp_dir().join("neige-1321-gate-logs"),
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         })
     }
 
