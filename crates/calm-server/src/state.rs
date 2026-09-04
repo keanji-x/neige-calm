@@ -1014,10 +1014,13 @@ impl AppState {
     /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
     /// and auto-spawns every enabled plugin via `PluginHost::autospawn_enabled`.
     ///
-    /// If the registry load returns an error (e.g. duplicate plugin id) we
-    /// surface it: that's a hard misconfiguration the operator needs to fix.
-    /// Per-plugin parse failures (and per-plugin spawn failures) are already
-    /// downgraded to `tracing::warn!` so one broken plugin can't block boot.
+    /// If the registry load returns an error we surface it: `load_from_dir`
+    /// only errors when `plugins_dir` itself cannot be read, which is a hard
+    /// misconfiguration the operator needs to fix. Per-plugin failures — a
+    /// broken manifest, an unresolvable entry, or a second entry claiming an
+    /// id already loaded (#1168) — are downgraded to `tracing::warn!` plus a
+    /// `LoadReport::skipped` entry so one broken plugin can't block boot; the
+    /// count below is a summary, the per-entry detail is in those warnings.
     /// Shared CODEX_HOME seeding stays here because it is colocated with the
     /// CodexClient owner and `AppState::new` is the boot-time-only path.
     pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
