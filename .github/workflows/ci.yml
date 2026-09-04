@@ -51,13 +51,18 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
-      code_changed: ${{ steps.classify.outputs.code_changed }}
       rust_changed: ${{ steps.classify.outputs.rust_changed }}
+      fe_changed: ${{ steps.classify.outputs.fe_changed }}
+      web_changed: ${{ steps.classify.outputs.web_changed }}
+      openapi_changed: ${{ steps.classify.outputs.openapi_changed }}
+      fe_e2e_changed: ${{ steps.classify.outputs.fe_e2e_changed }}
+      stack_changed: ${{ steps.classify.outputs.stack_changed }}
+      mutation_changed: ${{ steps.classify.outputs.mutation_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: classify documentation-only changes
+      - name: classify affected CI surfaces
         id: classify
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -66,35 +71,50 @@ jobs:
         run: |
           set -euo pipefail
           scripts/ci/classify-code-changes-selftest.sh
-          code_changed=true
           rust_changed=true
+          fe_changed=true
+          web_changed=true
+          openapi_changed=true
+          fe_e2e_changed=true
+          stack_changed=true
+          mutation_changed=true
           if [ -n "${BASE_SHA:-}" ] \
              && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
              && git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
             if [ "$EVENT_NAME" = "pull_request" ]; then
-              code_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
-                | scripts/ci/classify-code-changes.sh)"
-              rust_changed="$(git diff --name-only -z "$BASE_SHA"..."$HEAD_SHA" -- \
-                | scripts/ci/classify-code-changes.sh rust)"
+              diff_range="$BASE_SHA...$HEAD_SHA"
             else
-              code_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
-                | scripts/ci/classify-code-changes.sh)"
-              rust_changed="$(git diff --name-only -z "$BASE_SHA".."$HEAD_SHA" -- \
-                | scripts/ci/classify-code-changes.sh rust)"
+              diff_range="$BASE_SHA..$HEAD_SHA"
             fi
+            classify() {
+              git diff --name-only -z "$diff_range" -- \
+                | scripts/ci/classify-code-changes.sh "$@"
+            }
+            rust_changed="$(classify rust)"
+            fe_changed="$(classify fe)"
+            web_changed="$(classify web)"
+            openapi_changed="$(classify openapi)"
+            fe_e2e_changed="$(classify fe-e2e)"
+            stack_changed="$(classify stack)"
+            mutation_changed="$(classify mutation)"
           fi
-          echo "code_changed=$code_changed"
-          echo "rust_changed=$rust_changed"
-          echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
-          echo "rust_changed=$rust_changed" >> "$GITHUB_OUTPUT"
+          for output_name in rust_changed fe_changed web_changed \
+            openapi_changed fe_e2e_changed stack_changed mutation_changed; do
+            output_value="${!output_name}"
+            echo "$output_name=$output_value"
+            echo "$output_name=$output_value" >> "$GITHUB_OUTPUT"
+          done
 
-  # #903 — fmt + grep ratchets + clippy split off the critical path: none of
-  # them consume the test build, so they run as a parallel job instead of
-  # serializing ~2.5min in front of the test step.
+  # #903 — fmt + grep ratchets + clippy split off the critical path. The stable
+  # required context always runs the cheap cross-tree ratchets; Rust setup,
+  # probes, fmt, and clippy are step-scoped to Rust-relevant changes.
   lint:
     name: lint (fmt + ratchets + clippy)
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') }}
     runs-on: ubuntu-latest
+    env:
+      RUN_RUST_CHECKS: ${{ needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -103,6 +123,7 @@ jobs:
           persist-credentials: false
 
       - name: local Rust gate safety selftest
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/local-rust-gates-selftest.sh
 
       # #1289 — the toolchain version lives in rust-toolchain.toml (single
@@ -111,9 +132,11 @@ jobs:
       # form needs rustup >= 1.28 (where it was introduced); hosted runner
       # images ship 1.29.x, and a pre-1.28 rustup fails closed on missing args.
       - name: install pinned Rust toolchain (rust-toolchain.toml)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: rustup toolchain install --no-self-update
 
       - uses: Swatinem/rust-cache@v2
+        if: env.RUN_RUST_CHECKS == 'true'
         with:
           # Deliberately NOT the shared `workspace` key: clippy (check-mode)
           # produces mostly rmeta artifacts, disjoint from the test job's
@@ -127,25 +150,30 @@ jobs:
           shared-key: lint
 
       - name: cargo fmt --all --check
+        if: env.RUN_RUST_CHECKS == 'true'
         run: cargo fmt --all --check
 
       - name: frozen-vector gate discriminates branch-creation pushes (#1294)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/frozen-vector-gate-selftest.sh
 
       # This used to be a standalone, non-required eight-second job. Folding it into the required
       # lint context removes one runner and makes the security-vector freeze gate enforceable.
       - name: vectors dir changes require FROZEN-VECTOR-CHANGE rationale
+        if: env.RUN_RUST_CHECKS == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: scripts/ci/frozen-vector-gate.sh
 
       - name: single migrations/ dir gate (#679 PR2)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: |
           count=$(find . -maxdepth 4 -type d -name migrations -not -path './external/*' -not -path './target/*' | wc -l)
           [ "$count" -eq 1 ] && echo "OK: 1 migrations/ directory" || { echo "::error::expected 1 migrations/ directory, found $count"; exit 1; }
 
       - name: harness raw status UPDATE gate (#679 PR3a)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: |
           set -euo pipefail
           paths=(
@@ -188,12 +216,15 @@ jobs:
         run: command -v rg
 
       - name: runtimes ratchet selftest
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/selftest.sh
 
       - name: PR9b-iv runtimes retirement ratchet (#758)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/runtimes_retirement.sh
 
       - name: dropped runtimes table reintroduction ratchet (#679 PR10)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/dropped_runtimes_table.sh
 
       # #1318 §1 — replaced #1300's whole-repository `persist_report` census.
@@ -203,9 +234,11 @@ jobs:
       # it catches a writer added by somebody who does not know the boundary
       # exists. The script's KNOWN GAPS section lists what it cannot see.
       - name: report-write boundary selftest (#1318)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/report_write_boundary_selftest.sh
 
       - name: report-write boundary gate (#1318)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/report_write_boundary.sh
 
       # #1252 S3′ PR-B. Two halves, two different statements — do not merge them
@@ -222,12 +255,15 @@ jobs:
       #     the bare `Transaction` that `RepoEventWrite::write_in_tx` still
       #     hands out.
       - name: append-seam boundary selftest (#1252 S3′)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/append_seam_boundary_selftest.sh
 
       - name: append-seam boundary gate (#1252 S3′)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/ratchets/append_seam_boundary.sh
 
       - name: no parallel operation-event entrance (#679 PR4)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: |
           set -euo pipefail
           path=crates/
@@ -252,6 +288,7 @@ jobs:
           esac
 
       - name: token authority audit gate (#679 PR7b-i)
+        if: env.RUN_RUST_CHECKS == 'true'
         run: |
           set -euo pipefail
           paths=(
@@ -310,6 +347,7 @@ jobs:
       # under `tests/*.rs` are the legitimate consumers and are not
       # scanned.
       - name: sanity — no raw_repo escape in production
+        if: env.RUN_RUST_CHECKS == 'true'
         run: |
           set -euo pipefail
           paths=(
@@ -342,6 +380,7 @@ jobs:
           esac
 
       - name: pgid escape gate (#1013 T11)
+        if: env.RUN_RUST_CHECKS == 'true'
         # The `pgid-escape-probe` feature compiles a module whose only job is to
         # read `pgid_lease::Pgid`'s private field from outside the module. The
         # build MUST fail with E0616. Asserting only "it failed" would be a fake
@@ -383,6 +422,7 @@ jobs:
           echo "OK: probe fails with E0616 on Pgid's private field, in calm-proc-supervisor/src/lib.rs"
 
       - name: append-seam escape probe (#1252 S3′ PR-B)
+        if: env.RUN_RUST_CHECKS == 'true'
         # `mod append_seam_escape_probe` in
         # crates/calm-truth/src/db/sqlite/events.rs holds four samples, each a
         # bypass that a review channel wrote and COMPILED against the seam's
@@ -472,6 +512,7 @@ jobs:
           exit "$fail"
 
       - name: pgid accessor ratchet (#1013 T11 companion)
+        if: env.RUN_RUST_CHECKS == 'true'
         # DEFENSE IN DEPTH, NOT A PROOF. Read this before trusting it.
         #
         # The compile-fail probe above pins exactly one thing: `Pgid`'s tuple
@@ -582,6 +623,7 @@ jobs:
         run: ./scripts/gate-1316-terminology-ratchet.sh --selftest
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
+        if: env.RUN_RUST_CHECKS == 'true'
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
   rust-shards:
@@ -731,7 +773,7 @@ jobs:
   web-unit:
     name: web-unit (build + test)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.web_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -765,7 +807,7 @@ jobs:
   fe-unit:
     name: fe-unit (lint + build + test)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.fe_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -809,7 +851,7 @@ jobs:
   fe-browser:
     name: fe-browser (vitest + chromium)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.fe_changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -840,43 +882,63 @@ jobs:
         run: npm run test:browser
 
   # #1119 — the shard count follows the selected-entry count instead of being
-  # frozen at 6. This job runs the SAME selection code path as the shards
-  # (`run.mjs --plan`), so the plan can never drift from what the shards run.
+  # frozen at 6. For mutation-relevant changes this job runs the SAME selection
+  # code path as the shards (`run.mjs --plan`), so the plan cannot drift from
+  # what the shards run. Known-unrelated changes emit an explicit zero-selection
+  # plan without provisioning Node; classifier fixtures pin that boundary.
   fe-mutation-plan:
     name: fe-mutation-plan
+    needs: changes
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
       MUTATION_TEST_SCOPE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'witness' }}
+      RUN_MUTATION_PLAN: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.mutation_changed == 'true' }}
     defaults:
       run:
         working-directory: fe
     outputs:
-      shards: ${{ steps.plan.outputs.shards }}
-      matrix: ${{ steps.plan.outputs.matrix }}
-      total: ${{ steps.plan.outputs.total }}
-      selected: ${{ steps.plan.outputs.selected }}
-      test_scope: ${{ steps.plan.outputs.test_scope }}
+      shards: ${{ steps.plan.outputs.shards || steps.noop.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix || steps.noop.outputs.matrix }}
+      total: ${{ steps.plan.outputs.total || steps.noop.outputs.total }}
+      selected: ${{ steps.plan.outputs.selected || steps.noop.outputs.selected }}
+      test_scope: ${{ steps.plan.outputs.test_scope || steps.noop.outputs.test_scope }}
     steps:
       - uses: actions/checkout@v4
+        if: env.RUN_MUTATION_PLAN == 'true'
         with:
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
+        if: env.RUN_MUTATION_PLAN == 'true'
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: fe/package-lock.json
 
       - name: npm ci
+        if: env.RUN_MUTATION_PLAN == 'true'
         run: npm ci
+
+      - name: Select no mutation evidence for unrelated changes
+        id: noop
+        if: env.RUN_MUTATION_PLAN != 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo 'shards=[]' >> "$GITHUB_OUTPUT"
+          echo 'matrix=[]' >> "$GITHUB_OUTPUT"
+          echo 'total=1' >> "$GITHUB_OUTPUT"
+          echo 'selected=0' >> "$GITHUB_OUTPUT"
+          echo 'test_scope=witness' >> "$GITHUB_OUTPUT"
 
       # Run harness fixtures once here, before any fan-out. They used to run once per shard even
       # though they do not depend on shard contents. Chromium is still unnecessary: the fixtures
       # and --plan use only the platform-independent project.
       - name: Plan mutation shards
         id: plan
+        if: env.RUN_MUTATION_PLAN == 'true'
         run: |
           set -euo pipefail
           npm run test:mutation:fixtures
@@ -1045,7 +1107,7 @@ jobs:
   fe-e2e:
     name: fe e2e (playwright + docker stack)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.fe_e2e_changed == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
@@ -1139,7 +1201,7 @@ jobs:
   stack-e2e-tier-1:
     name: stack e2e (tier 1)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.stack_changed == 'true') }}
     # Match the chromium stack job's runner pin so the host-built release
     # binaries remain ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
@@ -1226,7 +1288,7 @@ jobs:
   openapi-drift:
     name: openapi drift (cargo emit-openapi == checked-in spec)
     needs: changes
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.code_changed == 'true') }}
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.openapi_changed == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
