@@ -54,6 +54,57 @@ value that arrives as inline `style` — it is per-row data, not a variant.
 - Day cells are buttons with `aria-pressed` and a full-date accessible name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).
 
+## The phone, and the ledger that declares it (#1234)
+
+The compact viewport draws a header and the month calendar, and that is all it
+draws. **The gap is allowed; leaving it undeclared is not.** #1253 added six
+props to `TodayPageProps` — `launchpad`, `launchpadDocument`, `launchpadError`,
+`onWriteSummary`, `summaryPending`, `summaryNotice` — none of which the phone
+renders, and the whole review chain missed it, because nothing anywhere stated
+what the phone leaves out.
+
+`page-props.ts` states it. `TODAY_VIEWPORT_LEDGER` maps **every** key of
+`TodayPageProps` to `{ render: true }` or `{ render: false, why }`, and two
+things follow mechanically from `tsc -b`:
+
+- a prop added to `TodayPageProps` and not to the ledger does not compile, and
+  the diagnostic names the prop;
+- a prop declared `render: false` is not a member of `TodayCompactProps`
+  (`Pick<TodayPageProps, …>` over the rendered keys), so `TodayCompact` cannot
+  read it even by accident.
+
+Two more things hold it up, and both were added after review found the ledger
+easy to walk around:
+
+- **`TodayPage` does not know which viewport it is on.** `ViewportDispatch`
+  (`viewport-dispatch.tsx`) owns `useCompactViewport` and is generic in both
+  prop packs, so it has no name for any Today field; `TodayPage` names fields
+  but cannot tell the viewports apart. While one function held both, an
+  `if (compact) return <>{props.launchpadDocument}…</>` compiled clean and the
+  ledger had nothing to say about it. The reach is exactly this: while
+  `public.tsx` does not import `useCompactViewport`, that escape cannot be
+  written there. Importing the hook back into it still compiles — measured —
+  so what this buys is a visible import instead of one line in a branch.
+- **The ledger is bound to the real signatures, in types.** `page-props.ts`
+  asserts that the ledger's keys and `keyof TodayPageProps` are the *same set*
+  and that neither side has an index signature; `page-props.test.ts` asserts
+  that `TodayPage` and `TodayCompact` take exactly the canonical and derived
+  types. Both use type identity, not `extends`: `TodayPageProps & { x?: … }` is
+  mutually assignable to `TodayPageProps`, so an assignability check sees no
+  problem with an entry that has quietly grown a prop. The signature assertions
+  live in the *test* module on purpose — a local type of the same name shadows
+  any assertion written inside `public.tsx` itself.
+
+Consequences for whoever touches this next: the props type lives in
+`page-props.ts` rather than `public.tsx` (which re-exports it) because a ledger
+that names `keyof TodayPageProps` and a page that consumes the derived keys
+would otherwise import each other, and `no-circular` counts type-only edges.
+`render: true` only guarantees the phone renderer *may* name the prop; that it
+reaches the DOM is a liveness property no type carries. And the clock is
+sampled per renderer, so crossing the breakpoint reseeds `now` and restarts the
+15s interval — identical behaviour whenever `nowMs` is pinned, and a fresher
+clock when it is not.
+
 ## Test contract
 
 `getByRole` only. `public.test.tsx` holds behavior; `public.contract.test.tsx`
