@@ -288,7 +288,25 @@ function BlockBody({ block }: { block: ReportBlock }): ReactNode {
   }
 }
 
-function ProseBlock({ markdown, blockId, onOpenLink }: {
+/**
+ * The rendered-Markdown half of a report block: `core/markdown`'s `parse`, the
+ * outline's own heading ids, and `sanitizeAstPolicy`.
+ *
+ * **Exported for the recipe editor** (#1292), which is the same picture — a
+ * saved report body, rendered — and which lives inside `features/report/` for
+ * exactly this reason. Two rules bracket that placement and neither leaves a
+ * second option: `features-no-cross-domain` forbids any other `features/*`
+ * from importing this file, and INV-DUP-004/005 make `core/markdown` the
+ * single Markdown path (`systems/fs-viewers/public.tsx` records that
+ * `react-markdown` was deleted on purpose to hold that line). A recipe editor
+ * anywhere else would have had to write a second renderer to violate both.
+ *
+ * The `failed` branch below renders the **source**, not an error, and that
+ * behaviour is doubly right for a recipe: the author is editing raw Markdown,
+ * so the text they wrote is the most useful thing to show them when it will
+ * not parse.
+ */
+export function ProseBlock({ markdown, blockId, onOpenLink }: {
   markdown: string;
   blockId: string | null;
   onOpenLink?: (target: ReportLinkTarget) => void;

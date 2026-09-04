@@ -190,6 +190,24 @@ export type NewTrackBody = Readonly<{
    * `input_schema` for it. Sending it otherwise is a 400.
    */
   template_input?: Readonly<Record<string, unknown>>;
+  /**
+   * The chosen user recipe's id (#1292) — a `track_recipes` row, read as
+   * `recipe.id` from `GET /api/track-recipes`.
+   *
+   * **Mutually exclusive with `template_id`, and the kernel says so with a
+   * 400** ("give `template_id` or `recipe_id`, not both" —
+   * `routes/tracks.rs`). They are not two spellings of one field: a
+   * `template_id` lands on `tracks.template_id`, which the start path later
+   * resolves against running plugins' manifests, and a recipe id has no
+   * manifest to resolve against — putting one there would make every
+   * recipe-created track log a resolution failure for an entirely normal
+   * situation. That exclusivity is why the picker's selection is a tagged
+   * union rather than a bare id string: two id spaces in one `string` cannot
+   * say which endpoint the value came from.
+   *
+   * Absent, never `''`: same rule as `template_id`.
+   */
+  recipe_id?: string;
 }>;
 
 /**
@@ -223,6 +241,90 @@ export type TrackTemplate = z.infer<typeof trackTemplateSchema>;
 
 export function trackTemplatesOperation(): ApiOperation<TrackTemplate[]> {
   return { method: 'GET', path: '/api/track-templates', responseSchema: z.array(trackTemplateSchema) };
+}
+
+/**
+ * A user-defined starting point for a new track (#1292) — a `track_recipes`
+ * row.
+ *
+ * ## Why this is not `TrackTemplate` with a flag
+ *
+ * There is no combined endpoint and **no `builtin` / `read_only`
+ * discriminator on either payload**; the kernel states that as intentional
+ * (`routes/track_recipes.rs`): built-in and mine "differ only in where the
+ * payload came from", and where it came from is *which endpoint answered*.
+ * So the kind is tagged on merge, in the one place that merges them
+ * (`features/area/new-track`), and neither wire type grows a field the server
+ * does not have.
+ *
+ * The two are also shaped differently in the way that matters to a reader.
+ * A template exposes `tasks[]` — structured, renderable as a hover card, and
+ * never a `body`. A recipe exposes `body` — the Markdown whose `neige-block`
+ * fences *are* its tasks — and no `tasks[]`. That asymmetry is why "duplicate
+ * this built-in as my recipe" is not offered: producing a recipe body from a
+ * template would mean re-implementing the kernel's `render_fence` in
+ * TypeScript, i.e. a second fence writer, which is the duplication #1300 spent
+ * a slice removing.
+ */
+export const trackRecipeSchema = z.object({
+  id: z.string(),
+  /** Picker label *and* the instantiated report's summary — one field on the
+   *  kernel side too, so the editor edits one thing. */
+  title: z.string(),
+  /** The report body. Its `neige-block` fences are the recipe's tasks. */
+  body: z.string(),
+  /**
+   * The optimistic-lock anchor a `PUT` must echo as `if_revision`. Not
+   * `updated_at`: a wall clock is not a version.
+   */
+  revision: z.number(),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+export type TrackRecipe = z.infer<typeof trackRecipeSchema>;
+
+export function trackRecipesOperation(): ApiOperation<TrackRecipe[]> {
+  return { method: 'GET', path: '/api/track-recipes', responseSchema: z.array(trackRecipeSchema) };
+}
+
+export function createTrackRecipeOperation(
+  body: Readonly<{ title: string; body: string }>,
+): ApiOperation<TrackRecipe> {
+  return { method: 'POST', path: '/api/track-recipes', body, responseSchema: trackRecipeSchema };
+}
+
+/**
+ * Whole-document replace, gated on the `revision` the caller read.
+ *
+ * Whole-body and not per-block CAS, deliberately: a recipe's only writer is
+ * its owner, possibly from two windows, and the correct answer to a stale
+ * write there is showing the second writer a conflict — not a merge engine.
+ * A track's report needs block-level CAS because three parties write it
+ * concurrently; a recipe has no such third party, and there is no partially
+ * synced state in between.
+ *
+ * The response is the *stored* row, which is not always the bytes sent: the
+ * write boundary re-renders every fence, drops tombstones and normalizes the
+ * task privilege fields. Callers must render what comes back.
+ */
+export function updateTrackRecipeOperation(
+  recipeId: string,
+  body: Readonly<{ title: string; body: string; if_revision: number }>,
+): ApiOperation<TrackRecipe> {
+  return {
+    method: 'PUT',
+    path: `/api/track-recipes/${encodeURIComponent(recipeId)}`,
+    body,
+    responseSchema: trackRecipeSchema,
+  };
+}
+
+export function deleteTrackRecipeOperation(recipeId: string): ApiOperation<undefined> {
+  return {
+    method: 'DELETE',
+    path: `/api/track-recipes/${encodeURIComponent(recipeId)}`,
+    responseSchema: z.undefined(),
+  };
 }
 
 export type TrackPatchBody = Readonly<{

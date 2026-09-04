@@ -274,6 +274,25 @@
      so the ceiling has to live on the content we hand it. `display: block`
      because the layer is phrasing content (a `<span>`) by design — astryx
      renders it inline-safe so it stays valid inside a paragraph. */
+  /* The picker's band heading — "My recipes" / "Built in" (#1292).
+     The quiet rank `kernel-owned` uses on the track page: a fact *about* the
+     rows under it, not a row. It is `aria-hidden` and non-interactive by
+     construction (see `MenuGroup`), so nothing here is a hit target. The
+     inline padding lines its first character up with the menu items' labels,
+     which is what makes it read as a band rather than as a disabled option.
+
+     No `max-height` beside it: astryx's menu container is already
+     `max-height: 300px; overflow-y: auto` (`DropdownMenu.tsx`'s `dropdown`
+     style), so two groups on a short screen scroll inside the popover instead
+     of growing it — which matters because the layer does not portal. */
+  .menuGroupHeading {
+    padding: var(--space-1) var(--space-2);
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    user-select: none;
+  }
+
   .taskScroll {
     display: block;
     max-inline-size: 28rem;
