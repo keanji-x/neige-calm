@@ -231,13 +231,27 @@ async fn diagnostics_never_mix_source_area_with_later_reference_targets() {
         .await
         .expect("predicate must finish its fact statement")
         .expect("reader task must stay alive");
-    sqlx::query(
+    let moved = sqlx::query(
         "UPDATE tracks SET area_id='snapshot-area-2' \
          WHERE id IN ('snapshot-track','destination-track')",
     )
     .execute(repo.pool())
     .await
-    .expect("move both tracks between the fact snapshot and verdict evaluation");
+    .expect("move both tracks between the fact snapshot and verdict evaluation")
+    .rows_affected();
+    assert_eq!(moved, 2, "the t0/t1 mutation must move both tracks");
+    let moved_areas: Vec<(String,)> = sqlx::query_as(
+        "SELECT area_id FROM tracks \
+         WHERE id IN ('snapshot-track','destination-track') ORDER BY id",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .expect("read moved track areas");
+    assert_eq!(
+        moved_areas,
+        vec![("snapshot-area-2".into(),), ("snapshot-area-2".into(),)],
+        "both source and target must be committed at t1"
+    );
     resume_tx.send(()).expect("reader still listening");
     let verdicts = timeout(TEST_TIMEOUT, reader)
         .await
