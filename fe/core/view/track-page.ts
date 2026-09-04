@@ -200,28 +200,24 @@ function cardRow(card: CardWire): PanelRow {
  * `panel.ts`'s `RowStatus`), not wording the view model owns.
  *
  * **Both controls here have visible text and so take no `aria-label`**: the
- * reveal button wraps the task key and the kind button shows the kind. Each
- * gets only a pointer `title` naming where it goes —
- * `Show ${key} in the report` and `Open the worker card for ${key}`. Note that
- * this second sentence is `open-card`'s wording *on a Task row only*; the
+ * reveal button wraps the task key and the kind button shows the kind. The
+ * reveal gets no generic "Show …" tooltip: when the server supplied a pending
+ * reason, that compact reason is its one pointer `title`; otherwise it stays
+ * silent. The worker control keeps `Open the worker card for ${key}`. Note that
+ * this sentence is `open-card`'s wording *on a Task row only*; the
  * Cards row's `open-card` has no wording at all, which is why `RowAction`
  * carries its sentences per row rather than per `kind`.
  */
 function taskRow(task: ReportTaskRow): PanelRow {
   const workerCardId = task.workerCardId;
-  const badges: RowBadge[] = [
-    ...(task.declaration !== null
-      ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
-      : []),
-    ...(task.pendingReason !== null
-      ? [{ id: `pending-reason:${task.pendingReason.kind}`, text: task.pendingReason.message, struck: false }]
-      : []),
-  ];
+  const badges: RowBadge[] = task.declaration !== null
+    ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
+    : [];
   const actions: RowAction[] = [{
     kind: 'reveal-block',
     blockId: task.blockId,
     label: null,
-    hint: `Show ${task.key} in the report`,
+    hint: task.pendingReason?.message ?? null,
   }];
   if (task.kind !== null && workerCardId !== null) {
     actions.push({

@@ -32,7 +32,7 @@
  * onto a canvas to measure the separation the colour channel actually
  * delivers.
  */
-import { render, waitFor } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { commands, page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -93,7 +93,7 @@ function renderRow(onOpenCard: () => void, onOpenTask: () => void) {
   const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
   const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
   const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
-  const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+  const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
   return { row, dot, kind, reveal };
 }
 
@@ -123,7 +123,7 @@ describe('a TASKS row, laid out', () => {
       .toBeLessThanOrEqual(1);
   });
 
-  it('keeps a pending reason out of the row and reveals compact copy only on hover', async () => {
+  it('replaces the Show-task tooltip with one compact pending-reason tooltip', async () => {
     await browserPage.viewport(1200, 800);
     const message = 'Queued 1/1';
     render(
@@ -149,18 +149,15 @@ describe('a TASKS row, laid out', () => {
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
     const key = row.querySelector<HTMLElement>('[data-nc-field="title"]')!;
-    const reason = row.querySelector<HTMLElement>('[data-nc-badge="pending-reason:budgetQueued"]')!;
-    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
-    const layer = reason.closest<HTMLElement>('[popover]')!;
+    const reveal = row.querySelector<HTMLElement>('button[title="Queued 1/1"]')!;
 
     expect(row.innerText).not.toContain(message);
     expect(key.innerText).toBe('bench-harness');
-    expect(layer.matches(':popover-open')).toBe(false);
-
-    await userEvent.hover(reveal);
-    await waitFor(() => { expect(layer.matches(':popover-open')).toBe(true); }, { timeout: 2000 });
-    expect(reason.innerText).toBe(message);
-    expect(getComputedStyle(reason).fontSize).toBe('11px');
+    expect(reveal.title).toBe(message);
+    expect(reveal.title).not.toContain('Show');
+    expect(row.querySelector('[popover]')).toBeNull();
+    const box = reveal.getBoundingClientRect();
+    expect(tooltipAt(box.left + box.width / 2, box.top + box.height / 2).text).toBe(message);
   });
 
   it('gives the row, its open middle and its dot to the reveal control, and only the kind to the card', async () => {
@@ -222,7 +219,7 @@ describe('a TASKS row, laid out', () => {
       </div>,
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+    const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
     /* Premise: the kind really is a label here — a `<button>` would make the
        hit below trivially true for the wrong reason. */
     expect(row.querySelector('button[title^="Open the worker card"]')).toBeNull();
@@ -263,7 +260,7 @@ describe('a TASKS row, laid out', () => {
       </div>,
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
-    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+    const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     /* Premise: there really is no dot, and the lane is still reserved. */
     expect(row.querySelector('[data-nc-status]')).toBeNull();
@@ -546,7 +543,7 @@ describe('the TASKS status mark', () => {
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
     /* The reveal button's first child is the key — see `public.tsx`. A class
        selector would be a dynamic query, which this repo forbids. */
-    const key = row.querySelector<HTMLElement>('button[title^="Show "]')!
+    const key = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!
       .firstElementChild as HTMLElement;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
@@ -922,7 +919,7 @@ describe('hovering the TASKS status', () => {
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
     const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
-    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+    const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
     const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
     const mark = dot.getBoundingClientRect();
     const centre = { x: mark.left + mark.width / 2, y: mark.top + mark.height / 2 };
@@ -975,7 +972,7 @@ describe('hovering the TASKS status', () => {
     );
     const row = document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
     const dot = row.querySelector<HTMLElement>('[data-nc-status]')!;
-    const reveal = row.querySelector<HTMLElement>('button[title^="Show "]')!;
+    const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
 
     expect(dot.getAttribute('aria-label'))
       .toBe('Status: failed — track 9a4c is not a git repository');

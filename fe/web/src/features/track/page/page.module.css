@@ -527,16 +527,6 @@
     text-align: start;
   }
 
-  /* Scheduler/admission copy is a hover layer, never row body. `--text-xs` is
-     the label floor and keeps this compact beside the task's primary name. */
-  .taskReasonTooltip {
-    display: block;
-    max-inline-size: calc(var(--panel-w) - var(--space-8));
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
-    color: var(--text-2);
-  }
-
   /*
    * ── "Clicking the row reveals the block" is a claim about a *rectangle* ───
    *
@@ -1105,19 +1095,6 @@
        (#1234 S1b-4b). */
     .mobileRowStruck {
       text-decoration: line-through;
-    }
-
-    /* Mobile has no hover. Keep the reason out of visible row copy while its
-       projection marker and accessible description remain available. */
-    .mobileReasonHidden {
-      position: absolute;
-      inline-size: 1px;
-      block-size: 1px;
-      margin: -1px;
-      padding: 0;
-      overflow: hidden;
-      clip-path: inset(50%);
-      white-space: nowrap;
     }
 
     .mobileConversationList {

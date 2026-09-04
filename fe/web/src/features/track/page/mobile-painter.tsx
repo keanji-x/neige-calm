@@ -216,24 +216,12 @@ function reveal(
  */
 function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
   const action = reveal(row);
-  const pendingReason = row.badges.find((badge) => badge.id.startsWith('pending-reason:'));
-  const visibleBadges = row.badges.filter((badge) => !badge.id.startsWith('pending-reason:'));
-  const accessibleDescription = pendingReason === undefined
-    ? row.status?.phrase
-    : row.status === null ? pendingReason.text : `${row.status.phrase} — ${pendingReason.text}`;
   const meta: readonly ReactNode[] = [
-    ...visibleBadges.map(taskBadge),
+    ...row.badges.map(taskBadge),
     ...(row.status === null ? [] : [statusWord(row.status)]),
     ...(row.kind === null
       ? []
       : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
-    ...(pendingReason === undefined ? [] : [(
-      <span
-        key={pendingReason.id}
-        className={styles.mobileReasonHidden}
-        {...mark(MARKER.badge, pendingReason.id)}
-      >{pendingReason.text}</span>
-    )]),
   ];
   return (
     <MobileListItem
@@ -241,7 +229,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
       title={row.title}
       rowMarker={row.id}
       titleFieldMarker={FIELD.title}
-      {...(accessibleDescription === undefined ? {} : { accessibleDescription })}
+      {...(row.status === null ? {} : { accessibleDescription: row.status.phrase })}
       {...(action === null ? {} : {
         rowActionMarker: 'reveal-block' satisfies RowAction['kind'],
         onSelect: () => deps.onOpenTask?.(action.blockId),

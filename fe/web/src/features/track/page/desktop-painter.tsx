@@ -37,7 +37,6 @@
 // now.
 
 import type { ReactNode } from 'react';
-import { HoverCard } from '@astryxdesign/core/HoverCard';
 
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
@@ -249,8 +248,6 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
-  const pendingReason = row.badges.find((badge) => badge.id.startsWith('pending-reason:'));
-  const visibleBadges = row.badges.filter((badge) => !badge.id.startsWith('pending-reason:'));
   const revealControl = (
     <button
       type="button"
@@ -261,10 +258,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       {/* Mono: the key is the literal other reports and the kernel address
           this task by (§2.2). */}
       <span className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
-      {/* Declaration state remains row copy. Scheduler/admission reasons do
-          not: the HoverCard below reveals those only when this control is
-          hovered, while keeping the server text as the projection carrier. */}
-      {visibleBadges.map((badge) => (
+      {row.badges.map((badge) => (
         <span
           key={badge.id}
           className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
@@ -276,22 +270,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   );
   return (
     <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
-      {pendingReason === undefined ? revealControl : (
-        <HoverCard
-          placement="start"
-          delay={250}
-          focusTrigger="never"
-          hasHoverIndication={false}
-          content={(
-            <span
-              className={styles.taskReasonTooltip}
-              {...mark(MARKER.badge, pendingReason.id)}
-            >{pendingReason.text}</span>
-          )}
-        >
-          {revealControl}
-        </HoverCard>
-      )}
+      {revealControl}
       {/* The kind is a word either way — what changes is whether it is a
           control. `title` describes the destination without touching the
           accessible name, which stays the visible word (WCAG 2.5.3). */}

@@ -167,7 +167,7 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'block-3',
       label: null,
-      hint: 'Show gate-alpha in the report',
+      hint: null,
     }]);
   });
 
@@ -183,10 +183,10 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'b-a',
       label: null,
-      hint: 'Show k-a in the report',
+      hint: null,
     }]);
     expect(with_.actions).toEqual([
-      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: 'Show k-b in the report' },
+      { kind: 'reveal-block', blockId: 'b-b', label: null, hint: null },
       {
         kind: 'open-card',
         cardId: 'card-9',
@@ -202,14 +202,14 @@ describe('deriveTrackPageView tasks', () => {
    * neither may carry an `aria-label`; each carries only a pointer `title`
    * naming its destination.
    */
-  it('gives each Task control a destination hint and no accessible name', () => {
+  it('keeps the task reveal quiet and gives only the worker control a destination hint', () => {
     const [row] = tasksModule([
       task({ key: 'gate-alpha', kind: 'codex', workerCardId: 'card-9' }),
     ]).rows;
     const [reveal, open] = row.actions;
 
     expect(reveal.label).toBeNull();
-    expect(reveal.hint).toBe('Show gate-alpha in the report');
+    expect(reveal.hint).toBeNull();
     expect(open.label).toBeNull();
     expect(open.hint).toBe('Open the worker card for gate-alpha');
   });
@@ -254,7 +254,7 @@ describe('deriveTrackPageView tasks', () => {
       kind: 'reveal-block',
       blockId: 'b-k',
       label: null,
-      hint: 'Show k-k in the report',
+      hint: null,
     }]);
   });
 
@@ -268,20 +268,17 @@ describe('deriveTrackPageView tasks', () => {
     expect(unreadable.badges).toEqual([{ id: 'declaration', text: 'Unreadable', struck: false }]);
   });
 
-  it('carries the server-provided pending reason as a visible badge', () => {
+  it('uses the server-provided pending reason as the reveal hover and not row copy', () => {
     const [row] = tasksModule([task({
       pendingReason: {
         kind: 'budgetQueued',
-        message: 'Queued 1/1 — wait for a slot or raise task_budget',
+        message: 'Queued 1/1',
         occupiedTaskBudget: 1,
         effectiveTaskBudget: 1,
       },
     })]).rows;
-    expect(row.badges).toEqual([{
-      id: 'pending-reason:budgetQueued',
-      text: 'Queued 1/1 — wait for a slot or raise task_budget',
-      struck: false,
-    }]);
+    expect(row.badges).toEqual([]);
+    expect(row.actions[0]?.hint).toBe('Queued 1/1');
   });
 
   /*

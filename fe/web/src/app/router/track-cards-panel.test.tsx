@@ -370,7 +370,7 @@ describe('track route TASKS panel', () => {
   it('reveals the block from the row even when the task has an openable card', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     const row = await taskRow(/^has-adapter/);
-    expect(row.getAttribute('title')).toBe('Show has-adapter in the report');
+    expect(row.getAttribute('title')).toBeNull();
     await userEvent.click(row);
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
     expect(window.location.hash).toContain('b-term');
@@ -417,7 +417,8 @@ describe('track route TASKS panel', () => {
     ] as const) {
       const row = list.getByRole('button', { name: new RegExp(`^${key}`) });
       expect(row.textContent).not.toContain(message);
-      expect(list.getByText(message).closest('[popover]')).not.toBeNull();
+      expect(row.getAttribute('title')).toBe(message);
+      expect(list.queryByText(message)).toBeNull();
     }
   });
 });
