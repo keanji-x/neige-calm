@@ -11,10 +11,12 @@
 //! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a track is scoped
 //! to a plugin that is not currently running ∧ trusted (plugin stopped,
 //! trust revoked, track row unreadable), the scope is
-//! [`TrackPluginScope::None`] — zero plugin tools. This mirrors the planner
-//! harness's descriptor-unresolved degradation (vanilla prompt): the tools
-//! are withdrawn together with the plugin context rather than silently
-//! widened back to the union.
+//! [`TrackPluginScope::None`] — zero plugin tools. On *this* trigger the
+//! planner harness degrades too (vanilla prompt): the tools are withdrawn
+//! together with the plugin context rather than silently widened back to the
+//! union. #1321 S1 narrowed the "mirrors" claim that used to sit here to that
+//! one trigger — the planner has a second degradation (a broken template
+//! contract) that this gate deliberately does **not** mirror; see below.
 //!
 //! #1321 S1 — the paragraph above used to end "The gate reads
 //! `tracks.plugin_scope` only — it does not look up `templates[]` by

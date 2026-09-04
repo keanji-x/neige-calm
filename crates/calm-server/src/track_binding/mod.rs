@@ -62,9 +62,11 @@
 //!
 //! ## Who writes `plugin_scope`
 //!
-//! Not one writer — three, and the earlier claim here ("written once, by
+//! Not one writer. The earlier claim here ("written once, by
 //! `routes::tracks::create_track` … and `PATCH` cannot change it") was false
-//! in its first half:
+//! in its first half. Enumerated by sweeping every mention of the column
+//! across `crates/calm-server/src`, `crates/calm-truth/src` and
+//! `crates/calm-truth/migrations` — three runtime writers plus one migration:
 //!
 //! 1. `routes::tracks::create_track` — copies the admitted template's binding
 //!    into the column. The only writer that pairs it with a `template_id`.
@@ -80,6 +82,11 @@
 //!    columns are cleared in one statement, so the row stays self-consistent
 //!    (an owner is never dropped while a template id survives), but "the
 //!    column is only ever added, never changed" is not true of it.
+//! 4. Migration 0076 (`crates/calm-truth/migrations`, the one that adds the
+//!    column) — a one-time backfill that derived the column for pre-existing
+//!    rows. Not a runtime writer, but it is where the oldest values in the
+//!    column came from, so "create wrote every value in this column" is false
+//!    of them too.
 //!
 //! `PATCH /api/tracks` genuinely cannot touch it (INV-1110-004,
 //! `calm-truth/src/model.rs`) — that half of the old sentence stands, and it
@@ -124,13 +131,20 @@ mod tests;
 /// un-own a track — see the module doc.
 #[derive(Clone, Debug)]
 pub(crate) enum TrackOwnerBinding {
-    /// `plugin_scope IS NULL` — no owner was ever recorded for this track.
+    /// `plugin_scope IS NULL` — this track has no owner *now*.
     ///
-    /// This is a *terminal* answer, not a "look harder" one. A running plugin
+    /// Deliberately not "no owner was ever recorded": `routes::today`'s
+    /// launchpad adoption clears the column (together with `template_id` and
+    /// `template_input`) on a track that may well have had one, and migration
+    /// 0076 backfilled the column for rows that predate it. Neither changes
+    /// what this variant means to a reader.
+    ///
+    /// It is a *terminal* answer, not a "look harder" one. A running plugin
     /// that happens to declare the row's `template_id` does **not** adopt the
-    /// track: the create that would have bound it ran while no owner was
-    /// available and deliberately stored NULL, and nothing after create may
-    /// promote a track into a plugin's scope.
+    /// track: no code path in `crates/calm-server` writes a non-NULL
+    /// `plugin_scope` onto an existing row (the sweep behind the module doc's
+    /// writer list), so an unbound track cannot be promoted into a plugin's
+    /// scope by anything a reader might observe.
     Unbound,
     /// `plugin_scope` names a plugin that is running ∧ trusted and present in
     /// the registry. This is the *whole* owner judgement: the tool scope is
