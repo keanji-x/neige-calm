@@ -150,7 +150,7 @@ The substance of (A) — *the binding commits with the mint* — is unchanged.
 
 ## 3. Schema / migration shape
 
-**New file `crates/calm-truth/migrations/0087_track_create_idempotency.sql`.**
+**New file `crates/calm-truth/migrations/0088_track_create_idempotency.sql`.**
 Never an edit to an applied migration: `sqlx` checksums the whole file including
 comments, and editing one bricks startup with `VersionMismatch`. `0086` is the
 current head.
@@ -646,7 +646,7 @@ verbatim — the thing that did not converge.
 
 | # | goal | files | prod Δ (est.) | acceptance tests |
 |---|---|---|---|---|
-| 1 | the durable binding | `crates/calm-truth/migrations/0087_track_create_idempotency.sql` (new); `crates/calm-truth/src/db/sqlite/track.rs` (`track_create_idempotency_claim_tx` + `_get`) | ~90 | T-BIND-1, T-BIND-2 |
+| 1 | the durable binding | `crates/calm-truth/migrations/0088_track_create_idempotency.sql` (new); `crates/calm-truth/src/db/sqlite/track.rs` (`track_create_idempotency_claim_tx` + `_get`) | ~90 | T-BIND-1, T-BIND-2 |
 | 2 | plan/arm dispatch + resume | `crates/calm-server/src/routes/tracks/create.rs` (new, ported from the reference branch minus the preflight, with lookup 1 as the authority, the fail-closed `miss+occupied` arm, and `materialize_workspace` on `Resume`); `routes/tracks.rs` (handler takes `HeaderMap`, dispatches `CreatePlan`, writes the binding inside the create closure at `:1464` **on the `Mint` arm only** — `create_track_structure` is reached by both arms, since `create_track_with_planner_harness` (`routes/tracks.rs:1406-1428`) calls it with `first_message: None` too, so the write is conditioned on the plan rather than on reaching the closure; maps a primary-key unique violation to a fail-closed `Internal`) | ~560 | T-V1…T-V4, T-ARM-1, T-ARM-2, T-MAT-1, T-MAT-2, T-LEGACY-1 |
 | 3 | payload-hash binding + the split outcome arm | `operation/planner_harness_start_adapter.rs` (`create_request_sha256`); `routes/tracks/create.rs` (digest in `plan_first_message`, carried on `FirstMessagePlan`; `response_for`) | ~100 | T-HASH-1, T-HASH-2, T-COLL-1 |
 | 4 | contract prose + the 500's wording | `routes/tracks.rs` utoipa block (`:617-627`), `routes/tracks/create.rs` module docs, regenerated `fe/core/api/generated/openapi.json`, `web/src/api/openapi.json`, `web/src/api/generated.ts` | ~60 + generated | T-500-1 |

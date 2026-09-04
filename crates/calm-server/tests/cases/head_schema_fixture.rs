@@ -25,6 +25,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0085_track_recipe_provenance.sql",
     "0086_rename_worker_flow_items_runtime_id.sql",
     "0087_area_track_defaults.sql",
+    "0088_track_create_idempotency.sql",
 ];
 
 #[test]
