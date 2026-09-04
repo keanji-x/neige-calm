@@ -31,21 +31,24 @@
 //!
 //! # What `Idempotency-Key` means here, and when it is required
 //!
-//! **Required if and only if the body carries `first_message`.** No caller in
-//! this repository sends the header to this endpoint today, so making it
-//! unconditionally required would 400 every one of them; making it optional
-//! *with* a `first_message` would leave no dedup key at all, so a retried
-//! create would mint a second track and deliver the instruction twice.
+//! **Required if and only if the body carries `first_message`.** The new-track
+//! route sends the header with its first message; message-less callers do not.
+//! Making it unconditionally required would 400 those legacy creates, while
+//! making it optional *with* a `first_message` would leave no dedup key at all,
+//! so a retried create could mint a second track and deliver the instruction
+//! twice.
 //!
 //! Given the key, the contract is the four-arm one `create_track_conversation`
 //! documents, reused through `retryable_operation_key`: a success replays, a
 //! terminal failure genuinely retries under a `#N` operation key, a `Stuck`
 //! predecessor keeps failing closed, and 64 failed attempts exhaust the key
 //! (409 `idempotency_key_exhausted`). A fifth statement follows from those: the
-//! same key with a **different `first_message`** is 409 `conflict` — the text
-//! is bound into the payload hash — **except after a terminal failure**, where
-//! the retry runs under a fresh `#N` key that no earlier payload hash is bound
-//! to.
+//! same operation attempt with a **different `first_message`** is 409
+//! `conflict`. The base attempt is bound in the durable track-create row. After
+//! a persisted terminal failure, a fresh `#N` operation is a new delivery
+//! attempt whose own payload becomes the replay authority if it succeeds.
+//! The create shape itself never gets that exception: once the track exists,
+//! those inputs have already taken effect and no operation can reapply them.
 //!
 //! # A message-less create is still NOT idempotent, and that is stated
 //!
@@ -98,9 +101,10 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, http::StatusCode};
 
 use crate::actor::Actor;
+use crate::db::sqlite::TrackCreateRequestFingerprint;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
-use crate::model::{NewTrack, Track};
+use crate::model::{NewTrack, RequestTheme, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
@@ -112,7 +116,7 @@ use crate::routes::terminal_cards::{
 };
 use crate::state::RouteState;
 
-use super::{CreateTrackOptions, create_track_structure};
+use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 /// Which arm of the contract this request takes, decided from **two** lookups:
 /// the durable `track_create_idempotency` binding, and what sits on the chosen
@@ -236,8 +240,11 @@ struct PriorAttempt {
     ///   repoints a managed workspace to an attached one at any time. Hence
     ///   this field.
     /// - `first_message`, `first_message_sha256`, `create_request_sha256` —
-    ///   pure functions of the request body. Two different bodies *should* be a
-    ///   409.
+    ///   pure functions of the request body. The create digest is always checked
+    ///   against the durable binding. The message is checked against the chosen
+    ///   operation on Replay, against the binding on an operation-less base
+    ///   resume, and may be edited only on the genuine `#N` retry after a
+    ///   persisted terminal failure.
     /// - `sort`, `goal`, `create_card` — hard-coded `None` here.
     /// - the two reset/force-new-thread flags — hard-coded `false`.
     /// - `profile` — hard-coded `Default::default()`.
@@ -278,20 +285,25 @@ pub(super) struct ResumeFirstMessage {
     prior: PriorAttempt,
 }
 
-/// The three create-request fields bound into `payload_hash`, so that one
-/// `Idempotency-Key` replayed with a *different create* is a 409 rather than a
-/// silent 201 returning the original track.
+/// Every request field that decides the minted track, in its deserialized
+/// request shape. Its digest is persisted in the same row as the track id, so a
+/// missing operation row cannot erase request identity.
 ///
 /// Cloned at the call site right after the body is deserialized and **before**
-/// `admit_template` overwrites `template_id` with the roster's spelling. Using
-/// the admitted key instead would be nicer semantics under a future
-/// case-folding admission rule, but it requires running `admit_template`
-/// *before* the arm decision — i.e. validating on a resuming arm, which is the
-/// class of bug variant 3 is. Recorded as a KNOWN GAP instead.
+/// `CreationSource::stamp` writes the roster's template spelling. The
+/// fingerprint deliberately describes what the caller sent; deriving it from
+/// admitted or normalized live state would rerun mutable validation on Resume,
+/// which is the variant-3 class this module avoids.
 pub(super) struct CreateRequestShape {
     pub title: String,
+    pub sort: Option<f64>,
+    pub cwd: Option<String>,
     pub template_id: Option<String>,
     pub recipe_id: Option<String>,
+    pub template_input: Option<serde_json::Value>,
+    pub attach_folder: bool,
+    pub theme: RequestTheme,
+    pub fork_report_from: Option<String>,
 }
 
 /// Everything a keyed `POST /api/tracks` needs to submit the operation.
@@ -303,9 +315,13 @@ pub(super) struct FirstMessagePlan {
     /// It travels on the plan rather than as a `resume_prior_attempt`
     /// parameter on purpose: that function's signature takes neither
     /// `NewTrack` nor `CreateTrackOptions`, and that absence is what makes
-    /// "this arm cannot mint" compiler-enforced. A hash of three strings is
-    /// not a mint input, so the invariant survives.
+    /// "this arm cannot mint" compiler-enforced. A digest is not a mint input,
+    /// so the invariant survives.
     create_request_sha256: String,
+    /// The initial message digest is stored in the binding row too. Unlike the
+    /// create digest, it may be relaxed after a persisted terminal failure,
+    /// when the next `#N` operation is a new delivery attempt.
+    first_message_sha256: String,
     /// The caller's `Idempotency-Key`, verbatim. On the `Mint` arm it is half
     /// of the binding row's primary key; on the resuming arms it is unused,
     /// because the binding has already been read.
@@ -372,6 +388,18 @@ pub(super) async fn plan_first_message(
     // track behind.
     validate_first_message(&text)?;
 
+    let create_request_sha256 = stable_payload_hash(&serde_json::json!({
+        "title": shape.title,
+        "sort": shape.sort,
+        "cwd": shape.cwd,
+        "template_id": shape.template_id,
+        "recipe_id": shape.recipe_id,
+        "template_input": shape.template_input,
+        "attach_folder": shape.attach_folder,
+        "theme": shape.theme,
+        "fork_report_from": shape.fork_report_from,
+    }))?;
+    let first_message_sha256 = first_message_digest(&text);
     let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
     // Taken before either lookup, released when the plan is dropped at the end
     // of the request. See the field's doc comment.
@@ -385,6 +413,9 @@ pub(super) async fn plan_first_message(
         .repo
         .track_create_idempotency_get(area_id, &idempotency_key)
         .await?;
+    if let Some(binding) = binding.as_ref() {
+        ensure_binding_create_matches(binding, &create_request_sha256, &idempotency_key)?;
+    }
 
     // Lookup 2 — unchanged in role: which harness-start *attempt* this request
     // joins, and whether a `Failed` predecessor is stepped over with `#N`.
@@ -398,17 +429,15 @@ pub(super) async fn plan_first_message(
 
     let plan = FirstMessagePlan {
         text,
-        create_request_sha256: stable_payload_hash(&serde_json::json!({
-            "title": shape.title,
-            "template_id": shape.template_id,
-            "recipe_id": shape.recipe_id,
-        }))?,
+        create_request_sha256,
+        first_message_sha256,
         idempotency_key,
         operation_key: operation_key.clone(),
         _same_key_claim: same_key_claim,
     };
 
-    match select_arm(binding.is_some(), chosen_existing.is_some()) {
+    let selected_arm = select_arm(binding.is_some(), chosen_existing.is_some());
+    match selected_arm {
         SelectedArm::Mint => Ok(CreatePlan::Mint(plan)),
         SelectedArm::BindingLost => Err(CalmError::Internal(format!(
             "operation {operation_key} exists under this Idempotency-Key but no \
@@ -420,24 +449,29 @@ pub(super) async fn plan_first_message(
         ))),
         arm => {
             let binding = binding.expect("both resuming arms are selected by a binding hit");
-            // Consumed rather than re-read so the criterion and the replayed
-            // payload cannot disagree. `Some` by construction of the `Replay`
-            // row — it is the very thing that selected it.
-            let cwd = match arm {
+            // Consume the chosen operation once so both the message criterion
+            // and the replayed cwd come from the exact attempt this request is
+            // joining. A successful edited `#N` retry is not represented by the
+            // binding's original-message digest; its operation payload is the
+            // durable authority for later replays.
+            let (prior_arm, cwd) = match arm {
                 SelectedArm::Replay => {
                     let op = chosen_existing
                         .expect("the Replay arm is selected by an occupied chosen key");
                     let payload: PlannerHarnessStartOperationPayload =
                         serde_json::from_value(op.payload)?;
-                    Some(payload.cwd)
+                    ensure_replay_message_matches(&payload, &plan)?;
+                    (PriorArm::Replay, Some(payload.cwd))
                 }
-                _ => None,
+                SelectedArm::GenuineRetry => {
+                    let allow_edited_message = operation_key != base_key;
+                    ensure_binding_message_matches(&binding, &plan, allow_edited_message)?;
+                    (PriorArm::GenuineRetry, None)
+                }
+                _ => unreachable!("mint and binding-lost arms returned above"),
             };
             let prior = PriorAttempt {
-                arm: match arm {
-                    SelectedArm::Replay => PriorArm::Replay,
-                    _ => PriorArm::GenuineRetry,
-                },
+                arm: prior_arm,
                 track_id: binding.track_id,
                 planner_card_id: binding.planner_card_id,
                 report_card_id: binding.report_card_id,
@@ -446,6 +480,77 @@ pub(super) async fn plan_first_message(
             Ok(CreatePlan::Resume(ResumeFirstMessage { plan, prior }))
         }
     }
+}
+
+fn binding_fingerprint(binding: &crate::db::sqlite::TrackCreateBinding) -> Result<(&str, &str)> {
+    match &binding.request_fingerprint {
+        TrackCreateRequestFingerprint::LegacyUnknown => Err(CalmError::Conflict(format!(
+            "this Idempotency-Key names track {} but predates durable request fingerprints, so \
+             the server cannot safely decide whether this is the same create; inspect that track \
+             before choosing a new key",
+            binding.track_id
+        ))),
+        TrackCreateRequestFingerprint::V1 {
+            create_request_sha256,
+            first_message_sha256,
+        } => Ok((create_request_sha256, first_message_sha256)),
+    }
+}
+
+/// The create shape is permanent once its track commits, so compare it as soon
+/// as the binding is read — before retry-slot exhaustion can mask a payload
+/// conflict and before any resume side effect.
+fn ensure_binding_create_matches(
+    binding: &crate::db::sqlite::TrackCreateBinding,
+    create_request_sha256: &str,
+    idempotency_key: &str,
+) -> Result<()> {
+    let (bound_create_request_sha256, _) = binding_fingerprint(binding)?;
+    if bound_create_request_sha256 != create_request_sha256 {
+        return Err(crate::operation::idempotency_payload_conflict(Some(
+            idempotency_key,
+        )));
+    }
+    Ok(())
+}
+
+/// The message is the sole fingerprint exception. It is compared after arm
+/// selection because a persisted terminal failure and fresh `#N` key represent
+/// a new delivery attempt whose text may be edited.
+fn ensure_binding_message_matches(
+    binding: &crate::db::sqlite::TrackCreateBinding,
+    plan: &FirstMessagePlan,
+    allow_edited_message: bool,
+) -> Result<()> {
+    let (_, first_message_sha256) = binding_fingerprint(binding)?;
+    if !allow_edited_message && first_message_sha256 != plan.first_message_sha256 {
+        return Err(crate::operation::idempotency_payload_conflict(Some(
+            &plan.idempotency_key,
+        )));
+    }
+    Ok(())
+}
+
+/// A replay joins the chosen operation attempt, not necessarily the base
+/// attempt recorded by the track binding. After a terminal failure the caller
+/// may edit the message on a fresh `#N` key; once that attempt succeeds, its
+/// digest is the durable replay identity.
+fn ensure_replay_message_matches(
+    payload: &PlannerHarnessStartOperationPayload,
+    plan: &FirstMessagePlan,
+) -> Result<()> {
+    let first_message_sha256 = payload.first_message_sha256.as_deref().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "track-create operation {} has no first-message fingerprint",
+            plan.operation_key
+        ))
+    })?;
+    if first_message_sha256 != plan.first_message_sha256 {
+        return Err(crate::operation::idempotency_payload_conflict(Some(
+            &plan.idempotency_key,
+        )));
+    }
+    Ok(())
 }
 
 /// The `first_message` twin of `create_track_with_planner_harness`, for the arm
@@ -470,7 +575,11 @@ pub(super) async fn create_track_with_first_message(
     // function is the only writer of the field, and it is reachable only from
     // `CreatePlan::Mint`. Pinned by
     // `a_message_less_create_writes_no_binding_row`.
-    options.idempotency_key = Some(plan.idempotency_key.clone());
+    options.idempotency_claim = Some(TrackCreateIdempotencyClaim {
+        key: plan.idempotency_key.clone(),
+        create_request_sha256: plan.create_request_sha256.clone(),
+        first_message_sha256: plan.first_message_sha256.clone(),
+    });
     let (track, _created, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
     let cwd = track.workspace.path.clone();
@@ -483,6 +592,7 @@ pub(super) async fn create_track_with_first_message(
         report_card_id,
         cwd,
         plan.text,
+        plan.first_message_sha256,
         plan.create_request_sha256,
         plan.operation_key,
     )
@@ -597,6 +707,7 @@ pub(super) async fn resume_prior_attempt(
         prior.report_card_id,
         cwd,
         plan.text,
+        plan.first_message_sha256,
         plan.create_request_sha256,
         plan.operation_key,
     )
@@ -722,6 +833,7 @@ async fn start_planner_harness_with_first_message(
     // even if the workspace was repointed in between. See `PriorArm`.
     cwd: String,
     text: String,
+    first_message_sha256: String,
     create_request_sha256: String,
     operation_key: String,
 ) -> Result<()> {
@@ -743,13 +855,13 @@ async fn start_planner_harness_with_first_message(
         // field below, which is already part of the payload): replaying one key
         // with a different sentence is a 409 instead of a silent replay of the
         // first one.
-        first_message_sha256: Some(first_message_digest(&text)),
+        first_message_sha256: Some(first_message_sha256),
         first_message: Some(text),
-        // #1384 — `title` / `template_id` / `recipe_id`, so the same key with a
-        // different create is a 409 instead of a 201 returning the original
-        // track. Every other producer of this payload leaves the field `None`,
-        // where `skip_serializing_if` drops the key and their payload bytes stay
-        // byte-identical to what older binaries wrote.
+        // #1384 / #1434 — also carried in the operation payload for its local
+        // collision check. The durable authority is now the binding row, which
+        // covers every mint input and exists even when this operation does not.
+        // Other producers leave the field `None`, preserving their payload
+        // bytes across deployment.
         create_request_sha256: Some(create_request_sha256),
     };
     let op_payload = serde_json::to_value(&request)?;

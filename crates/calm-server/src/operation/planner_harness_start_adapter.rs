@@ -348,27 +348,20 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `abandoned_running_operations_on_boot` re-drives old payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_message: Option<String>,
-    /// #1384 — SHA-256 (lower-case hex) of the **create request's own** shape:
-    /// `title`, `template_id`, `recipe_id`, in that order.
+    /// #1384 / #1434 — SHA-256 (lower-case hex) of the track create request's
+    /// mint inputs.
     ///
     /// Never read by this adapter, exactly like
-    /// [`Self::first_message_sha256`]. It exists so those three fields reach
-    /// `stable_payload_hash`, which is what makes `OperationRuntime::submit`
-    /// answer 409 when one `Idempotency-Key` is replayed with a *different
-    /// create*. Without it the payload covered none of the create request's own
-    /// fields, so the same key with a different `title` silently returned 201
-    /// and the original track.
+    /// [`Self::first_message_sha256`]. It keeps the operation's local collision
+    /// check aligned with the durable binding-level fingerprint. The binding
+    /// is authoritative because it survives the pre-operation failure window;
+    /// this copy preserves operation replay compatibility.
     ///
-    /// Those three and no others, because each is a pure function of the
-    /// request body and none is movable by a later `PATCH`. `cwd` is
-    /// deliberately **excluded**: it is already in the payload and it *is*
-    /// moved by `PATCH /api/tracks/{id}`, which is the field the replay arm
-    /// specifically un-binds. `template_input`, `attach_folder`,
-    /// `fork_report_from` and `sort` are not bound either — a same-key retry
-    /// differing only in one of those returns 201 and silently ignores the
-    /// change, which is a stated KNOWN GAP. `area_id` needs no entry: it is
-    /// half of the binding row's primary key, so a different area is a
-    /// different binding.
+    /// The digest covers title, sort, the request's original cwd, template and
+    /// recipe ids, template input, attach-folder intent, theme, and fork source.
+    /// It hashes the request, not mutable track state, so a later workspace
+    /// repoint does not change replay identity. `area_id` is scoped by the
+    /// binding primary key instead.
     ///
     /// `skip_serializing_if` keeps every caller that does not set it — every
     /// message-less create, and the four non-create producers — writing

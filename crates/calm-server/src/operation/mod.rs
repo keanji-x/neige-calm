@@ -163,7 +163,7 @@ const IDEMPOTENCY_PAYLOAD_CONFLICT_MSG: &str = "already used with different payl
 /// (used by both [`OperationRuntime::submit`] and the repo's
 /// `insert_operation`) so callers can classify it via
 /// [`is_idempotency_payload_conflict`].
-fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> CalmError {
+pub(crate) fn idempotency_payload_conflict(idempotency_key: Option<&str>) -> CalmError {
     let key = idempotency_key.unwrap_or("<missing idempotency key>");
     CalmError::Conflict(format!(
         "operation idempotency key {key} {IDEMPOTENCY_PAYLOAD_CONFLICT_MSG}"

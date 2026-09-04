@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
-  deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser, lifecycleLabel, toTrack,
+  createTrackOperation, deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser, lifecycleLabel, toTrack,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
-  userVisibleTracks,
+  trackCreateKeyAction, userVisibleTracks,
   type Track,
 } from './track.js';
 import type { Area } from './area.js';
@@ -56,6 +56,48 @@ describe('track wire decode', () => {
 
   it('percent-encodes the area id into the list path', () => {
     expect(tracksInAreaOperation('a/b').path).toBe('/api/areas/a%2Fb/tracks');
+  });
+});
+
+describe('track create operation', () => {
+  const theme = { fg: [1, 2, 3], bg: [4, 5, 6] } as const;
+
+  it('carries the draft key exactly when a first message is present', () => {
+    const keyed = createTrackOperation(
+      { area_id: 'area', theme, first_message: 'ship it' },
+      'draft-key',
+    );
+    expect(keyed.headers).toEqual({ 'Idempotency-Key': 'draft-key' });
+
+    const messageLess = createTrackOperation({ area_id: 'area', theme });
+    expect(messageLess.headers).toBeUndefined();
+  });
+
+  it('makes a message without a key invalid at both the type and runtime boundaries', () => {
+    expect(() => {
+      // @ts-expect-error first_message makes Idempotency-Key required.
+      createTrackOperation({ area_id: 'area', theme, first_message: 'missing key' });
+    }).toThrow(/Idempotency-Key/);
+  });
+
+  it('replaces only an explicitly exhausted key', () => {
+    expect(trackCreateKeyAction({
+      kind: 'http', status: 409, code: 'idempotency_key_exhausted', message: 'used up',
+    })).toBe('replace');
+    expect(trackCreateKeyAction({
+      kind: 'http', status: 409, code: 'conflict', message: 'different payload',
+    })).toBe('preserve');
+    expect(trackCreateKeyAction({
+      kind: 'http', status: 409, code: 'conflict', message: 'already used with different payload',
+    })).toBe('offer-explicit-replace');
+    expect(trackCreateKeyAction({
+      kind: 'http', status: 409, code: 'conflict',
+      message: 'this key predates durable request fingerprints',
+    })).toBe('offer-explicit-replace');
+    expect(trackCreateKeyAction({
+      kind: 'http', status: 500, code: 'internal', message: 'unknown result',
+    })).toBe('preserve');
+    expect(trackCreateKeyAction({ kind: 'transport', message: 'answer lost' })).toBe('preserve');
   });
 });
 

@@ -129,6 +129,20 @@ async fn boot_without_daemon() -> Boot {
     boot_with_daemon(false).await
 }
 
+fn app_for_state(state: AppState) -> axum::Router {
+    routes::router()
+        .layer(Extension(Principal {
+            user_id: "owner".into(),
+            display_name: "owner".into(),
+            role: "owner".into(),
+            session_id: "test".into(),
+        }))
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state)
+}
+
 async fn boot_with_daemon(daemon_running: bool) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -171,17 +185,7 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
     } else {
         SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
     });
-    let app = routes::router()
-        .layer(Extension(Principal {
-            user_id: "owner".into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = app_for_state(state.clone());
     Boot {
         app,
         state,
@@ -192,6 +196,14 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
 }
 
 impl Boot {
+    fn app_with_running_daemon(&self) -> axum::Router {
+        let repo: Arc<dyn Repo> = self.repo.clone();
+        let state = self.state.clone().with_shared_codex_appserver(
+            SharedCodexAppServer::new_fake_running_with_pending(repo, None),
+        );
+        app_for_state(state)
+    }
+
     /// `POST /api/tracks`. `idempotency_key` and `first_message` are both
     /// optional so one helper covers the legacy shape and the keyed shape — the
     /// point of several tests below is that omitting them changes nothing.
@@ -237,6 +249,16 @@ impl Boot {
     }
 
     async fn post_create(&self, idempotency_key: Option<&str>, body: Value) -> (StatusCode, Value) {
+        self.post_create_on(self.app.clone(), idempotency_key, body)
+            .await
+    }
+
+    async fn post_create_on(
+        &self,
+        app: axum::Router,
+        idempotency_key: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .method("POST")
             .uri("/api/tracks")
@@ -244,9 +266,7 @@ impl Boot {
         if let Some(key) = idempotency_key {
             builder = builder.header("idempotency-key", key);
         }
-        let response = self
-            .app
-            .clone()
+        let response = app
             .oneshot(builder.body(Body::from(body.to_string())).unwrap())
             .await
             .unwrap();
@@ -1627,6 +1647,72 @@ async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
         "one delivered message, but two audit rows — the failed attempt's row survives its \
          compensation"
     );
+
+    let (replay, replay_body) = b
+        .create_track(
+            Some("idem-edit-after-failure"),
+            Some("the sentence I actually meant"),
+        )
+        .await;
+    assert_eq!(
+        replay,
+        StatusCode::CREATED,
+        "the edited message became the successful `#2` attempt, so replaying that exact attempt \
+         must join it rather than comparing against the abandoned base-attempt draft: \
+         body={replay_body}"
+    );
+    assert_eq!(
+        retry_body["id"], replay_body["id"],
+        "the replay returns the track already minted by the base attempt"
+    );
+    assert_eq!(b.track_count().await, 1, "the replay mints no second track");
+    assert_eq!(
+        b.copies_in_harness("the sentence I actually meant", 1)
+            .await,
+        1,
+        "the replay must not deliver the successful retry's message twice"
+    );
+    assert_eq!(
+        b.user_message_event_count().await,
+        2,
+        "joining the successful `#2` attempt writes no third audit row"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1434 — a fresh `#N` operation key relaxes only the message attempt. The
+/// track's creation parameters have already committed and cannot be replayed,
+/// so changing one must still conflict with the binding-level request shape.
+#[tokio::test]
+async fn a_failed_operation_does_not_unbind_the_create_shape() {
+    let b = boot().await;
+    let key = "idem-failed-shape";
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let original = json!({
+        "area_id": b.area_id,
+        "title": "original title",
+        "first_message": "same sentence",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+    let (failed, failed_body) = b.post_create(Some(key), original.clone()).await;
+    assert!(
+        !failed.is_success(),
+        "the injected first attempt must fail: status={failed} body={failed_body}"
+    );
+
+    let mut edited = original;
+    edited["title"] = json!("different title");
+    let (status, body) = b.post_create(Some(key), edited).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(b.track_count().await, 1);
+    let title: String = sqlx::query_scalar("SELECT title FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(title, "original title");
     b.shutdown_harnesses().await;
 }
 
@@ -1664,6 +1750,19 @@ async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
         b.track_count().await,
         1,
         "64 failed attempts under one key must still be one track"
+    );
+
+    let different_create = json!({
+        "area_id": b.area_id,
+        "title": "different title",
+        "first_message": "burn this key",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+    let (status, body) = b.post_create(Some("idem-burn"), different_create).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        body["code"], "conflict",
+        "the permanent create fingerprint is checked before retry-slot exhaustion: body={body}"
     );
     b.shutdown_harnesses().await;
 }
@@ -1959,6 +2058,129 @@ async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
          row — which is precisely why the operation row could never have carried this binding"
     );
     assert_eq!(b.user_message_event_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// #1434 — the durable binding must remember the request as well as the ids.
+///
+/// The first call commits the track and binding, then fails before an operation
+/// row exists. Starting the daemon before the second call makes the old defect
+/// decisive: without a binding-level message digest, the edited sentence is
+/// accepted on the vacant operation key and delivered to the original track.
+#[tokio::test]
+async fn an_operationless_binding_rejects_a_different_first_message() {
+    let b = boot_without_daemon().await;
+    let key = "idem-operationless-message";
+    let (first, first_body) = b.create_track(Some(key), Some("original sentence")).await;
+    assert_eq!(
+        first,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "body={first_body}"
+    );
+    assert_eq!(b.track_count().await, 1);
+    assert_eq!(b.binding_count().await, 1);
+    assert_eq!(
+        b.operation_count().await,
+        0,
+        "premise: no payload hash exists"
+    );
+
+    let running_app = b.app_with_running_daemon();
+    let mut edited = json!({
+        "area_id": b.area_id,
+        "title": "",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        "first_message": "edited sentence",
+    });
+    let (status, body) = b
+        .post_create_on(running_app, Some(key), edited.take())
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], "conflict", "body={body}");
+    assert_eq!(b.track_count().await, 1, "the rejected edit mints nothing");
+    assert_eq!(
+        b.operation_count().await,
+        0,
+        "the request fingerprint is checked before submit writes an operation"
+    );
+    assert_eq!(b.user_message_event_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// #1434 — create parameters have already taken effect once the binding exists.
+/// A vacant operation key must not make a different title look like a retryable
+/// operation parameter: no operation can apply that title to the existing row.
+#[tokio::test]
+async fn an_operationless_binding_rejects_a_different_create_shape() {
+    let b = boot_without_daemon().await;
+    let key = "idem-operationless-shape";
+    let base = json!({
+        "area_id": b.area_id,
+        "title": "original title",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        "first_message": "same sentence",
+    });
+    let (first, first_body) = b.post_create(Some(key), base.clone()).await;
+    assert_eq!(
+        first,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "body={first_body}"
+    );
+    assert_eq!(
+        b.operation_count().await,
+        0,
+        "premise: no payload hash exists"
+    );
+
+    let mut edited = base;
+    edited["title"] = json!("different title");
+    let (status, body) = b
+        .post_create_on(b.app_with_running_daemon(), Some(key), edited)
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], "conflict", "body={body}");
+    let title: String = sqlx::query_scalar("SELECT title FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(title, "original title");
+    assert_eq!(b.operation_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// #1434 migration contract — an 0088 row has no reconstructible full request.
+/// It is represented as a named legacy state and refused before replay side
+/// effects instead of pretending NULL hashes mean a match.
+#[tokio::test]
+async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
+    let b = boot().await;
+    let key = "idem-legacy-fingerprint";
+    let (created, body) = b.create_track(Some(key), Some("same sentence")).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let operations_before = b.operation_count().await;
+    sqlx::query(
+        "UPDATE track_create_idempotency \
+         SET request_fingerprint_version = 0, \
+             create_request_sha256 = NULL, \
+             first_message_sha256 = NULL \
+         WHERE idempotency_key = ?1",
+    )
+    .bind(key)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, body) = b.create_track(Some(key), Some("same sentence")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], "conflict", "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("predates durable request fingerprints")),
+        "body={body}"
+    );
+    assert_eq!(b.track_count().await, 1);
+    assert_eq!(b.operation_count().await, operations_before);
     b.shutdown_harnesses().await;
 }
 
@@ -2275,11 +2497,11 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
 ///
 /// Before #1384 the operation payload covered none of the create request's own
 /// fields, so this returned 201 and the ORIGINAL track: the caller's new title
-/// was silently discarded and nothing said so. `create_request_sha256` binds
-/// `title`, `template_id` and `recipe_id` into `payload_hash`, which `submit`
-/// compares before anything else runs.
+/// was silently discarded and nothing said so. `create_request_sha256` now
+/// binds the complete mint shape in the durable binding row and is also carried
+/// into `payload_hash` for operation-level replay compatibility.
 ///
-/// Fails when `create_request_sha256` is dropped from the payload struct.
+/// Fails when `title` is omitted from the binding's create-request digest.
 #[tokio::test]
 async fn the_same_key_with_a_different_title_is_a_conflict() {
     let b = boot().await;
@@ -2314,8 +2536,7 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
     );
     assert_eq!(first_body["id"], replay_body["id"]);
 
-    // And the other two bound fields, each on its own key so the two cases
-    // cannot mask each other.
+    // And a source field on its own key.
     let recipe_id = b.create_recipe("rollout flow", &recipe_body()).await;
     let with_recipe = json!({
         "area_id": b.area_id,
@@ -2336,15 +2557,63 @@ async fn the_same_key_with_a_different_title_is_a_conflict() {
         StatusCode::CONFLICT,
         "dropping `recipe_id` is a different create, not a replay: body={body}"
     );
-    let mut with_template = with_recipe;
-    with_template.as_object_mut().unwrap().remove("recipe_id");
-    with_template["template_id"] = json!("small-change");
-    let (conflict, body) = b.post_create(Some("idem-source"), with_template).await;
-    assert_eq!(
-        conflict,
-        StatusCode::CONFLICT,
-        "…and so is naming a template instead: body={body}"
-    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1434 / #1429 — the binding-level create fingerprint covers every request
+/// field that decides the minted track, not only the three fields the operation
+/// payload happened to cover first. These edits are intentionally invalid or
+/// stale under today's world in some rows: the fingerprint comparison must run
+/// before replay skips create-path validation and before any side effect.
+#[tokio::test]
+async fn every_mint_input_is_bound_to_the_track_create_key() {
+    let b = boot().await;
+    let key = "idem-complete-create-shape";
+    let base = json!({
+        "area_id": b.area_id,
+        "title": "original title",
+        "first_message": "same sentence",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+    let (created, body) = b.post_create(Some(key), base.clone()).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+
+    let mut cases = Vec::new();
+    let mut edited = base.clone();
+    edited["sort"] = json!(42);
+    cases.push(("sort", edited));
+    let mut edited = base.clone();
+    edited["cwd"] = json!("/path/that/need/not/exist/on-a-replay");
+    cases.push(("cwd", edited));
+    let mut edited = base.clone();
+    edited["attach_folder"] = json!(true);
+    cases.push(("attach_folder", edited));
+    let mut edited = base.clone();
+    edited["template_id"] = json!("small-change");
+    cases.push(("template_id", edited));
+    let mut edited = base.clone();
+    edited["recipe_id"] = json!("recipe-that-need-not-exist-on-a-replay");
+    cases.push(("recipe_id", edited));
+    let mut edited = base.clone();
+    edited["theme"] = json!({"fg": [1, 2, 3], "bg": [4, 5, 6]});
+    cases.push(("theme", edited));
+    let mut edited = base.clone();
+    edited["template_input"] = json!({"issue": 1434});
+    cases.push(("template_input", edited));
+    let mut edited = base;
+    edited["fork_report_from"] = json!("another-track");
+    cases.push(("fork_report_from", edited));
+
+    for (field, edited) in cases {
+        let (status, body) = b.post_create(Some(key), edited).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "changing {field} must not silently return the original track: body={body}"
+        );
+        assert_eq!(body["code"], "conflict", "field={field} body={body}");
+    }
+    assert_eq!(b.track_count().await, 1);
     b.shutdown_harnesses().await;
 }
 
@@ -2379,7 +2648,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
     }
 
     // And the positive half, so this is not merely "the field is never written":
-    // a keyed create DOES carry it, which is what makes the 409 above reachable.
+    // a keyed create DOES carry it as an operation-local compatibility belt.
     let (status, body) = b
         .create_track(Some("idem-digest"), Some("ship the thing"))
         .await;
@@ -2392,7 +2661,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
     assert_eq!(keyed.len(), 1, "one keyed start: {payloads:?}");
     assert!(
         keyed[0]["create_request_sha256"].is_string(),
-        "a keyed create must carry the digest, or the conflict above could never fire: {:?}",
+        "a keyed create must carry the digest so operation replay keeps the same payload identity: {:?}",
         keyed[0]
     );
     b.shutdown_harnesses().await;

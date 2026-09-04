@@ -561,7 +561,24 @@ async fn track_delete_leaf_tx(
     Ok(())
 }
 
-/// #1384 — what one `(area_id, Idempotency-Key)` pair already minted.
+/// #1434 — the request identity stored beside what one
+/// `(area_id, Idempotency-Key)` pair minted.
+///
+/// Version 0 is not represented by missing optional fields. It is a named
+/// migration state for rows written before request fingerprints existed; the
+/// route fails those rows closed because their original request cannot be
+/// reconstructed reliably. Every new claim is [`Self::V1`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackCreateRequestFingerprint {
+    LegacyUnknown,
+    V1 {
+        create_request_sha256: String,
+        first_message_sha256: String,
+    },
+}
+
+/// #1384 / #1434 — what one `(area_id, Idempotency-Key)` pair already minted,
+/// together with the request that was allowed to mint it.
 ///
 /// Three ids, not one. `resume_prior_attempt` needs the planner and report
 /// card ids to resubmit the harness start, and in the variant-4 shape (the
@@ -575,6 +592,18 @@ pub struct TrackCreateBinding {
     pub track_id: String,
     pub planner_card_id: String,
     pub report_card_id: String,
+    pub request_fingerprint: TrackCreateRequestFingerprint,
+}
+
+/// A new binding claim. Unlike the versioned read model, both request digests
+/// are required fields: production code cannot construct a legacy-unknown row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackCreateBindingClaim {
+    pub track_id: String,
+    pub planner_card_id: String,
+    pub report_card_id: String,
+    pub create_request_sha256: String,
+    pub first_message_sha256: String,
 }
 
 /// Claim `(area_id, idempotency_key)` for a track, **inside the transaction
@@ -596,12 +625,13 @@ pub async fn track_create_idempotency_claim_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
     idempotency_key: &str,
-    binding: &TrackCreateBinding,
+    binding: &TrackCreateBindingClaim,
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO track_create_idempotency \
-         (area_id, idempotency_key, track_id, planner_card_id, report_card_id, created_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         (area_id, idempotency_key, track_id, planner_card_id, report_card_id, created_at_ms, \
+          request_fingerprint_version, create_request_sha256, first_message_sha256) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
     )
     .bind(area_id)
     .bind(idempotency_key)
@@ -609,10 +639,14 @@ pub async fn track_create_idempotency_claim_tx(
     .bind(&binding.planner_card_id)
     .bind(&binding.report_card_id)
     .bind(now_ms())
+    .bind(&binding.create_request_sha256)
+    .bind(&binding.first_message_sha256)
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
+
+type TrackCreateBindingRow = (String, String, String, i64, Option<String>, Option<String>);
 
 /// The read side: one primary-key hit, on a pooled connection.
 ///
@@ -625,19 +659,49 @@ pub async fn track_create_idempotency_get_pool(
     area_id: &str,
     idempotency_key: &str,
 ) -> Result<Option<TrackCreateBinding>> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT track_id, planner_card_id, report_card_id FROM track_create_idempotency \
+    let row: Option<TrackCreateBindingRow> = sqlx::query_as(
+        "SELECT track_id, planner_card_id, report_card_id, request_fingerprint_version, \
+                create_request_sha256, first_message_sha256 \
+         FROM track_create_idempotency \
          WHERE area_id = ?1 AND idempotency_key = ?2",
     )
     .bind(area_id)
     .bind(idempotency_key)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(
-        |(track_id, planner_card_id, report_card_id)| TrackCreateBinding {
+    row.map(
+        |(
             track_id,
             planner_card_id,
             report_card_id,
+            version,
+            create_request_sha256,
+            first_message_sha256,
+        )| {
+            let request_fingerprint = match (version, create_request_sha256, first_message_sha256) {
+                (0, None, None) => TrackCreateRequestFingerprint::LegacyUnknown,
+                (1, Some(create_request_sha256), Some(first_message_sha256)) => {
+                    TrackCreateRequestFingerprint::V1 {
+                        create_request_sha256,
+                        first_message_sha256,
+                    }
+                }
+                (version, create_hash, message_hash) => {
+                    return Err(CalmError::Internal(format!(
+                        "track-create idempotency binding has invalid fingerprint state: \
+                         version={version}, create_hash_present={}, message_hash_present={}",
+                        create_hash.is_some(),
+                        message_hash.is_some()
+                    )));
+                }
+            };
+            Ok(TrackCreateBinding {
+                track_id,
+                planner_card_id,
+                report_card_id,
+                request_fingerprint,
+            })
         },
-    ))
+    )
+    .transpose()
 }

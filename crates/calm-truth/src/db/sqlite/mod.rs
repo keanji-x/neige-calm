@@ -132,8 +132,11 @@ pub use task_projection::{
     WithdrawalEdge, evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
+// The request-fingerprint enum is exported with its binding: route code must
+// construct V1 on write and handle LegacyUnknown explicitly on read.
 pub use track::{
-    AttachedInheritedPath, TrackCreateBinding, TrackRecipeOrigin, TrackWorkspacePlan,
+    AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
+    TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
     track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
     track_delete_tx, track_require_leaf_tx, track_update_tx,
 };
@@ -558,6 +561,9 @@ mod track_workspace_migration_tests;
 
 #[cfg(test)]
 mod track_create_idempotency_tests;
+
+#[cfg(test)]
+mod track_create_request_fingerprint_migration_tests;
 
 #[cfg(test)]
 mod track_template_rename_migration_tests;

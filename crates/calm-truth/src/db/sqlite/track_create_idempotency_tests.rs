@@ -11,8 +11,9 @@
 //! reaches the INSERT — see the design's KNOWN GAP 3).
 
 use super::{
-    SqlxRepo, TrackCreateBinding, area_create_tx, track_create_idempotency_claim_tx,
-    track_create_idempotency_get_pool, track_create_tx,
+    SqlxRepo, TrackCreateBinding, TrackCreateBindingClaim, TrackCreateRequestFingerprint,
+    area_create_tx, track_create_idempotency_claim_tx, track_create_idempotency_get_pool,
+    track_create_tx,
 };
 use crate::model::{NewArea, NewTrack, RequestTheme};
 
@@ -27,6 +28,28 @@ fn new_track(area_id: &crate::ids::AreaId, title: &str) -> NewTrack {
         template_input: None,
         attach_folder: false,
         theme: RequestTheme::default_dark(),
+    }
+}
+
+fn claim(track_id: impl Into<String>, planner: &str, report: &str) -> TrackCreateBindingClaim {
+    TrackCreateBindingClaim {
+        track_id: track_id.into(),
+        planner_card_id: planner.into(),
+        report_card_id: report.into(),
+        create_request_sha256: "a".repeat(64),
+        first_message_sha256: "b".repeat(64),
+    }
+}
+
+fn stored_binding(track_id: impl Into<String>, planner: &str, report: &str) -> TrackCreateBinding {
+    TrackCreateBinding {
+        track_id: track_id.into(),
+        planner_card_id: planner.into(),
+        report_card_id: report.into(),
+        request_fingerprint: TrackCreateRequestFingerprint::V1 {
+            create_request_sha256: "a".repeat(64),
+            first_message_sha256: "b".repeat(64),
+        },
     }
 }
 
@@ -73,11 +96,7 @@ async fn the_binding_and_the_track_commit_together() {
         &mut tx,
         area.id.as_str(),
         "key-rolled-back",
-        &TrackCreateBinding {
-            track_id: track.id.to_string(),
-            planner_card_id: "planner-1".into(),
-            report_card_id: "report-1".into(),
-        },
+        &claim(track.id.to_string(), "planner-1", "report-1"),
     )
     .await
     .expect("claim the key");
@@ -154,11 +173,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
         &mut tx,
         area.id.as_str(),
         "one-key",
-        &TrackCreateBinding {
-            track_id: first.id.to_string(),
-            planner_card_id: "planner-1".into(),
-            report_card_id: "report-1".into(),
-        },
+        &claim(first.id.to_string(), "planner-1", "report-1"),
     )
     .await
     .expect("the first claim wins");
@@ -166,11 +181,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
         &mut tx,
         area.id.as_str(),
         "one-key",
-        &TrackCreateBinding {
-            track_id: second.id.to_string(),
-            planner_card_id: "planner-2".into(),
-            report_card_id: "report-2".into(),
-        },
+        &claim(second.id.to_string(), "planner-2", "report-2"),
     )
     .await;
     let error = refused.expect_err(
@@ -209,11 +220,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
         &mut tx,
         area2.id.as_str(),
         "one-key",
-        &TrackCreateBinding {
-            track_id: winner.id.to_string(),
-            planner_card_id: "planner-w".into(),
-            report_card_id: "report-w".into(),
-        },
+        &claim(winner.id.to_string(), "planner-w", "report-w"),
     )
     .await
     .expect("claim");
@@ -222,11 +229,11 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
         track_create_idempotency_get_pool(repo.pool(), area2.id.as_str(), "one-key")
             .await
             .expect("read back"),
-        Some(TrackCreateBinding {
-            track_id: winner.id.to_string(),
-            planner_card_id: "planner-w".into(),
-            report_card_id: "report-w".into(),
-        }),
+        Some(stored_binding(
+            winner.id.to_string(),
+            "planner-w",
+            "report-w"
+        )),
         "the read side must return the three ids the mint wrote"
     );
     // The same key under a DIFFERENT area is a different binding: the area is
