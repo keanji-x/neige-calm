@@ -138,7 +138,7 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
     assert_eq!(asc.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
     assert_eq!(asc[0].kind, "user_message");
     assert_eq!(asc[0].card_id.as_deref(), Some(card_id.as_str()));
-    assert_eq!(asc[0].runtime_id.as_deref(), Some(session_id));
+    assert_eq!(asc[0].captured_session_id.as_deref(), Some(session_id));
     assert_eq!(asc[0].worker_session_id.as_deref(), Some(session_id));
 
     // Ascending paging: after the first id, limit 1 -> the second row.
@@ -219,4 +219,97 @@ async fn delete_by_card_tx_purges_rows() {
         .await
         .unwrap();
     assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
+}
+
+// ---------------------------------------------------------------------------
+// #1316 S4a — migration 0086 renames `runtime_id` to `captured_session_id`.
+//
+// This slice started as a DROP, on the claim that the column duplicated
+// `worker_session_id` and that the id was also in the payload. Two review
+// channels falsified the second half by replaying the real migration chain,
+// and the test below is that counter-example, kept as a regression pin: the
+// shape it seeds is exactly the one a drop would have destroyed.
+// ---------------------------------------------------------------------------
+
+fn migrator_through_0085() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 85)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
+#[tokio::test]
+async fn migration_0086_preserves_the_id_the_payload_does_not_carry() {
+    let dir = tempfile::tempdir().expect("temporary database directory");
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("pre-pr5.sqlite").display()
+    );
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("open migration fixture");
+    migrator_through_0085()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0085");
+
+    // The pre-PR5 shape, as `0049` leaves it: the resolved RUNTIME id in the
+    // un-FK'd column, no session mirror so `worker_session_id` is NULL, and a
+    // payload whose `session_id` is the PROVIDER's agent session string —
+    // a different value. `0055` then dropped `runtimes`; its step-1 bridge
+    // carries the mapping into `worker_sessions.agent_session_id`, so the id
+    // is recoverable — but only by an ambiguous join, and only while that
+    // mirror survives. This column answers it directly.
+    sqlx::query(
+        "INSERT INTO worker_flow_items \
+         (card_id, runtime_id, track_id, worker_session_id, kind, payload, created_at_ms) \
+         VALUES (NULL, 'rt-1', NULL, NULL, 'user_message', \
+                 '{\"type\":\"userMessage\",\"session_id\":\"agent-sess-abc\"}', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed the pre-PR5 row shape");
+    pool.close().await;
+
+    let repo = SqlxRepo::open(&url).await.expect("migrate through 0086");
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('worker_flow_items') ORDER BY name")
+            .fetch_all(repo.pool())
+            .await
+            .expect("read post-0086 column list");
+    assert!(
+        columns.iter().any(|c| c == "captured_session_id"),
+        "0086 must rename the column, not remove it; got {columns:?}"
+    );
+    assert!(
+        !columns.iter().any(|c| c == "runtime_id"),
+        "the retiring spelling must be gone; got {columns:?}"
+    );
+
+    let (captured, payload): (Option<String>, String) =
+        sqlx::query_as("SELECT captured_session_id, payload FROM worker_flow_items")
+            .fetch_one(repo.pool())
+            .await
+            .expect("read the migrated row");
+    assert_eq!(
+        captured.as_deref(),
+        Some("rt-1"),
+        "the rename must preserve the value; dropping the column would have \
+         destroyed the only copy of this id"
+    );
+    let value: serde_json::Value = serde_json::from_str(&payload).expect("payload is JSON");
+    assert_eq!(
+        value.get("session_id").and_then(serde_json::Value::as_str),
+        Some("agent-sess-abc"),
+        "and the payload still carries a DIFFERENT id, which is why 'the \
+         payload has it too' was not a safe premise for a drop"
+    );
 }

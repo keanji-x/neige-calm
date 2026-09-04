@@ -48,7 +48,10 @@ impl WorkerFlowItemSink for WorkerFlowSink {
 
         // Direct out-of-domain insert — no Event, no gate (db/mod.rs trait
         // doc), exactly like run_loop's `harness_item_insert`.
-        // Worker-flow sessions are runtime-keyed after #695 PR5.
+        // The same id goes to both columns on every current insert. They are
+        // still two columns: `worker_session_id` is the FK and goes NULL when
+        // the session is deleted, `captured_session_id` is what was observed
+        // here and survives that (#1316 S4a).
         self.repo
             .worker_flow_item_insert(
                 ctx.card_id.as_deref(),
@@ -234,7 +237,7 @@ mod tests {
         assert_eq!(rows[1].kind, "commandExecution");
         assert_eq!(rows[2].kind, "fileChange");
         assert_eq!(rows[0].card_id.as_deref(), Some(card_id.as_str()));
-        assert_eq!(rows[0].runtime_id.as_deref(), Some(SESSION_ID));
+        assert_eq!(rows[0].captured_session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(rows[0].worker_session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(rows[0].track_id.as_deref(), Some("track-x"));
 

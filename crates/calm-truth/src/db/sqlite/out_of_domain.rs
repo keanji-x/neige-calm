@@ -63,7 +63,7 @@ pub async fn harness_items_delete_by_card_tx(
 pub async fn worker_flow_item_insert_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: Option<&str>,
-    runtime_id: Option<&str>,
+    captured_session_id: Option<&str>,
     track_id: Option<&str>,
     worker_session_id: Option<&str>,
     kind: &str,
@@ -72,14 +72,14 @@ pub async fn worker_flow_item_insert_tx(
 ) -> Result<i64> {
     let row = sqlx::query(
         r#"INSERT INTO worker_flow_items (
-               card_id, runtime_id, track_id, worker_session_id,
+               card_id, captured_session_id, track_id, worker_session_id,
                kind, payload, created_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
            RETURNING id"#,
     )
     .bind(card_id)
-    .bind(runtime_id)
+    .bind(captured_session_id)
     .bind(track_id)
     .bind(worker_session_id)
     .bind(kind)
@@ -429,7 +429,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn worker_flow_item_insert(
         &self,
         card_id: Option<&str>,
-        runtime_id: Option<&str>,
+        captured_session_id: Option<&str>,
         track_id: Option<&str>,
         worker_session_id: Option<&str>,
         kind: &str,
@@ -441,7 +441,7 @@ impl RepoOutOfDomain for SqlxRepo {
         let id = worker_flow_item_insert_tx(
             &mut tx,
             card_id,
-            runtime_id,
+            captured_session_id,
             track_id,
             worker_session_id,
             kind,
