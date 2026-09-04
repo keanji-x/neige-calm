@@ -2,8 +2,8 @@ use super::session_projection::runtime_get_projectable_for_card_from_pool;
 use super::*;
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{
-    AgentProvider, RuntimeId, Tx as WorkerSessionProjectionTx, WorkerSessionInit,
-    WorkerSessionKind, WorkerSessionProjection,
+    AgentProvider, Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind,
+    WorkerSessionProjection,
 };
 use calm_types::worker::WorkerSessionState;
 use serde_json::json;
@@ -247,7 +247,7 @@ pub(super) async fn seed_terminal_runtime(
 pub(super) async fn seed_codex_terminal_card(
     repo: &SqlxRepo,
     label: &'static str,
-) -> (String, String, RuntimeId) {
+) -> (String, String, String) {
     let mut tx = repo
         .pool()
         .begin()

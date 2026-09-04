@@ -18,7 +18,6 @@ use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegm
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::session_projection_repo::RuntimeId;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
@@ -43,7 +42,7 @@ pub struct PlannerHarness {
 }
 
 pub struct PlannerHarnessParams {
-    pub runtime_id: RuntimeId,
+    pub runtime_id: String,
     pub track_id: TrackId,
     pub card_id: CardId,
     pub thread_id: Option<String>,
@@ -57,7 +56,7 @@ pub struct PlannerHarnessParams {
 }
 
 pub(super) struct Inner {
-    runtime_id: RuntimeId,
+    runtime_id: String,
     track_id: TrackId,
     card_id: CardId,
     thread_id: RwLock<Option<String>>,
@@ -1555,7 +1554,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
 async fn transcript_refresh_with_timeout<F>(
     fut: F,
     timeout: Duration,
-    runtime_id: &RuntimeId,
+    runtime_id: &String,
     card_id: &str,
     track_id: &str,
 ) -> Option<track_vcs::CommitHash>
@@ -1615,7 +1614,7 @@ async fn diff_with_timeout(
 async fn diff_or_fallback_on_timeout<F, G, H>(
     fut: F,
     timeout: Duration,
-    runtime_id: &RuntimeId,
+    runtime_id: &String,
     card_id: &str,
     track_id: &str,
     fallback: H,

@@ -250,7 +250,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
     (card, runtime_id, thread_id, harness)
 }
 
-async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &String, harness: PlannerHarness) {
+async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &str, harness: PlannerHarness) {
     if let Some(handle) = boot.state.harness.remove(runtime_id) {
         handle.shutdown().await.unwrap();
     } else {

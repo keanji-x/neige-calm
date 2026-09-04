@@ -753,7 +753,7 @@ async fn wait_for_user_message(harness: &PlannerHarness, text: &str) -> HarnessS
     }
 }
 
-async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &String, harness: PlannerHarness) {
+async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &str, harness: PlannerHarness) {
     if let Some(handle) = boot.state.harness.remove(runtime_id) {
         handle.shutdown().await.unwrap();
     } else {

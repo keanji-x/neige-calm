@@ -5,7 +5,6 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 
 use crate::harness::PlannerHarness;
-use crate::session_projection_repo::RuntimeId;
 
 /// #953 §5 — registry-local monotonic reservation identity. Minted by a
 /// checked increment (panic on exhaustion — the clean anti-ABA invariant;
@@ -25,7 +24,7 @@ pub enum Slot {
 }
 
 struct RegistryInner {
-    map: DashMap<RuntimeId, Slot>,
+    map: DashMap<String, Slot>,
     next_reservation: AtomicU64,
 }
 
@@ -50,7 +49,7 @@ impl Default for HarnessRegistry {
 /// inert and can never stomp a newer claim.
 pub struct HarnessReservation {
     registry: HarnessRegistry,
-    runtime_id: RuntimeId,
+    runtime_id: String,
     id: ReservationId,
     /// Set by `install` so the consuming call suppresses the Drop release.
     done: bool,
@@ -128,7 +127,7 @@ impl HarnessRegistry {
     /// (a superseded reservation's guard becomes inert — same posture as
     /// [`Self::reserve_replacing`]); returns the previous Live handle.
     /// Production registration paths go through reserve → install.
-    pub fn insert(&self, runtime_id: RuntimeId, handle: PlannerHarness) -> Option<PlannerHarness> {
+    pub fn insert(&self, runtime_id: String, handle: PlannerHarness) -> Option<PlannerHarness> {
         match self.0.map.insert(runtime_id, Slot::Live(handle)) {
             Some(Slot::Live(previous)) => Some(previous),
             _ => None,
@@ -138,7 +137,7 @@ impl HarnessRegistry {
     /// #953 §5 — claim a vacant slot. Single `entry()` op: vacant ⇒ insert
     /// `Reserved(fresh_id)` and return the guard; occupied (Reserved OR
     /// Live) ⇒ `None`. Deferred recovery's `SkipIfClaimed` claim.
-    pub fn try_reserve(&self, runtime_id: RuntimeId) -> Option<HarnessReservation> {
+    pub fn try_reserve(&self, runtime_id: String) -> Option<HarnessReservation> {
         let id = self.next_reservation_id();
         match self.0.map.entry(runtime_id.clone()) {
             Entry::Occupied(_) => None,
@@ -161,7 +160,7 @@ impl HarnessRegistry {
     /// resume / start-adapter replace path.
     pub fn reserve_replacing(
         &self,
-        runtime_id: RuntimeId,
+        runtime_id: String,
     ) -> (HarnessReservation, Option<PlannerHarness>) {
         let id = self.next_reservation_id();
         let previous_live = match self.0.map.entry(runtime_id.clone()) {
@@ -185,7 +184,7 @@ impl HarnessRegistry {
         )
     }
 
-    pub fn get(&self, runtime_id: &RuntimeId) -> Option<PlannerHarness> {
+    pub fn get(&self, runtime_id: &String) -> Option<PlannerHarness> {
         self.0
             .map
             .get(runtime_id)
@@ -200,8 +199,8 @@ impl HarnessRegistry {
     /// cancel, id-checked). All four Live-targeting production call sites
     /// (user shutdown, track shutdown, old-runtime supersede, start
     /// compensation) keep these semantics.
-    pub fn remove(&self, runtime_id: &RuntimeId) -> Option<PlannerHarness> {
-        match self.0.map.entry(runtime_id.clone()) {
+    pub fn remove(&self, runtime_id: &str) -> Option<PlannerHarness> {
+        match self.0.map.entry(runtime_id.to_owned()) {
             Entry::Occupied(occupied) => match occupied.get() {
                 Slot::Live(_) => match occupied.remove() {
                     Slot::Live(handle) => Some(handle),
@@ -223,8 +222,7 @@ impl HarnessRegistry {
     /// Reserved slots stay untouched (their guards own them).
     #[cfg(feature = "fixtures")]
     pub fn drain_all_for_dev(&self) -> Vec<PlannerHarness> {
-        let runtime_ids: Vec<RuntimeId> =
-            self.0.map.iter().map(|entry| entry.key().clone()).collect();
+        let runtime_ids: Vec<String> = self.0.map.iter().map(|entry| entry.key().clone()).collect();
         runtime_ids
             .iter()
             .filter_map(|runtime_id| self.remove(runtime_id))

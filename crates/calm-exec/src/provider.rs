@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use calm_types::error::CoreError;
-use calm_types::runtime::{RuntimeId, TimestampMs};
+use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
     DeathVerdict, ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession,
 };
@@ -15,7 +15,7 @@ pub enum SpawnHandle {
         renderer_id: String,
     },
     Harness {
-        runtime_id: RuntimeId,
+        runtime_id: String,
     },
     NoOp,
 }

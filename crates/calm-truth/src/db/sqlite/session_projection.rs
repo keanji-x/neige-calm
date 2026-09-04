@@ -16,7 +16,7 @@ use super::session_row::{agent_provider_to_db, runtime_message};
 use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
 use crate::model::*;
 use crate::session_projection_repo::{
-    AgentProvider, CardId as RuntimeCardId, Result as WorkerSessionProjectionResult, RuntimeId,
+    AgentProvider, CardId as RuntimeCardId, Result as WorkerSessionProjectionResult,
     ThreadAttribution, Tx as WorkerSessionProjectionTx, WorkerSessionKind, WorkerSessionProjection,
     WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError,
 };
@@ -29,7 +29,7 @@ use calm_types::worker::WorkerSessionState;
 
 pub(super) async fn runtime_current_status_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<WorkerSessionState> {
     let row = sqlx::query(
         r#"SELECT state FROM worker_sessions ws
@@ -46,7 +46,7 @@ pub(super) async fn runtime_current_status_tx(
 
 pub(super) async fn runtime_get_by_id_from_pool(
     pool: &SqlitePool,
-    id: &RuntimeId,
+    id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
@@ -175,7 +175,7 @@ pub(super) async fn runtimes_active_for_kind_from_pool(
 
 pub async fn session_projection_by_id_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let sql = format!(
         r#"{WS_CARD_KEYED_RUNTIME_SELECT}
@@ -205,7 +205,7 @@ pub async fn session_projection_active_for_card_tx(
 
 pub async fn session_set_status_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     status: WorkerSessionState,
 ) -> WorkerSessionProjectionResult<()> {
     if status == WorkerSessionState::Superseded {
@@ -236,7 +236,7 @@ pub async fn session_set_status_for_card_tx(
 
 pub async fn session_bind_attribution_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     attr: ThreadAttribution,
 ) -> WorkerSessionProjectionResult<()> {
     if &attr.runtime_id != id {
@@ -253,7 +253,7 @@ pub async fn session_bind_attribution_tx(
 
 pub async fn session_clear_terminal_run_id_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_clear_terminal_run_id_mirror_tx(tx, id, now).await?;
@@ -262,7 +262,7 @@ pub async fn session_clear_terminal_run_id_tx(
 
 pub async fn session_set_handle_state_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     state: Option<serde_json::Value>,
 ) -> WorkerSessionProjectionResult<()> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
@@ -273,7 +273,7 @@ pub async fn session_set_handle_state_tx(
 
 pub async fn session_set_active_turn_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     turn_id: Option<&str>,
 ) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
@@ -285,7 +285,7 @@ pub async fn session_set_active_turn_tx(
 /// runtime status matrix and emits no event.
 pub async fn session_set_harness_observation_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     status: WorkerSessionState,
     thread_id: Option<&str>,
     active_turn_id: Option<&str>,
@@ -299,7 +299,7 @@ pub async fn session_set_harness_observation_runtime_tx(
 /// runtime status matrix and emits no event.
 pub async fn session_fail_if_active_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_fail_if_active_tx(tx, id, now).await?;
@@ -310,7 +310,7 @@ pub async fn session_fail_if_active_runtime_tx(
 /// runtime status matrix and emits no event.
 pub async fn session_mark_superseded_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
 ) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
     session_mark_superseded_tx(tx, id, now).await?;
@@ -321,7 +321,7 @@ pub async fn session_mark_superseded_runtime_tx(
 /// runtime status matrix and emits no event.
 pub async fn session_restore_from_superseded_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     status: WorkerSessionState,
 ) -> WorkerSessionProjectionResult<()> {
     let now = now_ms();
@@ -334,7 +334,7 @@ pub async fn session_restore_from_superseded_runtime_tx(
 
 pub async fn session_complete_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &RuntimeId,
+    id: &String,
     terminal_status: WorkerSessionState,
 ) -> WorkerSessionProjectionResult<()> {
     if !matches!(
@@ -451,7 +451,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
 
     async fn session_projection_by_id(
         &self,
-        id: &RuntimeId,
+        id: &str,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
         runtime_get_by_id_from_pool(&self.pool, id).await
     }
