@@ -1710,7 +1710,22 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
     }).finally(() => { setCreating(false); });
   };
 
-  if (areaId === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
+  /*
+   * A syntactically fine id for an area that has been deleted must not render a
+   * working composer: the reader types a sentence, presses Enter and only then
+   * eats a 4xx. The rail's own area list answers it, so no extra read.
+   *
+   * "Not in the list" is a verdict only once that list has actually arrived.
+   * `areas` falls back to `[]` while the read is in flight and again when it
+   * fails, and both of those look exactly like "deleted" to a bare `some()` —
+   * which is why the check is gated on a settled, successful read and every
+   * other state falls through to the form. A composer against a stale area is
+   * recoverable; a load-time "this area could not be found" on an area that
+   * exists is not.
+   */
+  const areaResolved = !workspace.areasLoading && workspace.areasError === null;
+  const areaExists = workspace.areas.some((area) => area.id === areaId);
+  if (areaId === undefined || (areaResolved && !areaExists)) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
   return (
     <NewTrackForm
       submitting={creating}

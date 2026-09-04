@@ -12,38 +12,6 @@ It no longer owns a New track dialog (#1211): starting a track is the route
 navigates there. `onOpenSettings` / `onSignOut` are injected: the shell never
 signs out itself. `nowMs` exists so a test can pin the `pinned_at` stamp.
 
-## The track-create body (#1131, #1147 S3, #1211)
-
-The create moved to `app/router`'s `NewTrackRoute` with the page (#1211); this
-section stays because the rail is still one of the two `+` surfaces. The
-new-track page's Folder chip is optional and decides the request shape — and the
-body carries **no `title`** since #1211: the kernel stores the empty string and
-the planner agent names the track through `calm.track.rename`.
-
-| Folder | `POST /api/tracks` body | Kernel branch |
-| --- | --- | --- |
-| not chosen | `{ area_id, theme }` | *managed* — the kernel derives, creates and owns a workspace under the workspace root |
-| chosen | `… + { cwd, attach_folder: true }` | *attached* — the user's own directory, never created, moved or deleted by the kernel |
-
-Both keys travel together, and absence is the signal — `cwd: null` or
-`attach_folder: false` are different kernel paths, not equivalents. `true`
-rather than a pre-flight `GET /api/areas/resolve`: with the flag omitted the
-kernel refuses any path no area has already claimed, and `true` is a no-op when
-this area already covers the path (`routes/tracks.rs`, same-area arm), so a
-second track in the same repository does not conflict with the first.
-
-The failure that branch can produce is a **structured 409** (`FolderConflict`)
-with no `error` key, which the generic normaliser can only report as the bare
-word "Conflict". The shell decodes it (`folderConflictOf` +
-`folderConflictMessage`) and names the path, the owning area, and the remedy.
-The area *name* comes from `useWorkspace`, which is the second reason this lives
-here rather than in the form.
-
-The picker's `listDirectory` port is created here too
-(`app/providers/directory.ts`): `ui/directory-browser` must not know a transport
-exists, and `features/**` may not import `app/**`, so the composition layer is
-the only place that can bind them.
-
 ## Visual contract
 
 `shell.module.css`, `@layer features` — app composition sits at the same cascade

@@ -2416,7 +2416,7 @@
   why: >
     源码注释:"the title-row `+` button is the visible trigger, and it stays mounted while the Dialog is open
     so Dialog's focus-restore lands keyboard users back on the `+` button after close."
-  source: web/src/pages/Area.tsx:419-443
+  source: web/src/pages/Area.tsx:119-130,145-155,414-438,474-477
   authoritative_test: NONE
   owner_slice: features/area/page
   intentional_omission: false
@@ -2434,7 +2434,7 @@
   why: >
     源码注释(#891 signoff round 2):"the owner wants the dialog to read as one cohesive card … the visible
     'New track' head is gone but the accessible name stays."
-  source: web/src/pages/Area.tsx:479-491
+  source: web/src/pages/Area.tsx:478-486
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: features/area/page
   intentional_omission: true

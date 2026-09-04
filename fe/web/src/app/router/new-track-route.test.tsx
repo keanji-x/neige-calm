@@ -98,6 +98,18 @@ function harness(options: {
   heldDetail?: Promise<void>;
   /** Hold the create POST open until this resolves, to drive a late create. */
   heldCreate?: Promise<void>;
+  /**
+   * Hold `GET /api/areas` open until this resolves. The area list is what the
+   * route consults to decide whether its `$areaId` still exists, so this is the
+   * only way to render the page while that answer is genuinely unknown.
+   */
+  heldAreas?: Promise<void>;
+  /**
+   * Where the browser starts, under the basepath. Deep-linking is the entry
+   * that reaches a *stale* area id: every in-app `+` can only name an area the
+   * rail is currently showing.
+   */
+  path?: string;
 } = {}) {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
@@ -148,6 +160,9 @@ function harness(options: {
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
       }
+      if (request.path === '/api/areas' && options.heldAreas) {
+        return options.heldAreas.then(() => ({ status: 200, statusText: 'OK', body: [AREA, OTHER] }));
+      }
       const body = request.path === '/api/areas' ? [AREA, OTHER]
         : request.path.startsWith('/api/fs/listdir') ? LISTING
           : request.method === 'POST' && request.path === '/api/tracks'
@@ -156,7 +171,7 @@ function harness(options: {
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
   };
-  window.history.pushState({}, '', `${APP_BASEPATH}/`);
+  window.history.pushState({}, '', `${APP_BASEPATH}${options.path ?? '/'}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
@@ -518,6 +533,58 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(createdTrackBodies(sent)[0]).toMatchObject({ area_id: 'c2' });
     expect(createdTrackBodies(sent)[0]).not.toHaveProperty('title');
     expect(plannerInputTexts(sent)).toEqual([]);
+  });
+});
+
+/*
+ * A deep link is the only way to reach this route with an area id the rail
+ * cannot show: the `+` controls are rendered from the area list itself. The id
+ * that outlives its area is the interesting one — a stale bookmark, a link
+ * pasted after the area was deleted — because it is *syntactically* fine, so
+ * without a lookup the page renders a composer that works right up until the
+ * create eats a 4xx.
+ */
+describe('the route refuses an area id that no longer exists', () => {
+  it('reports a deleted area instead of rendering a working composer', async () => {
+    harness({ templates: TEMPLATES, path: '/area/c9/new' });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('This area could not be found.');
+    /* The composer's absence is the point: an ErrorBox rendered *above* a live
+       form would still lose the reader's sentence to the 4xx. */
+    expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
+  });
+
+  it('renders the composer for an area that does exist', async () => {
+    harness({ templates: TEMPLATES, path: '/area/c1/new' });
+    expect(await findComposer()).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  /*
+   * The false red this check invites, pinned.
+   *
+   * `workspace.areas` is `[]` while `GET /api/areas` is in flight, and `[]`
+   * contains no id — so a bare `some()` calls *every* area deleted for as long
+   * as the read takes, which on a slow link is the whole first paint. The read
+   * is held open here, so "not found" is only ever a settled answer.
+   *
+   * The composer assertion is what keeps this from passing vacuously against a
+   * route that renders nothing at all; the settled half — the list landing and
+   * the ErrorBox appearing — is the case above, deliberately, so that deleting
+   * the existence check turns exactly one of these three red.
+   */
+  it('does not call the area missing while the area list is still loading', async () => {
+    let releaseAreas = (): void => undefined;
+    const held = new Promise<void>((resolve) => { releaseAreas = () => { resolve(); }; });
+    harness({ templates: TEMPLATES, path: '/area/c9/new', heldAreas: held });
+
+    expect(await findComposer()).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    // Let the read finish so nothing is left hanging on the way out.
+    releaseAreas();
+    await held;
   });
 });
 
