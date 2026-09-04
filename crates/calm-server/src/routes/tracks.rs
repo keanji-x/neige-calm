@@ -167,6 +167,15 @@ pub struct CreateTrackRequest {
     /// optional.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// A built-in roster template (#1209) to instantiate the new track's report
+    /// from — the caller's spelling, admitted against the roster before
+    /// anything is minted; `tracks.template_id` then stores the roster's own
+    /// key. It is also what binds the track to a plugin (`plugin_scope`) and
+    /// what makes `template_input` acceptable.
+    ///
+    /// One of the three mutually exclusive starting points (`template_id`,
+    /// `recipe_id`, `fork_report_from`); naming two of them is a 400 that names
+    /// both. Naming none is the ordinary blank create.
     #[serde(default)]
     pub template_id: Option<String>,
     /// A user-defined recipe (`track_recipes` row, #1292) to start from.
@@ -303,11 +312,19 @@ impl CreateTrackRequest {
 /// while its report came from somewhere else); closing that pair alone would
 /// have left a hole of the same shape one field over.
 ///
-/// Observed, not inferred: nothing in production sent any of these
-/// combinations. Neither frontend (`web/src`, `fe/`, enumerated by directory)
-/// sends `fork_report_from` at all — zero hits outside the generated OpenAPI
-/// types — and no Rust caller constructs a [`CreateTrackRequest`]; the only
+/// Observed, not inferred — **about this repository's own callers**: neither
+/// frontend (`web/src`, `fe/`, enumerated by directory) sends
+/// `fork_report_from` at all (zero hits outside the generated OpenAPI types),
+/// no Rust caller constructs a [`CreateTrackRequest`], and the MCP tool face
+/// reaches `track_create_tx` directly rather than through this body. The only
 /// producers of the two-source shape were the four tests #1321 S2 rewrote.
+///
+/// 第一轮评审 MINOR-5 (#1321 S2) — that is a statement about first-party
+/// clients, and it is the widest one the evidence carries. It is **not** the
+/// claim that nothing in production ever sent these combinations: the repo
+/// itself documents out-of-repo scripts against this endpoint
+/// (`docs/deploy-and-upgrade.md` §8.2, which now carries this slice's
+/// 201 → 400 entry), and no reader here can see their traffic.
 enum NamedSource {
     /// No starting point named; the track keeps the default skeleton.
     Blank,
@@ -327,6 +344,12 @@ impl NamedSource {
     /// The message names the offending fields rather than reporting a generic
     /// conflict: a caller that sent three fields, one of them by accident, has
     /// to be able to tell which one to drop.
+    ///
+    /// 第一轮评审 MINOR-4 (#1321 S2) — the tail is "give **at most** one", not
+    /// "exactly one". Zero starting points is the ordinary case ([`Self::Blank`]
+    /// — it is what both frontends' default create sends), so "exactly one"
+    /// would tell a caller who sent two fields by accident that it must now
+    /// pick a template, a recipe or a fork source, which is false.
     fn from_request(
         template_id: Option<String>,
         recipe_id: Option<String>,
@@ -348,7 +371,7 @@ impl NamedSource {
                 let (last, rest) = fields.split_last().expect("at least two named sources");
                 Err(CalmError::BadRequest(format!(
                     "track create: `{}` and `{last}` each name a starting point for the \
-                     new track's report; give exactly one",
+                     new track's report; give at most one",
                     rest.join("`, `"),
                 )))
             }
@@ -362,30 +385,28 @@ impl NamedSource {
     /// 400 #1209 introduced. A `Recipe` row and a `Fork` source are looked up
     /// inside the create transaction, so their absence is decided there.
     async fn resolve(self, s: &RouteState) -> Result<CreationSource> {
-        Ok(match self {
-            Self::Blank => CreationSource::unbound(TrackInit::Blank),
-            Self::Recipe(recipe_id) => CreationSource::unbound(TrackInit::Recipe { recipe_id }),
-            Self::Fork(source_track_id) => {
-                CreationSource::unbound(TrackInit::Fork { source_track_id })
-            }
-            Self::Template(template_id) => {
-                // #1209 — one lookup. The template is the concept; a plugin
-                // binding is an attribute of it, not a second way in. Roster
-                // membership is the whole admission test: whether some plugin
-                // claims the id, and whether that plugin is running and
-                // trusted, cannot change the answer.
-                let admission = admit_template(s, &template_id).await.ok_or_else(|| {
-                    CalmError::BadRequest(format!(
-                        "track create: `template_id` must reference a known track template; got `{template_id}`"
-                    ))
-                })?;
-                CreationSource {
-                    init: TrackInit::Template {
+        Ok(CreationSource {
+            init: match self {
+                Self::Blank => TrackInit::Blank,
+                Self::Recipe(recipe_id) => TrackInit::Recipe { recipe_id },
+                Self::Fork(source_track_id) => TrackInit::Fork { source_track_id },
+                Self::Template(template_id) => {
+                    // #1209 — one lookup. The template is the concept; a plugin
+                    // binding is an attribute of it, not a second way in. Roster
+                    // membership is the whole admission test: whether some plugin
+                    // claims the id, and whether that plugin is running and
+                    // trusted, cannot change the answer.
+                    let admission = admit_template(s, &template_id).await.ok_or_else(|| {
+                        CalmError::BadRequest(format!(
+                            "track create: `template_id` must reference a known track template; got `{template_id}`"
+                        ))
+                    })?;
+                    TrackInit::Template {
                         key: admission.key(),
-                    },
-                    binding: admission.binding,
+                        binding: admission.binding.map(Box::new),
+                    }
                 }
-            }
+            },
         })
     }
 }
@@ -394,31 +415,30 @@ impl NamedSource {
 /// from that same value — the provenance the `tracks` row records.
 ///
 /// #1321 S2 — the point of this type is that there is nowhere to disagree.
-/// `tracks.template_id` is read **out of** [`Self::init`] by [`Self::stamp`]
-/// rather than carried alongside it, so "which source the create used" and
-/// "which source the row claims" are one value with one reader. Before this
-/// slice they were two: `into_parts` copied the caller's `template_id` onto
-/// `NewTrack`, the handler overwrote it with the admitted key, and the `init`
-/// match then independently decided that an explicit `fork_report_from` won —
-/// which is precisely how a row could end up stamped `template_id` +
-/// `plugin_scope` while its report had been forked from an unrelated track
-/// (#1321 「已观察事实」§3).
+/// Both provenance columns are read **out of** [`Self::init`] by
+/// [`Self::stamp`] rather than carried alongside it, so "which source the
+/// create used" and "which source the row claims" are one value with one
+/// reader. Before this slice they were two: `into_parts` copied the caller's
+/// `template_id` onto `NewTrack`, the handler overwrote it with the admitted
+/// key, and the `init` match then independently decided that an explicit
+/// `fork_report_from` won — which is precisely how a row could end up stamped
+/// `template_id` + `plugin_scope` while its report had been forked from an
+/// unrelated track (#1321 「已观察事实」§3).
+///
+/// 第一轮评审 MINOR-2 (#1321 S2) — the first cut of this type kept the plugin
+/// binding as a **sibling field** of `init`, and only the `template_id` half
+/// was actually derived. `plugin_scope` came off that sibling, so
+/// `CreationSource { init: TrackInit::Fork { .. }, binding: Some(manifest) }`
+/// compiled and stamped a fork-born row with a plugin owner — the same shape
+/// as the `## KNOWN GAPS` Gap 1 on [`admit_template`], re-minted next door to
+/// it, under a doc sentence that claimed the type made it impossible. The
+/// binding now lives **inside** [`TrackInit::Template`], so that construction
+/// is a compile error rather than a sentence about today's three call sites.
 struct CreationSource {
     init: TrackInit,
-    /// The owning plugin at creation time, when the admitted template is bound
-    /// to a running ∧ trusted one. Only [`TrackInit::Template`] can carry one:
-    /// every other arm is built by [`Self::unbound`].
-    binding: Option<Manifest>,
 }
 
 impl CreationSource {
-    fn unbound(init: TrackInit) -> Self {
-        Self {
-            init,
-            binding: None,
-        }
-    }
-
     /// Which `template_input` owner this source presents, per #891 / #1110 S2.
     ///
     /// 第二轮评审 NIT-3 (#1209) — `None` binding has two different causes and
@@ -428,27 +448,43 @@ impl CreationSource {
     /// [`NamedSource::resolve`] already 400s.)
     fn template_input_owner(&self) -> crate::plugin_host::template_input::TemplateInputOwner<'_> {
         use crate::plugin_host::template_input::TemplateInputOwner;
-        match (&self.binding, &self.init) {
-            (Some(manifest), _) => TemplateInputOwner::Plugin(manifest),
-            (None, TrackInit::Template { .. }) => TemplateInputOwner::NoBoundPlugin,
-            (None, _) => TemplateInputOwner::NoTemplateId,
+        match &self.init {
+            TrackInit::Template {
+                binding: Some(manifest),
+                ..
+            } => TemplateInputOwner::Plugin(manifest),
+            TrackInit::Template { binding: None, .. } => TemplateInputOwner::NoBoundPlugin,
+            TrackInit::Blank | TrackInit::Recipe { .. } | TrackInit::Fork { .. } => {
+                TemplateInputOwner::NoTemplateId
+            }
         }
     }
 
     /// Write this source's provenance onto the row about to be inserted.
     ///
-    /// Both columns are derived here and nowhere else. `template_id` comes out
-    /// of `init` itself — the roster's own `&'static` key, never the caller's
-    /// string, see [`TemplateAdmission::key`] — so a create whose report did
-    /// not come from a template cannot leave a template id on the row.
+    /// Both columns come out of one `match` arm on `init`, so they cannot name
+    /// different sources: `template_id` is the roster's own `&'static` key,
+    /// never the caller's string (see [`TemplateAdmission::key`]), and
+    /// `plugin_scope` is the binding that same admitted template carries. A
+    /// create whose report did not come from a template can leave neither.
+    ///
+    /// 第一轮评审 NIT-2 (#1321 S2) — "derived here and nowhere else" is true of
+    /// **this route**, not of the columns. `operation/child_track_adapter.rs`
+    /// builds its own `NewTrack` and inherits `plugin_scope` from the parent
+    /// track (it is a different creation path with a different provenance
+    /// rule, not a second writer racing this one).
     fn stamp(&self, p: &mut NewTrack) {
-        p.template_id = match &self.init {
-            TrackInit::Template { key } => Some((*key).to_string()),
-            TrackInit::Blank | TrackInit::Recipe { .. } | TrackInit::Fork { .. } => None,
-        };
-        // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
+        // #1110 S4 — the owning plugin id lands in `plugin_scope` in the same
         // insert. Unbound create leaves it None. Not a request field.
-        p.plugin_scope = self.binding.as_ref().map(|manifest| manifest.id.clone());
+        let (template_id, plugin_scope) = match &self.init {
+            TrackInit::Template { key, binding } => (
+                Some((*key).to_string()),
+                binding.as_ref().map(|manifest| manifest.id.clone()),
+            ),
+            TrackInit::Blank | TrackInit::Recipe { .. } | TrackInit::Fork { .. } => (None, None),
+        };
+        p.template_id = template_id;
+        p.plugin_scope = plugin_scope;
     }
 }
 
@@ -833,7 +869,7 @@ pub(crate) async fn get_track_detail(
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give exactly one), or — with `first_message` — an empty or over-long message. Decided before anything is minted.", body = ErrorBody),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — an empty or over-long message. Decided before anything is minted.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back, nothing compensates, and the create is not retryable — read the track back from `GET /api/tracks` and look before resending, because resending a message that did arrive delivers it twice. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.", body = ErrorBody),
     ),
 )]
@@ -1522,7 +1558,23 @@ enum TrackInit {
     Blank,
     /// Instantiate a template recipe. The roster's own `&'static` key, never
     /// the caller's string — see [`TemplateAdmission::key`].
-    Template { key: &'static str },
+    Template {
+        key: &'static str,
+        /// The owning plugin at creation time, when the admitted template is
+        /// bound to a running ∧ trusted one.
+        ///
+        /// 第一轮评审 MINOR-2 (#1321 S2) — it lives **in this arm** rather than
+        /// beside the `TrackInit` in [`CreationSource`], so "there is a plugin
+        /// owner" cannot be stated about a source that is not a template. That
+        /// is a type-level fact, not a property of the current call sites: the
+        /// only constructor of this arm is [`NamedSource::resolve`]'s template
+        /// admission, and no other arm has a field to put a `Manifest` in.
+        ///
+        /// Boxed because a `Manifest` is ~864 bytes and the other arms carry a
+        /// `String` at most; inline it and every `TrackInit` — including the
+        /// blank create's — pays that width (`clippy::large_enum_variant`).
+        binding: Option<Box<Manifest>>,
+    },
     /// Instantiate a **user-defined** recipe (`track_recipes` row, #1292).
     ///
     /// Distinct from [`TrackInit::Template`] rather than folded into it,
@@ -1686,7 +1738,7 @@ async fn create_track_structure(
                 // on an `expect` that reads as unconditional.
                 let init_snapshot = match (&init, recipe_source) {
                     (TrackInit::Blank, _) => None,
-                    (TrackInit::Template { key }, _) => Some(prepare_template_report(key)?),
+                    (TrackInit::Template { key, .. }, _) => Some(prepare_template_report(key)?),
                     (TrackInit::Recipe { recipe_id }, None) => {
                         // The read above is driven by the same `init`, so this
                         // arm needs the read to have been skipped on the very

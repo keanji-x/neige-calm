@@ -3178,7 +3178,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give exactly one), or — with `first_message` — an empty or over-long message. Decided before anything is minted.",
+            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — an empty or over-long message. Decided before anything is minted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5261,7 +5261,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "A built-in roster template (#1209) to instantiate the new track's report\nfrom — the caller's spelling, admitted against the roster before\nanything is minted; `tracks.template_id` then stores the roster's own\nkey. It is also what binds the track to a plugin (`plugin_scope`) and\nwhat makes `template_input` acceptable.\n\nOne of the three mutually exclusive starting points (`template_id`,\n`recipe_id`, `fork_report_from`); naming two of them is a 400 that names\nboth. Naming none is the ordinary blank create."
           },
           "template_input": {
             "type": [

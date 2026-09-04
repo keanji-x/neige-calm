@@ -1516,6 +1516,17 @@ export interface components {
             recipe_id?: string | null;
             /** Format: double */
             sort?: number | null;
+            /**
+             * @description A built-in roster template (#1209) to instantiate the new track's report
+             *     from — the caller's spelling, admitted against the roster before
+             *     anything is minted; `tracks.template_id` then stores the roster's own
+             *     key. It is also what binds the track to a plugin (`plugin_scope`) and
+             *     what makes `template_input` acceptable.
+             *
+             *     One of the three mutually exclusive starting points (`template_id`,
+             *     `recipe_id`, `fork_report_from`); naming two of them is a 400 that names
+             *     both. Naming none is the ordinary blank create.
+             */
             template_id?: string | null;
             template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
@@ -5730,7 +5741,7 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give exactly one), or — with `first_message` — an empty or over-long message. Decided before anything is minted. */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — an empty or over-long message. Decided before anything is minted. */
             400: {
                 headers: {
                     [name: string]: unknown;

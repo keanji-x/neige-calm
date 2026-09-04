@@ -342,53 +342,59 @@ fn task_blocks(payload: &TrackReportPayload) -> Vec<&Value> {
 /// of a "what did this create mint" loop. What replaced it is stronger than
 /// "it mints no hidden track": `a_template_and_an_explicit_fork_source_are_a_400`
 /// below asserts the whole database is byte-for-byte unchanged.
+///
+/// 第一轮评审 NIT-4 (#1321 S2) — with one leg left, the `for` over a
+/// single-element array and its `leg` label were scaffolding for a second leg
+/// that no longer exists. Flattened; the create is written out once.
 #[tokio::test]
 async fn creating_from_a_template_mints_no_hidden_track() {
     let boot = boot().await;
 
-    for (leg, extra) in [("template only", json!({ "template_id": ISSUE_DEVELOPMENT }))] {
-        let tracks_before = boot
-            .repo
-            .tracks_window(None, None, None)
-            .await
-            .unwrap()
-            .len();
+    let tracks_before = boot
+        .repo
+        .tracks_window(None, None, None)
+        .await
+        .unwrap()
+        .len();
 
-        let (status, body) = post(
-            boot.app.clone(),
-            "/api/tracks",
-            create_body(&boot.area_id, leg, extra),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "{leg}: body={body}");
-        let created = body["id"].as_str().expect("track id").to_string();
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        create_body(
+            &boot.area_id,
+            "template only",
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let created = body["id"].as_str().expect("track id").to_string();
 
-        // Exactly one new track, and it is the one the caller asked for. A
-        // count alone would pass if the create minted one hidden track and
-        // failed to mint the requested one.
-        let after = boot.repo.tracks_window(None, None, None).await.unwrap();
-        assert_eq!(
-            after.len(),
-            tracks_before + 1,
-            "{leg}: created {} tracks, not 1",
-            after.len() - tracks_before
-        );
-        assert!(
-            after.iter().any(|track| track.id.as_str() == created),
-            "{leg}: the requested track is not among them"
-        );
+    // Exactly one new track, and it is the one the caller asked for. A
+    // count alone would pass if the create minted one hidden track and
+    // failed to mint the requested one.
+    let after = boot.repo.tracks_window(None, None, None).await.unwrap();
+    assert_eq!(
+        after.len(),
+        tracks_before + 1,
+        "created {} tracks, not 1",
+        after.len() - tracks_before
+    );
+    assert!(
+        after.iter().any(|track| track.id.as_str() == created),
+        "the requested track is not among them"
+    );
 
-        assert!(
-            kernel_template_overlays(&boot.repo).await.is_empty(),
-            "{leg}: a kernel/view/template overlay was minted; the kernel has \
-             no writer for one: {:?}",
-            kernel_template_overlays(&boot.repo).await
-        );
-        assert!(
-            boot.repo.area_get_system().await.unwrap().is_none(),
-            "{leg}: creating from a template must not mint the system area either"
-        );
-    }
+    assert!(
+        kernel_template_overlays(&boot.repo).await.is_empty(),
+        "a kernel/view/template overlay was minted; the kernel has \
+         no writer for one: {:?}",
+        kernel_template_overlays(&boot.repo).await
+    );
+    assert!(
+        boot.repo.area_get_system().await.unwrap().is_none(),
+        "creating from a template must not mint the system area either"
+    );
 }
 
 /// Two tracks from one template are independent documents with the same content.
@@ -870,16 +876,32 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
 /// wins as it did before this slice, the create commits, and *then* the same
 /// 400 with the same message is returned — leaves this file's whole filtered
 /// suite green **except this case**, and inside it the failure is the snapshot
-/// assertion (`left` carried a freshly committed `tracks`/`cards`/`area_folders`
-/// row set) while every status and message assertion above it passed. Measured
-/// on `test(recipe_instantiate) or test(template_tracks) or test(report_fork) or
-/// test(first_message)`, `--no-fail-fast`: 65 tests run, 64 passed, 1 failed.
-/// That is the discrimination the snapshot exists for: without it, the mutation
-/// is invisible.
+/// assertion ("an ambiguous-source 400 must not write anything"; `left` carried
+/// a freshly committed `tracks`/`cards`/`area_folders` row set) while every
+/// status and message assertion above it passed. That is the discrimination the
+/// snapshot exists for: without it, the mutation is invisible.
+///
+/// The command, verbatim, so the numbers below are reproducible:
+///
+/// ```text
+/// env -u NEIGE_CODEX_BIN cargo nextest run --workspace --locked \
+///   --features calm-server/codex-e2e \
+///   -E 'test(recipe_instantiate) or test(template_tracks) or test(report_fork) or test(first_message)' \
+///   --test-threads 8 --no-fail-fast
+/// ```
+///
+/// Baseline **66 tests run, 66 passed**; under `MUTATION-1321S2-1`, **66 run,
+/// 65 passed, 1 failed**. (第一轮评审 NIT-1 — this block used to say 65/64/1
+/// and did not record the command. The filterset is matched on test *names*, so
+/// it also picks up `calm-truth`'s
+/// `events_prune::tests::first_message_dedup_kind_is_never_prunable` via
+/// `test(first_message)`; that 66th test is unrelated to this file and is
+/// green throughout. A recorded mutation number whose command is missing is
+/// not evidence, and this block's entire value is that it is.)
 ///
 /// (`MUTATION-1321S2-2`, the coarser one — no exclusivity at all, last field
-/// named wins — turns four cases red on the same filter: this one,
-/// `a_recipe_and_an_explicit_fork_source_are_a_400`,
+/// named wins — turns four cases red on the same filter (66 run, 62 passed, 4
+/// failed): this one, `a_recipe_and_an_explicit_fork_source_are_a_400`,
 /// `template_id_and_recipe_id_together_are_a_400` and
 /// `template_id_and_recipe_id_with_a_fork_source_are_still_a_400`. It is the
 /// weaker evidence: it moves the status code, so it says nothing about the
@@ -890,6 +912,14 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
 /// storage — and `track_create_tx` writes `TrackAreaCache` (in memory, outside
 /// the transaction) on a path that a rollback does not undo. Same caveat as
 /// `assert_old_spelling_is_an_unknown_field`'s.
+///
+/// 第一轮评审 (#1321 S2) — the same blindness covers the **filesystem**, and
+/// that is not hypothetical: under `MUTATION-1321S2-1` the deferred create
+/// commits and `materialize_workspace` really does mint the workspace
+/// directory, which then survives the 400. Two snapshots of the SQLite tables
+/// see none of it. So the leg's claim is "no *database* write before the
+/// transaction", which is what #1321's acceptance asks for — not "no side
+/// effect of any kind", a statement this file has no instrument for.
 #[tokio::test]
 async fn a_template_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;

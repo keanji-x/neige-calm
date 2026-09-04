@@ -222,9 +222,27 @@ export type NewTrackBody = Readonly<{
    * The chosen user recipe's id (#1292) — a `track_recipes` row, read as
    * `recipe.id` from `GET /api/track-recipes`.
    *
-   * **Mutually exclusive with `template_id`, and the kernel says so with a
-   * 400** ("give `template_id` or `recipe_id`, not both" —
-   * `routes/tracks.rs`). They are not two spellings of one field: a
+   * **Mutually exclusive with `template_id` — and, since #1321 S2, with the
+   * kernel's third starting point `fork_report_from` as well. Naming any two
+   * is a 400 that names both**:
+   *
+   * ```
+   * track create: `template_id` and `recipe_id` each name a starting point
+   * for the new track's report; give at most one
+   * ```
+   *
+   * (`NamedSource::from_request` in `routes/tracks.rs`.) *At most* one: naming
+   * none is the ordinary blank create this type sends by default. Before
+   * #1321 S2 only this one pair was refused — `fork_report_from` silently
+   * outranked whichever other field was sent — and the quote here was the
+   * older `"give `template_id` or `recipe_id`, not both"`, a string the kernel
+   * no longer produces.
+   *
+   * `fork_report_from` is not a field of this type: no frontend creates a
+   * track by forking, so the exclusivity above is stated for the caller
+   * reading the wire contract, not for a shape this type can build.
+   *
+   * They are not two spellings of one field: a
    * `template_id` lands on `tracks.template_id`, which the start path later
    * resolves against running plugins' manifests, and a recipe id has no
    * manifest to resolve against — putting one there would make every

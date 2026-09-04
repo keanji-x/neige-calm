@@ -549,11 +549,29 @@ async fn an_unknown_recipe_id_is_a_400() {
 
 /// Two starting points is not a preference to resolve.
 ///
-/// The `code` assertion is what distinguishes the refusal from a panic: the
-/// `init` match in `create_track` carries a second, local refusal for the same
-/// combination, and a `500`/`internal` body is exactly what a `panic!` there
-/// would produce. Asserting the status alone would not tell the two apart if
-/// the early guard were ever removed.
+/// The `code` assertion separates the refusal from a `500`/`internal` body — a
+/// `panic!` on this path would produce exactly that, and asserting the status
+/// alone would not tell the two apart.
+///
+/// 第一轮评审 MINOR-3 (#1321 S2) — this comment used to justify the `code`
+/// assertion by a *second, local* refusal for the same combination inside the
+/// `init` match in `create_track`. #1321 S2 deleted that match together with
+/// its fallback arm (`NamedSource::from_request` is now the only refusal), so
+/// the redundancy the sentence described no longer exists. The assertion is
+/// still worth keeping for the reason above; it just is not guarding a second
+/// guard any more.
+///
+/// 第一轮评审 MINOR-1 (#1321 S2) — the message assertion below is new. This is
+/// the oldest of the four exclusivity cases (#1292) and it was the only one
+/// asserting nothing about the body, which made it the one input on which the
+/// design promise `NamedSource::from_request` writes down — *name the
+/// conflicting fields, not "parameter conflict"* — had no pin. Two independent
+/// review channels found it with the same construction: replace the computed
+/// field list with a hard-coded `template_id`/`recipe_id`/`fork_report_from`
+/// triple (or with one generic sentence) and every other exclusivity case goes
+/// red while this one stays green. The negative half (`fork_report_from` must
+/// **not** be named) is what makes it a pin on "the fields the caller actually
+/// sent" rather than on "some fields".
 #[tokio::test]
 async fn template_id_and_recipe_id_together_are_a_400() {
     let boot = boot().await;
@@ -574,6 +592,17 @@ async fn template_id_and_recipe_id_together_are_a_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
     assert_eq!(error["code"], json!("bad_request"), "{error}");
+    let message = error["error"].as_str().unwrap_or("");
+    for field in ["template_id", "recipe_id"] {
+        assert!(
+            message.contains(&format!("`{field}`")),
+            "the 400 must name the fields that collided; got {error}"
+        );
+    }
+    assert!(
+        !message.contains("`fork_report_from`"),
+        "the 400 must not name a field the caller did not send; got {error}"
+    );
 }
 
 /// All three named at once is the same 400.
@@ -587,7 +616,11 @@ async fn template_id_and_recipe_id_together_are_a_400() {
 /// still names the fields.
 ///
 /// As above, the `code` assertion separates the refusal from a `500`/`internal`
-/// panic body, so this case stays decisive if the early guard is removed.
+/// panic body. 第一轮评审 MINOR-3 (#1321 S2) — it used to say "so this case
+/// stays decisive **if the early guard is removed**", which named the same
+/// deleted second refusal as the case above; there is no longer a second guard
+/// for this one to survive the removal of. What the assertion still buys is
+/// telling a refusal apart from a crash.
 #[tokio::test]
 async fn template_id_and_recipe_id_with_a_fork_source_are_still_a_400() {
     let boot = boot().await;

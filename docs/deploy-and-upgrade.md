@@ -541,6 +541,28 @@ survived was the generated OpenAPI artifacts, which this release regenerates.
 No data migration: the production `overlays` table held zero `kind='template'`
 rows.
 
+#1321 S2 narrows the same body once more, and this one is a **handler** 400
+rather than an extractor 422. `template_id`, `recipe_id` and `fork_report_from`
+each name where the new track's report comes from, and they are now mutually
+exclusive **pairwise**. Until this release only `template_id + recipe_id` was
+refused (#1292); the other two pairs were resolved silently — an explicit
+`fork_report_from` won, and the row was still stamped with the `template_id`
+and its plugin owner, claiming a provenance the report did not have. An
+out-of-repo script sending two of the three now gets
+
+```
+400  track create: `template_id` and `fork_report_from` each name a starting
+     point for the new track's report; give at most one
+```
+
+where it previously got a `201`. The message names the two fields that
+collided, so the fix is to drop one of them. Sending **none** of the three is
+unchanged and remains the ordinary blank create — the refusal is about naming
+two, not about naming one. Nothing is minted before the refusal: it is decided
+while the request body is destructured, before the create transaction opens.
+Neither frontend ever sent `fork_report_from`, and the MCP tool face does not
+go through this body at all, so a script is the only caller that can hit this.
+
 **Scan your installed plugins before upgrading.** Run this in the plugin
 install root; any output names a plugin this release will break. It reports
 all three failure modes: a manifest still carrying the retired `workflows` key
