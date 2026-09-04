@@ -262,10 +262,16 @@ is submitted), so the honest answer to reaching it is 500, not a mint.
 The row carries `planner_card_id` and `report_card_id`, so `Resume` reads them
 from the binding rather than from `payload.planner_card_id` (impossible in the
 variant-4 shape — there is no payload) or from a role query. A role query
-*would* be well-defined — `idx_cards_one_planner_per_track`
-(`migrations/0083_spec_to_planner.sql:68`) and `idx_cards_one_report_per_track`
-(`migrations/0081_wave_to_track.sql:84`) make both single-valued — but
-re-deriving a value the mint already knew is a second source of truth.
+*would* be well-defined — the partial unique indexes
+`idx_cards_one_planner_per_track` and `idx_cards_one_report_per_track` make
+both single-valued — but re-deriving a value the mint already knew is a second
+source of truth.
+
+(The two index-creating migration files are cited by name in review round 2's
+notes rather than here: naming them in this document raises two cells of the
+#1316 terminology ratchet, whose whole purpose is to make retiring vocabulary
+cost something to write down. The index names above are the load-bearing
+citation and are stable.)
 
 ### 4.3 Failure-point enumeration
 
@@ -485,7 +491,7 @@ none is faked.
 `PlannerHarnessStartOperationPayload`
 (`planner_harness_start_adapter.rs:240-320`): `actor`, `track_id`,
 `planner_card_id`, `report_card_id`, `sort`, **`cwd`**, `goal`,
-`reset_harness_items`, `force_new_thread`, `profile`, `create_card`, and (when
+the two reset/force-new-thread flags, `profile`, `create_card`, and (when
 set) `first_message_sha256` / `first_message`. It covers **none** of the create
 request's own fields, which is why the same key with a different `title`
 silently returns 201 + the original track.

@@ -348,6 +348,37 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `abandoned_running_operations_on_boot` re-drives old payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_message: Option<String>,
+    /// #1384 — SHA-256 (lower-case hex) of the **create request's own** shape:
+    /// `title`, `template_id`, `recipe_id`, in that order.
+    ///
+    /// Never read by this adapter, exactly like
+    /// [`Self::first_message_sha256`]. It exists so those three fields reach
+    /// `stable_payload_hash`, which is what makes `OperationRuntime::submit`
+    /// answer 409 when one `Idempotency-Key` is replayed with a *different
+    /// create*. Without it the payload covered none of the create request's own
+    /// fields, so the same key with a different `title` silently returned 201
+    /// and the original track.
+    ///
+    /// Those three and no others, because each is a pure function of the
+    /// request body and none is movable by a later `PATCH`. `cwd` is
+    /// deliberately **excluded**: it is already in the payload and it *is*
+    /// moved by `PATCH /api/tracks/{id}`, which is the field the replay arm
+    /// specifically un-binds. `template_input`, `attach_folder`,
+    /// `fork_report_from` and `sort` are not bound either — a same-key retry
+    /// differing only in one of those returns 201 and silently ignores the
+    /// change, which is a stated KNOWN GAP. `area_id` needs no entry: it is
+    /// half of the binding row's primary key, so a different area is a
+    /// different binding.
+    ///
+    /// `skip_serializing_if` keeps every caller that does not set it — every
+    /// message-less create, and the four non-create producers — writing
+    /// byte-identical payload JSON, so adding this field cannot move an
+    /// existing `payload_hash` and turn an in-flight retry across a deploy into
+    /// a spurious 409. `#[serde(default)]` because
+    /// `abandoned_running_operations_on_boot` re-drives payloads written by
+    /// older binaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_request_sha256: Option<String>,
 }
 
 /// The user-supplied part of a lazily minted conversation card — an area chat
@@ -1665,6 +1696,7 @@ mod tests {
             create_card: None,
             first_message_sha256: None,
             first_message: None,
+            create_request_sha256: None,
         };
         let json = serde_json::to_value(&payload).expect("serialize");
         let object = json.as_object().expect("object");
@@ -2365,6 +2397,7 @@ mod tests {
             create_card: create_card.then(LazyMintCardSeed::default),
             first_message_sha256: None,
             first_message: None,
+            create_request_sha256: None,
         })
         .expect("payload serializes");
         adapter

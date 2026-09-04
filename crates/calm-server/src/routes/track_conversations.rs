@@ -185,6 +185,7 @@ pub(crate) async fn create_track_conversation(
         // a 409 instead of a silent replay. Hash, not text.
         first_message_sha256: Some(first_message_digest(&text)),
         first_message: None,
+        create_request_sha256: None,
     };
     let payload = serde_json::to_value(payload)?;
     let operation_key = retryable_operation_key(&s, &derived.operation_key).await?;

@@ -278,9 +278,34 @@ pub(super) struct ResumeFirstMessage {
     prior: PriorAttempt,
 }
 
+/// The three create-request fields bound into `payload_hash`, so that one
+/// `Idempotency-Key` replayed with a *different create* is a 409 rather than a
+/// silent 201 returning the original track.
+///
+/// Cloned at the call site right after the body is deserialized and **before**
+/// `admit_template` overwrites `template_id` with the roster's spelling. Using
+/// the admitted key instead would be nicer semantics under a future
+/// case-folding admission rule, but it requires running `admit_template`
+/// *before* the arm decision — i.e. validating on a resuming arm, which is the
+/// class of bug variant 3 is. Recorded as a KNOWN GAP instead.
+pub(super) struct CreateRequestShape {
+    pub title: String,
+    pub template_id: Option<String>,
+    pub recipe_id: Option<String>,
+}
+
 /// Everything a keyed `POST /api/tracks` needs to submit the operation.
 pub(super) struct FirstMessagePlan {
     text: String,
+    /// The digest of [`CreateRequestShape`], carried here so it reaches
+    /// `resume_prior_attempt` as well.
+    ///
+    /// It travels on the plan rather than as a `resume_prior_attempt`
+    /// parameter on purpose: that function's signature takes neither
+    /// `NewTrack` nor `CreateTrackOptions`, and that absence is what makes
+    /// "this arm cannot mint" compiler-enforced. A hash of three strings is
+    /// not a mint input, so the invariant survives.
+    create_request_sha256: String,
     /// The caller's `Idempotency-Key`, verbatim. On the `Mint` arm it is half
     /// of the binding row's primary key; on the resuming arms it is unused,
     /// because the binding has already been read.
@@ -330,6 +355,7 @@ pub(super) async fn plan_first_message(
     headers: &HeaderMap,
     first_message: Option<String>,
     area_id: &str,
+    shape: CreateRequestShape,
 ) -> Result<CreatePlan> {
     let Some(text) = first_message else {
         return Ok(CreatePlan::Legacy);
@@ -372,6 +398,11 @@ pub(super) async fn plan_first_message(
 
     let plan = FirstMessagePlan {
         text,
+        create_request_sha256: stable_payload_hash(&serde_json::json!({
+            "title": shape.title,
+            "template_id": shape.template_id,
+            "recipe_id": shape.recipe_id,
+        }))?,
         idempotency_key,
         operation_key: operation_key.clone(),
         _same_key_claim: same_key_claim,
@@ -452,6 +483,7 @@ pub(super) async fn create_track_with_first_message(
         report_card_id,
         cwd,
         plan.text,
+        plan.create_request_sha256,
         plan.operation_key,
     )
     .await?;
@@ -557,6 +589,7 @@ pub(super) async fn resume_prior_attempt(
         prior.report_card_id,
         cwd,
         plan.text,
+        plan.create_request_sha256,
         plan.operation_key,
     )
     .await?;
@@ -681,6 +714,7 @@ async fn start_planner_harness_with_first_message(
     // even if the workspace was repointed in between. See `PriorArm`.
     cwd: String,
     text: String,
+    create_request_sha256: String,
     operation_key: String,
 ) -> Result<()> {
     let request = PlannerHarnessStartOperationPayload {
@@ -703,6 +737,12 @@ async fn start_planner_harness_with_first_message(
         // first one.
         first_message_sha256: Some(first_message_digest(&text)),
         first_message: Some(text),
+        // #1384 — `title` / `template_id` / `recipe_id`, so the same key with a
+        // different create is a 409 instead of a 201 returning the original
+        // track. Every other producer of this payload leaves the field `None`,
+        // where `skip_serializing_if` drops the key and their payload bytes stay
+        // byte-identical to what older binaries wrote.
+        create_request_sha256: Some(create_request_sha256),
     };
     let op_payload = serde_json::to_value(&request)?;
     // Same hash shape as `start_planner_harness`, so the two paths cannot drift

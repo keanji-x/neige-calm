@@ -2237,3 +2237,128 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
     );
     b.shutdown_harnesses().await;
 }
+
+/// T-HASH-1 — the same key with a different **create** is a conflict.
+///
+/// Before #1384 the operation payload covered none of the create request's own
+/// fields, so this returned 201 and the ORIGINAL track: the caller's new title
+/// was silently discarded and nothing said so. `create_request_sha256` binds
+/// `title`, `template_id` and `recipe_id` into `payload_hash`, which `submit`
+/// compares before anything else runs.
+///
+/// Fails when `create_request_sha256` is dropped from the payload struct.
+#[tokio::test]
+async fn the_same_key_with_a_different_title_is_a_conflict() {
+    let b = boot().await;
+    let base = json!({
+        "area_id": b.area_id,
+        "title": "the original title",
+        "first_message": "ship the thing",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+    let (first, first_body) = b.post_create(Some("idem-title"), base.clone()).await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+
+    // Byte-identical except the title.
+    let mut edited = base.clone();
+    edited["title"] = json!("a completely different track");
+    let (second, second_body) = b.post_create(Some("idem-title"), edited).await;
+    assert_eq!(
+        second,
+        StatusCode::CONFLICT,
+        "the same key with a different create must not silently return the original track: \
+         body={second_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "and must mint nothing");
+
+    // The control: the SAME title still replays. Without it the assertion above
+    // would also be satisfied by a key that 409s on every repeat.
+    let (replay, replay_body) = b.post_create(Some("idem-title"), base).await;
+    assert_eq!(
+        replay,
+        StatusCode::CREATED,
+        "…while a byte-identical replay must still replay: body={replay_body}"
+    );
+    assert_eq!(first_body["id"], replay_body["id"]);
+
+    // And the other two bound fields, each on its own key so the two cases
+    // cannot mask each other.
+    let recipe_id = b.create_recipe("rollout flow", &recipe_body()).await;
+    let with_recipe = json!({
+        "area_id": b.area_id,
+        "title": "same title",
+        "recipe_id": recipe_id,
+        "first_message": "ship the thing",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+    let (created, body) = b.post_create(Some("idem-source"), with_recipe.clone()).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let mut without_recipe = with_recipe.clone();
+    without_recipe.as_object_mut().unwrap().remove("recipe_id");
+    let (conflict, body) = b.post_create(Some("idem-source"), without_recipe).await;
+    assert_eq!(
+        conflict,
+        StatusCode::CONFLICT,
+        "dropping `recipe_id` is a different create, not a replay: body={body}"
+    );
+    let mut with_template = with_recipe;
+    with_template.as_object_mut().unwrap().remove("recipe_id");
+    with_template["template_id"] = json!("small-change");
+    let (conflict, body) = b.post_create(Some("idem-source"), with_template).await;
+    assert_eq!(
+        conflict,
+        StatusCode::CONFLICT,
+        "…and so is naming a template instead: body={body}"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-HASH-2 — `skip_serializing_if` keeps every existing caller's
+/// `payload_hash` stable.
+///
+/// The four other producers of `PlannerHarnessStartOperationPayload` and every
+/// message-less create leave `create_request_sha256` as `None`. If the field
+/// serialized as `"create_request_sha256": null` instead of being omitted, their
+/// payload bytes would change, their `payload_hash` would move, and an
+/// operation submitted by an older binary and retried after a deploy would come
+/// back 409 `conflict` — a spurious "you changed your message" for a request
+/// nobody changed.
+///
+/// Companion of `a_create_without_a_first_message_is_unchanged`: that one pins
+/// the absence of `first_message`, this one the absence of the digest, and both
+/// on the same bytes.
+///
+/// Fails when `skip_serializing_if` is removed from the field.
+#[tokio::test]
+async fn a_message_less_create_writes_byte_identical_payload_json() {
+    let b = boot().await;
+    let (status, body) = b.create_track(None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let payloads = b.operation_payloads().await;
+    assert_eq!(payloads.len(), 1, "one start: {payloads:?}");
+    for payload in &payloads {
+        assert!(
+            payload.get("create_request_sha256").is_none(),
+            "the message-less payload must not carry the key at all — not even as null: {payload}"
+        );
+    }
+
+    // And the positive half, so this is not merely "the field is never written":
+    // a keyed create DOES carry it, which is what makes the 409 above reachable.
+    let (status, body) = b
+        .create_track(Some("idem-digest"), Some("ship the thing"))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let payloads = b.operation_payloads().await;
+    let keyed: Vec<&Value> = payloads
+        .iter()
+        .filter(|p| p.get("first_message").is_some())
+        .collect();
+    assert_eq!(keyed.len(), 1, "one keyed start: {payloads:?}");
+    assert!(
+        keyed[0]["create_request_sha256"].is_string(),
+        "a keyed create must carry the digest, or the conflict above could never fire: {:?}",
+        keyed[0]
+    );
+    b.shutdown_harnesses().await;
+}

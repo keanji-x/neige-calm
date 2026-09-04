@@ -702,6 +702,7 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         create_card: None,
         first_message_sha256: None,
         first_message: None,
+        create_request_sha256: None,
     })?;
     run_planner_card_operation(s, "planner-harness-start", payload).await
 }
