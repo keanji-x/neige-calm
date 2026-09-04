@@ -800,8 +800,11 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
           existing === undefined ? created : newestArea(existing, created),
         ]);
       });
-      void client.invalidateQueries({ queryKey: queryKeys.areas() });
     },
+    // A lost response does not prove the POST rolled back. Reconcile on both
+    // success and failure so retrying the still-open dialog cannot create a
+    // duplicate Area after an already-committed first request.
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   const update = useMutation({
     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>

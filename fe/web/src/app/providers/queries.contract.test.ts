@@ -213,6 +213,23 @@ describe('delete mutation wiring', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
   });
 
+  it('invalidates Areas after a failed POST that may already have committed', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const transport: ApiTransportPort = {
+      send: () => Promise.reject(new Error('POST response lost')),
+    };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await expect(result.current.create({ name: 'Reading', color: '#5B8DEF' }))
+      .rejects.toBeInstanceOf(ApiError);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+  });
+
   it('does not let a delayed Area PATCH response overwrite a newer event row', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const original = toArea(areaWireSchema.parse(userArea));

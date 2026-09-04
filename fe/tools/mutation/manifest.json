@@ -985,7 +985,7 @@
       "oracle:INV-APP-115"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -797,7 +797,7 @@\n         const existing = current.find((area) => area.id === created.id);\n         return sortedAreas([\n           ...current.filter((area) => area.id !== created.id),\n-          existing === undefined ? created : newestArea(existing, created),\n+          existing === undefined ? created : created,\n         ]);\n       });\n       void client.invalidateQueries({ queryKey: queryKeys.areas() });\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -797,7 +797,7 @@\n         const existing = current.find((area) => area.id === created.id);\n         return sortedAreas([\n           ...current.filter((area) => area.id !== created.id),\n-          existing === undefined ? created : newestArea(existing, created),\n+          existing === undefined ? created : created,\n         ]);\n       });\n     },\n",
     "expected_red": [
       "delete mutation wiring does not let a delayed Area POST response overwrite a newer event row"
     ],
@@ -993,6 +993,36 @@
       "web/src/app/providers/queries.contract.test.ts"
     ],
     "why_more_than_one": "The held-response witness isolates the same-id create-response reconciliation branch."
+  },
+  {
+    "mutation_id": "app-area-create-failure-skips-reconciliation",
+    "defends": [
+      "oracle:INV-APP-116"
+    ],
+    "target": "web/src/app/providers/queries.ts",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -804,7 +804,6 @@\n     // A lost response does not prove the POST rolled back. Reconcile on both\n     // success and failure so retrying the still-open dialog cannot create a\n     // duplicate Area after an already-committed first request.\n-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>\n",
+    "expected_red": [
+      "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/queries.contract.test.ts"
+    ],
+    "why_more_than_one": "The failed-response witness observes reconciliation independently of the successful write-through path."
+  },
+  {
+    "mutation_id": "app-area-update-failure-skips-reconciliation",
+    "defends": [
+      "oracle:INV-APP-116"
+    ],
+    "target": "web/src/app/providers/queries.ts",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -824,7 +824,6 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
+    "expected_red": [
+      "delete mutation wiring invalidates Areas after a failed PATCH"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/queries.contract.test.ts"
+    ],
+    "why_more_than_one": "The PATCH failure witness separately pins the update mutation's onSettled branch."
   },
   {
     "mutation_id": "events-derived-kind-list-drops-gate-result",

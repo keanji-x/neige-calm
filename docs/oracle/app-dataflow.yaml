@@ -2128,8 +2128,26 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:791-820
-  authoritative_test: fe/core/domain/area.test.ts:78-84; fe/web/src/app/providers/queries.contract.test.ts:285-323
+  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:791-827
+  authoritative_test: fe/core/domain/area.test.ts:78-84; fe/web/src/app/providers/queries.contract.test.ts:233-278,302-339
+  owner_slice: app/providers
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-116
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    Area 的 POST 与 PATCH 在成功或失败后都必须 invalidate `queryKeys.areas()`；transport
+    failure 不能被当作服务端未提交的证明。
+  why: >
+    响应可能在服务端提交后丢失。若失败分支不重新拉取，创建对话框仍显示错误并允许重试，
+    从而创建第二个 Area；更新失败也会让默认 template/cwd 长期停留在旧 cache 中。
+  source: fe/web/src/app/providers/queries.ts:791-827
+  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:200-231
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
