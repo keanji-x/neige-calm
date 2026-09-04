@@ -25,15 +25,34 @@
 //! nothing asserting about the pair. The two cases at the bottom of this file
 //! cover it in both directions — an existing recipe and a missing one.
 //!
-//! # What this slice deliberately does NOT promise
+//! # #1384 — safe retry
 //!
-//! Retry, replay and idempotency are **not** here, and their absence is a
-//! decision rather than a gap. A create is not retryable today (`POST
-//! /api/tracks` has never been), and making it retryable needs the key→track
-//! binding to be persisted in the same transaction that mints the id — a
-//! migration, and its own slice. So a client that repeats a create carrying a
-//! `first_message` gets a second track, exactly as a client repeating any
-//! other create always has, and nothing in this file asserts otherwise.
+//! The second half. A create carrying a `first_message` now requires an
+//! `Idempotency-Key`, and the key→track binding is persisted **in the same
+//! transaction that mints the id** (`track_create_idempotency`). The four
+//! variants that block make up the middle of this file:
+//!
+//! * V1 — a replay returns the same track and does not re-deliver;
+//! * V2 — a success that landed on a `#N` retry key still replays;
+//! * V3 — the arm is decided before the create path validates, so a replay
+//!   survives its attached directory being deleted;
+//! * V4 — a daemon outage adopts the track it already minted, instead of
+//!   minting one per retry.
+//!
+//! # What is STILL not promised, and is asserted rather than assumed
+//!
+//! A **message-less** `POST /api/tracks` remains non-idempotent: the header is
+//! not read on that path, no binding row is written, and a retry mints a second
+//! track exactly as it always has
+//! (`a_create_without_a_first_message_is_unchanged`,
+//! `a_message_less_create_writes_no_binding_row`).
+//!
+//! Two further arms are **not covered here, and no test pretends to cover
+//! them**: the in-flight duplicate and the cross-process primary-key race.
+//! `plan_first_message` takes an in-process claim before either lookup and
+//! holds it through the mint, so two same-key creates inside one process
+//! serialize and the second takes the resuming arm without ever reaching the
+//! primary key. Both need a cross-instance harness.
 
 #![cfg(unix)]
 
@@ -64,11 +83,53 @@ struct Boot {
     state: AppState,
     area_id: String,
     repo: Arc<SqlxRepo>,
-    #[allow(dead_code)]
     tmp: TempDir,
 }
 
+/// A real git repository the user owns, the shape `PATCH /api/tracks/{id}`
+/// accepts as an attached workspace. Same recipe as
+/// `cases/track_workspace_repoint.rs::user_repo`.
+fn user_repo(at: &std::path::Path) -> PathBuf {
+    fn git(at: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} in {at:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    std::fs::create_dir_all(at).unwrap();
+    git(at, &["init", "-b", "main"]);
+    git(at, &["config", "user.name", "fixture"]);
+    git(at, &["config", "user.email", "fixture@example.com"]);
+    git(at, &["config", "gc.auto", "0"]);
+    git(at, &["config", "maintenance.auto", "false"]);
+    std::fs::write(at.join("README.md"), b"the user's own work\n").unwrap();
+    git(at, &["add", "-A"]);
+    git(at, &["commit", "-q", "--no-verify", "-m", "user commit"]);
+    at.to_path_buf()
+}
+
 async fn boot() -> Boot {
+    boot_with_daemon(true).await
+}
+
+/// Same fixture, but with the shared codex app-server **not running** —
+/// `SharedCodexAppServer::is_running()` is false, which is what
+/// `PlannerHarnessStartAdapter::validate` refuses on. This is the production
+/// state during a daemon outage / restart window, and it is the only way to
+/// reach variant 4: with a fake installed, `is_running()` short-circuits to
+/// `true` and the outage is unconstructible.
+async fn boot_without_daemon() -> Boot {
+    boot_with_daemon(false).await
+}
+
+async fn boot_with_daemon(daemon_running: bool) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
@@ -105,9 +166,11 @@ async fn boot() -> Boot {
         Some(tracks),
     )
     .with_workspace_root(tmp.path().join("workspaces"))
-    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-        repo_dyn, None,
-    ));
+    .with_shared_codex_appserver(if daemon_running {
+        SharedCodexAppServer::new_fake_running_with_pending(repo_dyn, None)
+    } else {
+        SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
+    });
     let app = routes::router()
         .layer(Extension(Principal {
             user_id: "owner".into(),
@@ -129,10 +192,14 @@ async fn boot() -> Boot {
 }
 
 impl Boot {
-    /// `POST /api/tracks`. `first_message` is optional so one helper covers the
-    /// legacy shape and the #1299 shape — the point of several tests below is
-    /// that omitting it changes nothing.
-    async fn create_track(&self, first_message: Option<&str>) -> (StatusCode, Value) {
+    /// `POST /api/tracks`. `idempotency_key` and `first_message` are both
+    /// optional so one helper covers the legacy shape and the keyed shape — the
+    /// point of several tests below is that omitting them changes nothing.
+    async fn create_track(
+        &self,
+        idempotency_key: Option<&str>,
+        first_message: Option<&str>,
+    ) -> (StatusCode, Value) {
         let mut body = json!({
             "area_id": self.area_id,
             "title": "",
@@ -141,17 +208,71 @@ impl Boot {
         if let Some(text) = first_message {
             body["first_message"] = json!(text);
         }
-        self.post_create(body).await
+        self.post_create(idempotency_key, body).await
     }
 
-    async fn post_create(&self, body: Value) -> (StatusCode, Value) {
+    /// `POST /api/tracks` with an **explicit** `cwd`, i.e. the attached branch.
+    ///
+    /// The attached branch is the one whose create-path validation reads the
+    /// disk (`validate_attached_workspace`), so it is the only shape that can
+    /// show the ordering bug: the same bytes stop being acceptable the moment
+    /// the directory goes away, even though the replay mints nothing.
+    async fn create_track_at(
+        &self,
+        idempotency_key: Option<&str>,
+        first_message: Option<&str>,
+        cwd: &std::path::Path,
+    ) -> (StatusCode, Value) {
+        let mut body = json!({
+            "area_id": self.area_id,
+            "title": "",
+            "cwd": cwd.to_string_lossy(),
+            "attach_folder": true,
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        });
+        if let Some(text) = first_message {
+            body["first_message"] = json!(text);
+        }
+        self.post_create(idempotency_key, body).await
+    }
+
+    async fn post_create(&self, idempotency_key: Option<&str>, body: Value) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/tracks")
+            .header("content-type", "application/json");
+        if let Some(key) = idempotency_key {
+            builder = builder.header("idempotency-key", key);
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// `PATCH /api/tracks/{id}` — the production route that repoints a managed
+    /// workspace at a repository the user owns (#1147 S3).
+    async fn repoint_to(&self, track_id: &str, path: &std::path::Path) -> (StatusCode, Value) {
+        let body = json!({"workspace": {
+            "kind": "attached",
+            "path": path.to_string_lossy(),
+            "attach_folder": true,
+        }});
         let response = self
             .app
             .clone()
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri("/api/tracks")
+                    .method("PATCH")
+                    .uri(format!("/api/tracks/{track_id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -164,6 +285,42 @@ impl Boot {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    async fn workspace_row(&self, track_id: &str) -> (String, String) {
+        sqlx::query_as("SELECT workspace_kind, workspace_path FROM tracks WHERE id=?1")
+            .bind(track_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The `cwd` of every `planner-harness-start` payload that carries `needle`
+    /// as its `first_message`, oldest first.
+    ///
+    /// Filtered by `first_message` on purpose: the re-point route submits a
+    /// `planner-harness-start` of its own (with the new cwd and
+    /// `force_new_thread`), so "the last payload" would answer about the wrong
+    /// operation.
+    async fn first_message_payload_cwds(&self, needle: &str) -> Vec<String> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start' \
+             ORDER BY created_at_ms, id",
+        )
+        .fetch_all(self.repo.pool())
+        .await
+        .unwrap();
+        rows.into_iter()
+            .filter_map(|row| serde_json::from_str::<Value>(&row).ok())
+            .filter(|payload| payload["first_message"].as_str() == Some(needle))
+            .map(|payload| payload["cwd"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// #1384 — how many `(area, Idempotency-Key)` → track bindings exist.
+    async fn binding_count(&self) -> i64 {
+        self.count("SELECT COUNT(*) FROM track_create_idempotency")
+            .await
     }
 
     async fn count(&self, sql: &str) -> i64 {
@@ -365,7 +522,7 @@ impl Boot {
 #[tokio::test]
 async fn the_first_message_reaches_the_agent_exactly_once() {
     let b = boot().await;
-    let (status, body) = b.create_track(Some("refactor the parser")).await;
+    let (status, body) = b.create_track(Some("idem-headline"), Some("refactor the parser")).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     // "Exactly once", written so it actually says that. `copies_in_harness`
@@ -404,7 +561,7 @@ async fn the_first_message_reaches_the_agent_exactly_once() {
 #[tokio::test]
 async fn the_first_message_is_a_user_message_attributed_to_the_human() {
     let b = boot().await;
-    let (status, body) = b.create_track(Some("please rename the track")).await;
+    let (status, body) = b.create_track(Some("idem-attrib"), Some("please rename the track")).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let turns = b.started_turn_text("User says:").await;
@@ -430,24 +587,35 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
 /// The largest regression surface in this slice: a create with **no**
 /// `first_message` is unchanged.
 ///
+/// The header is not merely optional there, it is **not read at all** — so a
+/// caller that sends a duplicate key twice still gets two tracks. That is a
+/// KNOWN GAP stated in the module header, not an accident, and asserting it
+/// here is what keeps someone from "fixing" it without reading why.
+///
 /// The operation payload must stay byte-identical in shape — no
 /// `first_message` key at all, because `skip_serializing_if` is what keeps an
 /// in-flight retry across a deploy from becoming a spurious payload-hash 409.
 #[tokio::test]
 async fn a_create_without_a_first_message_is_unchanged() {
     let b = boot().await;
-    let (first, body) = b.create_track(None).await;
+    let (first, body) = b.create_track(None, None).await;
     assert_eq!(first, StatusCode::CREATED, "body={body}");
-    let (second, _) = b.create_track(None).await;
+    let (second, _) = b.create_track(None, None).await;
     assert_eq!(second, StatusCode::CREATED);
-    assert_eq!(b.track_count().await, 2);
+    // Same key twice, no first message: the header is ignored, so these are two
+    // more independent tracks.
+    let (third, _) = b.create_track(Some("ignored-key"), None).await;
+    let (fourth, _) = b.create_track(Some("ignored-key"), None).await;
+    assert_eq!(third, StatusCode::CREATED);
+    assert_eq!(fourth, StatusCode::CREATED);
+    assert_eq!(b.track_count().await, 4);
     assert_eq!(
         b.user_message_event_count().await,
         0,
         "nothing was typed, so nothing may be enqueued"
     );
     let payloads = b.operation_payloads().await;
-    assert_eq!(payloads.len(), 2, "one start per create: {payloads:?}");
+    assert_eq!(payloads.len(), 4, "one start per create: {payloads:?}");
     for payload in payloads {
         assert!(
             payload.get("first_message").is_none(),
@@ -470,13 +638,13 @@ async fn a_create_without_a_first_message_is_unchanged() {
 #[tokio::test]
 async fn a_rejected_first_message_leaves_no_track_and_no_cards() {
     let b = boot().await;
-    let (blank, body) = b.create_track(Some("   \n  ")).await;
+    let (blank, body) = b.create_track(Some("idem-blank"), Some("   \n  ")).await;
     assert_eq!(blank, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(b.track_count().await, 0);
     assert_eq!(b.card_count().await, 0);
 
     let too_long = "x".repeat(32_769);
-    let (over, body) = b.create_track(Some(&too_long)).await;
+    let (over, body) = b.create_track(Some("idem-long"), Some(&too_long)).await;
     assert_eq!(over, StatusCode::BAD_REQUEST, "body={body}");
     assert_eq!(b.track_count().await, 0);
     assert_eq!(b.card_count().await, 0);
@@ -484,7 +652,7 @@ async fn a_rejected_first_message_leaves_no_track_and_no_cards() {
     // 32768 characters is the ceiling, counted in CHARACTERS not bytes — a
     // multi-byte string at the limit must be accepted.
     let at_limit = "é".repeat(32_768);
-    let (ok, body) = b.create_track(Some(&at_limit)).await;
+    let (ok, body) = b.create_track(Some("idem-limit"), Some(&at_limit)).await;
     assert_eq!(ok, StatusCode::CREATED, "body={body}");
     b.shutdown_harnesses().await;
 }
@@ -513,7 +681,7 @@ async fn a_template_create_delivers_the_first_message() {
     // count cannot be satisfied by the seeded report travelling into the turn.
     let needle = "check the p99 on the way out";
     let (status, body) = b
-        .post_create(json!({
+        .post_create(Some("idem-template"), json!({
             "area_id": b.area_id,
             "title": "",
             "template_id": "small-change",
@@ -620,7 +788,7 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
     // cannot be satisfied by the instantiated report travelling into the turn.
     let needle = "watch the p99 while it stages";
     let (status, body) = b
-        .post_create(json!({
+        .post_create(Some("idem-recipe"), json!({
             "area_id": b.area_id,
             "title": "",
             "recipe_id": recipe_id,
@@ -709,7 +877,7 @@ async fn a_first_message_is_delivered_once_on_a_recipe_create() {
 async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
     let b = boot().await;
     let (status, body) = b
-        .post_create(json!({
+        .post_create(Some("idem-missing-recipe"), json!({
             "area_id": b.area_id,
             "title": "",
             "recipe_id": "recipe-does-not-exist",
@@ -793,7 +961,7 @@ async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
 
-    let (status, body) = b.create_track(Some("do not lose this sentence")).await;
+    let (status, body) = b.create_track(Some("idem-failed-start"), Some("do not lose this sentence")).await;
     assert!(
         status.is_server_error(),
         "a create that promised to deliver a message must not answer 2xx when the harness that \
@@ -844,7 +1012,7 @@ async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() 
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
 
-    let (status, body) = b.create_track(None).await;
+    let (status, body) = b.create_track(None, None).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -871,10 +1039,26 @@ async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() 
 // "Failing after the spawn means the message is already delivered" is a
 // consequence of today's driver semantics (spawn is the side effect, the
 // phase write only records it, and there is no compensation on this path), not
-// a property anyone promised. Teaching the endpoint to answer what actually
-// happened — a persisted delivery marker read back on the failure path — is
-// #1384. If #1384 lands, THIS TEST IS EXPECTED TO CHANGE; it is here to keep
-// the wording honest in the meantime, not to freeze the behaviour.
+// a property anyone promised.
+//
+// #1384 UPDATE — the unknown survived, and this is why.
+//
+// The header used to say this test was expected to change once #1384 taught the
+// endpoint to answer what actually happened. It cannot, and the reason is not
+// effort: `harness.user_message.enqueued` proves only an *attempt*. `prepare_tx`
+// seeds the observation and writes that audit row in a transaction that commits
+// at `TxCommitted`, the later `AppServerInteract` can still fail, `events` is
+// append-only, and compensation only marks the runtime failed. There is no other
+// durable record of the turn leaving, so no read the handler can perform answers
+// the question — and a *negative* claim would be a lie precisely on this branch.
+//
+// What #1384 did add is the actionable half, and only for the two things it can
+// prove: a retry under the same `Idempotency-Key` creates no second track (the
+// binding row) and delivers no second copy (`retryable_operation_key` does not
+// step over `Stuck`, so the retry resolves to this same operation and replays
+// the recorded failure). The assertions below now pin both, and pin that the
+// text still refuses to claim the track is usable — a replay does not repair an
+// attached workspace whose directory was deleted.
 // ---------------------------------------------------------------------------
 
 /// A start that fails *after* the spawn has already delivered the message —
@@ -896,7 +1080,7 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
     b.reject_spawn_succeeded().await;
 
     let needle = "this sentence is already on its way";
-    let (status, body) = b.create_track(Some(needle)).await;
+    let (status, body) = b.create_track(Some("idem-stuck"), Some(needle)).await;
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -928,6 +1112,1123 @@ async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
         !text.contains("send the message from the track itself"),
         "…nor instruct an unconditional resend, which duplicates it on this path: {text}"
     );
+    // #1384 — the two properties the server CAN prove, named in the text. Both
+    // are new: before the binding row existed, a retry under this key minted a
+    // second track, so neither sentence would have been true.
+    assert!(
+        text.contains("no second track"),
+        "the 500 must say that retrying under the same key mints no second track — that is what \
+         #1384 bought and it is the only actionable thing here: {text}"
+    );
+    assert!(
+        text.contains("no second copy"),
+        "…and that it delivers no second copy, which is the half a user is actually afraid of: \
+         {text}"
+    );
+    // And the claim it must NOT make, now that the create IS retryable: that the
+    // track is fine. A replay does not repair an attached workspace whose
+    // directory was deleted, so "retryable" is not "healthy".
+    assert!(
+        text.contains("does not assert that the track is usable"),
+        "the 500 must not let 'safe to retry' be read as 'the track is fine': {text}"
+    );
+    assert!(
+        !text.contains("the create is not retryable"),
+        "…and must drop the claim #1384 made false: {text}"
+    );
 
+    b.shutdown_harnesses().await;
+}
+
+// ===========================================================================
+// #1384 — safe retry.
+//
+// Everything below this line is about ONE `Idempotency-Key` producing at most
+// one track. The four variants the issue names are T-V1…T-V4; the rest pin the
+// pieces they rest on (the arm table's fail-closed cell, the `Mint`-only
+// binding write, `Resume`'s re-materialization and the poisoned-workspace
+// trade).
+// ===========================================================================
+
+/// `Idempotency-Key` is required exactly when `first_message` is present.
+///
+/// Fails when the header is made optional on this branch — a `first_message`
+/// with no key has no dedup key at all, so a retried create would mint a second
+/// track and deliver the instruction twice.
+#[tokio::test]
+async fn a_first_message_without_an_idempotency_key_is_rejected_before_any_mint() {
+    let b = boot().await;
+    let (status, body) = b.create_track(None, Some("no key, no track")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(b.track_count().await, 0, "no track may survive the refusal");
+    assert_eq!(b.card_count().await, 0, "and no cards either");
+    assert_eq!(b.binding_count().await, 0);
+}
+
+/// T-LEGACY-1 — the binding row is written on the **`Mint` arm only**.
+///
+/// Sent WITH an `Idempotency-Key` and WITHOUT a `first_message`, which is the
+/// only shape that can tell the two conditions apart: "the header was present"
+/// and "the plan was `Mint`". `plan_first_message` returns `Legacy` before the
+/// header is read, so the key here is inert.
+///
+/// Writing it on `Legacy` too would be actively wrong rather than merely
+/// wasteful: `Legacy` has already returned from the dispatch, so there is no
+/// resuming arm for a primary-key collision to map onto, and the second create
+/// below — a working 201 today — would become an error.
+///
+/// Fails when the `Mint`-arm condition on the binding write is removed.
+#[tokio::test]
+async fn a_message_less_create_writes_no_binding_row() {
+    let b = boot().await;
+    let (first, body) = b.create_track(Some("idem-legacy"), None).await;
+    assert_eq!(first, StatusCode::CREATED, "body={body}");
+    assert_eq!(
+        b.binding_count().await,
+        0,
+        "a message-less create must write no binding row even when the caller sends a key — the \
+         header is not read on that path at all"
+    );
+    let (second, body) = b.create_track(Some("idem-legacy"), None).await;
+    assert_eq!(
+        second,
+        StatusCode::CREATED,
+        "…and the same key again must still be a plain 201, not a collision: body={body}"
+    );
+    assert_eq!(
+        b.track_count().await,
+        2,
+        "a message-less create is deliberately still NOT idempotent (KNOWN GAP 1)"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-V1 — replaying a successful create returns the SAME track and does not
+/// re-deliver the message.
+///
+/// Fails when the binding lookup in `plan_first_message` is made to always
+/// answer `None`: the replay then mints a second track.
+#[tokio::test]
+async fn replaying_a_successful_create_returns_the_same_track_and_delivers_once() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    assert_eq!(b.binding_count().await, 1, "the mint wrote its binding");
+    // Give the first delivery its own budget before the replay, so the "no
+    // second copy" check below burns its full deadline on the question it is
+    // actually asking instead of racing the first enqueue.
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 1).await,
+        1,
+        "premise: the create delivered the sentence once"
+    );
+    let (second, second_body) = b
+        .create_track(Some("idem-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(second, StatusCode::CREATED, "body={second_body}");
+
+    assert_eq!(
+        first_body["id"], second_body["id"],
+        "the same key must return the same track"
+    );
+    assert_eq!(b.track_count().await, 1, "and must not mint a second one");
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 2).await,
+        1,
+        "the replay must not deliver the instruction a second time"
+    );
+    assert_eq!(b.user_message_event_count().await, 1);
+    b.shutdown_harnesses().await;
+}
+
+/// T-V1b — arm (a) with the one piece of server state that can move underneath
+/// a replay: the track's workspace.
+///
+/// `PATCH /api/tracks/{id}` repoints a managed workspace at a repository the
+/// user owns, which changes `track.workspace.path`. That path travels in the
+/// `planner-harness-start` payload, and `submit` compares `payload_hash` before
+/// anything else — so a replay that rebuilt the payload from *current* state
+/// would hash differently and be answered 409 `conflict` for a request the
+/// client sent byte for byte identically. Permanently, and indistinguishably
+/// from a genuine different-body conflict.
+///
+/// Fails when the `PriorArm::Replay` branch takes `track.workspace.path`
+/// instead of the chosen operation's own `cwd`.
+#[tokio::test]
+async fn a_replay_survives_the_track_being_repointed_in_between() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-repoint-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let track_id = first_body["id"].as_str().unwrap().to_string();
+    let (kind_before, managed_path) = b.workspace_row(&track_id).await;
+    assert_eq!(
+        kind_before, "managed",
+        "premise: the create made it managed"
+    );
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 1).await,
+        1,
+        "premise: the create delivered the sentence once"
+    );
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed, or this test proves nothing: body={patch_body}"
+    );
+    let (kind_after, path_after) = b.workspace_row(&track_id).await;
+    assert_eq!(kind_after, "attached");
+    assert_eq!(
+        PathBuf::from(&path_after),
+        target,
+        "premise: the track's cwd really moved"
+    );
+    assert_ne!(path_after, managed_path);
+
+    let (second, second_body) = b
+        .create_track(Some("idem-repoint-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        second,
+        StatusCode::CREATED,
+        "a byte-identical replay must still replay after the workspace moved — the 409 here would \
+         say the caller changed its message when it did not: body={second_body}"
+    );
+    assert_eq!(
+        first_body["id"], second_body["id"],
+        "and it must be the same track"
+    );
+    assert_eq!(b.track_count().await, 1, "no second track");
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 2).await,
+        1,
+        "and the replay must not deliver the instruction a second time"
+    );
+    // The mechanism, not just the status: the replayed payload carries the
+    // predecessor's cwd, which is what makes the hashes match.
+    assert_eq!(
+        b.first_message_payload_cwds("ship the thing").await,
+        vec![managed_path.clone()],
+        "the replay must resubmit the chosen operation's payload, cwd included"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The counterweight to the case above, resolving the **other** way.
+///
+/// A genuine retry really executes: it starts a harness. Replaying the failed
+/// attempt's `cwd` would start it in a managed directory the re-point has since
+/// moved into the trash. Nothing forces it to be byte-identical either — the
+/// retry runs under a fresh `#N` key that no earlier payload hash is bound to.
+///
+/// This test must stay GREEN when the replay fix is mutated away, which is what
+/// proves the fix is scoped to the replay arm rather than applied to both.
+#[tokio::test]
+async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
+    let b = boot().await;
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b
+        .create_track(Some("idem-repoint-retry"), Some("second time lucky"))
+        .await;
+    assert!(
+        !failed.is_success(),
+        "the injected thread/start failure must surface: status={failed} body={failed_body}"
+    );
+    let track_id: String = sqlx::query_scalar("SELECT id FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let (_, managed_path) = b.workspace_row(&track_id).await;
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed: body={patch_body}"
+    );
+    let (_, path_after) = b.workspace_row(&track_id).await;
+    assert_eq!(PathBuf::from(&path_after), target);
+
+    let (retry, retry_body) = b
+        .create_track(Some("idem-repoint-retry"), Some("second time lucky"))
+        .await;
+    assert_eq!(
+        retry,
+        StatusCode::CREATED,
+        "the same key must retry, not replay the failure: body={retry_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "the retry reuses the track");
+    assert_eq!(
+        b.copies_in_harness("second time lucky", 1).await,
+        1,
+        "the retry delivers the message the failed attempt never did"
+    );
+    let cwds = b.first_message_payload_cwds("second time lucky").await;
+    assert_eq!(
+        cwds.len(),
+        2,
+        "one payload per attempt — the failed one and the retry: {cwds:?}"
+    );
+    assert_eq!(cwds[0], managed_path, "the failed attempt saw the old cwd");
+    assert_eq!(
+        cwds[1], path_after,
+        "but the retry really executes, so it must start in the workspace the track has NOW — the \
+         old managed directory has been recycled out from under it"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-V2 — the success did not happen on the base key, it happened on `#2`, and
+/// replaying it must still be a replay.
+///
+/// 1. the base attempt terminally fails;
+/// 2. the same key succeeds under `#2`, whose payload froze the *managed* cwd;
+/// 3. `PATCH /api/tracks/{id}` repoints the track;
+/// 4. the create request is replayed byte for byte.
+///
+/// `retryable_operation_key` walks past the `Failed` base and stops on `#2`
+/// because it is not `Failed` — so the chosen key already holds a **succeeded**
+/// operation, i.e. this is a replay. A criterion that only asks "does the chosen
+/// key carry a `#N` suffix" answers `GenuineRetry` here, rebuilds the payload
+/// from the repointed workspace, and `submit` answers 409 for a byte-identical
+/// request.
+#[tokio::test]
+async fn a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint() {
+    let b = boot().await;
+    // (1) burn the base key.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b
+        .create_track(Some("idem-hash-replay"), Some("ship the thing"))
+        .await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected failure must surface: status={failed} body={failed_body}"
+    );
+
+    // (2) the success lands on `#2`.
+    let (created, created_body) = b
+        .create_track(Some("idem-hash-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        created,
+        StatusCode::CREATED,
+        "premise: the retry must succeed: body={created_body}"
+    );
+    let track_id = created_body["id"].as_str().unwrap().to_string();
+    let (_, managed_path) = b.workspace_row(&track_id).await;
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 1).await,
+        1,
+        "premise: the successful `#2` attempt delivered the sentence once"
+    );
+
+    // (3) move the workspace underneath it.
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed, or this test proves nothing: body={patch_body}"
+    );
+    let (_, path_after) = b.workspace_row(&track_id).await;
+    assert_ne!(path_after, managed_path, "premise: the cwd really moved");
+
+    // (4) byte-identical replay.
+    let (replay, replay_body) = b
+        .create_track(Some("idem-hash-replay"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        replay,
+        StatusCode::CREATED,
+        "the chosen key `#2` already holds a SUCCEEDED operation, so this is a replay and must \
+         resubmit that operation's payload — a 409 here tells a byte-identical caller it changed \
+         its message: body={replay_body}"
+    );
+    assert_eq!(
+        created_body["id"], replay_body["id"],
+        "and it must be the same track"
+    );
+    assert_eq!(b.track_count().await, 1, "no second track");
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 2).await,
+        1,
+        "and the replay must not deliver the instruction a second time"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-HASH-1 / arm (e) — the same key with a different message is a conflict,
+/// not a silent replay of the first sentence.
+#[tokio::test]
+async fn the_same_key_with_a_different_first_message_is_a_conflict() {
+    let b = boot().await;
+    let (first, body) = b
+        .create_track(Some("idem-edit"), Some("original draft"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={body}");
+
+    let (second, body) = b
+        .create_track(Some("idem-edit"), Some("edited draft"))
+        .await;
+    assert_eq!(second, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(b.track_count().await, 1, "the rejected edit minted nothing");
+    assert_eq!(
+        b.copies_in_harness("edited draft", 1).await,
+        0,
+        "and delivered nothing"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// Arm (b) — after a terminally failed attempt the same key genuinely RETRIES:
+/// it does not replay the recorded failure, and it does not mint a second track.
+#[tokio::test]
+async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
+    let b = boot().await;
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b
+        .create_track(Some("idem-retry"), Some("second time lucky"))
+        .await;
+    assert!(
+        !failed.is_success(),
+        "the injected thread/start failure must surface: status={failed} body={failed_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+
+    let (retry, retry_body) = b
+        .create_track(Some("idem-retry"), Some("second time lucky"))
+        .await;
+    assert_eq!(
+        retry,
+        StatusCode::CREATED,
+        "the same key must retry, not replay the failure: body={retry_body}"
+    );
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "the retry must reuse the track, not mint a second one"
+    );
+    assert_eq!(
+        b.copies_in_harness("second time lucky", 1).await,
+        1,
+        "premise: the retry delivers the message the failed attempt never did"
+    );
+    assert_eq!(
+        b.copies_in_harness("second time lucky", 2).await,
+        1,
+        "…exactly once: the failed attempt's copy never reached the harness, and the retry \
+         delivered one"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The seam between arm (b) and arm (e), measured.
+///
+/// Arm (e) ("same key, different message ⇒ 409") is not unconditional. The 409
+/// comes from the payload hash bound to a *specific* operation key, and a
+/// terminal failure moves the retry to a fresh `#N` key that no hash is bound
+/// to. So an edited sentence resent after a failure is accepted — and the
+/// interesting half is what happens to the *abandoned* draft: it must not be
+/// delivered alongside the edit.
+#[tokio::test]
+async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
+    let b = boot().await;
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b
+        .create_track(
+            Some("idem-edit-after-failure"),
+            Some("the draft that never left"),
+        )
+        .await;
+    assert!(
+        !failed.is_success(),
+        "the injected thread/start failure must surface: status={failed} body={failed_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+
+    let (retry, retry_body) = b
+        .create_track(
+            Some("idem-edit-after-failure"),
+            Some("the sentence I actually meant"),
+        )
+        .await;
+    assert_eq!(
+        retry,
+        StatusCode::CREATED,
+        "after a terminal failure the same key runs under a fresh `#N` operation key, which no \
+         earlier payload hash is bound to — so the edited message is a retry, not a 409: \
+         body={retry_body}"
+    );
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "and it still lands on the track the failed attempt created"
+    );
+    assert_eq!(
+        b.copies_in_harness("the sentence I actually meant", 1)
+            .await,
+        1,
+        "the edited sentence is the one that gets delivered"
+    );
+    assert_eq!(
+        b.copies_in_harness("the draft that never left", 1).await,
+        0,
+        "and the abandoned draft is never delivered — the retry replaces it, it does not \
+         accompany it"
+    );
+    // TWO audit rows for ONE delivery, and that is the current truth rather than
+    // an oversight: the failed attempt's `prepare_tx` committed — the enqueue and
+    // its `harness.user_message.enqueued` row share that transaction — and only
+    // the thread start afterwards failed. Compensation aborts the harness task
+    // and fails the runtime; it does not roll back a committed event row. So "an
+    // audit row exists" does NOT imply "the message was delivered", which is the
+    // same fact that keeps the 500's wording uncertain.
+    assert_eq!(
+        b.user_message_event_count().await,
+        2,
+        "one delivered message, but two audit rows — the failed attempt's row survives its \
+         compensation"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-EXH-1 / arm (d) — 64 terminally failed attempts exhaust the key, and the
+/// 65th says so with its own code rather than a generic 500.
+///
+/// Driven through the real endpoint 64 times rather than by hand-seeding
+/// `operations` rows: the `#N` chain, the payload the route writes and the
+/// track-reuse branch all have to hold for the count to be reached, and a
+/// seeded row would prove none of that.
+#[tokio::test]
+async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
+    let b = boot().await;
+    for attempt in 1..=64 {
+        b.state
+            .shared_codex_appserver
+            .fail_next_thread_start_for_test();
+        let (status, body) = b
+            .create_track(Some("idem-burn"), Some("burn this key"))
+            .await;
+        assert!(
+            !status.is_success(),
+            "attempt {attempt} was supposed to fail: status={status} body={body}"
+        );
+    }
+    let (status, body) = b
+        .create_track(Some("idem-burn"), Some("burn this key"))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        body["code"], "idempotency_key_exhausted",
+        "an exhausted key must say so — 'use a new key' is the actionable answer: body={body}"
+    );
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "64 failed attempts under one key must still be one track"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-V3 — the arm is decided BEFORE the create path validates the request.
+///
+/// 1. a create with an explicit `cwd` succeeds, attaching the track to a
+///    directory the user owns;
+/// 2. the user deletes that directory;
+/// 3. the create request is replayed **byte for byte**.
+///
+/// The replay mints nothing — the track, its cards and its folder claim all
+/// exist — so nothing about it needs the directory. But the handler re-read the
+/// disk on the way in (`validate_attached_workspace`) and answered
+/// `400 attached workspace ... does not exist` before it ever reached the replay
+/// branch. Not a missing frozen payload field: an ordering bug.
+///
+/// Fails (400 instead of 201) when `validate_attached_workspace` is moved ahead
+/// of the `CreatePlan` dispatch.
+#[tokio::test]
+async fn a_replay_survives_the_attached_directory_being_deleted() {
+    let b = boot().await;
+    let attached = user_repo(&b.tmp.path().join("my-project"));
+    let (first, first_body) = b
+        .create_track_at(Some("idem-deleted-dir"), Some("ship the thing"), &attached)
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let track_id = first_body["id"].as_str().unwrap().to_string();
+    let (kind, path) = b.workspace_row(&track_id).await;
+    assert_eq!(kind, "attached", "premise: the explicit cwd attached it");
+    assert_eq!(
+        PathBuf::from(&path),
+        attached,
+        "premise: onto the directory we are about to delete"
+    );
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 1).await,
+        1,
+        "premise: the successful create delivered the sentence once"
+    );
+
+    // The disturbance: the user's directory goes away. The harness is
+    // deliberately left running — shutting it down here would drop any copy
+    // still sitting in its pending queue, and the final count would then read 0
+    // under load.
+    std::fs::remove_dir_all(&attached).unwrap();
+    assert!(!attached.exists(), "premise: the directory really is gone");
+
+    let (replay, replay_body) = b
+        .create_track_at(Some("idem-deleted-dir"), Some("ship the thing"), &attached)
+        .await;
+    assert_eq!(
+        replay,
+        StatusCode::CREATED,
+        "a byte-identical replay mints nothing, so the create path's disk check must not run at \
+         all — a 400 here refuses a request that was already accepted, forever: body={replay_body}"
+    );
+    assert_eq!(
+        first_body["id"], replay_body["id"],
+        "and it must be the same track"
+    );
+    assert_eq!(b.track_count().await, 1, "no second track");
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 2).await,
+        1,
+        "and the replay must not deliver the instruction a second time"
+    );
+    // KNOWN GAP 6, asserted rather than assumed: the replay 201s and the
+    // workspace is still broken. `materialize_workspace` is an unconditional
+    // no-op for `Attached`, so `Resume`'s re-materialization does not repair
+    // this — and no "safe retry" sentence in this feature claims it does.
+    assert!(
+        !attached.exists(),
+        "the replay must NOT have recreated the user's directory: that is the deliberate \
+         carve-out, and a test that stopped observing it would let the carve-out quietly change"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The same root cause truncating the genuine-retry arm, which is why the fix is
+/// the ordering and not a wider frozen payload.
+///
+/// Constructed with a `.git` removal rather than a whole-directory delete so the
+/// retry has a real directory to run in: `PATCH /api/tracks/{id}` refuses to
+/// repoint an *attached* workspace, so "repoint to a valid B" is not reachable
+/// for the shape that can 400 here.
+#[tokio::test]
+async fn a_retry_after_a_failure_survives_the_attached_directory_ceasing_to_validate() {
+    let b = boot().await;
+    let attached = user_repo(&b.tmp.path().join("my-project"));
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b
+        .create_track_at(
+            Some("idem-retry-invalid-dir"),
+            Some("second time lucky"),
+            &attached,
+        )
+        .await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected thread/start failure must surface: status={failed} body={failed_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "the failed attempt left its track");
+    let track_id: String = sqlx::query_scalar("SELECT id FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let (_, path) = b.workspace_row(&track_id).await;
+    assert_eq!(PathBuf::from(&path), attached);
+
+    // The disturbance: the directory stops satisfying the create-path check
+    // (`is not inside a Git work tree`) while remaining a perfectly usable
+    // directory for the retry that is about to run in it.
+    std::fs::remove_dir_all(attached.join(".git")).unwrap();
+
+    let (retry, retry_body) = b
+        .create_track_at(
+            Some("idem-retry-invalid-dir"),
+            Some("second time lucky"),
+            &attached,
+        )
+        .await;
+    assert_eq!(
+        retry,
+        StatusCode::CREATED,
+        "the retry mints nothing either, so the create path's disk check must not stand between \
+         it and the workspace the track has now: body={retry_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "the retry reuses the track");
+    let cwds = b.first_message_payload_cwds("second time lucky").await;
+    assert_eq!(
+        cwds.len(),
+        2,
+        "one payload per attempt — the failed one and the retry: {cwds:?}"
+    );
+    assert_eq!(
+        PathBuf::from(&cwds[1]),
+        attached,
+        "and the retry really executes, in the workspace the track has now"
+    );
+    assert_eq!(
+        b.copies_in_harness("second time lucky", 1).await,
+        1,
+        "premise: the retry delivers the message the failed attempt never did"
+    );
+    assert_eq!(
+        b.copies_in_harness("second time lucky", 2).await,
+        1,
+        "…exactly once"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The counterweight to the two cases above: moving the arm decision in front of
+/// the create-path validation must not remove that validation from the path that
+/// still mints.
+///
+/// Written as an assertion rather than as "I read the code and `Legacy` returns
+/// before the header is read": every check the reorder skipped on the resuming
+/// arms is exercised here on a create with **no** `first_message`, plus a
+/// template create, which is the other production entry into this handler.
+#[tokio::test]
+async fn a_create_without_a_first_message_still_runs_every_create_check() {
+    let b = boot().await;
+    let base = json!({
+        "area_id": b.area_id,
+        "title": "",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+    });
+
+    // `cwd` shape.
+    let mut relative = base.clone();
+    relative["cwd"] = json!("not/absolute");
+    let (status, body) = b.post_create(None, relative).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // Attached-workspace existence — the very check the resuming arms skip.
+    let mut missing = base.clone();
+    missing["cwd"] = json!(b.tmp.path().join("nope").to_string_lossy());
+    missing["attach_folder"] = json!(true);
+    let (status, body) = b.post_create(None, missing).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // Attached workspace that exists but is not a Git work tree.
+    let plain = b.tmp.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let mut not_git = base.clone();
+    not_git["cwd"] = json!(plain.to_string_lossy());
+    not_git["attach_folder"] = json!(true);
+    let (status, body) = b.post_create(None, not_git).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // Template admission.
+    let mut unknown_template = base.clone();
+    unknown_template["template_id"] = json!("no-such-template");
+    let (status, body) = b.post_create(None, unknown_template).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // `template_input` binding: no bound plugin here, so any input is refused.
+    let mut unbound_input = base.clone();
+    unbound_input["template_input"] = json!({"anything": 1});
+    let (status, body) = b.post_create(None, unbound_input).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    // Area 404.
+    let mut unknown_area = base.clone();
+    unknown_area["area_id"] = json!("area-does-not-exist");
+    let (status, body) = b.post_create(None, unknown_area).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+
+    assert_eq!(
+        b.track_count().await,
+        0,
+        "none of the refusals above may mint a track"
+    );
+
+    // And the happy legacy paths still work, plain and templated.
+    let (plain_create, plain_body) = b.post_create(None, base.clone()).await;
+    assert_eq!(plain_create, StatusCode::CREATED, "body={plain_body}");
+    let mut templated = base.clone();
+    templated["template_id"] = json!("small-change");
+    let (template_create, template_body) = b.post_create(None, templated).await;
+    assert_eq!(template_create, StatusCode::CREATED, "body={template_body}");
+    assert_eq!(b.track_count().await, 2);
+    assert_eq!(
+        b.user_message_event_count().await,
+        0,
+        "nothing was typed on either, so nothing may be enqueued"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// **T-V4 — the headline.** A daemon outage adopts the track it already minted
+/// instead of turning one `Idempotency-Key` into a track farm.
+///
+/// The construction, and why it is not covered by "this handler does not
+/// compensate": `OperationRuntime::submit` runs `adapter.validate` **before**
+/// `insert_operation`, and `PlannerHarnessStartAdapter::validate` refuses while
+/// the shared app-server is down. So the refusal writes no operation row at all.
+/// Before #1384 the operation row was the only record of which track a key
+/// created, so this measured, on exactly this fixture: two requests under one
+/// key, both 500, **2** tracks, **4** cards, **0** operations.
+///
+/// The numbers below are the inverted ones, and the inversion is the point. The
+/// rejected daemon-preflight fix asserted `tracks == 0` — it prevented the mint.
+/// This design does not prevent it; it *adopts* it. One track, two cards, two
+/// 500s, no delivery, and `operations` still 0 because `validate` still refuses.
+///
+/// Fails (`track_count == 2`) when the `track_create_idempotency` INSERT is
+/// deleted from the create closure: the retry then reads no binding and mints.
+#[tokio::test]
+async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
+    let b = boot_without_daemon().await;
+    let (first, first_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
+    let (second, second_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
+    assert_eq!(
+        first,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the daemon is down, so the harness start cannot succeed: body={first_body}"
+    );
+    assert_eq!(
+        second,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "…and the retry fails the same way, for the same reason: body={second_body}"
+    );
+    // The load-bearing number. `2` is the measured pre-#1384 behaviour.
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "one key, one track — the retry must adopt the track the first attempt already minted, \
+         not mint another one"
+    );
+    assert_eq!(b.card_count().await, 2, "its planner and report cards, once");
+    assert_eq!(
+        b.binding_count().await,
+        1,
+        "and exactly one binding row, written by the mint that committed it"
+    );
+    assert_eq!(
+        b.operation_count().await,
+        0,
+        "premise: `validate` refuses before `insert_operation`, so there is still no operation \
+         row — which is precisely why the operation row could never have carried this binding"
+    );
+    assert_eq!(b.user_message_event_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// T-V4b — the control: the message-less path keeps its `warn!` + 201 during the
+/// same outage.
+///
+/// The rejected preflight fix would have turned this 201 into a 500 (and every
+/// in-transaction 4xx with it). Nothing in this design puts a daemon check
+/// anywhere the `Legacy` arm can reach, and this is what says so.
+#[tokio::test]
+async fn a_create_without_a_first_message_still_succeeds_during_a_daemon_outage() {
+    let b = boot_without_daemon().await;
+    let (status, body) = b.create_track(None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(b.track_count().await, 1);
+    assert_eq!(b.binding_count().await, 0);
+    b.shutdown_harnesses().await;
+}
+
+/// T-ARM-2 — the arm table's last cell: a binding **miss** with an **occupied**
+/// chosen key mints nothing.
+///
+/// The state is unreachable by construction (the binding commits strictly before
+/// the operation is submitted), so it is constructed by hand: an operation row
+/// under the derived key with no binding row. The earlier draft answered `Mint`
+/// here, which fails *open* — the mint commits a track and its cards, and
+/// `insert_operation` then raises `idempotency_payload_conflict` on the unique
+/// violation, leaving an orphan track behind a 409. That is the exact failure
+/// class this feature abolishes, so the honest answer is an error.
+///
+/// The assertion that matters is `track_count == 0`, not the status: the claim
+/// is about what is **written**.
+#[tokio::test]
+async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
+    use sha2::{Digest, Sha256};
+    let b = boot().await;
+    let key = "idem-orphan-op";
+    let operation_key = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("track-create:{}:{key}", b.area_id));
+        format!("track-create-{}", hex::encode(hasher.finalize()))
+    };
+    // An operation under the derived key, in a non-`Failed` phase so
+    // `retryable_operation_key` stops on it, and with no binding row anywhere.
+    sqlx::query(
+        "INSERT INTO operations \
+         (id, kind, operation_key, idempotency_key, payload_hash, target_type, target_json, \
+          payload_json, phase, attempt, created_at_ms, updated_at_ms) \
+         VALUES ('op-orphan', 'planner-harness-start', ?1, ?1, 'hash', 'card', '{}', '{}', \
+                 'succeeded', 0, 1, 1)",
+    )
+    .bind(&operation_key)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(b.binding_count().await, 0, "premise: no binding row");
+
+    let (status, body) = b.create_track(Some(key), Some("this must mint nothing")).await;
+    assert!(
+        status.is_server_error(),
+        "an unreachable state must fail closed rather than mint: status={status} body={body}"
+    );
+    assert_eq!(
+        b.track_count().await,
+        0,
+        "and above all it must write NOTHING — a mint here commits a track and then collides on \
+         the operation's unique key, leaving an orphan behind a 409"
+    );
+    assert_eq!(b.card_count().await, 0);
+    assert_eq!(b.binding_count().await, 0);
+}
+
+/// T-MAT-1 — `Resume` re-materializes the workspace.
+///
+/// The failure points the resuming arm exists for include "process died between
+/// the COMMIT and `materialize_workspace`" and "`materialize_workspace` returned
+/// `Err`". A resume that only re-submitted the operation would answer 201 for a
+/// track whose managed directory does not exist — #1147 replayed one layer down.
+///
+/// Construction: create successfully with key K, then remove the managed
+/// directory, then replay K.
+///
+/// Fails when the `materialize_workspace` call is deleted from
+/// `resume_prior_attempt`: the replay then 201s onto a directory with no `HEAD`.
+#[tokio::test]
+async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-remat"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let track_id = first_body["id"].as_str().unwrap().to_string();
+    let (kind, path) = b.workspace_row(&track_id).await;
+    assert_eq!(kind, "managed", "premise: the create made it managed");
+    let path = PathBuf::from(path);
+    assert!(path.join(".git").exists(), "premise: it was materialized");
+    b.shutdown_harnesses().await;
+
+    std::fs::remove_dir_all(&path).unwrap();
+    assert!(!path.exists(), "premise: the workspace really is gone");
+
+    let (replay, replay_body) = b
+        .create_track(Some("idem-remat"), Some("ship the thing"))
+        .await;
+    assert_eq!(replay, StatusCode::CREATED, "body={replay_body}");
+    assert_eq!(first_body["id"], replay_body["id"], "the same track");
+    assert_eq!(b.track_count().await, 1);
+    assert!(
+        path.join(".git").exists(),
+        "the resume must have re-materialized the managed workspace — a 201 pointing at a \
+         directory that does not exist is #1147 replayed one layer down"
+    );
+    let head = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(
+        head.status.success(),
+        "…and its HEAD must resolve: {}",
+        String::from_utf8_lossy(&head.stderr)
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-MAT-2 — the idempotence premise §4.4 rests on: re-materializing a HEALTHY
+/// managed workspace is a no-op.
+///
+/// Every other resuming test would stay green if `materialize_workspace` quietly
+/// re-ran `git init` and a fresh initial commit on each call — the directory
+/// stays valid either way. This one sees it, because it compares the owner
+/// marker and the HEAD commit id across the replay.
+///
+/// Fails when the `if !git_head_resolves(path)` guard is dropped from
+/// `materialize_managed_workspace_inner`: HEAD moves.
+#[tokio::test]
+async fn a_resume_on_a_healthy_managed_workspace_is_a_no_op() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-noop"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let track_id = first_body["id"].as_str().unwrap().to_string();
+    let (_, path) = b.workspace_row(&track_id).await;
+    let path = PathBuf::from(path);
+
+    fn head_of(path: &std::path::Path) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "rev-parse HEAD must resolve");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+    fn marker_of(path: &std::path::Path) -> Vec<u8> {
+        let dir = std::fs::read_dir(path.join(".git")).unwrap();
+        for entry in dir.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("owner") || name.contains("calm") || name.contains("neige") {
+                return std::fs::read(entry.path()).unwrap();
+            }
+        }
+        panic!("no owner marker under {path:?}/.git");
+    }
+
+    let head_before = head_of(&path);
+    let marker_before = marker_of(&path);
+
+    let (replay, replay_body) = b
+        .create_track(Some("idem-noop"), Some("ship the thing"))
+        .await;
+    assert_eq!(replay, StatusCode::CREATED, "body={replay_body}");
+
+    assert_eq!(
+        head_of(&path),
+        head_before,
+        "a resume onto a healthy managed workspace must not move HEAD — re-running `git init` and \
+         a fresh initial commit would rewrite the user's history under them"
+    );
+    assert_eq!(
+        marker_of(&path),
+        marker_before,
+        "…and must leave the owner marker byte-identical"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// T-BRICK-1 — the ownership fence is NOT relaxed, and the answer is
+/// 409 `idempotency_key_exhausted` rather than a generic 500 or a 201.
+///
+/// The state is reachable, not theoretical: `write_owner_marker` creates
+/// `<path>/.git` and only then writes the marker, so process death between those
+/// two syscalls leaves a directory that has entries and no marker — which
+/// `materialize_workspace` refuses forever. Allowlisting "the only entry is
+/// `.git/`" would be a marker-absence heuristic, and no positive fingerprint can
+/// separate it from a user's own partially-initialised repository, so the
+/// refusal stands and the resuming arm inherits it.
+///
+/// The honest cost, stated in the design and asserted here: this key is poisoned
+/// for good. `idempotency_key_exhausted` is the one answer that is actionable —
+/// "retry under a new key", which `a_new_idempotency_key_recovers_from_a_poisoned_workspace`
+/// shows really works.
+///
+/// Fails when the materialization failure is mapped back to a generic
+/// `CalmError::Internal`.
+#[tokio::test]
+async fn a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-brick"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let track_id = first_body["id"].as_str().unwrap().to_string();
+    let (_, path) = b.workspace_row(&track_id).await;
+    let path = PathBuf::from(path);
+    b.shutdown_harnesses().await;
+
+    // The exact residue of the `create_dir_all(<path>/.git)` → `write` window.
+    std::fs::remove_dir_all(&path).unwrap();
+    std::fs::create_dir_all(path.join(".git")).unwrap();
+
+    let (replay, replay_body) = b
+        .create_track(Some("idem-brick"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        replay,
+        StatusCode::CONFLICT,
+        "an un-materializable workspace must not be answered 201, and must not read as a generic \
+         server fault either: body={replay_body}"
+    );
+    assert_eq!(
+        replay_body["code"], "idempotency_key_exhausted",
+        "the status alone does not tell an operator what to do; the code does: body={replay_body}"
+    );
+    assert_eq!(b.track_count().await, 1, "and nothing new is minted");
+}
+
+/// T-BRICK-2 — the escape, and it needs no new machinery: the poisoning is
+/// **per key**.
+///
+/// A new `Idempotency-Key` misses the binding, mints a fresh track id, and a
+/// managed path is derived from *that* id — so it is a different directory and
+/// the poisoned one is never revisited. Nothing pulls the new attempt back onto
+/// the old path: a managed workspace takes `FolderClaim::Skip`, so no
+/// `area_folders` row contends on it either.
+///
+/// Fails when the managed path is derived from `(area_id, idempotency_key)`
+/// instead of the minted track id: the new key then lands on the poisoned
+/// directory and this test 409s.
+#[tokio::test]
+async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
+    let b = boot().await;
+    let (first, first_body) = b
+        .create_track(Some("idem-poisoned"), Some("ship the thing"))
+        .await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
+    let poisoned_track = first_body["id"].as_str().unwrap().to_string();
+    let (_, poisoned_path) = b.workspace_row(&poisoned_track).await;
+    let poisoned_path = PathBuf::from(poisoned_path);
+    b.shutdown_harnesses().await;
+    std::fs::remove_dir_all(&poisoned_path).unwrap();
+    std::fs::create_dir_all(poisoned_path.join(".git")).unwrap();
+    // Premise: the old key really is dead.
+    let (poisoned, poisoned_body) = b
+        .create_track(Some("idem-poisoned"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        poisoned,
+        StatusCode::CONFLICT,
+        "premise: the old key is exhausted: body={poisoned_body}"
+    );
+
+    let (fresh, fresh_body) = b
+        .create_track(Some("idem-fresh"), Some("ship the thing"))
+        .await;
+    assert_eq!(
+        fresh,
+        StatusCode::CREATED,
+        "a new Idempotency-Key must be a complete recovery — the poisoning is per key, and the \
+         new track's managed path is derived from a freshly minted id: body={fresh_body}"
+    );
+    let fresh_track = fresh_body["id"].as_str().unwrap().to_string();
+    assert_ne!(fresh_track, poisoned_track);
+    let (_, fresh_path) = b.workspace_row(&fresh_track).await;
+    let fresh_path = PathBuf::from(fresh_path);
+    assert_ne!(
+        fresh_path, poisoned_path,
+        "and it must be a different directory, or the recovery would re-enter the same fence"
+    );
+    assert!(
+        fresh_path.join(".git").exists(),
+        "…which really was materialized"
+    );
+    assert_eq!(
+        b.copies_in_harness("ship the thing", 2).await,
+        2,
+        "two distinct tracks, one delivery each"
+    );
     b.shutdown_harnesses().await;
 }

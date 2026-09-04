@@ -35,7 +35,8 @@ use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, TrackRecipeOrigin, TrackWorkspacePlan, area_folder_create_tx,
     area_folders_list_all_tx, card_create_with_id_tx, overlay_delete_by_entity_tx,
     overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, terminal_delete_tx,
-    track_create_tx, track_delete_tx, track_recipe_get_tx, track_update_tx,
+    track_create_idempotency_claim_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
+    track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -57,7 +58,6 @@ use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
-use crate::routes::conversations_shared::validate_first_message;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -77,7 +77,7 @@ use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -91,6 +91,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
 
+mod create;
 mod fork_guard;
 
 use fork_guard::guard_forked_blocks;
@@ -915,18 +916,21 @@ pub(crate) async fn get_track_detail(
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
     actor: Actor,
+    // #1384 — read only on the `first_message` path. A message-less create
+    // never touches it, which is what keeps the legacy path unchanged.
+    headers: HeaderMap,
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
-    // #1299 S1 — first, before every other check in this handler and therefore
-    // before every mint it can reach. A rejected first message (blank or
-    // over-long) must leave no track, no cards, no folder claim and no
-    // materialized workspace behind, and this handler's own comment below
-    // explains why "non-201 ⇒ no side effect" is otherwise not one of its
-    // properties.
+    // #1299 S1 / #1384 — first, before every other check in this handler and
+    // therefore before every mint it can reach. A rejected first message (blank,
+    // over-long, missing `Idempotency-Key`, exhausted key) must leave no track,
+    // no cards, no folder claim and no materialized workspace behind, and this
+    // handler's own comment below explains why "non-201 ⇒ no side effect" is
+    // otherwise not one of its properties.
     //
-    // `validate_first_message` is the conversation route's function, called not
-    // restated: a message this endpoint accepts is delivered through the same
-    // `Observation::UserMessage` slot `POST /api/cards/{id}/planner/input`
+    // The validation itself is the conversation route's `validate_first_message`,
+    // called not restated: a message this endpoint accepts is delivered through
+    // the same `Observation::UserMessage` slot `POST /api/cards/{id}/planner/input`
     // writes, so one ceiling has to govern both or one of them accepts what the
     // other later refuses.
     //
@@ -936,14 +940,46 @@ pub(crate) async fn create_track(
     // `recipe_id` create delivers the message exactly like a bare one. Pinned by
     // `track_create_first_message::a_template_create_delivers_the_first_message`
     // and `…::a_first_message_is_delivered_once_on_a_recipe_create`.
-    let first_message = request.first_message.take();
-    if let Some(text) = first_message.as_deref() {
-        validate_first_message(text)?;
-    }
+    //
+    // Returns `CreatePlan::Legacy` when the body carried no `first_message`,
+    // which is the pre-#1299 path verbatim: no header read, no key derived, no
+    // lookup, no binding row, and every check below in the order it always ran.
+    let plan = create::plan_first_message(
+        &s,
+        &headers,
+        request.first_message.take(),
+        request.area_id.as_str(),
+    )
+    .await?;
+    // #1384 — the arm decision comes BEFORE the create path's request
+    // validation, not after it.
+    //
+    // Both resuming arms mint nothing: the track, its cards and its folder claim
+    // already exist, so every check below exists to protect a mint this request
+    // will not perform, and this request already passed all of them once — when
+    // it was first accepted. Re-running them re-reads **mutable** state, and that
+    // state moves: deleting the directory a successful create attached made a
+    // byte-identical replay answer 400 `attached workspace ... does not exist`
+    // forever, while the track itself was alive. See `create.rs`'s module docs.
+    //
+    // `CreatePlan::Legacy` cannot reach this branch — it is produced before the
+    // header is even read — so no `first_message`-free caller can observe the
+    // reordering.
+    let plan = match plan {
+        create::CreatePlan::Resume(resume) => {
+            return create::resume_prior_attempt(s, actor, resume).await;
+        }
+        create::CreatePlan::Legacy => None,
+        create::CreatePlan::Mint(plan) => Some(plan),
+    };
     // #1292 / #1321 S2 — two starting points is not a preference to resolve, it
     // is a request that does not name one thing. Refused inside
     // `NamedSource::from_request`, before any other work and before any read,
     // so no later code has a two-source state to pick a winner from.
+    //
+    // #1384 — deliberately AFTER the arm decision above: it is create-path
+    // request validation, and the resuming arms mint nothing, so re-running it
+    // on a replay is the variant-3 class this design closes.
     let (mut p, named_source, cwd_omitted) = request.into_parts()?;
     // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
     // codex card alongside the track row. Both rows commit in one tx
@@ -1122,28 +1158,37 @@ pub(crate) async fn create_track(
     let init = source.init;
 
     let workspace_root = s.workspace_root.clone();
-    let created = create_track_with_planner_harness(
-        s,
-        actor,
-        p,
-        first_message,
-        CreateTrackOptions {
-            folder_claim,
-            body_area_id,
-            normalized_cwd,
-            init,
-            // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
-            // the new FE sends) is the managed-default branch: the server picks
-            // the directory. An explicit `cwd` is the attached branch and keeps
-            // the #250 claim rules above verbatim.
-            workspace_plan: if cwd_omitted {
-                TrackWorkspacePlan::ManagedUnder(workspace_root)
-            } else {
-                TrackWorkspacePlan::AttachedFromCwd
-            },
+    let options = CreateTrackOptions {
+        folder_claim,
+        body_area_id,
+        normalized_cwd,
+        init,
+        // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
+        // the new FE sends) is the managed-default branch: the server picks
+        // the directory. An explicit `cwd` is the attached branch and keeps
+        // the #250 claim rules above verbatim.
+        workspace_plan: if cwd_omitted {
+            TrackWorkspacePlan::ManagedUnder(workspace_root)
+        } else {
+            TrackWorkspacePlan::AttachedFromCwd
         },
-    )
-    .await;
+        // #1384 — `None` here is the whole `Mint`-only rule. Both arms of the
+        // message-less dispatch reach `create_track_structure`, so the binding
+        // write cannot be conditioned on the closure running;
+        // `create::create_track_with_first_message` is the sole writer of this
+        // field, and it is reachable only from `CreatePlan::Mint`.
+        idempotency_key: None,
+    };
+    // #1384 — the only fork left in this handler's tail: the resuming arms
+    // returned above, so `Some` here is always a mint. Without a `first_message`
+    // the legacy call is reached unchanged, down to the best-effort
+    // `start_planner_harness` and the `first_message`-free operation payload (the
+    // field is `skip_serializing_if`, so those payload bytes are byte-identical
+    // to what older binaries wrote).
+    let created = match plan {
+        None => create_track_with_planner_harness(s, actor, p, options).await,
+        Some(plan) => create::create_track_with_first_message(s, actor, p, options, plan).await,
+    };
     match created {
         Err(error) => match conflict.take() {
             Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
@@ -1657,32 +1702,38 @@ struct CreateTrackOptions {
     /// each create entry point; `create_track_structure` materializes the
     /// managed case right after the transaction commits.
     workspace_plan: TrackWorkspacePlan,
+    /// #1384 — the caller's `Idempotency-Key`, and `Some` on exactly one arm:
+    /// a create that carried a `first_message` and therefore took
+    /// `CreatePlan::Mint`. When set, `create_track_structure` writes the
+    /// `track_create_idempotency` row **inside** the transaction that mints the
+    /// track id, so there is no interval in which the track exists and the
+    /// binding does not.
+    ///
+    /// `None` for every other entry — the message-less create included. A
+    /// message-less create is deliberately still not idempotent; see
+    /// `tracks/create.rs`'s module docs for why writing the binding there would
+    /// turn a working 201 into an error.
+    idempotency_key: Option<String>,
 }
 
 #[allow(deprecated)]
+/// The message-less create, end to end.
+///
+/// #1384 moved the `first_message` half out: a create that carries one takes
+/// `CreatePlan::Mint` and goes through `create::create_track_with_first_message`
+/// instead, because it needs an operation key, a frozen `cwd` and a binding
+/// row — none of which this entry has any use for. What is left here is the
+/// pre-#1299 path exactly, including `start_planner_harness`'s deliberate
+/// `warn!` + 201 when the harness fails to start.
 async fn create_track_with_planner_harness(
     s: RouteState,
     actor: Actor,
     p: NewTrack,
-    // #1299 S1 — travels to `start_planner_harness` and nowhere else. The
-    // create transaction never sees it: the message is delivered by the
-    // `planner-harness-start` operation submitted after that transaction
-    // commits, which is why an in-transaction refusal (an unknown `recipe_id`,
-    // say) rolls the whole create back and leaves no operation carrying it.
-    first_message: Option<String>,
     options: CreateTrackOptions,
 ) -> Result<Response> {
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
-    start_planner_harness(
-        &s,
-        &actor,
-        &track,
-        planner_card_id,
-        report_card_id,
-        first_message,
-    )
-    .await?;
+    start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
@@ -1699,6 +1750,7 @@ async fn create_track_structure(
         normalized_cwd,
         init,
         workspace_plan,
+        idempotency_key,
     } = options;
     // #1147 — captured before `s` is moved into the write closure. Only the
     // managed branch uses it; `materialize_workspace` ignores it for attached.
@@ -1712,6 +1764,7 @@ async fn create_track_structure(
     let report_card_id_for_tx = report_card_id.clone();
     let area_id_for_attach = body_area_id;
     let normalized_cwd_for_tx = normalized_cwd;
+    let idempotency_key_for_tx = idempotency_key;
     // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
     // (`User` when no `X-Calm-Actor` header was present, `Planner` otherwise) and
     // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
@@ -1780,6 +1833,51 @@ async fn create_track_structure(
                 .await?;
                 let track_id = track.id.clone();
                 let area_id = track.area_id.clone();
+
+                // #1384 — the `Idempotency-Key` → track binding, written HERE:
+                // in the same `BEGIN IMMEDIATE` transaction that just minted the
+                // id, with both card ids (minted before the transaction opened)
+                // already in hand.
+                //
+                // This statement is the whole fix. The `operations` row cannot
+                // carry this fact: `submit` writes it on a pooled connection
+                // after `adapter.validate` succeeds, so a daemon outage refuses
+                // before it exists and leaves the track with nothing pointing at
+                // it — one fresh track per retry, measured at `tracks=2,
+                // cards=4, operations=0`.
+                //
+                // `Some` on the `Mint` arm only. `create_track_structure` is
+                // reached by the message-less path too, so the condition is on
+                // the plan rather than on reaching this closure.
+                if let Some(key) = idempotency_key_for_tx.as_deref() {
+                    track_create_idempotency_claim_tx(
+                        tx,
+                        area_id.as_str(),
+                        key,
+                        &calm_truth::db::sqlite::TrackCreateBinding {
+                            track_id: track_id.to_string(),
+                            planner_card_id: planner_card_id_for_tx.clone(),
+                            report_card_id: report_card_id_for_tx.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| {
+                        // Fail closed on the primary-key violation. In one
+                        // process `conversation_first_message_locks` serializes
+                        // two same-key creates and the second takes `Resume`
+                        // without reaching this INSERT, so this is the
+                        // cross-instance racer — and the answer it gets is an
+                        // error whose retry resolves to `Resume`, never a second
+                        // committed track. Deliberately not recovered in place:
+                        // the losing racer's transaction has already written a
+                        // track row it must not keep.
+                        CalmError::Internal(format!(
+                            "track create: this Idempotency-Key was claimed by a concurrent \
+                             create; retry, and the retry will resolve to the track that won \
+                             ({error})"
+                        ))
+                    })?;
+                }
 
                 // #1300 — three initialization sources, one persistence
                 // mechanism. `Template` builds from a constant and needs no
@@ -2072,19 +2170,21 @@ async fn create_track_structure(
     Ok((track, created, planner_card_id, report_card_id))
 }
 
+/// Start the planner harness for a create that carried **no** `first_message`.
+///
+/// Best-effort by design and unchanged since before #1299: the track is the
+/// whole deliverable here and "the track exists, its planner agent is inert" is
+/// a documented, recoverable state, so a failed start is a `warn!` and the
+/// create still answers 201. The keyed path's opposite choice — a 5xx, because
+/// the request also promised to deliver a sentence — lives in
+/// `tracks/create.rs`, which is also where its wording is justified.
 async fn start_planner_harness(
     s: &RouteState,
     actor: &Actor,
     track: &Track,
     planner_card_id: String,
     report_card_id: String,
-    first_message: Option<String>,
 ) -> Result<()> {
-    // #1299 S1 — captured before `first_message` moves into the payload. This
-    // is the entire switch between the two failure semantics below, and it is
-    // read exactly once, after the match, so all four failure branches share
-    // one decision rather than four copies of it.
-    let carries_first_message = first_message.is_some();
     // #1211 S1: no goal is seeded on this user-driven create path. An omitted
     // title is stored as the empty string (`Untitled track` is only what the
     // frontend shows for a blank one) and the planner agent names the track once
@@ -2108,22 +2208,16 @@ async fn start_planner_harness(
         // #1299 S1 — `None` here is not "no message", it is the pre-#1299 shape
         // verbatim: `skip_serializing_if` drops the key entirely, so a create
         // that typed nothing writes byte-identical payload JSON and therefore
-        // the same `payload_hash` an older binary would have written.
-        first_message,
+        // the same `payload_hash` an older binary would have written. Since
+        // #1384 this call site is only ever reached by a message-less create, so
+        // there is no longer anything else it could be.
+        first_message: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
     }))?;
-    // #1299 S1 — `Some(reason)` iff the harness did not start. Every one of the
-    // four ways that can happen (submit rejected, wait errored, the operation
-    // reached `Failed`, the operation reached `Stuck`) writes it, so the
-    // decision after the match is reached from all four and cannot be true of
-    // only the one that happened to be edited. The `warn!` lines are unchanged
-    // and still fire on every failure regardless of `first_message`: they are
-    // what the create-without-a-message path has always emitted.
-    let mut harness_start_failed: Option<String> = None;
     match s
         .operation_runtime
         .submit(
@@ -2139,25 +2233,24 @@ async fn start_planner_harness(
     {
         Ok(op_id) => match s.operation_runtime.wait(&op_id).await {
             Ok(result) => match result.outcome {
-                // `SucceededViaCollision` is unreachable from this call site
-                // today, and folding it in with `Succeeded` is only correct
-                // while that holds. Two independent reasons it holds: this
-                // path submits `idempotency_key: None`, and
-                // `find_by_idempotency_key` returns `None` without looking at
-                // the table when the key is absent, so `submit` never takes
-                // its collision short-circuit; and the sole producer of the
-                // variant (`operation_result_from`) needs a persisted
-                // `phase_detail.completion == "idempotency_collision"`, which
-                // nothing in this repository writes.
+                // `SucceededViaCollision` is unreachable from this call site,
+                // and folding it in with `Succeeded` is only correct while that
+                // holds. Two independent reasons it does:
                 //
-                // #1384 changes the first reason. The moment a create carries
-                // an `Idempotency-Key` that reaches this `OperationKey`, a
-                // repeated create resolves to the FIRST operation and comes
-                // back here as `SucceededViaCollision` — i.e. "the message was
-                // delivered, by an earlier request, not by this one". Treating
-                // that as `Succeeded` then answers 201 for a create that
-                // delivered nothing. Split the arm in that slice, do not
-                // inherit it.
+                // 1. this path submits `idempotency_key: None`, and
+                //    `find_by_idempotency_key` returns `None` without looking at
+                //    the table when the key is absent, so `submit` never takes
+                //    its collision short-circuit. #1384 did NOT change this:
+                //    the keyed create is a different call site
+                //    (`tracks/create.rs`), and this one is reached only by a
+                //    message-less create, which reads no header at all;
+                // 2. the sole producer of the variant (`operation_result_from`)
+                //    needs a persisted
+                //    `phase_detail.completion == "idempotency_collision"`, which
+                //    nothing in this repository writes. This ground is global
+                //    and survives #1384 — which is why `tracks/create.rs` splits
+                //    the arm as a fail-closed statement rather than as a runtime
+                //    signal it depends on.
                 OperationOutcome::Succeeded { .. }
                 | OperationOutcome::SucceededViaCollision { .. } => {}
                 OperationOutcome::Failed {
@@ -2172,8 +2265,7 @@ async fn start_planner_harness(
                         error = %last_error,
                         "planner harness start operation failed; track created but planner agent is inert"
                     );
-                    harness_start_failed =
-                        Some(format!("operation failed in {from_phase:?}: {last_error}"));
+
                 }
                 OperationOutcome::Stuck { reason, from_phase } => {
                     tracing::warn!(
@@ -2183,8 +2275,7 @@ async fn start_planner_harness(
                         reason,
                         "planner harness start operation stuck; track created but planner agent is inert"
                     );
-                    harness_start_failed =
-                        Some(format!("operation stuck in {from_phase:?}: {reason}"));
+
                 }
             },
             Err(e) => {
@@ -2194,7 +2285,7 @@ async fn start_planner_harness(
                     error = %e,
                     "planner harness start wait failed; track created but planner agent may be inert"
                 );
-                harness_start_failed = Some(format!("waiting for the operation failed: {e}"));
+
             }
         },
         Err(e) => {
@@ -2204,39 +2295,8 @@ async fn start_planner_harness(
                 error = %e,
                 "planner harness start submission failed; track created but planner agent is inert"
             );
-            harness_start_failed = Some(format!("submitting the operation failed: {e}"));
-        }
-    }
 
-    // #1299 S1 — a create that carried a `first_message` promised to deliver
-    // it. The message is only ever written by the `planner-harness-start`
-    // operation, so if that operation did not run to success the create did not
-    // keep that promise, and a 201 would claim it did. Report the failure
-    // instead.
-    //
-    // What this 5xx does NOT say: it does not say nothing happened. The track,
-    // its two cards, its folder claim and (on the managed path) its
-    // materialized workspace are all already committed by the time this
-    // function runs — `create_track_structure` returned before it was called.
-    // "non-201 ⇒ no side effect" is not a property of this handler and this
-    // branch does not make it one; there is deliberately no compensating
-    // delete here. Making the create *retryable* — an idempotency key that
-    // survives the id mint — is #1384, not this slice.
-    //
-    // Without a `first_message` this is unreachable: the pre-#1299 semantics
-    // stay byte-for-byte, `warn!` + 201, i.e. "the track exists and its planner
-    // agent is inert", which is a documented and recoverable state because
-    // nothing the user said was riding on that operation.
-    if let Some(reason) = harness_start_failed
-        && carries_first_message
-    {
-        return Err(CalmError::Internal(format!(
-            "track create: the track was created but its planner harness start did not complete, \
-             so the server cannot tell whether the first message reached the agent ({reason}). \
-             Nothing is rolled back — the track, its cards and its workspace are already \
-             committed. Open the track and check before sending the message again; if it did \
-             arrive, sending it again delivers it twice."
-        )));
+        }
     }
 
     Ok(())
