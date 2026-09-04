@@ -1419,13 +1419,15 @@
     后加的 wire 字段必须在 zod 侧带 `.default(...)`，与 Rust 侧的 `#[serde(default)]`
     对齐，使旧 event-log / replay fixture 无需迁移即可解析
   why: >
-    已知的成对默认值：area.kind → 'user'（#175）、track.lifecycle → 'draft'（#145，与
-    migration 0012 的 DB DEFAULT 一致）、track.cwd → ''（#250 PR2）、
+    已知的成对默认值：area.kind → 'user'（#175）、area.default_template_id / default_cwd
+    → null（#1370）、track.lifecycle → 'draft'（#145，与 migration 0012 的 DB DEFAULT
+    一致）、track.cwd → ''（#250 PR2）、
     track.template_id / purpose / terminal_at → null、track.template_input → null（#891）、
     pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。
     每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
-  source: web/src/api/schemas.ts:19-215
-  authoritative_test: web/src/api/schemas.test.ts:45-64,146-149,697-713
+  source: web/src/api/schemas.ts:31-215; fe/core/api/schemas.ts:31-39
+  authoritative_test: web/src/api/schemas.test.ts:49-68,128-155,698-729,746-762;
+    fe/core/api/schemas.contract.test.ts:241-254
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core
@@ -1468,16 +1470,13 @@
   kind: gate
   family: wire-compat
   statement: >
-    每个 wire 变体都要成对测试：一条 happy-path `parse`，一条缺必填字段的
-    `safeParse` 必须失败
+    #136 PR4 引入的四个 dispatcher/task-lifecycle wire 变体必须成对测试：
+    一条 happy-path `parse`，一条缺必填字段的 `safeParse` 必须失败
   why: >
     注释把这条写成了显式的测试约定（#136 PR4："两条一组，每个新变体一个 happy parse
     加一个缺字段 safeParse"）。缺了 reject 那一半，schema 退化成宽松形状时没人会发现。
-    覆盖面包括 dispatcher/task 生命周期、proposal 通道（#955）、track.report_edited（#247，
-    含 author 判别式的四个取值 + #955 的 plugin 臂 author_plugin_id）、
-    harness transcript 事件、plugin.tool.registered / forge.issue.read。
-  source: web/src/api/schemas.test.ts:277-283,513-518
-  authoritative_test: web/src/api/schemas.test.ts:284-511,519-635,748-838
+  source: web/src/api/schemas.test.ts:332-442
+  authoritative_test: web/src/api/schemas.test.ts:339-442
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core

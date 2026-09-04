@@ -104,6 +104,8 @@ function makeKernelArea(id: string, name: string): KernelArea {
     color: '#5a9',
     sort: 0,
     kind: 'user',
+    default_template_id: null,
+    default_cwd: null,
     created_at: 1,
     updated_at: 2,
   };
@@ -454,6 +456,8 @@ describe('Issue #288 — area rename propagates to sidebar', () => {
             color: '#5a9',
             sort: 0,
             kind: 'user',
+            default_template_id: null,
+            default_cwd: null,
             created_at: 1,
             updated_at: 99,
           },

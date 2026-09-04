@@ -1,11 +1,8 @@
 /* What is left after the form moved onto `@astryxdesign/core` (#1209): only
-   what no astryx component owns — this app's type/colour on the form root, the
-   bound-input panel's inset rule, and making the Start from trigger fill its
-   field the way the text inputs above it do. Every control's look — inputs,
-   menu, checkbox, buttons, status messages, the task hover-card's surface —
-   comes from astryx and is deliberately not restated here, and so is every
-   flex box: the form root is `VStack as="form" gap={2}` and the action row is
-   `HStack gap={1} justify="end"`, which is why neither has a rule below. */
+   page layout, the composer's local focus treatment, and the bound-input
+   panel's inset rule. The compact starting-point/folder controls live in the
+   shared `default-pills` module; every other control's look comes from astryx
+   and is deliberately not restated here. */
 @layer features {
   /*
    * #1211 — the page whose whole content is one composer.
@@ -240,16 +237,6 @@
     flex-wrap: wrap;
   }
 
-  /* The collapsed Start from chip. It no longer spans the dialog — it is one
-     of two peer controls in `.controls` and is sized to its own label, like
-     the folder chip beside it. What is left is the ceiling that keeps a long
-     template title from taking the row on its own; astryx's label span carries
-     the ellipsis. The `features` layer sorts after `astryx`, so this wins
-     without a specificity fight. */
-  .trigger {
-    max-inline-size: 16rem;
-  }
-
   /* Indented and rule-led: the fields belong to the template named above them,
      and the inset rule carries that without a second box around them. */
   .panel {
@@ -260,35 +247,4 @@
     border-inline-start: 1px solid var(--hairline);
   }
 
-  /* The hover-card's scroll box. `HoverCard` takes no max-height, and drops
-     the `className`/`style` it accepts before they reach the rendered layer,
-     so the ceiling has to live on the content we hand it. `display: block`
-     because the layer is phrasing content (a `<span>`) by design — astryx
-     renders it inline-safe so it stays valid inside a paragraph. */
-  /* The picker's band heading — "My recipes" / "Built in" (#1292).
-     The quiet rank `kernel-owned` uses on the track page: a fact *about* the
-     rows under it, not a row. It is `aria-hidden` and non-interactive by
-     construction (see `MenuGroup`), so nothing here is a hit target. The
-     inline padding lines its first character up with the menu items' labels,
-     which is what makes it read as a band rather than as a disabled option.
-
-     No `max-height` beside it: astryx's menu container is already
-     `max-height: 300px; overflow-y: auto` (`DropdownMenu.tsx`'s `dropdown`
-     style), so two groups on a short screen scroll inside the popover instead
-     of growing it — which matters because the layer does not portal. */
-  .menuGroupHeading {
-    padding: var(--space-1) var(--space-2);
-    color: var(--text-3);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
-    user-select: none;
-  }
-
-  .taskScroll {
-    display: block;
-    max-inline-size: 28rem;
-    max-block-size: 14rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
 }

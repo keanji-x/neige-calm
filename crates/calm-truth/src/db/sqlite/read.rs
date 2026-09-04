@@ -86,7 +86,8 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- areas
     async fn areas_list(&self) -> Result<Vec<Area>> {
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
+                      created_at, updated_at
                FROM areas ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
@@ -101,7 +102,8 @@ impl RepoRead for SqlxRepo {
         // (debug surfaces, integration tests asserting on the system
         // area's existence) use `areas_list` directly.
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
+                      created_at, updated_at
                FROM areas WHERE kind = 'user' ORDER BY sort ASC"#,
         )
         .fetch_all(&self.pool)
@@ -111,7 +113,8 @@ impl RepoRead for SqlxRepo {
 
     async fn area_get(&self, id: &str) -> Result<Option<Area>> {
         let row = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
+                      created_at, updated_at
                FROM areas WHERE id = ?1"#,
         )
         .bind(id)
@@ -127,7 +130,8 @@ impl RepoRead for SqlxRepo {
         // `areas(kind) WHERE kind = 'system'` from migration 0009 —
         // there is at most one such row.
         let row = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-            r#"SELECT id, name, color, sort, kind, created_at, updated_at
+            r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
+                      created_at, updated_at
                FROM areas WHERE kind = 'system' LIMIT 1"#,
         )
         .fetch_optional(&self.pool)

@@ -11,7 +11,8 @@ import { MobileAreas } from './mobile-areas.tsx';
 afterEach(cleanup);
 
 const area: Area = {
-  id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0,
+  id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user',
+  defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
 };
 const track: Track = {
   id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -25,7 +26,13 @@ const track: Track = {
  * together — which is the property the shell is what actually proves
  * (`mobile-report-navigation.test.tsx` drives the real one).
  */
-function AreasHarness({ onOpenTrack }: { onOpenTrack: (trackId: string) => void }) {
+function AreasHarness({
+  onOpenTrack, onCreateArea = vi.fn(), onEditArea = vi.fn(),
+}: {
+  onOpenTrack: (trackId: string) => void;
+  onCreateArea?: () => void;
+  onEditArea?: (area: Area) => void;
+}) {
   const [selection, setSelection] = useState<{ areaId: string | null; motion: 'none' | 'forward' | 'back' }>(
     { areaId: null, motion: 'none' },
   );
@@ -37,6 +44,8 @@ function AreasHarness({ onOpenTrack }: { onOpenTrack: (trackId: string) => void 
       motion={selection.motion}
       onSelectArea={(areaId) => setSelection({ areaId, motion: 'forward' })}
       onBack={() => setSelection({ areaId: null, motion: 'back' })}
+      onCreateArea={onCreateArea}
+      onEditArea={onEditArea}
       onOpenTrack={onOpenTrack}
     />
   );
@@ -57,5 +66,17 @@ describe('MobileAreas', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to Areas' }));
     expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+  });
+
+  it('offers Area creation at the root and editing after drill-in', async () => {
+    const onCreateArea = vi.fn();
+    const onEditArea = vi.fn();
+    render(<AreasHarness onOpenTrack={vi.fn()} onCreateArea={onCreateArea} onEditArea={onEditArea} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    expect(onCreateArea).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: /Product/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit area Product' }));
+    expect(onEditArea).toHaveBeenCalledWith(area);
   });
 });

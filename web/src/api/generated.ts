@@ -1236,6 +1236,16 @@ export interface components {
             color: string;
             /** Format: int64 */
             created_at: number;
+            /**
+             * @description Exact attached Git working directory preselected for a new Track.
+             *     `None` keeps the server-managed Neige workspace default.
+             */
+            default_cwd: string | null;
+            /**
+             * @description Built-in Track template preselected by the official New Track surface.
+             *     `None` keeps "No template" as the Area's creation default.
+             */
+            default_template_id: string | null;
             id: string;
             kind?: components["schemas"]["AreaKind"];
             name: string;
@@ -1267,6 +1277,16 @@ export interface components {
         AreaKind: "user" | "system";
         AreaPatch: {
             color?: string | null;
+            /**
+             * @description Missing leaves the preference alone, null restores managed workspaces,
+             *     and a string sets the exact attached working directory to preselect.
+             */
+            default_cwd?: string | null;
+            /**
+             * @description Missing leaves the preference alone, null clears it, and a string sets
+             *     the built-in template preselected by the New Track surface.
+             */
+            default_template_id?: string | null;
             name?: string | null;
             /** Format: double */
             sort?: number | null;
@@ -1394,6 +1414,26 @@ export interface components {
             terminal_id?: string | null;
             thread_id?: string | null;
             thread_status?: string | null;
+        };
+        /**
+         * @description User-facing Area creation. The raw sync-domain `NewArea` stays narrow for
+         *     internal callers; these two preferences belong to the REST product surface
+         *     and are applied inside the same audited transaction as the Area row.
+         *
+         *     Deliberately permissive about unknown JSON keys, matching the historical
+         *     `NewArea` contract: in particular a caller-supplied `kind` must continue to
+         *     be ignored rather than gaining a path to create a system Area.
+         */
+        CreateAreaRequest: {
+            color: string;
+            default_cwd?: string | null;
+            default_template_id?: string | null;
+            name: string;
+            /**
+             * Format: double
+             * @description If absent, server appends to end.
+             */
+            sort?: number | null;
         };
         /**
          * @description Body payload accepted by `POST /api/tracks/:track_id/cards`.
@@ -3206,7 +3246,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NewArea"];
+                "application/json": components["schemas"]["CreateAreaRequest"];
             };
         };
         responses: {
@@ -3217,6 +3257,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Unknown default template or invalid attached default folder */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */
@@ -3544,6 +3593,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Area"];
+                };
+            };
+            /** @description Unknown default template or invalid attached default folder */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Area not found */

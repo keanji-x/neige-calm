@@ -69,6 +69,8 @@ function seedArea(client: QueryClient, name: string): KernelArea {
     color: '#abc',
     sort: 0,
     kind: 'user',
+    default_template_id: null,
+    default_cwd: null,
     created_at: 1,
     updated_at: 2,
   };

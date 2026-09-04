@@ -509,6 +509,9 @@ impl Repo for SqlxRepo {
 mod tests;
 
 #[cfg(test)]
+mod area_defaults_migration_tests;
+
+#[cfg(test)]
 mod sub_track_tree_tests;
 #[cfg(test)]
 mod task_context_migration_tests;

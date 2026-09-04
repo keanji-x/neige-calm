@@ -76,6 +76,14 @@ pub struct AreaPatch {
     pub name: Option<String>,
     pub color: Option<String>,
     pub sort: Option<f64>,
+    /// Missing leaves the preference alone, null clears it, and a string sets
+    /// the built-in template preselected by the New Track surface.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub default_template_id: Option<Option<String>>,
+    /// Missing leaves the preference alone, null restores managed workspaces,
+    /// and a string sets the exact attached working directory to preselect.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub default_cwd: Option<Option<String>>,
 }
 
 // ---------------- AreaFolder DTOs ----------------

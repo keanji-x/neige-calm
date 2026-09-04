@@ -46,6 +46,8 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
         color: p.color,
         sort,
         kind: AreaKind::User,
+        default_template_id: None,
+        default_cwd: None,
         created_at: now,
         updated_at: now,
     })
@@ -95,6 +97,8 @@ pub async fn area_create_system_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<A
         color: "#000".into(),
         sort,
         kind: AreaKind::System,
+        default_template_id: None,
+        default_cwd: None,
         created_at: now,
         updated_at: now,
     })
@@ -106,7 +110,8 @@ pub async fn area_update_tx(
     p: AreaPatch,
 ) -> Result<Area> {
     let mut c = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-        r#"SELECT id, name, color, sort, kind, created_at, updated_at
+        r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,
+                  created_at, updated_at
            FROM areas WHERE id = ?1"#,
     )
     .bind(id)
@@ -124,19 +129,37 @@ pub async fn area_update_tx(
     if let Some(v) = p.sort {
         c.sort = v;
     }
-    c.updated_at = now_ms();
+    if let Some(v) = p.default_template_id {
+        c.default_template_id = v;
+    }
+    if let Some(v) = p.default_cwd {
+        c.default_cwd = v;
+    }
+    // Area responses and `area.updated` events race on the client. Make this a
+    // strict row version, not merely a wall-clock sample, so two writes in one
+    // millisecond still have an unambiguous order and an older HTTP response
+    // cannot overwrite the later event.
+    let next_version = c
+        .updated_at
+        .checked_add(1)
+        .ok_or_else(|| CalmError::Internal(format!("area {id} updated_at overflow")))?;
+    c.updated_at = now_ms().max(next_version);
 
     // `kind` is intentionally absent from `AreaPatch` — issue #175
     // forbids re-tagging an area between user/system through the regular
     // PATCH surface. The system area is minted exactly once via
     // `area_create_system_tx` and never demoted; user areas stay user.
     sqlx::query(
-        r#"UPDATE areas SET name = ?1, color = ?2, sort = ?3, updated_at = ?4
-           WHERE id = ?5"#,
+        r#"UPDATE areas
+           SET name = ?1, color = ?2, sort = ?3, default_template_id = ?4,
+               default_cwd = ?5, updated_at = ?6
+           WHERE id = ?7"#,
     )
     .bind(&c.name)
     .bind(&c.color)
     .bind(c.sort)
+    .bind(&c.default_template_id)
+    .bind(&c.default_cwd)
     .bind(c.updated_at)
     .bind(c.id.as_str())
     .execute(&mut **tx)

@@ -91,32 +91,29 @@
 // Owning the chip means the empty label and the purpose phrase can be two
 // different strings, which is what they are.
 //
-// ## The folder is optional and empty by default (#1147 S3)
+// ## The folder is optional and starts from the Area preference (#1147 S3)
 //
-// Left empty, the draft carries no `cwd` at all and the caller's POST omits
-// `cwd` / `attach_folder`, which is the kernel's *managed*-workspace branch: it
-// allocates a directory under the workspace root, `git init`s it, and owns it.
-// Filled in, the track is *attached* to a repository the user already has, which
-// the kernel never creates, moves or deletes. Create time is the only entry
-// into that choice — `managed → attached` after the fact exists as an API and
-// has no UI — so an always-visible optional control is the whole feature, not a
-// shortcut for one.
+// A saved Area folder preselects that exact repository. With no Area folder —
+// or after the reader explicitly clears it — the draft carries no `cwd` and the
+// caller's POST omits `cwd` / `attach_folder`, which is the kernel's *managed*
+// workspace branch: it allocates a directory under the workspace root, `git
+// init`s it, and owns it. A filled value attaches the Track to a repository the
+// user already has, which the kernel never creates, moves or deletes. Create
+// time is the only UI entry into that choice.
 //
 // ## The template (#1209)
 //
-// "No template" is a first-class option and the default, and it is **not** a
-// row the server sent: it is the absence of a template, i.e. a create with no
-// `template_id`. Everything about this list is arranged so that staying on it
-// is free. In particular `templates` may be empty because the read failed or
-// has not landed, and the composer is fully usable in that state: this is the
-// app's only track-creation entry point, and a failed list read must not be able
-// to close it.
+// "No template" is a first-class option when the Area has no saved template,
+// or when the reader explicitly clears that preference for this Track. It is
+// **not** a row the server sent: it is the absence of `template_id` on create.
+// `templates` may be empty because the read failed or has not landed, and the
+// composer remains usable when no unresolved Area default must be preserved.
 //
 // The words on screen are the reader's, not the codebase's. Both chips name
-// their **default** rather than asking a question — "No template" and "Neige
-// workspace" — because neither has an undecided state: leave them alone and
-// those are the track you get. See `NO_TEMPLATE` and `FOLDER_PLACEHOLDER` for
-// the long form.
+// their current **default** rather than asking a question. When the Area has no
+// preference those are "No template" and "Neige workspace"; otherwise leaving
+// them alone keeps the Area's template/folder. `NO_STARTING_POINT` carries the
+// absence value; the shared starting-point and folder pills own the labels.
 //
 // One concept, one word, one field: the list, the chip and the wire all say
 // *template* / `template_id`. (#1209 removed the vocabulary seam this comment
@@ -130,8 +127,8 @@
 // with no combined endpoint and no discriminator field on either payload; the
 // kind *is* which endpoint answered, and this file is where the two are tagged
 // and merged. See `StartingPoint` for why the selection had to stop being a
-// bare id string, and `MenuGroup` for the band headings, which appear only
-// when both kinds are present.
+// bare id string; the shared starting-point pill adds band headings only when
+// both kinds are present.
 //
 // **Duplicating a built-in as a recipe is not offered**, and that is a
 // deliberate omission rather than an oversight: `GET /api/track-templates`
@@ -185,22 +182,16 @@
 // `DropdownMenuItem` hard-codes `role="menuitem"` and offers no
 // `menuitemradio`/`aria-checked`. Two things stand in for it, and both are
 // asserted: the trigger's accessible name is "Template: <current choice>" —
-// an `aria-label`, because the chip's *text* is the bare choice and a name
-// read on its own has to say which kind of choice it is — and the chosen item
-// carries a check icon plus a `VisuallyHidden` "Selected".
+// the shared pill gives Astryx's Button that full `label` while rendering the
+// bare choice through `children`, so the popup inherits the same useful name —
+// and the chosen item carries a check icon plus a hidden "Selected".
 //
-// ### Two astryx limits this shape runs into, measured and left standing
+// ### One astryx limit this shape runs into, measured and left standing
 //
-// Neither is fixable from here — both live inside `@astryxdesign/core` — so
-// they are written down rather than worked around with a local fork.
+// It lives inside `@astryxdesign/core`, so it is written down rather than
+// worked around with a local fork.
 //
-//  1. **The menu's accessible name is the current selection, not "Template".**
-//     `DropdownMenu` names its popup from its trigger's *label*
-//     (`aria-label={button.label}`, `DropdownMenu.tsx`) and not from the
-//     trigger's computed name, so the `aria-label` that makes the trigger read
-//     "Template: Small change" does not reach the popup: a reader who opens it
-//     on a chosen template hears "Small change menu". Unset the two coincide.
-//  2. **The hover card's `role="dialog"` is a DOM descendant of the
+// **The hover card's `role="dialog"` is a DOM descendant of the
 //     `role="menu"`.** `HoverCard` renders its layer inline next to the
 //     trigger — deliberately, "no portal is needed" (`HoverCard.tsx`). The
 //     trigger here is a menu item, so the layer is emitted inside the menu, and
@@ -210,25 +201,14 @@
 //     layer — but that is astryx's rendering detail carrying the ARIA
 //     structure, not something this file guarantees.
 
-import { useEffect, useRef, useId, type ReactNode } from 'react';
+import { useEffect, useRef, useId } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
-import { Divider } from '@astryxdesign/core/Divider';
-import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
-/* The app's own icon set, for the one glyph astryx does not ship: `folder`.
-   Aliased because both are called `Icon` and both are used here — astryx's for
-   the controls it also owns (check, close, the send arrow), this one for the
-   folder chip, which is the same glyph `DirectoryField` draws so the product's
-   two folder controls do not show different folders. */
-import { Icon as AppIcon } from '../../../ui/icon/public.tsx';
-import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
@@ -237,6 +217,9 @@ import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
+import {
+  FolderPill, NO_STARTING_POINT, StartingPointPill, type StartingPoint,
+} from '../default-pills/public.tsx';
 import styles from './new-track.module.css';
 
 /**
@@ -296,15 +279,23 @@ export type NewTrackFormProps = Readonly<{
   error: string | null;
   /**
    * Templates the user may start from, from `GET /api/track-templates`. An
-   * empty array is a legitimate, fully working state — no-template only.
+   * empty canonical roster is fully usable when the Area has no saved
+   * template. If an Area preference is still unresolved, Create stays blocked
+   * until the roster resolves or the reader explicitly chooses No template.
    */
   templates: readonly TrackTemplate[];
+  /** Distinguishes an empty canonical roster from a read still in flight. */
+  templatesLoaded: boolean;
   /**
-   * Set when the template read failed. It is a *notice*, not an error: the
-   * composer still submits. Told rather than hidden, so "where did my templates
-   * go" has an answer on screen.
+   * Set when the template read failed. It is a visible roster notice rather
+   * than the form's create-error channel. The composer may still submit with
+   * No template, but an unresolved saved Area preference fails closed until
+   * the reader explicitly clears it.
    */
   templatesError?: string | null;
+  /** Snapshot of the Area preferences when this route opened. */
+  initialTemplateId: string | null;
+  initialCwd: string | null;
   /**
    * The reader's own recipes, from `GET /api/track-recipes` (#1292). Empty is
    * the ordinary day-one state and is not an error: the menu then looks
@@ -336,56 +327,6 @@ export type NewTrackFormProps = Readonly<{
 const ISSUE_DEVELOPMENT = 'issue-development';
 
 /**
- * What the picker has selected — a **tagged union**, not an id string (#1292).
- *
- * The tag is not decoration. `template_id` and `recipe_id` are separate,
- * mutually exclusive request fields — sending both is a 400 — and they are
- * drawn from two different id spaces served by two different endpoints, with
- * no `builtin` / `read_only` discriminator on either payload (the kernel
- * records that as intentional in `routes/track_recipes.rs`: the kind *is*
- * which endpoint answered). A bare string cannot say which space a value came
- * from, and two things went wrong the moment recipes joined the list:
- *
- *  1. `templates.find((t) => t.id === selected)` resolves a **recipe** id that
- *     happens to equal a template key, and the request then names a template
- *     the reader never picked;
- *  2. the stale-selection fallback beside it asks the same question, so a
- *     recipe deleted in another window silently resolved against the template
- *     list instead of falling back to "no template".
- *
- * Both call sites are below and both read the tag first.
- */
-type StartingPoint =
-  | Readonly<{ kind: 'none' }>
-  | Readonly<{ kind: 'template'; id: string }>
-  | Readonly<{ kind: 'recipe'; id: string }>;
-
-/**
- * "No template" — the absence of a starting point, which is what goes on the
- * wire (both id keys absent) and what the composer opens on.
- */
-const NO_STARTING_POINT: StartingPoint = Object.freeze({ kind: 'none' });
-
-/**
- * What the template chip says when nothing has been picked.
- *
- * It names the **default**, not a question. An earlier cut had it ask ("Choose
- * a template") on the theory that an unset control should say what it is for.
- * That is right for a control whose unset state is *undecided*, and wrong for
- * this one: there is no undecided state here — no template is a real, working
- * choice, it is the one this page opens on, and it is what gets created if the
- * chip is never touched. A control that asks a question it has already answered
- * makes a settled default look like an outstanding task.
- *
- * `No template` and not `Blank`: `Blank` was the codebase's word for "no
- * `template_id` on the wire", and it had leaked onto a chip a person reads
- * before they know this app has templates at all. The same string serves as the
- * chip and as the menu's first row, which is now a plain identity rather than
- * two strings that have to be kept in step.
- */
-const NO_TEMPLATE = 'No template';
-
-/**
  * The greeting, by the reader's own clock.
  *
  * Taken as an argument rather than read inside, so the boundaries are testable
@@ -415,42 +356,8 @@ const TASK_LABEL = 'What this track should do';
 
 const TASK_PLACEHOLDER = 'What should this track do?';
 
-/**
- * What the folder chip says while no folder has been picked — its visible text,
- * its accessible name and its hover string at once.
- *
- * Like the template chip, it names the default rather than asking: leaving this
- * alone is not an omission, it is the *managed* branch — the kernel allocates a
- * directory under the workspace root, `git init`s it and owns it — and that is
- * the right answer for most tracks. Picking a folder is the exception, so the
- * chip states what will happen and stays out of the way.
- *
- * It is the chip's *text* only. The accessible name is built separately from
- * `FOLDER_PURPOSE`, because a name read on its own has to say which kind of
- * control it is — and once a folder is picked, "Neige workspace: /srv/app"
- * would be the default's name glued to the value that replaced it.
- */
-const FOLDER_PLACEHOLDER = 'Neige workspace';
-/**
- * What the folder control *is*, for the accessible name — which the chip's own
- * text cannot carry in either state: unset it is the default's name, and set it
- * is a bare basename ("app"), which tells a reader nothing about which `app`.
- * The full path rides in the name too, for the same reason.
- */
-const FOLDER_PURPOSE = 'Folder';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
-
-/**
- * The segment that identifies a path: its last one, or `/` for the root, which
- * has none. A chip sits in a row of chips and cannot hold
- * `/home/kenji/src/neige-calm` without becoming the row; the whole path is one
- * hover or one screen reader away, in the name.
- */
-function basenameOf(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  return trimmed === '' ? '/' : trimmed.slice(trimmed.lastIndexOf('/') + 1);
-}
 
 /** Mirrors the enum in the bound plugin's `input_schema`. */
 type MergePolicy = 'hold-for-ratify' | 'auto-merge';
@@ -467,15 +374,22 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 }
 
 export function NewTrackForm({
-  submitting, error, templates, templatesError = null, recipes = [], onManageRecipes,
-  listDirectory, onSubmit,
+  submitting, error, templates, templatesLoaded, templatesError = null,
+  initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
 }: NewTrackFormProps) {
   const fieldId = useId();
+  // Creation preferences are a route-opening snapshot. Area events may update
+  // this prop while the same New Track route remains mounted; mixing that live
+  // value with the existing local selection would silently clear an unresolved
+  // opening default instead of either keeping or adopting one coherent state.
+  const openingTemplateId = useRef(initialTemplateId).current;
   const [message, setMessage] = useState('');
-  const [selected, setSelected] = useState<StartingPoint>(NO_STARTING_POINT);
+  const [selected, setSelected] = useState<StartingPoint>(openingTemplateId === null
+    ? NO_STARTING_POINT
+    : { kind: 'template', id: openingTemplateId });
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
-  const [cwd, setCwd] = useState('');
+  const [cwd, setCwd] = useState(initialCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   const folderId = `${fieldId}-folder`;
@@ -504,7 +418,10 @@ export function NewTrackForm({
    * A starting point that vanished between renders (the list refetched without
    * it, or the reader deleted the recipe in the manage screen) must not leave a
    * selection pointing at nothing; falling back to no template is the safe
-   * direction — it always submits.
+   * direction — it always submits. A persisted Area default is the exception:
+   * silently clearing that preference would create the Track from a different
+   * starting point, so it stays selected and blocks Create until the roster
+   * resolves or the reader explicitly chooses another row.
    *
    * **Each lookup is confined to its own id space by the tag.** Before #1292
    * this was one `templates.find` against a bare string, which for a recipe id
@@ -519,24 +436,21 @@ export function NewTrackForm({
   const chosenRecipe = selected.kind === 'recipe'
     ? recipes.find((recipe) => recipe.id === selected.id)
     : undefined;
+  const unresolvedAreaDefault = openingTemplateId !== null
+    && selected.kind === 'template'
+    && selected.id === openingTemplateId
+    && chosen === undefined;
   const effectiveSelection: StartingPoint = selected.kind === 'none'
     || (selected.kind === 'template' && chosen !== undefined)
     || (selected.kind === 'recipe' && chosenRecipe !== undefined)
+    || unresolvedAreaDefault
     ? selected
     : NO_STARTING_POINT;
-  /* The chip's text. `chosen` and `chosenRecipe` are never both set — the tag
-     makes that structural, not a convention — so this reads as "whichever kind
-     is selected, or the default". */
-  const chosenTitle = chosen?.title ?? chosenRecipe?.title ?? NO_TEMPLATE;
-  /* Headings only when there is something to tell apart. Day one the reader
-     has no recipes, and the menu is then exactly the list it was before this
-     feature existed: no empty group, no "no recipes yet" row. That copy
-     belongs on the manage screen, which has room for it. */
-  const showGroupHeadings = recipes.length > 0 && templates.length > 0;
   const wantsInput = needsInput(chosen);
   const issueDev = wantsInput
     && effectiveSelection.kind === 'template'
     && effectiveSelection.id === ISSUE_DEVELOPMENT;
+  const templatePending = unresolvedAreaDefault && !templatesLoaded && templatesError === null;
   const parsedIssue = issueDev ? parseGitHubIssueUrl(issueUrl) : null;
 
   // Fail-closed: a bound template this build has no editor for cannot be
@@ -545,26 +459,29 @@ export function NewTrackForm({
   const unsupportedInput = wantsInput && !issueDev;
   const issueUrlTouched = issueUrl.trim() !== '';
   const issueUrlBad = issueDev && issueUrlTouched && parsedIssue === null;
-  const inputBlocker = unsupportedInput || (issueDev && parsedIssue === null);
+  const inputBlocker = unresolvedAreaDefault || unsupportedInput || (issueDev && parsedIssue === null);
   /* Blank by the *kernel's* rule, not JS's: `isBlankForKernel` is the one
      place that criterion is written (`core/domain/track.ts`), and `submit`
      below asks it the same question. A gate that used `trim()` here would
      light up Create for a draft the server refuses — see that function for the
      code point the two disagree about. */
   const valid = !isBlankForKernel(message) && !inputBlocker;
-  /* The folder control's accessible name *and* its hover string — one value,
-     because they answer the same question and must not drift apart. Neither is
-     the chip's text: unset that text is the default's name, and set it is a
-     bare basename, and neither survives being read on its own. */
-  const folderName = cwd === '' ? `${FOLDER_PURPOSE}: ${FOLDER_PLACEHOLDER}` : `${FOLDER_PURPOSE}: ${cwd}`;
-
   /*
    * One status slot on the composer, and the two things that can fill it never
    * coexist: `templatesError` means the list is empty, and an empty list has no
    * bound template to be unsupported. Error vs warning is the difference that
    * matters to a reader — one blocks the submit, the other does not.
    */
-  const status = unsupportedInput
+  const status = templatePending
+    ? { type: 'warning' as const, message: 'Loading the Area’s default template…' }
+    : unresolvedAreaDefault
+      ? {
+        type: 'error' as const,
+        message: templatesError === null
+          ? 'The Area’s default template is not available in this build. Choose another starting point.'
+          : `${templatesError} Choose “No template” to continue without the saved default.`,
+      }
+      : unsupportedInput
     ? { type: 'error' as const, message: 'This template needs input this version cannot collect yet.' }
     : templatesError !== null
       ? { type: 'warning' as const, message: `${templatesError} You can still create a track without one.` }
@@ -577,15 +494,13 @@ export function NewTrackForm({
        `text.trim()` on, and `"  keep indentation  "` reached the agent with
        the indentation gone. */
     if (isBlankForKernel(text) || inputBlocker || submitting) return;
-    /* Spread, not `cwd: folder || undefined`: the caller keys the whole
+    /* Spread, not `cwd: cwd || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
-       inspects the draft before it is serialized — including the tests.
-
-       The trim here is the path's, not the sentence's: a `cwd` is a filesystem
-       path chosen in the picker, where surrounding space is never meant. */
-    const folder = cwd.trim();
-    const base = { message: text, ...(folder === '' ? {} : { cwd: folder }) };
+       inspects the draft before it is serialized — including the tests. A
+       non-empty path travels byte-for-byte: leading/trailing spaces are legal
+       POSIX path characters, not form whitespace. */
+    const base = { message: text, ...(cwd === '' ? {} : { cwd }) };
     if (effectiveSelection.kind === 'none') { onSubmit(base); return; }
     /* A recipe carries `recipe_id` and stops here. It can never also carry
        `template_id`: the union has one arm at a time, so the exclusivity the
@@ -722,122 +637,26 @@ export function NewTrackForm({
                no labels above it and no paragraph under it. */
             footerActions={(
               <HStack gap={1} align="center" className={styles.controls}>
-                <DropdownMenu
+                <StartingPointPill
+                  templates={templates}
+                  templatesLoaded={templatesLoaded}
+                  recipes={recipes}
+                  value={effectiveSelection}
+                  onChange={setSelected}
+                  onManageRecipes={onManageRecipes}
                   placement="above"
-                  button={{
-                    id: triggerId,
-                    label: chosenTitle,
-                    /* The chip's text is the choice; its *name* has to survive
-                       being read on its own, out of the row, with nothing beside
-                       it — so it says which kind of choice it is. Unset the two
-                       coincide, because "Choose a template" already is that
-                       sentence. */
-                    'aria-label': `Template: ${chosenTitle}`,
-                    variant: 'secondary',
-                    size: 'sm',
-                    className: styles.trigger,
-                  }}
-                >
-                  {/* The absence of a template is an alternative like any other,
-                      and it is the one the composer opens on. It carries no hover
-                      card because it has no tasks to show — its whole content is
-                      its name. */}
-                  <TemplateChoice
-                    label={NO_TEMPLATE}
-                    isSelected={effectiveSelection.kind === 'none'}
-                    onSelect={() => setSelected(NO_STARTING_POINT)}
-                  />
-                  {/* ── Mine, then the built-ins ────────────────────────────
-                      Rows look the same for both kinds, because to a reader
-                      choosing one they *are* the same thing: a report the new
-                      track starts from. What differs is only who wrote it, and
-                      that is what the headings say.
-
-                      Mine first, in server order; the built-ins keep the order
-                      the kernel constant declares. And neither kind carries an
-                      edit or delete affordance here — omit, never disable
-                      (`systems/cards/ui/board-host.tsx`): a gesture the reader
-                      can see but not use is worse than one that is not on this
-                      screen. Editing lives behind `Manage recipes…` below. */}
-                  <MenuGroup heading={showGroupHeadings ? 'My recipes' : null}>
-                    {recipes.map((recipe) => (
-                      <TemplateChoice
-                        /* Prefixed because the two id spaces are unrelated and
-                           a recipe may legitimately be called `small-change`.
-                           An unprefixed key would collide and React would
-                           reuse one row's state for the other. */
-                        key={`recipe:${recipe.id}`}
-                        label={recipe.title}
-                        isSelected={effectiveSelection.kind === 'recipe' && effectiveSelection.id === recipe.id}
-                        onSelect={() => setSelected({ kind: 'recipe', id: recipe.id })}
-                      />
-                    ))}
-                  </MenuGroup>
-                  <MenuGroup heading={showGroupHeadings ? 'Built in' : null}>
-                    {templates.map((template) => (
-                      <TemplateChoice
-                        key={`template:${template.id}`}
-                        label={template.title}
-                        tasks={template.tasks}
-                        isSelected={effectiveSelection.kind === 'template' && effectiveSelection.id === template.id}
-                        onSelect={() => setSelected({ kind: 'template', id: template.id })}
-                      />
-                    ))}
-                  </MenuGroup>
-                  {/* The way to the authoring screen, and the only one: there
-                      is no other entry point to recipes in the product, so it
-                      is here whether or not the reader has any yet — a menu
-                      that offers recipes and no way to write one would be a
-                      dead end. It is an action, not a choice, so it sits under
-                      a rule and changes no selection. */}
-                  <Divider />
-                  <DropdownMenuItem label="Manage recipes…" onClick={onManageRecipes} />
-                </DropdownMenu>
-
-                {/* The folder, #1147 S3. The chip's text is the default's name
-                    until a folder is picked and the folder's basename after; the
-                    name says which control it is and carries the full path,
-                    because neither of those texts survives being read alone.
-                    `aria-haspopup="dialog"` because it opens one — see the
-                    `Dialog` at the end of this component. */}
-                <Button
-                  type="button"
-                  id={folderId}
-                  variant="secondary"
-                  size="sm"
-                  className={styles.trigger}
-                  aria-haspopup="dialog"
-                  aria-label={folderName}
-                  icon={<AppIcon name="folder" size="sm" />}
-                  label={cwd === '' ? FOLDER_PLACEHOLDER : basenameOf(cwd)}
-                  onClick={() => setBrowsing(true)}
-                  /* The one attribute astryx has no prop for, passed through as
-                     a rest prop: it is what makes a chip truncated to a
-                     basename one hover from readable. astryx drops `title` from
-                     `BaseProps` in favour of a `tooltip` prop, which would mount
-                     a floating layer on a control whose whole job is to open
-                     one. Same reasoning, and the same shape, as
-                     `DirectoryField`'s. */
-                  {...{ title: folderName }}
+                  triggerId={triggerId}
                 />
 
-                {/* Create time is the only entry into the attached choice, so the
-                    way *back* to the managed default has to exist here too —
-                    there is no later screen for it. It appears beside the folder
-                    it undoes and only once there is one; icon-only, because a
-                    control that undoes a choice should not be wider than the
-                    choice. */}
-                {cwd !== '' && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    isIconOnly
-                    icon={<Icon icon="close" size="sm" />}
-                    label={FOLDER_CLEAR_LABEL}
-                    onClick={() => setCwd('')}
-                  />
-                )}
+                {/* Shared with the Area editor so the two folder preferences
+                    keep one compact, borderless pill contract. */}
+                <FolderPill
+                  buttonId={folderId}
+                  value={cwd}
+                  clearLabel={FOLDER_CLEAR_LABEL}
+                  onBrowse={() => setBrowsing(true)}
+                  onClear={() => setCwd('')}
+                />
               </HStack>
             )}
           /* Astryx's own `ChatSendButton` is named "Send", which is true of
@@ -913,139 +732,5 @@ export function NewTrackForm({
         />
       </Dialog>
     </div>
-  );
-}
-
-/**
- * One alternative in the template menu, and — when it has tasks — the
- * "what will this give me" card behind it.
- *
- * ## The row is the trigger
- *
- * An earlier cut hung the card off a separate "N tasks" label in the row's
- * `endContent`. `HoverCard` renders a string child as a focusable
- * `<span tabIndex={0}>`, so that label was a *second* tab stop inside every
- * row — a composite control is supposed to be one stop.
- *
- * The card now hangs off the option itself. It costs no tab stop, because
- * `DropdownMenuItem` renders `tabIndex={-1}`: the menu is entered from its
- * trigger and walked with arrow keys, and `useListFocus.focusIndex` moves real
- * DOM focus onto the `[role="menuitem"]` element. `focusin` on the option is
- * therefore what opens the card — the keyboard gets the same affordance as the
- * pointer, on the same element, with no stop of its own.
- *
- * `focusTrigger="always"` is load-bearing and not defensive: the default
- * `'auto'` attaches focus listeners only when `useHoverCard`'s `isFocusable`
- * says so, and that helper returns `false` for an element with `tabindex="-1"`
- * — which is every menu item here. Left at `'auto'` the card would be
- * hover-only, i.e. the original defect with a new shape.
- *
- * ## The one sharp edge, reported as measured
- *
- * `useHoverCard` attaches a *native* `keydown` listener to its trigger that
- * calls `stopPropagation()` on Escape. The trigger here is the menu item, so
- * that listener sits below `DropdownMenu`'s React `onKeyDown` — which is
- * delegated at the root and therefore never runs. Escape's effect on the
- * *menu* is thereby handed to the engine's close request against
- * `popover="auto"`, and which layer that request lands on turns on whether the
- * DOM listener already hid the card: measured in Chromium it goes both ways
- * between runs, and in jsdom the menu never closes at all.
- *
- * The card itself always closes on Escape, and the menu always closes on Tab —
- * `DropdownMenu` handles Tab itself, per the APG menu-button pattern — so the
- * picker is not a keyboard trap.
- *
- * ## Why a HoverCard and not a Tooltip
- *
- * A tooltip is short non-interactive text and closes the moment the pointer
- * leaves the trigger, so a scrolling list inside one is unreachable — you
- * cannot move the mouse into it. `HoverCard` keeps itself open while the
- * pointer or focus is inside its content.
- *
- * ## The content
- *
- * Nothing here is authored copy: `key` and `goal` come from the `task` blocks
- * the created track's report is seeded with, so this cannot drift from what the
- * template actually does the way a hand-written description would (#1209
- * declined to add one for exactly that reason).
- */
-/**
- * One labelled band of the picker, in the shape astryx's own data-driven menu
- * gives a section: `role="group"` with an `aria-label`, and the visible
- * heading `aria-hidden` inside it.
- *
- * Copied from `renderDropdownItems.tsx` rather than reached for, because the
- * compound path this menu has to use — the template rows are wrapped in
- * `HoverCard`s — exposes no section component. The *markup* is astryx's; only
- * the type rank is ours (`styles.menuGroupHeading`, the quiet rank
- * `kernel-owned` uses on the track page: a fact about the rows, not a row).
- *
- * The heading is `aria-hidden` and the group carries the same string as its
- * `aria-label` so a screen reader hears the band once, on entering it, instead
- * of meeting an unowned text node between menu items. `role="group"` is a
- * legal child of `role="menu"`; a bare `<span>` would not be, and
- * `useListFocus` finds `[role="menuitem"]` by descendant query, so the extra
- * level costs the keyboard nothing.
- *
- * `heading === null` renders the rows and no band at all — not an unnamed
- * group. One group is not a grouping.
- *
- * Not collapsible, unlike the sidebar's `TrackSection` this borrows the
- * static-header half from: a popover that hides some of its own options behind
- * a disclosure is a menu you cannot see, and the reader opened it precisely to
- * see the options.
- */
-function MenuGroup({ heading, children }: Readonly<{ heading: string | null; children: ReactNode }>) {
-  if (heading === null) return <>{children}</>;
-  return (
-    <div role="group" aria-label={heading}>
-      <div className={styles.menuGroupHeading} aria-hidden="true">{heading}</div>
-      {children}
-    </div>
-  );
-}
-
-function TemplateChoice({ label, tasks, isSelected, onSelect }: Readonly<{
-  label: string;
-  tasks?: TrackTemplate['tasks'];
-  isSelected: boolean;
-  onSelect: () => void;
-}>) {
-  const item = (
-    <DropdownMenuItem
-      label={label}
-      onClick={onSelect}
-      /* `DropdownMenuItem` is a `role="menuitem"` with no `aria-checked` to
-         set — astryx exposes no `menuitemradio`. The check icon alone would
-         say nothing to a screen reader, so the state is also spelled out in
-         the item's accessible name. */
-      endContent={isSelected ? (
-        <>
-          <Icon icon="check" size="sm" color="accent" />
-          <VisuallyHidden>Selected</VisuallyHidden>
-        </>
-      ) : undefined}
-    />
-  );
-  if (tasks === undefined || tasks.length === 0) return item;
-  return (
-    <HoverCard
-      placement="end"
-      focusTrigger="always"
-      content={(
-        // Scrolling and a ceiling are ours: `HoverCard` has no max-height, and
-        // its `className`/`xstyle` props never reach the rendered layer, so the
-        // only place to bound the height is the content we pass in.
-        <span className={styles.taskScroll}>
-          <List listStyle="decimal" density="compact">
-            {tasks.map((task) => (
-              <ListItem key={task.key} label={task.key} description={task.goal} />
-            ))}
-          </List>
-        </span>
-      )}
-    >
-      {item}
-    </HoverCard>
   );
 }

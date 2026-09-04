@@ -24,7 +24,10 @@ afterEach(cleanup);
 const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 
 function area(overrides: Partial<Area> = {}): Area {
-  return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
+  return {
+    id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
+    defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0, ...overrides,
+  };
 }
 
 function track(overrides: Partial<Track> = {}): Track {

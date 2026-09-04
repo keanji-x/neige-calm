@@ -104,6 +104,16 @@ pub struct Area {
     pub sort: f64,
     #[serde(default)]
     pub kind: AreaKind,
+    /// Built-in Track template preselected by the official New Track surface.
+    /// `None` keeps "No template" as the Area's creation default.
+    #[serde(default)]
+    #[schema(nullable = true, required = true)]
+    pub default_template_id: Option<String>,
+    /// Exact attached Git working directory preselected for a new Track.
+    /// `None` keeps the server-managed Neige workspace default.
+    #[serde(default)]
+    #[schema(nullable = true, required = true)]
+    pub default_cwd: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

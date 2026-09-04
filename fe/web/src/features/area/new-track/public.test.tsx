@@ -33,6 +33,7 @@ const TASK_PLACEHOLDER = 'What should this track do?';
    control it is on top of that. */
 const FOLDER_PLACEHOLDER = 'Neige workspace';
 const FOLDER_CHIP_NAME = `Folder: ${FOLDER_PLACEHOLDER}`;
+const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 
 /* The template chip. It always names the current choice — "No template" until
    one is picked — so the name has one shape, and the assertions vary the tail
@@ -79,6 +80,9 @@ function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {})
     submitting: false,
     error: null,
     templates: TEMPLATES,
+    templatesLoaded: true,
+    initialTemplateId: null,
+    initialCwd: null,
     /* Required, like `listDirectory` and for the same reason: a call site that
        forgot it would render the one route into the recipe editor as a dead
        menu row. */
@@ -568,6 +572,112 @@ describe('Start from — no template is the default and stays free', () => {
     // A `status`, not an `alert`: nothing the user did failed.
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText(/Could not load templates\..*still create a track without one/)).toBeTruthy();
+  });
+});
+
+describe('Area creation defaults', () => {
+  it('submits the Area template and exact attached folder when the reader accepts both', async () => {
+    const { onSubmit } = renderForm({
+      initialTemplateId: 'small-change',
+      initialCwd: '/srv/area-default',
+    });
+    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Folder: /srv/area-default' }).textContent)
+      .toContain('area-default');
+    await fillMessage();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({
+      message: 'Ship the thing', template_id: 'small-change', cwd: '/srv/area-default',
+    });
+  });
+
+  it('lets one Track explicitly return to No template and a new managed folder', async () => {
+    const { onSubmit } = renderForm({
+      initialTemplateId: 'small-change',
+      initialCwd: '/srv/area-default',
+    });
+    await chooseTemplate('No template');
+    await userEvent.click(screen.getByRole('button', { name: FOLDER_CLEAR_LABEL }));
+    await fillMessage();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
+  it('never silently clears an Area template whose roster has not loaded', async () => {
+    const { onSubmit } = renderForm({
+      templates: [],
+      templatesLoaded: false,
+      initialTemplateId: 'small-change',
+    });
+    await fillMessage();
+    expect(submitButton().disabled).toBe(true);
+    expect(screen.getByText('Loading the Area’s default template…')).toBeTruthy();
+
+    await openTemplates();
+    await userEvent.click(screen.getByRole('menuitem', { name: /^No template/ }));
+    expect(submitButton().disabled).toBe(false);
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
+  it('keeps the Area template snapshot when the same route receives newer Area props', async () => {
+    const rendered = renderForm({
+      templates: [],
+      templatesLoaded: false,
+      initialTemplateId: 'opening-default',
+    });
+    await fillMessage();
+    expect(submitButton().disabled).toBe(true);
+
+    rendered.rerender(
+      <NewTrackForm {...rendered.props} initialTemplateId={null} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Template: opening-default' })).toBeTruthy();
+    expect(submitButton().disabled).toBe(true);
+    expect(screen.getByText('Loading the Area’s default template…')).toBeTruthy();
+  });
+
+  it('blocks a saved Area template that is absent from a loaded roster', async () => {
+    const { onSubmit } = renderForm({
+      templates: [],
+      templatesLoaded: true,
+      initialTemplateId: 'retired-template',
+    });
+    await fillMessage();
+    expect(submitButton().disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Template: retired-template (unavailable)' }))
+      .toBeTruthy();
+    expect(screen.getByText(/Area’s default template is not available/)).toBeTruthy();
+
+    await openTemplates();
+    await userEvent.click(screen.getByRole('menuitem', { name: /^No template/ }));
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
+  it('keeps a saved Area template blocked when the roster read fails', async () => {
+    const { onSubmit } = renderForm({
+      templates: [],
+      templatesLoaded: false,
+      templatesError: 'Could not load templates.',
+      initialTemplateId: 'small-change',
+    });
+    await fillMessage();
+    expect(submitButton().disabled).toBe(true);
+    expect(screen.getByText(/Could not load templates\..*Choose “No template”/)).toBeTruthy();
+
+    await openTemplates();
+    await userEvent.click(screen.getByRole('menuitem', { name: /^No template/ }));
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
+  it('preserves legal whitespace in the Area default folder path', async () => {
+    const { onSubmit } = renderForm({ initialCwd: '/srv/ area ' });
+    await fillMessage();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', cwd: '/srv/ area ' });
   });
 });
 

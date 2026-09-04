@@ -5,6 +5,8 @@ mod support;
 mod actor;
 #[path = "cases/admin_maintenance.rs"]
 mod admin_maintenance;
+#[path = "cases/area_defaults.rs"]
+mod area_defaults;
 #[path = "cases/area_folders.rs"]
 mod area_folders;
 #[path = "cases/area_system_endpoint.rs"]

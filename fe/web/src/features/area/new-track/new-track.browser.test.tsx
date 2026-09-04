@@ -48,6 +48,9 @@ function renderForm() {
       submitting={false}
       error={null}
       templates={TEMPLATES}
+      templatesLoaded
+      initialTemplateId={null}
+      initialCwd={null}
       onManageRecipes={vi.fn()}
       /* #1147 S3 — the folder picker's port. Never exercised here: this file
          is about the Start from menu's top layer. It is passed because the
@@ -131,7 +134,7 @@ async function openMenu() {
 }
 
 describe('Start from, in a real engine', () => {
-  it('dismisses cleanly from an option that owns a hover card', async () => {
+  it('dismisses the hover card and menu together with one Escape', async () => {
     renderForm();
     const menu = await openMenu();
     const option = screen.getByRole('menuitem', { name: /^Small change/ });
@@ -143,27 +146,16 @@ describe('Start from, in a real engine', () => {
     option.focus();
     await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); });
 
-    /* Escape dismisses the card. This much is `useHoverCard`'s own doing —
-       its native keydown listener on the trigger — and it is deterministic. */
+    /* The shared Template pill owns Escape in capture, before the HoverCard's
+       native listener can strand DropdownMenu's delegated handler. One key
+       closes both layers and restores the trigger — the same behavior the
+       Area editor needs so Escape does not bubble on into its host Dialog. */
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => { expect(card?.matches(':popover-open')).toBe(false); });
-
-    /* Whether the *menu* also goes is not asserted, and that is a finding, not
-       an omission: `useHoverCard`'s listener calls `stopPropagation()` on
-       Escape, so `DropdownMenu`'s React `onKeyDown` — delegated at the root —
-       never runs, and the menu's dismissal is left to the UA's close request
-       against `popover="auto"`. Which layer that request lands on depends on
-       whether the DOM listener already hid the card, i.e. on a race between a
-       listener and the engine; measured here it goes both ways run to run.
-       So the escape hatch that *is* pinned is the one that does not depend on
-       that race — Tab, which `DropdownMenu` handles itself (menu items are
-       `tabIndex={-1}`, so the APG menu-button pattern closes on Tab and hands
-       focus back to the trigger). That is what makes this not a keyboard
-       trap, which is the property that actually matters. */
-    await userEvent.keyboard('{Tab}');
     await waitFor(() => {
+      expect(card?.matches(':popover-open')).toBe(false);
       expect(menu.matches(':popover-open')).toBe(false);
       expect(trigger().getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(trigger());
     });
 
     /* And the picker still works afterwards. Closing leaves two states behind

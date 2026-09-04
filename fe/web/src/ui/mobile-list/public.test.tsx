@@ -526,6 +526,21 @@ describe('MobileListItem markers', () => {
 });
 
 describe('MobileListPage markers', () => {
+  it('forwards a header action without turning page content into the control', async () => {
+    const onClick = vi.fn();
+    render(
+      <MobileListPage
+        title="Areas"
+        actions={<button type="button" onClick={onClick}>New area</button>}
+      >
+        rows
+      </MobileListPage>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    expect(onClick).toHaveBeenCalledOnce();
+    expect(screen.getByText('rows').closest('button')).toBeNull();
+  });
+
   it('puts the module marker on the page container', () => {
     const { container } = render(
       <MobileListPage title="Cards" moduleMarker="cards">rows</MobileListPage>,

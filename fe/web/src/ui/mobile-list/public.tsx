@@ -57,11 +57,12 @@ function motionClass(motion: 'none' | 'forward' | 'back'): string {
 }
 
 export function MobileListPage({
-  title, backLabel, onBack, motion = 'none', children, moduleMarker, titleFieldMarker,
+  title, backLabel, onBack, actions, motion = 'none', children, moduleMarker, titleFieldMarker,
 }: Readonly<{
   title: string;
   backLabel?: string;
   onBack?: () => void;
+  actions?: ReactNode;
   motion?: 'none' | 'forward' | 'back';
   children: ReactNode;
   /** #1234 — the value of `data-nc-module` on this page's container. Omit on a
@@ -80,6 +81,7 @@ export function MobileListPage({
         title={title}
         backLabel={backLabel}
         onBack={onBack}
+        actions={actions}
         titleFieldMarker={titleFieldMarker}
       />
       <div className={styles.content}>{children}</div>

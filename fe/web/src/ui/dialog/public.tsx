@@ -46,17 +46,76 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
 export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
+  const viewOpenersRef = useRef(new Map<number, HTMLElement>());
+  const previousViewRef = useRef<Readonly<{ depth: number; id: number | null }>>({ depth: 0, id: null });
   const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const popView = useCallback(() => setViews((current) => current.slice(0, -1)), [setViews]);
   const pushView = useCallback((view: DialogChildView) => {
     const id = ++nextViewId.current;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && panelRef.current?.contains(active)) {
+      viewOpenersRef.current.set(id, active);
+    }
     setViews((current) => [...current, { ...view, id }]);
     return () => setViews((current) => current.filter((candidate) => candidate.id !== id));
   }, [setViews]);
   const view = views.at(-1) ?? null;
-  useEffect(() => { if (!open) setViews([]); }, [open, setViews]);
+  useEffect(() => {
+    if (open) return;
+    setViews([]);
+    viewOpenersRef.current.clear();
+    previousViewRef.current = { depth: 0, id: null };
+  }, [open, setViews]);
+
+  /*
+   * A child view changes which half of the still-mounted Dialog is visible.
+   * The opening-focus effect below only keys on `open`, so without this handoff
+   * focus stays on the now-`display:none` opener; popping the child then removes
+   * its focused Cancel/Select control and browsers drop focus to <body>.
+   *
+   * Capture happens synchronously in `pushView`, before React hides the base
+   * body. On a push, focus the first control in the child body (or the Dialog
+   * chrome if it has none). On a pop, restore the exact control that opened the
+   * removed view. The id comparison makes disposing a non-top LIFO entry a
+   * focus no-op: the visible child did not change.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const current = { depth: views.length, id: view?.id ?? null };
+    const previous = previousViewRef.current;
+    previousViewRef.current = current;
+    if (current.depth === previous.depth && current.id === previous.id) return;
+    if (current.id === previous.id) return;
+    const restoring = current.depth < previous.depth && previous.id !== null
+      ? viewOpenersRef.current.get(previous.id) ?? null
+      : null;
+    const frame = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (panel === null) return;
+      const reachable = focusables(panel);
+      if (restoring !== null && reachable.includes(restoring)) {
+        restoring.focus();
+      } else {
+        const child = current.depth > 0
+          ? panel.querySelector<HTMLElement>('[data-nc-dialog-child-view]')
+          : null;
+        (child === null ? reachable : focusables(child))[0]?.focus();
+      }
+      // `.focus()` can silently fail even for an element our syntactic filter
+      // accepted (for example a button inside a newly-disabled fieldset).
+      // Verify the result after both the restore and child-entry branches.
+      const active = document.activeElement;
+      if (active === null || !(reachable as readonly Element[]).includes(active)) {
+        (reachable[0] ?? panel).focus();
+      }
+      if (current.depth < previous.depth && previous.id !== null && previous.id !== current.id) {
+        viewOpenersRef.current.delete(previous.id);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, view?.id, views.length]);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -204,7 +263,9 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
         else onClose();
       }}><Icon name="close" /></button>}</header>}
       <div className="dialog-body" style={showingView ? { display: 'none' } : undefined}>{children}</div>
-      {showingView && <div className="dialog-body dialog-child-view">{view.body}</div>}
+      {showingView && (
+        <div className="dialog-body dialog-child-view" data-nc-dialog-child-view="">{view.body}</div>
+      )}
     </div>
   </div></DialogViewContext.Provider>, document.body);
 }

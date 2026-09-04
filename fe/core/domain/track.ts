@@ -184,10 +184,11 @@ export type NewTrackBody = Readonly<{
    */
   title?: string;
   /**
-   * Issue #1131 — optional. The new FE omits it; the kernel then stores
-   * `$HOME` and does not insert a `area_folders` row. Present values
-   * (including `""`) keep the pre-#1131 absolute-path + claim rules.
-   * `null` matches OpenAPI (`string | null`) and is the same omitted branch.
+   * Issue #1131 / #1147 — optional. The new FE omits it for a managed
+   * workspace, which the server allocates beneath its workspace root. An Area
+   * default or an explicit folder supplies the attached path instead; present
+   * values keep the absolute-path + claim rules. `null` matches OpenAPI
+   * (`string | null`) and is the same omitted branch.
    */
   cwd?: string | null;
   theme: ThemeRgb;

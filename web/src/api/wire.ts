@@ -87,9 +87,9 @@ export type KernelTrackDetail = Omit<Schemas['TrackDetail'], 'cards' | 'overlays
 
 export type WireEvent = GeneratedEvent;
 
-// ---------------- Request DTOs (mirror `model::NewX` / `XPatch`) ----------------
+// ---------------- Request DTOs (mirror the REST route schemas) ----------------
 
-export type NewAreaBody   = Schemas['NewArea'];
+export type NewAreaBody   = Schemas['CreateAreaRequest'];
 export type AreaPatchBody = Schemas['AreaPatch'];
 
 /**

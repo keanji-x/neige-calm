@@ -24,15 +24,17 @@ because it is per-row data. The running pulse is a token-timed animation
 
 - The rail is a `<nav aria-label="Workspace">`; each section has an `<h2>`.
 - Track rows are `<button>` with `aria-current="page"` when their URL is open.
-- An Area is one disclosure button with `aria-expanded`; it has no page URL.
-- The area count badge is `aria-hidden`: the row's accessible name already
-  carries the area name, and a bare number read after it is noise.
-- The disclosure chevron is decorative inside the Area button. The permanent
-  new-Track button and the hover-revealed Area delete are siblings, so no
+- An Area is a muted disclosure button with `aria-expanded` and no page URL.
+  Click, Enter, Space and assistive activation all toggle it immediately;
+  editing belongs to the permanently visible actions menu. Controlled open
+  state comes from Astryx `useCollapsible`; the product-specific row DOM keeps
+  `…` and `+` as non-nested sibling controls.
+- The chevron is decorative inside that button. The permanent
+  new-Track button and permanent Area actions menu are siblings, so no
   interactive element is nested inside another.
-- On a no-hover primary pointer the Area delete is permanently visible;
-  a wide viewport does not imply a mouse. Activating an Area initial in the
-  collapsed rail focuses and scrolls to the disclosure revealed by expansion.
+- The Area actions menu is permanently visible with every pointer type.
+  Activating an Area initial in the collapsed rail focuses and scrolls to the
+  disclosure revealed by expansion.
 - **Intentionally not done:** no skip-to-main link (INV-A11Y-058). The rail is
   short and this has never been raised as a pain point; re-evaluate if a second
   long section lands. "There is no skip link" is a decision, not a defect.
@@ -71,21 +73,22 @@ line, watch the named test go red) before landing.
   whose accessible name is per-area (`New track in <area>`), plus a `title`; the
   rail has one per area, so a shared `"New track"` name would be N
   indistinguishable controls (§4.4 also forbids the tooltip standing in for the
-  name). It sits at the trailing edge with hover-revealed delete one
-  control-step inboard, and `.areaRow` reserves both gutters at rest, so neither
-  control moves on hover. Delete stays visible under `(hover: none)`. Both
-  marks are stroked `ui/icon` glyphs, not literal
+  name). It sits at the trailing edge with a permanently visible actions menu
+  one control-step inboard, and `.areaRow` reserves both gutters, so neither
+  control moves on hover. Both marks are stroked `ui/icon` glyphs, not literal
   characters — an icon box with bare text is a source-contract violation. The
   collapsed strip gets no `+`: one glyph per area, and that glyph is the area.
-  As with INV-SIDEBAR-012 the *visual* reveal is CSS and `browser`-tier; jsdom
-  pins the names and that the two controls do not share a class.
+  Their visual permanence and alignment are CSS and `browser`-tier; jsdom pins
+  the names and that the two controls do not share a class.
 - **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
   Closing during the await aborts the request, dismisses its owning dialog and
   releases pending immediately.
 
 ## Deliberate gaps
 
-- Area drag-reorder is not in the rail. Double-click (or F2) renames an Area;
-  delete appears on row hover and still uses typed confirmation.
-- The sidebar's new-area flow is the sole consumer of `AREA_PALETTE`; it picks
-  a colour at random and sends it to the kernel (INV-DUP-006).
+- Area drag-reorder is not in the rail. Edit from the row actions menu opens one
+  Dialog for name, default template, and default folder. Delete lives in the
+  same menu and still uses typed confirmation.
+- The AppShell Area-editor flow is the sole consumer of `AREA_PALETTE`; it picks
+  a colour at random and sends it to the kernel (INV-DUP-006). Hosting it above
+  desktop Sidebar and mobile Areas makes both trigger the same Dialog and state.

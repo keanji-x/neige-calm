@@ -21,6 +21,11 @@ export const areaWireSchema = z.object({
   color: z.string(),
   sort: z.number(),
   kind: areaKindSchema.default('user'),
+  // Historical `area.updated` payloads predate both creation preferences.
+  // Current API snapshots emit explicit nulls; the decoder owns replay
+  // compatibility so every domain consumer still sees required fields.
+  default_template_id: z.string().nullable().default(null),
+  default_cwd: z.string().nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -32,6 +37,8 @@ export type Area = Readonly<{
   color: string;
   sort: number;
   kind: AreaKind;
+  defaultTemplateId: string | null;
+  defaultCwd: string | null;
   createdAt: number;
   updatedAt: number;
 }>;
@@ -43,9 +50,24 @@ export function toArea(wire: AreaWire): Area {
     color: wire.color,
     sort: wire.sort,
     kind: wire.kind,
+    defaultTemplateId: wire.default_template_id,
+    defaultCwd: wire.default_cwd,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
   };
+}
+
+/**
+ * Chooses the newest authoritative snapshot of one Area.
+ *
+ * Current server writes advance `updatedAt` strictly, so a lower version can
+ * never replace a higher one when the HTTP response and event stream race.
+ * Equal versions deliberately accept the incoming carrier: historical event
+ * logs can contain multiple same-millisecond updates and replay order remains
+ * their only tie-breaker.
+ */
+export function newestArea(current: Area, incoming: Area): Area {
+  return current.updatedAt > incoming.updatedAt ? current : incoming;
 }
 
 export function areaListOperation(): ApiOperation<AreaWire[]> {
@@ -73,8 +95,20 @@ export function sortedAreas(areas: readonly Area[]): Area[] {
     : left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 }
 
-export type NewAreaBody = Readonly<{ name: string; color: string; sort?: number }>;
-export type AreaPatchBody = Readonly<{ name?: string; color?: string; sort?: number }>;
+export type NewAreaBody = Readonly<{
+  name: string;
+  color: string;
+  sort?: number;
+  default_template_id?: string | null;
+  default_cwd?: string | null;
+}>;
+export type AreaPatchBody = Readonly<{
+  name?: string;
+  color?: string;
+  sort?: number;
+  default_template_id?: string | null;
+  default_cwd?: string | null;
+}>;
 
 export function createAreaOperation(body: NewAreaBody): ApiOperation<AreaWire> {
   return { method: 'POST', path: '/api/areas', body, responseSchema: areaWireSchema };

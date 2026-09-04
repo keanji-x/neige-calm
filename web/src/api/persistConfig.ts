@@ -52,7 +52,7 @@ export const PERSIST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 /** Manual schema lever for cache-format or API-contract changes that should
  *  evict all persisted Query snapshots, independent of package release
  *  versioning discipline. */
-export const PERSIST_CACHE_SCHEMA_VERSION = 'query-cache-v1';
+export const PERSIST_CACHE_SCHEMA_VERSION = 'query-cache-v2';
 
 /** Build-time buster derived from cache schema + `web/package.json` version.
  *  Exported so the provider and tests read the same source of truth. */

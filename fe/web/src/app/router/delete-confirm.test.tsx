@@ -92,7 +92,8 @@ it('does not navigate on an area delete success that arrives after cancellation'
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await screen.findByRole('button', { name: 'Delete area Work' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Area actions for Work' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Delete area' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Type Work to confirm.' }), 'Work');
   await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
   await waitFor(() => expect(resolveDelete).toBeTypeOf('function'));

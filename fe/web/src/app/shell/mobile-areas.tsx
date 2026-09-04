@@ -11,6 +11,7 @@
 // event: the shell's formula conjoins `mobileSection === 'areas'`, so a sheet
 // that is not rendered cannot claim the screen.
 
+import { IconButton } from '@astryxdesign/core/IconButton';
 import type { Area } from '../../../../core/domain/area.ts';
 import { visibleAreas } from '../../../../core/domain/area.ts';
 import {
@@ -19,9 +20,11 @@ import {
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 
 export function MobileAreas({
-  areas, tracksByArea, selectedAreaId, motion, onSelectArea, onBack, onOpenTrack,
+  areas, tracksByArea, selectedAreaId, motion,
+  onSelectArea, onBack, onCreateArea, onEditArea, onOpenTrack,
 }: Readonly<{
   areas: readonly Area[];
   tracksByArea: ReadonlyMap<string, readonly Track[]>;
@@ -29,6 +32,8 @@ export function MobileAreas({
   motion: 'none' | 'forward' | 'back';
   onSelectArea: (areaId: string) => void;
   onBack: () => void;
+  onCreateArea: () => void;
+  onEditArea: (area: Area) => void;
   onOpenTrack: (trackId: string) => void;
 }>) {
   const rows = visibleAreas(areas);
@@ -37,7 +42,21 @@ export function MobileAreas({
   if (selected !== undefined) {
     const tracks = visibleTracks(tracksByArea.get(selected.id) ?? []);
     return (
-      <MobileListPage title={selected.name} backLabel="Areas" motion={motion} onBack={onBack}>
+      <MobileListPage
+        title={selected.name}
+        backLabel="Areas"
+        motion={motion}
+        onBack={onBack}
+        actions={(
+          <IconButton
+            label={`Edit area ${selected.name}`}
+            icon={<Icon name="more" />}
+            variant="ghost"
+            size="lg"
+            onClick={() => onEditArea(selected)}
+          />
+        )}
+      >
         <MobileList title="Tracks">
           {tracks.map((track) => (
             <MobileListItem
@@ -54,7 +73,19 @@ export function MobileAreas({
   }
 
   return (
-    <MobileListPage title="Areas" motion={motion}>
+    <MobileListPage
+      title="Areas"
+      motion={motion}
+      actions={(
+        <IconButton
+          label="New area"
+          icon={<Icon name="plus" />}
+          variant="ghost"
+          size="lg"
+          onClick={onCreateArea}
+        />
+      )}
+    >
       <MobileList>
         {rows.map((area) => {
           const tracks = visibleTracks(tracksByArea.get(area.id) ?? []);

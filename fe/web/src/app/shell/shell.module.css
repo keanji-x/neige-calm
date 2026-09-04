@@ -350,37 +350,28 @@
    * The rule is about *optical* distance, not about DOM depth, and it is one
    * line:
    *
-   *     text-to-text distance must increase monotonically
-   *     with the size of the structural break.
+   *     every Area/Track row uses one cadence; section breaks alone increase.
    *
    * Two Gestalt consequences it has to satisfy, and both are checkable:
-   *   - a heading sits CLOSER to its own content than that content sits to
-   *     itself, otherwise it reads as one more row;
-   *   - a break between groups exceeds any break inside one.
+   *   - an Area label and its Tracks share one cadence; the label is already
+   *     distinguished by tone and by its disclosure control;
+   *   - a muted Area disclosure carries grouping without extra whitespace.
    *
    * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
    * a 24px label slot:
    *
-   *   area name  -> its first track    --space-0    0px   ->  9.6px
+   *   area name  -> its first track    --space-1    2px   -> 11.6px
    *   row        -> row               --space-1    2px   -> 11.6px
    *   section lb -> its first row     --space-2    4px   -> 15.3px
-   *   area group -> area group        --space-6   12px   -> 21.6px
    *   section    -> section           --space-8   16px   -> 27.3px
    *
-   * 9.6 < 11.6 < 15.3 < 21.6 < 27.3. Monotonic, and each step is a clear jump
-   * rather than a nudge.
+   * 11.6 = 11.6 < 15.3 < 27.3. Area and Track rows are even; section-level
+   * breaks remain clear jumps rather than nudges.
    *
-   * The two zeroes-and-fours are not arbitrary and not interchangeable: an area
-   * name gets 0 while a section label gets 4 because their boxes donate
-   * different amounts of their own leading (4.8px vs 6.5px). Equal gaps there
-   * would produce unequal distances, which is the whole reason this table is
-   * written in rendered pixels and not only in tokens.
-   *
-   * A previous round stated this as "every container's gap is half its
-   * parent's". That is a tidier sentence and it is wrong: it ranks by DOM
-   * nesting, and DOM nesting is not structural-break size. It handed the area
-   * name the same 4px a section label gets, putting it 13.6px from its own
-   * first track while the tracks sat 11.6px apart — grouping stated backwards.
+   * The Area used to get a zero gap to make parent/child proximity carry the
+   * hierarchy by itself. Its deliberately quieter type, position and chevron
+   * already say “group”, so the special-case rhythm was only visual noise,
+   * including between Areas.
    *
    * Every step is a `gap` on the container that owns the relationship, never a
    * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
@@ -397,7 +388,7 @@
   .areaGroup {
     display: flex;
     flex-direction: column;
-    gap: var(--space-0);
+    gap: var(--space-1);
   }
 
   .sectionRows,
@@ -410,7 +401,7 @@
   .areaGroups {
     display: flex;
     flex-direction: column;
-    gap: var(--space-6);
+    gap: var(--space-1);
   }
 
   .sectionHead {
@@ -467,7 +458,7 @@
   }
 
   /*
-   * The area name starts exactly where every track title starts: one 28px
+   * The Area name starts exactly where every Track title starts: one 28px
    * leading gutter (4px inset + 20px box + 4px clearance) for the chevron,
    * which is the same arithmetic as the track row's pin gutter, and then text.
    *
@@ -482,18 +473,14 @@
     grid-template-columns: minmax(0, 1fr);
     align-items: center;
 
-    /* --row-h-sm, not §6.2's --row-h. That 28 was sized for a row carrying an
-       8px identity dot and a 12.5px name; the dot is gone, and §2.5 lists
-       --row-h-sm for "rail 里的 track 行、菜单项、树行" — an area row is a tree
-       row. 24 still clears the 20px chevron, and it is what lets the name sit
-       closer to its first track than the tracks sit to each other. */
+    /* The disclosure shares the Track row's 24px slot. */
     min-block-size: var(--row-h-sm);
     padding-block: 0;
 
     /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
-       because the row carries a hover delete and a permanent `+` (4 + 20 + 4
-       + 20 + 4 = 52). Both are reserved at rest, so the name ellipsizes at the
-       same column whether or not delete has been revealed. */
+       because the row carries permanent actions and a permanent `+`
+       (4 + 20 + 4 + 20 + 4 = 52). Both are reserved, so the name ellipsizes at
+       the same column while both controls remain visible. */
     padding-inline:
       calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
       calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
@@ -501,7 +488,8 @@
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out;
   }
 
   .areaRow:hover {
@@ -512,17 +500,9 @@
     outline-offset: -2px;
   }
 
-  /* The disclosure glyph is decoration inside the one disclosure button. The
-     Area name no longer navigates to a page, so splitting the chevron into a
-     second tab stop would give two controls the same expand/collapse job. */
   .chevron {
     position: absolute;
     inset-block-start: 50%;
-    /* 4px = (--control-h − --control-h-sm) / 2. This box shares one column with
-       every track row's pin, and the column is set by the 28px chrome icons
-       above it (the collapse chevron, the section `+`), which are flush to the
-       rail padding; a 20px box inset by half the difference lands its glyph on
-       their centre line. The row's own padding reserves the space. */
     inset-inline-start: var(--space-2);
     display: grid;
     place-items: center;
@@ -541,21 +521,21 @@
   }
 
   /*
-   * Same size as its tracks, same weight — **tone is the only thing that
-   * demotes it**. One channel, and the cheapest one on §3.1's table.
+   * Same size as its Tracks, same weight — **tone is the only thing that
+   * demotes it**. The row remains a disclosure; it is not a Track destination.
    *
    * Two rounds got this wrong in opposite directions. First 12.5/500/--text-2:
    * heavier weight saying "more important", lighter tone saying "less", and
    * §3.1 ranks weight above tone with no rule for which wins — a net rank that
-   * is genuinely undefined is what "别扭" was. Then 11/600/--text-3: internally
-   * consistent, but it spent *three* channels to say one thing, and made a
-   * clickable row look like the inert section label above it.
+   * is genuinely undefined is what "别扭" was. Then 11/600/--text-3 spent
+   * three channels to say one thing.
    *
    * What actually carries the hierarchy now is everything that is free (§3.2
    * rule 6 — 位置是免费通道，先用它): the disclosure chevron this row alone
-   * owns, the 12px above it and 0 below it, and the empty status column that
-   * every track fills and no area does. Type only has to stay out of the way,
-   * so it spends one step of tone and nothing else (§3.2 rule 7 — 降低优于抬高).
+   * owns, the even 2px cadence around it, and the status column every Track
+   * fills and no Area does. Type
+   * only has to stay out of the way, so it spends one step of tone and nothing
+   * else (§3.2 rule 7 — 降低优于抬高).
    */
   .areaName {
     min-inline-size: 0;
@@ -570,14 +550,18 @@
        `--leading-none` is for boxes whose height is set by something else (icon
        buttons, badges), not for a line of prose that clips itself. */
     line-height: var(--leading-tight);
-    color: var(--text-3);
+    /* The Area-only mix moves one small step toward the rail while retaining
+       AA body contrast in both themes (4.59:1 light, 8.32:1 dark in Chromium).
+       `--text-4` is decorative/disabled-only at ~2.2:1 and may not carry this
+       readable label. Hover returns to the canonical muted text token. */
+    color: color-mix(in oklab, var(--text-3) 94%, var(--surface-rail));
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
   .areaRow:hover .areaName,
   .areaRow:focus-visible .areaName {
-    color: var(--text);
+    color: var(--text-3);
   }
 
   /*
@@ -585,14 +569,14 @@
    * whole reason it is here rather than 0.
    *
    * The rail's chrome icons (the collapse chevron, the section `+`) are 28px
-   * boxes flush to the rail's inline padding; its row icons (this ×, the track
+   * boxes flush to the rail's inline padding; its row icons (this more menu, the track
    * row's pin and ×) are 20px. Flush-right on both meant their *glyphs* sat on
    * two vertical lines 4px apart — near enough to read as a mistake, far enough
    * to see. Insetting the small boxes by half the difference puts every icon in
    * the rail on one column. The same 4px is applied in
    * `features/track/row/row.module.css`; both derive it, neither hardcodes it.
    */
-  .areaDelete,
+  .areaActionsButton,
   .areaNew {
     display: grid;
     place-items: center;
@@ -602,77 +586,44 @@
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
-    transition: opacity var(--motion-quick) ease-out;
   }
 
   /*
    * Two trailing controls on one row, and the order is §4.5's: the one that
-   * persists at rest goes outermost, so a resting row shows a single glyph
-   * flush to the trailing gutter rather than one floating beside a gap. That is
-   * the `+`. Delete takes the inboard slot — 4 + 20 + 4 — which is the same
+   * sits outermost goes flush to the trailing gutter rather than floating
+   * beside a gap. That is the `+`. Area actions take the inboard slot —
+   * 4 + 20 + 4 — which is the same
    * step `features/track/row/row.module.css` puts between its pin and its
    * delete, derived from the same two tokens.
    *
-   * Both slots are reserved by `.areaRow`'s trailing padding, so revealing the
-   * delete control moves nothing.
+   * Both visible slots are reserved by `.areaRow`'s trailing padding, so the
+   * name never runs underneath either control.
    */
   .areaNew {
     position: absolute;
     inset-block-start: 50%;
     inset-inline-end: var(--space-2);
     translate: 0 -50%;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out;
   }
 
-  .areaDelete {
+  .areaActions {
     position: absolute;
     inset-block-start: 50%;
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
     z-index: var(--z-raised);
     translate: 0 -50%;
 
-    /* Hover-revealed visually; the button remains in the focus order, and
-       keyboard focus restores it. Rename is the Area row's double-click/F2. */
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .areaDelete:hover,
-  .areaDelete:focus-visible {
-    opacity: 1;
-    pointer-events: auto;
-    background: var(--overlay-hover-strong);
-    color: var(--error-text);
-  }
-
-  .areaRowWrap:hover .areaDelete,
-  .areaRowWrap:focus-within .areaDelete {
+    /* Management is a first-class Area action, so the trigger stays visible. */
     opacity: 1;
     pointer-events: auto;
   }
 
-  /* A wide viewport is not proof of a hover-capable pointer: tablets and
-     touch displays can render the desktop rail too. Since the Area page is
-     gone, hiding delete there would make it unreachable. */
-  @media (hover: none) {
-    .areaDelete {
-      opacity: 1;
-      pointer-events: auto;
-    }
-  }
-
-  .areaRenameInput {
-    min-block-size: var(--row-h-sm);
-    inline-size: 100%;
-    padding-block: 0;
-    padding-inline:
-      calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
-      calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--paper);
-    font-size: var(--text-base);
-    line-height: var(--leading-tight);
-    color: var(--text);
+  .areaActionsButton {
+    min-inline-size: var(--control-h-sm);
+    min-block-size: var(--control-h-sm);
+    padding: 0;
   }
 
   /* Permanent, so it gets the quiet tone at rest and only picks up a fill on
@@ -687,21 +638,28 @@
 
   /*
    * §5.3's most important rule: when a region's emptiness has exactly one
-   * remedy, render that remedy's own interface in the position and at the size
-   * the content would have had. This input opens on the first area row's spot
-   * and is therefore an area row's height.
+   * remedy, render that remedy's own interface in the content position. This
+   * button occupies the first Area slot but keeps the larger action-row height
+   * (`--row-h`) instead of imitating the compact disclosure (`--row-h-sm`).
    */
-  .inlineCreate {
+  .emptyAreaCreate {
     min-block-size: var(--row-h);
     padding-block: 0;
 
-    /* The one field in the app that is deliberately *inset* rather than flush:
-       it opens where an area row would be, and an area row's text starts 28px in.
-       See the `.areaRow` note — this input is standing in for that row. */
+    /* The one empty-state action deliberately *inset* rather than flush: it
+       occupies the Area list position, whose disclosure text starts 28px in. */
     padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
     font-size: var(--text-base);
-    line-height: var(--leading-none);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .emptyAreaCreate:hover,
+  .emptyAreaCreate:focus-visible {
     color: var(--text);
+    background: var(--overlay-hover);
   }
 
   .userRow {
@@ -822,7 +780,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .areaRow,
-    .areaDelete,
+    .areaActions,
     .areaNew,
     .iconButton,
     .chevron {

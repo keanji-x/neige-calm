@@ -53,6 +53,16 @@ function renderFormInDialog(
   return { ...utils, onCreated, onCancel, qc };
 }
 
+type ListedArea = Awaited<ReturnType<typeof api.listAreas>>[number];
+
+function area(id: string, name: string, color = '#5a9', sort = 0): ListedArea {
+  return {
+    id, name, color, sort, kind: 'user',
+    default_template_id: null, default_cwd: null,
+    updated_at: 0, created_at: 0,
+  };
+}
+
 beforeEach(() => {
   cleanup();
   document.body.innerHTML = '';
@@ -114,7 +124,7 @@ describe('NewTaskForm — cwd validation + area inference', () => {
 
   it('renders auto-match banner when resolve hits', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue({
       area_id: 'area-1',
@@ -136,7 +146,7 @@ describe('NewTaskForm — cwd validation + area inference', () => {
 
   it('renders area dropdown / new-area input when resolve misses', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -157,7 +167,7 @@ describe('NewTaskForm — cwd validation + area inference', () => {
 describe('NewTaskForm — submit', () => {
   it('posts createTrack with attach_folder=true for the existing-area branch', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
@@ -197,7 +207,7 @@ describe('NewTaskForm — submit', () => {
 
   it('posts createTrack with an empty title when task description is blank', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     const createSpy = vi.spyOn(api, 'createTrack').mockResolvedValue({
@@ -236,14 +246,7 @@ describe('NewTaskForm — submit', () => {
   it('mints a new area first, then posts the track for the new-area branch', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
-    const newArea = {
-      id: 'area-new',
-      name: 'Project Z',
-      color: '#5a9',
-      sort: 0,
-      updated_at: 0,
-      created_at: 0,
-    };
+    const newArea = area('area-new', 'Project Z');
     const areaSpy = vi.spyOn(api, 'createArea').mockResolvedValue(
       newArea as unknown as Awaited<ReturnType<typeof api.createArea>>,
     );
@@ -283,7 +286,7 @@ describe('NewTaskForm — submit', () => {
 
   it('surfaces folder-conflict 409 with a user-readable message', async () => {
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     vi.spyOn(api, 'createTrack').mockRejectedValue(
@@ -320,8 +323,8 @@ describe('NewTaskForm — submit', () => {
     // "another area" phrasing — so the user can find the offender
     // in the sidebar without copy/pasting a UUID.
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Mine', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'area-other', name: 'Atlas', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+      area('area-1', 'Mine'),
+      area('area-other', 'Atlas', '#c97', 1),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
     vi.spyOn(api, 'createTrack').mockRejectedValue(
@@ -363,8 +366,8 @@ describe('NewTaskForm — auto-match override', () => {
     // subsequent submit must use the user's manual choice, not the
     // auto-matched id.
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
+      area('area-2', 'Borealis', '#c97', 1),
     ]);
     vi.spyOn(api, 'resolveAreaPath').mockResolvedValue({
       area_id: 'area-1',
@@ -428,8 +431,8 @@ describe('NewTaskForm — auto-match override', () => {
     // manual areaChoice — otherwise the override would be silently
     // undone the next time the user keeps typing.
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
+      area('area-2', 'Borealis', '#c97', 1),
     ]);
     const resolveSpy = vi
       .spyOn(api, 'resolveAreaPath')
@@ -504,8 +507,8 @@ describe('NewTaskForm — race guard', () => {
     // race guard, the slow `/a` reply would land last and clobber the
     // `/b` state.
     vi.spyOn(api, 'listAreas').mockResolvedValue([
-      { id: 'area-1', name: 'Atlas', color: '#5a9', sort: 0, updated_at: 0, created_at: 0 },
-      { id: 'area-2', name: 'Borealis', color: '#c97', sort: 1, updated_at: 0, created_at: 0 },
+      area('area-1', 'Atlas'),
+      area('area-2', 'Borealis', '#c97', 1),
     ]);
     let resolveSlow: ((v: Awaited<ReturnType<typeof api.resolveAreaPath>>) => void) | null = null;
     const slowReply = new Promise<Awaited<ReturnType<typeof api.resolveAreaPath>>>((res) => {

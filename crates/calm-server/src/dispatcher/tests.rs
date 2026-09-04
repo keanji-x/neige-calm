@@ -1716,6 +1716,8 @@ fn planner_push_predicate_and_observation_mapping_agree() {
                 color: "#000000".into(),
                 sort: 0.0,
                 kind: crate::model::AreaKind::User,
+                default_template_id: None,
+                default_cwd: None,
                 created_at: 1,
                 updated_at: 1,
             }),
