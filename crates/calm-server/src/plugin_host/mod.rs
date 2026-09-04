@@ -1562,12 +1562,20 @@ impl PluginHost {
         Ok(raw.into_inner())
     }
 
-    /// Forced rotation: delete the existing row + restart the plugin so it
-    /// picks up the new token on its next spawn. The actual mint happens
-    /// inside `spawn` via `ensure_plugin_token`; we just clear the slot here.
+    /// Forced rotation: clear the plugin's token slot, and put the plugin into
+    /// the state its `enabled` bit calls for. The actual mint happens inside
+    /// `spawn` via `ensure_plugin_token`; we only clear the slot here.
+    ///
+    /// Two branches, on the row read inside the guard (#1226):
+    /// * `enabled` (or no row at all) — delete, then restart, so the plugin
+    ///   picks up a fresh token on the spawn that follows;
+    /// * `enabled = false` — stop (best effort), then delete, and return `Ok`
+    ///   **without** restarting. Rotation's request is "give me a new token";
+    ///   the restart is a side effect, and on a plugin the operator turned off
+    ///   that side effect would turn it back on.
     ///
     /// #1196 §2.2 — the registry lookup, the kind guard, the token delete and
-    /// the restart are ONE critical section. Split across guards, a concurrent
+    /// the restart (or the stop) are ONE critical section. Split across guards, a concurrent
     /// `uninstall` could land between the kind check and the restart, and the
     /// restart would then respawn a plugin that no longer exists.
     pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
@@ -1655,60 +1663,111 @@ impl PluginHost {
         // Both checks live in `rotate_admission_check` so the pre-lock probe is
         // this code rather than a second copy of it.
         let _manifest = self.rotate_admission_check(id)?;
-        // Clearing the row first means: even if restart fails mid-flight, the
-        // next spawn will mint fresh. Old (raw) token in any plugin's hands is
-        // already worthless once the process is killed below.
-        let _ = self.repo.plugin_token_delete(id).await;
-
-        // #1226 — the restart is rotation's *side effect*, not its request.
-        //
-        // Rotation's purpose is "give me a new token". On a plugin whose row
-        // says `enabled = false` the restart would start something the
-        // operator explicitly turned off, and nothing reconciles the result:
-        // the next boot's `autospawn_enabled` skips the plugin precisely
-        // BECAUSE it is disabled, so `DB enabled = false` + runtime `Running`
-        // is terminal. That is #1169 race 3 / `reload`'s P0-1 one endpoint
-        // over, reached without any concurrency at all.
-        //
-        // Skipping the restart serves the caller's actual request in full: the
-        // token row is already deleted above, and `enable` mints a fresh one on
-        // its next spawn (`ensure_plugin_token`).
+        // #1226 review B1/B2 — read the `enabled` bit FIRST, then branch. The
+        // delete used to come before this read; it now happens on whichever
+        // branch we take, so a read failure is fully inert instead of leaving
+        // the token destroyed and the rotation unfinished.
         //
         // **Read inside the guard, never before it.** A value read outside the
         // guard is stale the instant the guard is taken — that exact defect is
         // documented on `reload` one file over. We hold `guard` here.
         //
-        // **An absent row is not a disabled row** and proceeds, matching the
-        // rule the shared configuration gate
+        // **An absent row is not a disabled row** and takes the enabled branch,
+        // matching the rule the shared configuration gate
         // ([`Self::config_for_spawn_or_unavailable`]) enforces; a row that does
         // not exist cannot say "disabled". (The HTTP route 404s before it gets
         // here anyway.)
         //
         // **A read failure fails closed**: we must not guess "probably still
         // enabled" and resurrect a disabled plugin, for the same reason the
-        // supervisor's third segment does not. The token is already gone, so
-        // the honest answer is an error the operator can retry. This read is
-        // not a second copy of the gate's: the gate answers "may this spawn
-        // proceed", which is a question rotation reaches only by performing the
-        // restart it is trying to decide about.
+        // supervisor's third segment does not. Nothing has been written at this
+        // point, so the refusal is inert and the identical request will work
+        // once the store recovers. This read is not a second copy of the gate's:
+        // the gate answers "may this spawn proceed", which is a question
+        // rotation reaches only by performing the restart it is trying to
+        // decide about.
         let enabled = match self.repo.plugin_get_by_id(id).await {
             Ok(Some(row)) => row.enabled,
             Ok(None) => true,
             Err(e) => {
                 return Err(HostError::BadState(format!(
-                    "rotate `{id}`: the token was deleted but the plugin row \
-                     could not be read, so the restart was not attempted: {e}"
+                    "rotate `{id}`: the plugin row could not be read, so the \
+                     `enabled` bit could not be honoured; nothing was deleted \
+                     and nothing was restarted: {e}"
                 )));
             }
         };
+
         if !enabled {
+            // #1226 — the restart is rotation's *side effect*, not its request.
+            //
+            // Rotation's purpose is "give me a new token". On a plugin whose
+            // row says `enabled = false` a restart would start something the
+            // operator explicitly turned off, and nothing would reconcile the
+            // result: the next boot's `autospawn_enabled` skips the plugin
+            // precisely BECAUSE it is disabled, so `DB enabled = false` +
+            // runtime `Running` is terminal. That is #1169 race 3 / `reload`'s
+            // P0-1 one endpoint over, reached without any concurrency at all.
+            //
+            // **But skipping the restart is not the same as walking away**
+            // (review B1). If the plugin IS running here, the state is already
+            // the torn one this issue is about, and returning `Ok` on top of it
+            // preserves the tear instead of fixing it: deleting the token row
+            // does NOT stop the orphan, because the plugin token is verified
+            // once at the `initialize` handshake against the value the kernel
+            // holds in memory and no callback path reads `plugin_tokens` again.
+            // The process would keep working indefinitely.
+            //
+            // That state is reachable in a way the code above cannot prevent:
+            // a deployment upgraded from a build predating this fix can already
+            // be in it — the old unconditional rotate is exactly what produced
+            // it — and the rotate an operator runs after the upgrade is the
+            // natural place for it to be reconciled.
+            //
+            // So: stop, and only then delete. Ordered that way because a failed
+            // stop must leave the token row intact — a rotation that destroyed
+            // the token while a live process kept running would be strictly
+            // worse than doing nothing. `NotFound` means the host was not
+            // running this plugin, which is the ordinary case and benign, and
+            // is exactly how `disable` / `uninstall` / `restart_under` read it.
+            match self.stop_under(guard).await {
+                Ok(()) | Err(HostError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+            // Review B2 — a failed delete may not be reported as a successful
+            // rotation. This used to be `let _ = ...`, so a store that refused
+            // the DELETE answered 200 with the old hash still in place: the
+            // rotation silently did not happen. `plugin_token_delete` is a bare
+            // `DELETE ... WHERE plugin_id = ?1` with no `rows_affected()` check
+            // (`calm-truth/src/db/sqlite/out_of_domain.rs:652`), unlike its
+            // neighbours `plugin_delete` / `plugin_update_enabled`, so "there
+            // was no token row" is already `Ok(())` and only a real store
+            // failure is an `Err`. Propagating therefore cannot break a plugin
+            // that was never spawned.
+            self.repo.plugin_token_delete(id).await.map_err(|e| {
+                HostError::BadState(format!("rotate `{id}`: plugin_token_delete: {e}"))
+            })?;
             tracing::info!(
                 plugin_id = %id,
-                "token rotated for a disabled plugin; not restarting it — \
-                 `enable` will mint a fresh token on its next spawn"
+                "token rotated for a disabled plugin; not restarted, and any \
+                 live process was stopped — `enable` will mint a fresh token \
+                 on its next spawn"
             );
             return Ok(());
         }
+
+        // Clearing the row before the restart means: even if the restart fails
+        // mid-flight, the next spawn will mint fresh. Any raw token in the
+        // plugin's hands is worthless once the process is killed below.
+        //
+        // Review B2 — same reasoning as the disabled branch: a delete that
+        // failed is not a rotation that happened, and refusing here leaves the
+        // plugin running with the token it already had rather than restarting
+        // it into a token the kernel could not clear.
+        self.repo
+            .plugin_token_delete(id)
+            .await
+            .map_err(|e| HostError::BadState(format!("rotate `{id}`: plugin_token_delete: {e}")))?;
         self.restart_under(guard).await
     }
 
