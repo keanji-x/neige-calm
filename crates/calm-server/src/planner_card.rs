@@ -128,7 +128,10 @@ writes are transactional.
      `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, \
      and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
      sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
-     cancel a pending projected task. Use `calm.plan.list` to inspect status.
+     cancel a pending projected task. Use `calm.plan.list` to inspect status. \
+     For `codex`/`claude`, `goal` is a natural-language objective. For `terminal`, \
+     `goal` is the exact Shell command passed verbatim to the runner: write an \
+     executable command only, not a natural-language description.
    * Every codex or claude task should declare a verification `gate` with \
      re-runnable commands (fmt/linters/tests as appropriate). On tracks with \
      `require_task_gates`, an ungated codex/claude block write still succeeds, \
@@ -523,7 +526,10 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "`key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
     "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
-    "cancel a pending projected task. Use `calm.plan.list` to inspect status."
+    "cancel a pending projected task. Use `calm.plan.list` to inspect status. ",
+    "For `codex`/`claude`, `goal` is a natural-language objective. For `terminal`, ",
+    "`goal` is the exact Shell command passed verbatim to the runner: write an ",
+    "executable command only, not a natural-language description."
 );
 
 /// Exact paragraph oracle for the static task-block protocol. The shipped

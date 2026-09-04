@@ -170,7 +170,7 @@ For an ordinary task block, only three fields are required from you:
 | ------ | -------- | ----- |
 | `key`  | yes | Identifier for the task, matching `^[a-z0-9][a-z0-9._-]{0,63}$` |
 | `kind` | yes | `"codex"`, `"claude"` or `"terminal"` |
-| `goal` | yes | Non-empty string: what the task is to achieve |
+| `goal` | yes | For `codex`/`claude`, a natural-language objective. For `terminal`, the exact executable Shell command passed verbatim as `/bin/sh -c <goal>`—not a natural-language description. |
 
 Useful optional ones:
 

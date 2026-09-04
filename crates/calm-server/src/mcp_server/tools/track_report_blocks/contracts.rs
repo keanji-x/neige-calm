@@ -202,7 +202,13 @@ pub(super) fn kinds_table() -> Value {
                     "properties": {
                         "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                         "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                        "goal": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                        "goal": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": report_blocks::MAX_STRING_CHARS,
+                            "pattern": "\\S",
+                            "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)."
+                        },
                         "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                         "gate": {
                             "type": "object", "additionalProperties": false, "required": ["steps"],
@@ -238,7 +244,7 @@ pub(super) fn kinds_table() -> Value {
                     },
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
                 },
-                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Every string nested anywhere in `context` is limited to 2048 characters."
+                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. For a terminal task, put an executable command only in `goal`; the runner passes it verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     })
@@ -466,6 +472,16 @@ mod task_kind_contract_tests {
         for field in ["goal", "acceptance", "no_gate_reason"] {
             assert_eq!(properties[field]["pattern"], "\\S");
         }
+        let goal_description = properties["goal"]["description"]
+            .as_str()
+            .expect("task goal description");
+        assert!(
+            goal_description.contains("codex/claude: natural-language objective")
+                && goal_description.contains("terminal: exact Shell command")
+                && goal_description.contains("passed verbatim"),
+            "task goal description must distinguish agent objectives from terminal commands: \
+             {goal_description}"
+        );
         assert_eq!(properties["priority"]["minimum"], i64::MIN);
         assert_eq!(properties["priority"]["maximum"], i64::MAX);
         for field in ["cwd", "gate"] {
@@ -485,7 +501,12 @@ mod task_kind_contract_tests {
                     .contains("\\x00-\\x1F")
             );
         }
-        assert!(task["usage"].as_str().unwrap().contains("ready: true"));
+        let usage = task["usage"].as_str().unwrap();
+        assert!(usage.contains("ready: true"));
+        assert!(
+            usage.contains("terminal") && usage.contains("executable command only"),
+            "task usage must keep terminal goal semantics visible: {usage}"
+        );
 
         let kinds = kinds_descriptor();
         assert!(kinds.description.contains("`task`"));
