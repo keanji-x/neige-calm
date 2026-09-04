@@ -1214,7 +1214,7 @@
   test_tier: jsdom
   migration: migrated
 
-- id: INV-APP-115
+- id: INV-APP-114
   kind: invariant
   family: app-session-auth
   statement: >
@@ -2119,7 +2119,7 @@
   intentional_omission: false
   migration: migrated
 
-- id: INV-APP-114
+- id: INV-APP-115
   kind: invariant
   family: app-invalidation-policy
   statement: >
