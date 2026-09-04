@@ -327,6 +327,35 @@ export function configDraftFrom(
  * Keys outside `fields` are never emitted, so residue left by an older
  * manifest — which the kernel deliberately keeps in the row — cannot be
  * disturbed by a screen that does not show it.
+ *
+ * ## A switch moved *onto* its default deletes the key
+ *
+ * The third property above has a hole a switch falls straight through, and the
+ * hole is only reachable when a value is already stored. `verbose` defaults to
+ * `true`, the row stores `false`, the operator flips it back: the control now
+ * shows `true`, it differs from the seed, and the literal rule would post
+ * `{"verbose": true}` — which is today's manifest default, materialized into
+ * the row forever. Every other control has an out (clear the field, clear the
+ * choice, and the key is deleted); a switch has two positions and can send
+ * neither `null` nor "unset", so on this one control the literal rule and
+ * §2.2.4 cannot both hold.
+ *
+ * So for a boolean, **the value that equals the declared default means
+ * "inherit"**, and the patch says `null` — the kernel deletes the key and the
+ * manifest default applies again, which is exactly what the switch is showing.
+ * The alternative considered was a second, per-row clear affordance beside the
+ * switch; it was rejected because the pane's appearance is signed off, a switch
+ * that already sits on the default has no visible difference between "stored"
+ * and "inherited", and an extra control would ask the operator to distinguish
+ * two states that render identically and behave identically until the manifest
+ * changes.
+ *
+ * Two consequences, both intended. A boolean pinned explicitly to the same
+ * value as its default is not expressible — that is §2.2.4's whole point, not a
+ * loss. And a stored value that *already* equals the default is left alone,
+ * because the seed equals it and nothing here fires; it is indistinguishable on
+ * screen from the inherited one, and rewriting a row nobody edited is the thing
+ * this function exists not to do.
  */
 export function configPatchFrom(
   fields: readonly PluginConfigField[],
@@ -338,7 +367,7 @@ export function configPatchFrom(
     const next = draft[field.key] ?? null;
     const previous = base[field.key] ?? null;
     if (next === previous) continue;
-    patch[field.key] = next;
+    patch[field.key] = field.kind === 'boolean' && next === field.default ? null : next;
   }
   return patch;
 }
@@ -433,8 +462,15 @@ function fieldViolationOf(
  *     against. The kernel's sentence names the two possible fixes (reload, or
  *     repair `manifest.json`) and is better than anything restated here.
  *   * **409 `plugin_config_corrupt`** — the stored document is not an object.
- *     The exit exists and is a single request, so this is the one refusal that
- *     comes with an offer rather than only a sentence.
+ *     The exit exists and is a single request, so this comes with an offer
+ *     rather than only a sentence.
+ *   * **400 `plugin_config_too_large`** — the row is over the total cap because
+ *     of residue from keys older manifests declared. The kernel's own sentence
+ *     ends "resend this request with `?reset=true`", and it is the *only* way
+ *     out: no ordinary patch can shrink residue this form does not render. It
+ *     therefore takes the same offer. This is why the kernel gives the refusal
+ *     its own code — it is a 400 like every schema violation, and the exit it
+ *     names cannot be recovered from the message text.
  */
 export function configWriteError(
   failure: PluginApiFailure,
@@ -454,12 +490,14 @@ export function configWriteError(
   return {
     message: failure.message,
     fieldKey: null,
-    offersReset: failure.code === 'plugin_config_corrupt',
+    offersReset: failure.code === 'plugin_config_corrupt' || failure.code === 'plugin_config_too_large',
   };
 }
 
-/** What a reload attempt actually did, per #1284 §2.4. */
-export type PluginReloadOutcomeKind = 'applied' | 'starting' | 'busy' | 'unavailable' | 'stopped' | 'idle';
+/** What a reload attempt actually did, per #1284 §2.4, plus the one ending
+ *  §2.4 has no row for — see `unknown` in [`reloadOutcome`]. */
+export type PluginReloadOutcomeKind =
+  | 'applied' | 'starting' | 'busy' | 'unavailable' | 'stopped' | 'idle' | 'unknown';
 
 export type PluginReloadOutcome = Readonly<{
   kind: PluginReloadOutcomeKind;
@@ -491,6 +529,9 @@ export type PluginReloadOutcome = Readonly<{
  * the *attempt* — the state that follows it is the state of a plugin nobody
  * touched. `unavailable` is judged before the generic failure because it is
  * more specific than "it did not come up", and it carries the reason verbatim.
+ * `unknown` — the one ending §2.4 has no row for, because nothing observed the
+ * plugin — comes after both: a transport failure whose read-back still landed a
+ * state is a case with evidence, and the evidence wins.
  */
 export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
   const { failure, state, lastError } = facts;
@@ -516,6 +557,27 @@ export function reloadOutcome(facts: PluginRestartFacts): PluginReloadOutcome {
       message: lastError === undefined
         ? 'Configuration saved. The plugin did not come up with it, and the kernel recorded no reason.'
         : `Configuration saved. The plugin did not come up with it: ${lastError}`,
+    };
+  }
+  if (failure?.code === 'transport_failure' && state === 'unknown') {
+    /*
+     * The request never left the browser (or came back undecodable), and the
+     * read-back that would have settled it failed the same way. §2.4 has three
+     * rows and this is none of them: every one of them is a statement about
+     * what the *plugin* did, and nothing here observed the plugin at all.
+     *
+     * Falling through to `stopped` — as this used to — renders the strongest
+     * claim on the screen ("the plugin has stopped and did not start with the
+     * new configuration") out of the weakest evidence there is. The likeliest
+     * truth is the opposite: a request that never arrived did not stop
+     * anything, so the plugin is still up on its previous configuration. Both
+     * are guesses, so neither is stated.
+     */
+    return {
+      kind: 'unknown',
+      tone: 'warning',
+      message: 'Configuration saved. The restart request could not be delivered, so this plugin\'s '
+        + 'current state is unknown — check the connection and reload this screen to see where it is.',
     };
   }
   if (failure !== null || state === 'crashed') {

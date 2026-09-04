@@ -631,7 +631,7 @@ pub(crate) async fn disable_plugin(
     ),
     responses(
         (status = 200, description = "Config updated", body = PluginDetail),
-        (status = 400, description = "Plugin declares no `config_schema`, or the patched config violates it", body = ErrorBody),
+        (status = 400, description = "Plugin declares no `config_schema`, or the patched config violates it (`bad_request`); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`)", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
         (status = 409, description = "Another lifecycle operation holds this plugin (`plugin_busy`); or the plugin row exists but its manifest is not loaded in the kernel registry (`plugin_manifest_unloaded`); or its stored `user_config` is not a JSON object (`plugin_config_corrupt`, clearable with `?reset=true`)", body = ErrorBody),
         (status = 415, description = "Extractor-level rejection (missing/!= `application/json` content type). Raised by axum's `Json` extractor **before** this handler runs, so the body is plain text and carries no `code` — outside the `ErrorBody` contract"),
@@ -807,12 +807,22 @@ pub(crate) async fn patch_plugin_config(
     // to carry it: `?reset=true` with the keys the operator wants keeps their
     // current configuration and drops exactly the residue, in one request. That
     // is what keeps the cap from being the lockout cell 12 avoided.
+    //
+    // (#1284 S4 review P2-A) It owes that answer *machine-readably* as well.
+    // The message names the exit, but a client cannot act on an English
+    // sentence — the web UI offered its "discard the stored configuration"
+    // button only for `plugin_config_corrupt`, so the operator read an
+    // instruction they had no control to follow, and §2.2.1's "the cap is not a
+    // lockout" held only for people with `curl`. Hence
+    // `CalmError::PluginConfigTooLarge` rather than a bare `BadRequest`: same
+    // 400, same message, but distinguishable from the schema violations that
+    // share the status and have no such exit.
     let stored = Value::Object(merged);
     let stored_bytes = serde_json::to_string(&stored)
         .map(|s| s.len())
         .unwrap_or(usize::MAX);
     if stored_bytes > USER_CONFIG_MAX_BYTES {
-        return Err(CalmError::BadRequest(format!(
+        return Err(CalmError::PluginConfigTooLarge(format!(
             "config: storing this patch would make plugin `{id}`'s user_config {stored_bytes} \
              bytes, over the {USER_CONFIG_MAX_BYTES}-byte cap on the whole stored document. \
              Its declared keys are within the {TEMPLATE_INPUT_MAX_BYTES}-byte cap, so the excess \

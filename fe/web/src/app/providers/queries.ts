@@ -28,7 +28,7 @@ import {
   patchPluginConfigOperation, pluginDetailOperation, pluginsOperation, reloadPluginOperation,
   setPluginEnabledOperation,
   type PluginApiFailure, type PluginConfigApplyResult, type PluginConfigSaveResult,
-  type PluginConfigValue, type PluginDetail, type PluginListItem,
+  type PluginConfigValue, type PluginDetail, type PluginListItem, type PluginRestartFacts,
 } from '../../../../core/domain/plugins.ts';
 import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
@@ -1057,16 +1057,42 @@ export function usePluginConfigMutations(
           return { saved: false, failure: saved.failure };
         }
       }
+      /*
+       * §2.4 wants the plugin's state **read back after the attempt**, and that
+       * is a second request on *both* branches, not only the failing one.
+       *
+       * A 2xx `reload` answers with the detail as of the moment the handler
+       * returned; a connector's bring-up can complete — or fail — after it. So
+       * a 200 saying `running` followed by a detail saying `unavailable` with a
+       * `last_error` is an ordinary sequence, and trusting the POST body alone
+       * would confirm "restarted with it" over the top of the one diagnostic
+       * that exists. Reading back on the success branch too is what makes the
+       * verdict come from the plugin rather than from the response to the
+       * command.
+       *
+       * The read-back is best-effort in the same sense on both branches: if it
+       * cannot be made, the caller falls back to what it already knows, which
+       * is the POST's own detail after a 2xx and nothing at all after a
+       * refusal.
+       */
+      const readBack = async (fallback: PluginRestartFacts): Promise<PluginRestartFacts> => {
+        try {
+          const after = await runOperation(transport, pluginDetailOperation(id), unauthorized);
+          return { ...fallback, state: after.state, lastError: after.last_error };
+        } catch {
+          return fallback;
+        }
+      };
+
       try {
         const detail = await runOperation(transport, reloadPluginOperation(id), unauthorized);
-        /* Still a read of `state` + `last_error`, not of the status code: a
-           reload can answer 200 having left the plugin `unavailable`, and this
-           response is the kernel's post-attempt detail. */
+        const restart = await readBack({
+          failure: null,
+          state: detail.state,
+          lastError: detail.last_error,
+        });
         await refresh(id);
-        return {
-          saved: true,
-          restart: { failure: null, state: detail.state, lastError: detail.last_error },
-        };
+        return { saved: true, restart };
       } catch (error) {
         const failure = pluginFailureOf(error);
         /*
@@ -1082,17 +1108,9 @@ export function usePluginConfigMutations(
          * refusal's own message — which is worse than the truth, and better
          * than a guess.
          */
-        let state: PluginDetail['state'] = 'unknown';
-        let lastError: string | undefined;
-        try {
-          const after = await runOperation(transport, pluginDetailOperation(id), unauthorized);
-          state = after.state;
-          lastError = after.last_error;
-        } catch {
-          // Nothing to add: the refusal below is then all that is known.
-        }
+        const restart = await readBack({ failure, state: 'unknown' });
         await refresh(id);
-        return { saved: true, restart: { failure, state, lastError } };
+        return { saved: true, restart };
       }
     },
   };

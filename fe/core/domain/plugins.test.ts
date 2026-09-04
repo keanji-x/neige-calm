@@ -181,6 +181,41 @@ describe('configPatchFrom (#1284 §2.2.5)', () => {
     expect(configPatchFrom(fields, base, { ...base, verbose: true })).toEqual({});
   });
 
+  /*
+   * ── The stored-boolean pair (S4 review P1-A) ─────────────────────────────
+   *
+   * The case above starts from *nothing stored*, which is why it passed while
+   * the defect was live. The pair below starts from a stored value that is the
+   * opposite of the default — the only shape in which a switch can be moved
+   * onto its default at all — and it is a pair because a rule that silenced
+   * that direction by silencing the control would be just as wrong.
+   */
+  it('deletes the key when a stored boolean is moved back onto its default', () => {
+    // `verbose` defaults to `true`; the row holds `false`. Flipping it back is
+    // "follow the manifest again", and posting the literal `true` would instead
+    // freeze today's default into the row for good.
+    const base = configDraftFrom(fields, { verbose: false });
+    expect(base.verbose).toBe(false);
+    expect(configPatchFrom(fields, base, { ...base, verbose: true })).toEqual({ verbose: null });
+  });
+
+  it('still writes a boolean moved away from its default', () => {
+    const base = configDraftFrom(fields, { verbose: true });
+    expect(configPatchFrom(fields, base, { ...base, verbose: false })).toEqual({ verbose: false });
+  });
+
+  it('writes a boolean literally when the manifest declares no default for it', () => {
+    /* No default means there is nothing to inherit, so `null` would delete the
+       key and leave the plugin with neither value. */
+    const undeclared = configFieldsOf({
+      type: 'object',
+      properties: { flag: { type: 'boolean' } },
+    });
+    const base = configDraftFrom(undeclared, {});
+    expect(base.flag).toBe(false);
+    expect(configPatchFrom(undeclared, base, { flag: true })).toEqual({ flag: true });
+  });
+
   it('cannot touch a key the current schema does not declare', () => {
     /* Residue from an older manifest is deliberately kept by the kernel and
        shown by nothing. A form that emitted it would delete or rewrite values
@@ -222,6 +257,54 @@ describe('configWriteError', () => {
     );
     expect(error.fieldKey).toBe('retries');
     expect(error.message).toBe('expected integer, found a string');
+  });
+
+  it('lands a violation on the declared key it names, not on one that starts the same', () => {
+    /*
+     * `token` and `token_extra` are both declared, and the match is exact
+     * rather than a prefix — a `startsWith` would put `token_extra`'s error on
+     * `token`'s control, which is a red field with someone else's reason in it.
+     * Both directions are checked because only one of them is asymmetric.
+     */
+    const pair = configFieldsOf({
+      type: 'object',
+      properties: { token: { type: 'string' }, token_extra: { type: 'string' } },
+    });
+    expect(configWriteError(
+      { code: 'bad_request', message: 'config.token_extra: expected string, found a number' },
+      pair,
+    ).fieldKey).toBe('token_extra');
+    expect(configWriteError(
+      { code: 'bad_request', message: 'config.token: expected string, found a number' },
+      pair,
+    ).fieldKey).toBe('token');
+  });
+
+  it('offers the reset for the byte-cap refusal too, without reading the prose', () => {
+    /*
+     * (S4 review P2-A.) A 400 like every schema violation, and the only one of
+     * them whose exit is `?reset=true` — the excess is residue from keys this
+     * form does not render and no ordinary patch can shrink. The judgement is
+     * the kernel's own code; matching `?reset=true` in the message would make
+     * an English sentence a wire format, so the code is what is read here and
+     * a plain `bad_request` carrying the same words must *not* offer it.
+     */
+    const tooLarge = configWriteError(
+      {
+        code: 'plugin_config_too_large',
+        message: 'config: storing this patch would make plugin `git-forge`\'s user_config 40000 '
+          + 'bytes, over the 32768-byte cap. Resend this request with `?reset=true`',
+      },
+      fields,
+    );
+    expect(tooLarge.offersReset).toBe(true);
+    expect(tooLarge.fieldKey).toBeNull();
+    expect(tooLarge.message).toContain('32768');
+
+    expect(configWriteError(
+      { code: 'bad_request', message: 'something mentioning ?reset=true in passing' },
+      fields,
+    ).offersReset).toBe(false);
   });
 
   it('keeps a violation of an undeclared key off the form', () => {
@@ -326,12 +409,45 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(idle.message).toMatch(/enable/i);
   });
 
-  it('falls back to the refusal when the plugin could not be read back', () => {
+  it('says the state is unknown when the request never left the browser', () => {
+    /*
+     * (S4 review P2-B.) Not a §2.4 row, and that is the point: every row there
+     * is a statement about what the plugin did, and a transport failure with no
+     * readable state observed the plugin not at all. This used to fall through
+     * to `stopped` — "the plugin has stopped and did not start with the new
+     * configuration" — which is the strongest claim on the screen made from the
+     * weakest evidence there is, and probably backwards: a request that never
+     * arrived stopped nothing.
+     */
     const outcome = reloadOutcome({
       failure: { code: 'transport_failure', message: 'The request could not be completed.' },
       state: 'unknown',
     });
+    expect(outcome.kind).toBe('unknown');
+    expect(outcome.tone).toBe('warning');
+    expect(outcome.message).toMatch(/unknown/);
+    expect(outcome.message).not.toMatch(/has stopped/);
+    // Saved is still saved: the write succeeded before the reload was tried.
+    expect(outcome.message).toMatch(/saved/i);
+  });
+
+  it('still reports a stop when the kernel answered and the plugin is down', () => {
+    /* The counterpart the row above must not swallow: a real refusal from a
+       reachable kernel is evidence about the plugin, and it keeps saying so. */
+    const outcome = reloadOutcome({
+      failure: { code: 'internal', message: 'spawn failed' },
+      state: 'unknown',
+    });
     expect(outcome.kind).toBe('stopped');
-    expect(outcome.message).toContain('The request could not be completed.');
+  });
+
+  it('paints unavailable as a warning rather than an error', () => {
+    /* Asserted directly, not left to "the pane has no error branch for it".
+       `unavailable` is a connector's normal terminal state — an upstream that
+       did not answer — and the error tone would say the kernel is broken. The
+       pane keys its styling off `tone`, so this is the field that decides it. */
+    expect(reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
+      .toBe('warning');
+    expect(reloadOutcome({ failure: null, state: 'unavailable' }).tone).toBe('warning');
   });
 });

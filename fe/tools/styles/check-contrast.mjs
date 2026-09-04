@@ -112,6 +112,62 @@ const chipPairs = [
 ];
 
 let failed = false;
+
+/**
+ * ── The list above is checked against the stylesheet, not trusted ─────────
+ *
+ * `chipPairs` used to be five hand-written rows and nothing tied them to the
+ * rule they claim to measure. That made the gate silent on exactly the change
+ * it exists for: a sixth `--color-*` override added to `.pluginStateChip` — a
+ * new tone for a new state, which is the only reason anyone edits that block —
+ * would be painted, shipped and never measured, and this file would still print
+ * five green numbers.
+ *
+ * So the relation is set equality, both ways, over every `--color-*` the rule
+ * declares in either theme:
+ *
+ *   * a declared name the pairs do not mention is an unmeasured colour, and
+ *     it is an error rather than a skipped recipe;
+ *   * a name the pairs mention that the rule no longer declares is a recipe
+ *     measuring an inherited value the chip does not override — the rule went
+ *     away and the number kept printing.
+ *
+ * The `--color-<v>` / `--color-on-<v>` convention is what makes the first half
+ * decidable without a browser: astryx's variants paint `--color-on-<v>` on
+ * `--color-<v>`, so a declared pair *is* a text-on-fill recipe and owes a
+ * ratio. `neutral` is the one that breaks the convention — astryx takes its
+ * type from `--color-text-primary` — which is why the check is stated over the
+ * declaration set as a whole and not as a rule about name suffixes: an
+ * exception has to be listed above to pass, and listing it is the point.
+ */
+{
+  const declared = new Set(
+    [...chipLight.keys(), ...chipDark.keys()].filter((name) => name.startsWith('--color-')),
+  );
+  const measured = new Set(chipPairs.flatMap(({ foreground, background }) => [foreground, background]));
+  for (const name of declared) {
+    if (!measured.has(name)) {
+      failed = true;
+      console.error(`.pluginStateChip declares ${name} but no contrast recipe measures it`);
+    }
+  }
+  for (const name of measured) {
+    if (!declared.has(name)) {
+      failed = true;
+      console.error(`contrast recipe names ${name}, which .pluginStateChip no longer declares`);
+    }
+  }
+  /* And the convention itself, so a fill added *with* its `on-` twin cannot be
+     covered by naming only one of the two. */
+  for (const name of declared) {
+    if (name.startsWith('--color-on-')) continue;
+    const twin = name.replace('--color-', '--color-on-');
+    if (declared.has(twin) && !(measured.has(name) && measured.has(twin))) {
+      failed = true;
+      console.error(`${name}/${twin} are declared as a pair but are not measured as one`);
+    }
+  }
+}
 /** @type {Array<[string, Map<string, string>]>} */
 const themes = [['light', light], ['dark', dark]];
 /** @type {Array<[string, Map<string, string>]>} */
@@ -120,11 +176,23 @@ const chipThemes = [['light', chipLight], ['dark', chipDark]];
 for (const [theme, vars] of chipThemes) {
   for (const { label, foreground, background } of chipPairs) {
     const fill = rgb(resolve(background, vars));
-    if (fill.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
-      failed = true;
-      console.error(`${theme} ${label} fill: outside sRGB gamut`);
+    const type = rgb(resolve(foreground, vars));
+    /* Both sides, not only the fill. The ratio is computed from this crude
+       linear-sRGB conversion, and a channel outside [0, 1] means the value is
+       outside the space the number was computed in — a ratio derived from one
+       is not a measurement of anything a screen will show, whichever side of
+       the pair it came from. The chip owns both names (§6.8 freezes
+       `web/src/styles`, and these are scoped overrides, not tokens), so
+       checking the type as well costs nothing borrowed. */
+    /** @type {ReadonlyArray<[string, readonly number[]]>} */
+    const sides = [['fill', fill], ['type', type]];
+    for (const [side, color] of sides) {
+      if (color.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
+        failed = true;
+        console.error(`${theme} ${label} ${side}: outside sRGB gamut`);
+      }
     }
-    const measured = ratio(rgb(resolve(foreground, vars)), fill);
+    const measured = ratio(type, fill);
     console.log(`${theme} plugin ${label}: ${measured.toFixed(2)}:1`);
     if (measured < 4.5) {
       failed = true;

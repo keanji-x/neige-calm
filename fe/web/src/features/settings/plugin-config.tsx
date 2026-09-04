@@ -135,9 +135,31 @@ export function PluginConfigPane({
       }
       return next;
     });
-    /* A new stored document invalidates every verdict about the old one — most
-       of all a field-level error whose control may not even exist any more. */
-    setPhase(IDLE);
+    /*
+     * ── Why this is not an unconditional `setPhase(IDLE)` ──────────────────
+     *
+     * It used to be, and that erased the confirmation of every write that
+     * worked. `save` / `applyRestart` invalidate this plugin's detail before
+     * they resolve, so the successful write's *own* refetch lands a new
+     * `user_config`, which changes `signature`, which re-seeds — and the
+     * "Saved." / §2.4 sentence the same write had just produced was gone by the
+     * next paint. Only the success path could hit it: a refused write changes
+     * nothing stored, so the signature holds and the error survived. Worse, a
+     * re-seed arriving mid-write cleared `saving` / `restarting`, which
+     * re-enabled the buttons under a request still in flight.
+     *
+     * What a new stored document actually invalidates is narrower than "every
+     * verdict": each phase is a statement about a write that already happened,
+     * and it stays true no matter what the row says now. The one exception is
+     * structural — a field-level error is rendered *inside a control*, so if
+     * the schema no longer declares that key there is nowhere to draw it and it
+     * would vanish with no trace either way. That, and only that, is cleared.
+     */
+    if (phase.phase === 'failed'
+      && phase.error.fieldKey !== null
+      && !fields.some((field) => field.key === phase.error.fieldKey)) {
+      setPhase(IDLE);
+    }
   }
 
   const commitBase = seeded !== null && seeded.id === pluginId ? seeded.base : base;
@@ -190,9 +212,17 @@ export function PluginConfigPane({
         : (
           <>
             {corrupt && (
+              /* Not "replaces it with the values below": the Save sends a
+                 patch, and a patch carries only what was edited (§2.2.5). The
+                 controls below start empty, and a switch showing `true` because
+                 that is the manifest's default is showing an inherited value,
+                 not a stored one — none of that reaches the payload. So the
+                 honest sentence is that the row is discarded and only what the
+                 operator fills in here survives it. */
               <p className={styles.notice} role="alert">
                 {`This plugin's stored configuration is not readable as a set of keys, so it cannot be `}
-                {'patched. Saving replaces it with exactly the values below.'}
+                {'patched. Saving discards it and keeps only the values you enter here; every other '}
+                {'key falls back to the plugin’s own defaults.'}
               </p>
             )}
             {fields.length === 0

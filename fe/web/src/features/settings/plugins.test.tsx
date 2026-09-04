@@ -113,10 +113,16 @@ describe('Plugins pane', () => {
    * — a chip that missed it would fall back to the vendor's own recipe and be
    * exactly the inconsistency this removed, silently.
    *
-   * The tone table is keyed by `PluginState`, so a kernel that grows an eighth
-   * state fails to compile here rather than acquiring a tone by default. Two
-   * groupings are load-bearing and are the reason this is a table and not a
-   * spot check:
+   * The tone table is keyed by `PluginState`, so **adding a member to this
+   * repo's `PLUGIN_STATES`** fails to compile here rather than letting the new
+   * state acquire a tone by default. That is the whole of the claim, and it is
+   * narrower than the one this comment used to make: a kernel that grows an
+   * eighth wire name while `PLUGIN_STATES` stays as it is compiles green
+   * everywhere — the decoder degrades the unknown name to `unknown` and
+   * `stateVariant`'s `default:` paints it neutral, both by design. What is
+   * pinned here is the front-end's own enumeration, which is the artefact this
+   * file can see. Two groupings are load-bearing and are the reason this is a
+   * table and not a spot check:
    *
    * - `unavailable` is **not** `crashed`'s tone. It is a connector's normal
    *   terminal state; red would say the kernel is broken.

@@ -1645,7 +1645,7 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
         m.insert(key.to_string(), json!(value));
         Value::Object(m)
     };
-    let mut refusal: Option<(usize, String)> = None;
+    let mut refusal: Option<(usize, String, String)> = None;
 
     for round in 0..8usize {
         let key = format!("k{round}");
@@ -1673,7 +1673,12 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
 
         let resp = patch_config(&state, "test.grow", one(&key, &chunk)).await;
         if resp.status() == StatusCode::BAD_REQUEST {
-            refusal = Some((round, body_to_text(resp).await));
+            let body = body_to_json(resp).await;
+            refusal = Some((
+                round,
+                body["error"].as_str().unwrap_or_default().to_string(),
+                body["code"].as_str().unwrap_or_default().to_string(),
+            ));
             break;
         }
         assert_eq!(
@@ -1696,7 +1701,7 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
         }
     }
 
-    let (round, text) = refusal.expect("the row must stop growing at some point");
+    let (round, text, code) = refusal.expect("the row must stop growing at some point");
     assert!(round > 1, "the cap must not refuse an ordinary first write");
     assert!(
         text.contains("32768"),
@@ -1705,6 +1710,16 @@ async fn residue_cannot_grow_the_stored_config_without_bound() {
     assert!(
         text.contains("reset=true"),
         "a refusal on bytes no ordinary patch can shrink must name the exit: {text}"
+    );
+    // (#1284 S4 review P2-A) The exit has to be reachable by a client, not only
+    // readable by a person. Every other 400 on this route is a schema violation
+    // the operator fixes by changing a value, and `?reset=true` is destructive,
+    // so a UI may only offer it where the kernel says it applies. Recovering
+    // that from the sentence would make the message a wire format; the code is
+    // the judgement, and this is the assertion that keeps it one.
+    assert_eq!(
+        code, "plugin_config_too_large",
+        "the residue refusal must be distinguishable from a schema violation without reading the prose: {text}"
     );
 
     // The exit is real, and it is the *same* request: reset drops the residue

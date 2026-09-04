@@ -11,10 +11,16 @@
 //      the operation descriptor and the transport, and this file reads it off
 //      the recorded request.
 //   2. **a restart's verdict comes from re-reading the plugin, not from the
-//      status code** (§2.4). Here the reload answers 500 with a body that says
-//      nothing useful, and the plugin is `unavailable` with a `last_error`
-//      afterwards. A host that trusted the status code cannot produce that
-//      sentence, so the assertion is only satisfiable by the extra read.
+//      status code** (§2.4), on *both* branches. One case has the reload answer
+//      500 with a body that says nothing useful; the other has it answer 200
+//      saying `running`. Either way the plugin is `unavailable` with a
+//      `last_error` when it is read back, and that is the sentence asserted —
+//      neither status code can produce it, so both assertions are satisfiable
+//      only by the extra read.
+//   3. **a confirmation outlives the refetch the write itself triggers.** Both
+//      writes invalidate this plugin's detail before resolving, so the pane
+//      re-seeds from a changed `user_config` in the same breath as it renders
+//      the sentence. See `pluginRow` for why a frozen fixture cannot see this.
 //
 // So this runs the router, the query client and the transport the application
 // uses, and stubs nothing but the network.
@@ -80,6 +86,42 @@ function detailBody(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
+/**
+ * ── The fixture has to be a row, not a constant ───────────────────────────
+ *
+ * (#1284 S4 review P1-B.) These tests used to answer every `GET
+ * /api/plugins/{id}` with the *same* `detailBody()`, so a PATCH that stored
+ * something never showed up in any later read. That is not a simplification, it
+ * is the one difference that made a production defect invisible: both writes
+ * invalidate this plugin's detail before they resolve, the successful write's
+ * own refetch therefore lands a changed `user_config`, and the pane re-seeds
+ * off it — which used to clear the phase and erase the confirmation the write
+ * had just produced. Only the success path could reach it (a refusal changes
+ * nothing stored), which is exactly the path a frozen fixture cannot tell apart
+ * from a working one.
+ *
+ * So the fixture keeps a row and the PATCH writes into it, with `null`
+ * deleting a key the way the kernel does. Nothing else here changes; every
+ * assertion below now runs against a detail that moves.
+ */
+function pluginRow(initial: Record<string, unknown> = { token: 'stored' }) {
+  let userConfig: Record<string, unknown> = { ...initial };
+  return {
+    detail: (overrides: Record<string, unknown> = {}) =>
+      detailBody({ user_config: { ...userConfig }, ...overrides }),
+    /** Applies a patch body the way `patch_plugin_config` does. */
+    patch(body: unknown, reset: boolean) {
+      const next: Record<string, unknown> = reset ? {} : { ...userConfig };
+      for (const [key, value] of Object.entries((body ?? {}) as Record<string, unknown>)) {
+        if (value === null) delete next[key];
+        else next[key] = value;
+      }
+      userConfig = next;
+    },
+    get stored() { return userConfig; },
+  };
+}
+
 type Reply = (request: ApiRequest, calls: readonly ApiRequest[]) => ApiTransportResponse;
 
 function renderPlugins(reply: Reply) {
@@ -117,14 +159,16 @@ function baseline(request: ApiRequest): ApiTransportResponse | null {
 
 describe('Settings › Plugins › configuration, end to end', () => {
   it('sends only the edited key, then restarts, then confirms', async () => {
+    const row = pluginRow();
     const calls = renderPlugins((request) => {
       const shared = baseline(request);
       if (shared !== null) return shared;
-      if (request.path === '/api/plugins/git-forge') return ok(detailBody());
+      if (request.path === '/api/plugins/git-forge') return ok(row.detail());
       if (request.path === '/api/plugins/git-forge/config') {
-        return ok(detailBody({ user_config: { token: 'stored', base_url: 'https://forge.internal' } }));
+        row.patch(request.body, false);
+        return ok(row.detail());
       }
-      if (request.path === '/api/plugins/git-forge/reload') return ok(detailBody({ state: 'running' }));
+      if (request.path === '/api/plugins/git-forge/reload') return ok(row.detail({ state: 'running' }));
       return ok([]);
     });
 
@@ -148,10 +192,121 @@ describe('Settings › Plugins › configuration, end to end', () => {
     // And the restart followed the write, rather than replacing it.
     const order = calls.filter((call) => call.method !== 'GET').map((call) => call.method);
     expect(order).toEqual(['PATCH', 'POST']);
+    // The write landed in the fixture's row, which is what makes the sentence
+    // above a claim about a pane that survived its own refetch (P1-B).
+    expect(row.stored).toEqual({ token: 'stored', base_url: 'https://forge.internal' });
+  });
+
+  /*
+   * ── P1-B: the confirmation has to outlive the refetch it causes ───────────
+   *
+   * A plain Save, with nothing else going on. `save` invalidates this plugin's
+   * detail before resolving, so by the time "Saved." is asked for, a refetch
+   * carrying the *new* `user_config` has already landed and the pane has
+   * re-seeded off it. This assertion is only reachable if re-seeding stopped
+   * throwing the phase away; with the unconditional `setPhase(IDLE)` it went
+   * back to `idle` and the sentence was never rendered.
+   */
+  it('keeps the confirmation after the refetch its own write triggered', async () => {
+    const row = pluginRow();
+    renderPlugins((request) => {
+      const shared = baseline(request);
+      if (shared !== null) return shared;
+      if (request.path === '/api/plugins/git-forge') return ok(row.detail());
+      if (request.path === '/api/plugins/git-forge/config') {
+        row.patch(request.body, false);
+        return ok(row.detail());
+      }
+      return ok([]);
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Git forge' }));
+    await userEvent.type(await screen.findByLabelText('base_url'), 'https://forge.internal');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Saved. Apply & restart to run with it.')).toBeTruthy();
+    // Still there after the invalidated queries have settled, not merely for
+    // one paint.
+    await screen.findByDisplayValue('https://forge.internal');
+    expect(screen.getByText('Saved. Apply & restart to run with it.')).toBeTruthy();
+  });
+
+  /*
+   * ── P1-A: a switch moved onto its default deletes the key ────────────────
+   *
+   * `verbose` defaults to `true` in the manifest and the row stores `false`.
+   * Flipping it back is the operator saying "follow the manifest again", and
+   * the only wire form of that is `null`: posting the literal `true` would
+   * write today's default into the row, after which a manifest that changed it
+   * could never reach this plugin again (§2.2.4). A switch cannot send "unset"
+   * any other way — it has two positions and no clear.
+   */
+  it('deletes a stored boolean the operator moved back onto its default', async () => {
+    const row = pluginRow({ token: 'stored', verbose: false });
+    const calls = renderPlugins((request) => {
+      const shared = baseline(request);
+      if (shared !== null) return shared;
+      if (request.path === '/api/plugins/git-forge') return ok(row.detail());
+      if (request.path === '/api/plugins/git-forge/config') {
+        row.patch(request.body, false);
+        return ok(row.detail());
+      }
+      return ok([]);
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Git forge' }));
+    await userEvent.click(await screen.findByRole('switch', { name: 'verbose' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await screen.findByText('Saved. Apply & restart to run with it.');
+    const patch = calls.find((call) => call.method === 'PATCH');
+    expect(patch?.body).toEqual({ verbose: null });
+    // The key is gone from the row, so the manifest default applies again —
+    // and it is gone rather than rewritten to `true`.
+    expect(row.stored).toEqual({ token: 'stored' });
+  });
+
+  /*
+   * ── P1-C: a 2xx reload is not the verdict either ─────────────────────────
+   *
+   * The reload answers 200 with `running`, and the detail read immediately
+   * after says `unavailable` with a reason — an ordinary sequence for a
+   * connector whose bring-up completes after the handler returns. §2.4 asks for
+   * the state read back *after the attempt*, on both branches; a host that
+   * trusted the POST body would confirm "restarted with it" over the top of the
+   * only diagnostic there is.
+   */
+  it('re-reads the plugin after a 2xx reload rather than trusting its body', async () => {
+    const reason = 'mcp-http: connect to https://forge.internal failed: connection refused';
+    const row = pluginRow();
+    renderPlugins((request, calls) => {
+      const shared = baseline(request);
+      if (shared !== null) return shared;
+      if (request.path === '/api/plugins/git-forge') {
+        const restarted = calls.some((call) => call.path === '/api/plugins/git-forge/reload');
+        return ok(restarted ? row.detail({ state: 'unavailable', last_error: reason }) : row.detail());
+      }
+      if (request.path === '/api/plugins/git-forge/config') {
+        row.patch(request.body, false);
+        return ok(row.detail());
+      }
+      // 200, and it says the plugin is up.
+      if (request.path === '/api/plugins/git-forge/reload') return ok(row.detail({ state: 'running' }));
+      return ok([]);
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Configure Git forge' }));
+    await userEvent.type(await screen.findByLabelText('base_url'), 'https://forge.internal');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply & restart' }));
+
+    const status = await screen.findByText(new RegExp(reason.replaceAll('.', '\\.')));
+    expect(status.textContent).toMatch(/did not come up/);
+    expect(screen.queryByText('Configuration saved and the plugin restarted with it.')).toBeNull();
   });
 
   it('reads the plugin back after a failed restart and reports what it found', async () => {
     const reason = 'mcp-http: connect to https://forge.internal failed: connection refused';
+    const row = pluginRow();
     const calls = renderPlugins((request) => {
       const shared = baseline(request);
       if (shared !== null) return shared;
@@ -161,10 +316,13 @@ describe('Settings › Plugins › configuration, end to end', () => {
            attempted, so the second read is the only way to this sentence. */
         const restarted = calls.some((call) => call.path === '/api/plugins/git-forge/reload');
         return ok(restarted
-          ? detailBody({ state: 'unavailable', last_error: reason })
-          : detailBody());
+          ? row.detail({ state: 'unavailable', last_error: reason })
+          : row.detail());
       }
-      if (request.path === '/api/plugins/git-forge/config') return ok(detailBody());
+      if (request.path === '/api/plugins/git-forge/config') {
+        row.patch(request.body, false);
+        return ok(row.detail());
+      }
       if (request.path === '/api/plugins/git-forge/reload') {
         return {
           status: 500,
