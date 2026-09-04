@@ -2,7 +2,7 @@
 //!
 //! Acceptance gate shared by the #679 sequence (PR2 migration-chain move,
 //! PR7 `root_session_id` backfill, PR9b retirement, PR11 historical
-//! replay): any DB staged at an arbitrary historical schema version and
+//! replay): any DB staged at a supported historical schema version and
 //! replayed to head must end up **structurally identical** to a freshly
 //! created DB, and representative seeded data must survive the trip.
 //!
@@ -41,11 +41,19 @@ use std::path::Path;
 /// The production migration chain, embedded by calm-truth.
 pub use calm_truth::MIGRATOR;
 
-/// Every applicable (up) migration version, ascending.
+/// The oldest schema version supported as an upgrade source.
+///
+/// This matches the production database served on localhost:4040 when the
+/// support floor was established. Older deployed schemas require a fresh DB.
+const MIN_SUPPORTED_MIGRATION_VERSION: i64 = 75;
+
+/// Every supported (up) migration version, ascending.
 pub fn migration_versions() -> Vec<i64> {
     let mut versions: Vec<i64> = MIGRATOR
         .iter()
-        .filter(|m| !m.migration_type.is_down_migration())
+        .filter(|m| {
+            !m.migration_type.is_down_migration() && m.version >= MIN_SUPPORTED_MIGRATION_VERSION
+        })
         .map(|m| m.version)
         .collect();
     versions.sort_unstable();

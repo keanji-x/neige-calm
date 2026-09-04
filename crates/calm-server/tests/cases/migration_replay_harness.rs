@@ -2,13 +2,12 @@
 //!
 //! Two suites:
 //!
-//!   1. `synthetic_fixture_replays_from_every_version` — for every
-//!      migration version N in the chain: stage a temp DB at N, seed the
-//!      synthetic core fixture (`tests/fixtures/migration_replay/core.json`,
-//!      version-aware), replay to head via the production `Migrator::run`
-//!      path, then (a) structurally diff the schema against a fresh head
-//!      DB and (b) spot-check data survival + known in-chain rewrites
-//!      (0037 plain-role collapse, 0038 event-kind rename).
+//!   1. `synthetic_fixture_replays_from_every_supported_version` — for every
+//!      supported migration version N (0075+) in the chain: stage a temp DB
+//!      at N, seed the synthetic core fixture
+//!      (`tests/fixtures/migration_replay/core.json`, version-aware), replay
+//!      to head via the production `Migrator::run` path, then (a) structurally
+//!      diff the schema against a fresh head DB and (b) spot-check data survival.
 //!
 //!   2. `external_snapshot_replays_to_head` — point `NEIGE_SNAPSHOT_DB`
 //!      at any (sanitized) production sqlite file and the same replay +
@@ -21,13 +20,18 @@ use crate::support;
 
 use support::migration_replay as harness;
 
+#[test]
+fn migration_replay_versions_start_at_supported_floor() {
+    let versions = harness::migration_versions();
+    assert_eq!(
+        versions.first(),
+        Some(&75),
+        "migration 0075 is the oldest supported deployed schema"
+    );
+}
+
 #[tokio::test]
-async fn synthetic_fixture_replays_from_every_version() {
-    // The fixture's task rows must be terminal: every task staged before 0068
-    // is historically attributed as origin='legacy', and 0073 intentionally
-    // rejects an upgrade while any such row is nonterminal. The rejected path
-    // is covered explicitly by
-    // `upgrade_from_pre_0068_with_nonterminal_task_aborts_cleanly_at_0072`.
+async fn synthetic_fixture_replays_from_every_supported_version() {
     let fixture =
         harness::Fixture::from_json(include_str!("../fixtures/migration_replay/core.json"));
     let fresh = harness::fresh_head_fingerprint().await;
@@ -52,8 +56,8 @@ async fn synthetic_fixture_replays_from_every_version() {
     );
     let versions = harness::migration_versions();
     assert!(
-        versions.len() >= 42,
-        "migration chain unexpectedly short: {versions:?}"
+        versions.len() >= 11,
+        "supported migration chain unexpectedly short: {versions:?}"
     );
     let head = *versions.last().unwrap();
     let dir = tempfile::tempdir().expect("tempdir");
@@ -79,37 +83,6 @@ async fn synthetic_fixture_replays_from_every_version() {
 
         // Data: every seeded row in a still-existing table survives.
         harness::assert_rows_survive(&pool, &report, &context).await;
-
-        // Known in-chain rewrites landed (only observable when the data
-        // was seeded before the rewriting migration ran).
-        let legacy_kinds: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM events \
-             WHERE kind IN ('codex.job_requested', 'terminal.job_requested')",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            legacy_kinds, 0,
-            "[{context}] 0038 must rewrite legacy *.job_requested event kinds"
-        );
-        let plain_roles: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role = 'plain'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            plain_roles, 0,
-            "[{context}] 0037 must collapse role='plain' into 'worker'"
-        );
-
-        let runtime_tables: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtimes'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(runtime_tables, 0, "[{context}] 0055 must drop runtimes");
 
         // Head stop sanity: at v=head the whole fixture (including rows
         // only expressible at head, e.g. the 'parked' operation) seeds
