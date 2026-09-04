@@ -26,6 +26,7 @@ pub struct ErrorBody {
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
     /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
+    /// `plugin_config_too_large`,
     /// `planner_harness_dormant`, `today_summary_no_activity`,
     /// `db_error`, `io_error`, `serde_error`,
     /// `codex_app_server`, `service_unavailable`, `internal`,
@@ -160,6 +161,28 @@ pub enum CalmError {
     #[error("plugin config corrupt: {0}")]
     PluginConfigCorrupt(String),
 
+    /// 400 — #1284 S4 review P2-A: the *whole stored document* would go over
+    /// `USER_CONFIG_MAX_BYTES`, and the excess is residue left by keys earlier
+    /// manifests declared. The refusal's own message names `?reset=true` as the
+    /// way out, because it is the only one: no ordinary patch can shrink keys
+    /// the current schema does not declare and no client renders.
+    ///
+    /// Its own code rather than the generic [`CalmError::BadRequest`], for the
+    /// same reason as [`CalmError::IdempotencyKeyExhausted`] and
+    /// [`CalmError::PluginConfigCorrupt`]: the client action differs and cannot
+    /// be derived from the status. Every other 400 on `PATCH /config` is a
+    /// schema violation the operator fixes by changing a value, and a client
+    /// that wants to offer the destructive exit by name has to tell the two
+    /// apart. The alternative — reading `?reset=true` back out of the English
+    /// sentence — makes the message a wire format, and the sentence is written
+    /// for a human.
+    ///
+    /// §2.2.1's claim that the total cap "is not a lockout" rests entirely on
+    /// this exit being reachable, so the code exists to make it reachable from
+    /// a UI rather than only from `curl`.
+    #[error("plugin config too large: {0}")]
+    PluginConfigTooLarge(String),
+
     /// 422 — manifest is structurally valid but its `min_kernel_version`
     /// demands a kernel newer than the one we are. Distinct from
     /// `PluginInstall` (which is a 400 "your input is malformed") because
@@ -231,6 +254,7 @@ impl CalmError {
             CalmError::PluginBusy(_) => "plugin_busy",
             CalmError::PluginManifestUnloaded(_) => "plugin_manifest_unloaded",
             CalmError::PluginConfigCorrupt(_) => "plugin_config_corrupt",
+            CalmError::PluginConfigTooLarge(_) => "plugin_config_too_large",
             CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
             CalmError::PlannerResetUnsupportedInSharedMode(_) => {
                 "planner_reset_unsupported_in_shared_mode"
@@ -257,7 +281,9 @@ impl CalmError {
             | CalmError::PluginConfigCorrupt(_)
             | CalmError::PlannerHarnessDormant(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
-            CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
+            CalmError::BadRequest(_)
+            | CalmError::PluginInstall(_)
+            | CalmError::PluginConfigTooLarge(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::PluginKernelTooOld(_)
@@ -370,6 +396,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginBusy(m)
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)
+            | CalmError::PluginConfigTooLarge(m)
             | CalmError::PluginKernelTooOld(m)
             | CalmError::PlannerResetUnsupportedInSharedMode(m)
             | CalmError::PlannerHarnessDormant(m)

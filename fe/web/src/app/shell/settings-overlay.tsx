@@ -30,14 +30,17 @@ import { useQuery } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
   AboutPane, AppearancePane, NetworkPane, SettingsSurface,
   type SettingsSection, type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
+import { useState } from '../../ui/state/public.ts';
 import {
-  pluginsQueryOptions, settingsQueryOptions, usePluginMutations, useSettingsMutation,
+  pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, usePluginConfigMutations,
+  usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
@@ -147,10 +150,60 @@ function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
  * The list is not primed by a route loader: it is one screen's read, it fails
  * loudly on its own (`retry: false`), and a loader would make opening any other
  * settings pane wait on it.
+ *
+ * ## The configuration pane is a second level, not a second route
+ *
+ * #1284 S4 adds a drill-in: a row whose plugin declares a `config_schema` walks
+ * into that plugin's configuration. Which row is open is held here rather than
+ * in the URL, and that is the one place this file departs from "the URL is the
+ * state".
+ *
+ * The reason is what the second level *is*. Every other settings level is a
+ * screen you can be sent to; this one holds an operator's unsaved edits to a
+ * document, keyed to a schema version the kernel may have replaced since. A
+ * shareable link to it would either arrive with someone else's draft or arrive
+ * empty on a plugin that no longer declares the field the link was made for. So
+ * it lives for as long as the visit does, and `/settings/plugins` stays the
+ * address of the list.
  */
 function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
   const mutations = usePluginMutations(transport, unauthorized);
+  const config = usePluginConfigMutations(transport, unauthorized);
+  const [openId, setOpenId] = useState<string | null>(null);
+  /*
+   * The row is what says the pane may be open at all, and it is re-derived from
+   * the list on every render rather than copied into state when it was clicked.
+   * The list refetches — an enable/disable invalidates it, and a plugin can be
+   * uninstalled from elsewhere — so a pane that trusted a captured row would
+   * keep offering a configuration screen for a plugin that is no longer there,
+   * and `has_config` is the kernel's answer to "is there anything to configure",
+   * not a fact about the moment the button was pressed.
+   */
+  const open = openId === null
+    ? undefined
+    : plugins.data?.find((plugin) => plugin.id === openId && plugin.has_config);
+  const detail = useQuery({
+    ...pluginDetailQueryOptions(transport, openId ?? '', unauthorized),
+    enabled: open !== undefined,
+  });
+
+  if (openId !== null && open !== undefined) {
+    return (
+      <PluginConfigPane
+        pluginId={open.id}
+        pluginName={open.manifest_name}
+        enabled={open.enabled}
+        detail={detail.data}
+        loadError={detail.error instanceof Error ? detail.error.message : null}
+        onRetryLoad={() => { void detail.refetch(); }}
+        onBack={() => setOpenId(null)}
+        onSave={(patch, options) => config.save(open.id, patch, options)}
+        onApplyRestart={(patch, options) => config.applyRestart(open.id, patch, options)}
+      />
+    );
+  }
+
   return (
     <PluginsPane
       plugins={plugins.data}
@@ -159,6 +212,7 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       pendingIds={mutations.pendingIds}
       errors={mutations.errors}
       onSetEnabled={mutations.setEnabled}
+      onOpenConfig={setOpenId}
     />
   );
 }

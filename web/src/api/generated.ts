@@ -1520,6 +1520,7 @@ export interface components {
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
              *     `plugin_manifest_unloaded`, `plugin_config_corrupt`,
+             *     `plugin_config_too_large`,
              *     `planner_harness_dormant`, `today_summary_no_activity`,
              *     `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
@@ -4675,7 +4676,7 @@ export interface operations {
                     "application/json": components["schemas"]["PluginDetail"];
                 };
             };
-            /** @description Plugin declares no `config_schema`, or the patched config violates it */
+            /** @description Plugin declares no `config_schema`, or the patched config violates it (`bad_request`); or the whole stored document would exceed its byte cap because of residue no ordinary patch can shrink (`plugin_config_too_large`, clearable with `?reset=true`) */
             400: {
                 headers: {
                     [name: string]: unknown;

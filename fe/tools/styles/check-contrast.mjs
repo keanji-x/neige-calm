@@ -70,9 +70,136 @@ const taskDotPulseFloor = keyframeOpacityFloor(
   'task-dot-pulse',
 );
 
+/**
+ * ── Recipes that live outside `tokens.css` ────────────────────────────────
+ *
+ * Settings › Plugins paints its five state chips with per-theme `oklch()`
+ * declared in its own CSS module rather than with tokens — they are
+ * use-specific fills for one column, not new semantic steps, and the module
+ * says why at length. That reasoning is only allowed to stand if the fills are
+ * still *measured*, so this reads the declarations back out of the stylesheet
+ * that owns them: lowering one of those ten values reddens this gate.
+ *
+ * Fail-closed in both directions. A missing block is an error rather than a
+ * skipped recipe, and so is a block that stops declaring a name this expects —
+ * the failure mode of the alternative is a rule silently checking nothing.
+ *
+ * @param {URL} url @param {string} selector
+ */
+function declarationsInRule(url, selector) {
+  const css = fs.readFileSync(url, 'utf8');
+  const start = css.indexOf(selector);
+  if (start === -1) throw new Error(`Missing rule ${selector} in ${url.pathname}`);
+  const open = css.indexOf('{', start);
+  const end = css.indexOf('}', open);
+  if (open === -1 || end === -1) throw new Error(`Unterminated rule ${selector} in ${url.pathname}`);
+  return declarations(css.slice(open, end + 1));
+}
+
+const chipModule = new URL('../../web/src/features/settings/settings.module.css', import.meta.url);
+const chipLight = declarationsInRule(chipModule, '\n  .pluginStateChip {');
+const chipDark = new Map([
+  ...chipLight,
+  ...declarationsInRule(chipModule, '\n  [data-theme="dark"] .pluginStateChip {'),
+]);
+/** The chip's fill and the type painted on it, named as astryx names them. */
+const chipPairs = [
+  { label: 'running chip', foreground: '--color-on-success', background: '--color-success' },
+  { label: 'crashed chip', foreground: '--color-on-error', background: '--color-error' },
+  { label: 'unavailable chip', foreground: '--color-on-warning', background: '--color-warning' },
+  { label: 'spawning/installing/installed chip', foreground: '--color-on-accent', background: '--color-accent' },
+  { label: 'unknown chip', foreground: '--color-text-primary', background: '--color-neutral' },
+];
+
 let failed = false;
+
+/**
+ * ── The list above is checked against the stylesheet, not trusted ─────────
+ *
+ * `chipPairs` used to be five hand-written rows and nothing tied them to the
+ * rule they claim to measure. That made the gate silent on exactly the change
+ * it exists for: a sixth `--color-*` override added to `.pluginStateChip` — a
+ * new tone for a new state, which is the only reason anyone edits that block —
+ * would be painted, shipped and never measured, and this file would still print
+ * five green numbers.
+ *
+ * So the relation is set equality, both ways, over every `--color-*` the rule
+ * declares in either theme:
+ *
+ *   * a declared name the pairs do not mention is an unmeasured colour, and
+ *     it is an error rather than a skipped recipe;
+ *   * a name the pairs mention that the rule no longer declares is a recipe
+ *     measuring an inherited value the chip does not override — the rule went
+ *     away and the number kept printing.
+ *
+ * The `--color-<v>` / `--color-on-<v>` convention is what makes the first half
+ * decidable without a browser: astryx's variants paint `--color-on-<v>` on
+ * `--color-<v>`, so a declared pair *is* a text-on-fill recipe and owes a
+ * ratio. `neutral` is the one that breaks the convention — astryx takes its
+ * type from `--color-text-primary` — which is why the check is stated over the
+ * declaration set as a whole and not as a rule about name suffixes: an
+ * exception has to be listed above to pass, and listing it is the point.
+ */
+{
+  const declared = new Set(
+    [...chipLight.keys(), ...chipDark.keys()].filter((name) => name.startsWith('--color-')),
+  );
+  const measured = new Set(chipPairs.flatMap(({ foreground, background }) => [foreground, background]));
+  for (const name of declared) {
+    if (!measured.has(name)) {
+      failed = true;
+      console.error(`.pluginStateChip declares ${name} but no contrast recipe measures it`);
+    }
+  }
+  for (const name of measured) {
+    if (!declared.has(name)) {
+      failed = true;
+      console.error(`contrast recipe names ${name}, which .pluginStateChip no longer declares`);
+    }
+  }
+  /* And the convention itself, so a fill added *with* its `on-` twin cannot be
+     covered by naming only one of the two. */
+  for (const name of declared) {
+    if (name.startsWith('--color-on-')) continue;
+    const twin = name.replace('--color-', '--color-on-');
+    if (declared.has(twin) && !(measured.has(name) && measured.has(twin))) {
+      failed = true;
+      console.error(`${name}/${twin} are declared as a pair but are not measured as one`);
+    }
+  }
+}
 /** @type {Array<[string, Map<string, string>]>} */
 const themes = [['light', light], ['dark', dark]];
+/** @type {Array<[string, Map<string, string>]>} */
+const chipThemes = [['light', chipLight], ['dark', chipDark]];
+
+for (const [theme, vars] of chipThemes) {
+  for (const { label, foreground, background } of chipPairs) {
+    const fill = rgb(resolve(background, vars));
+    const type = rgb(resolve(foreground, vars));
+    /* Both sides, not only the fill. The ratio is computed from this crude
+       linear-sRGB conversion, and a channel outside [0, 1] means the value is
+       outside the space the number was computed in — a ratio derived from one
+       is not a measurement of anything a screen will show, whichever side of
+       the pair it came from. The chip owns both names (§6.8 freezes
+       `web/src/styles`, and these are scoped overrides, not tokens), so
+       checking the type as well costs nothing borrowed. */
+    /** @type {ReadonlyArray<[string, readonly number[]]>} */
+    const sides = [['fill', fill], ['type', type]];
+    for (const [side, color] of sides) {
+      if (color.slice(0, 3).some((channel) => channel < 0 || channel > 1)) {
+        failed = true;
+        console.error(`${theme} ${label} ${side}: outside sRGB gamut`);
+      }
+    }
+    const measured = ratio(type, fill);
+    console.log(`${theme} plugin ${label}: ${measured.toFixed(2)}:1`);
+    if (measured < 4.5) {
+      failed = true;
+      console.error(`${theme} plugin ${label}: ${measured.toFixed(2)}:1 (requires 4.50:1)`);
+    }
+  }
+}
 
 /**
  * This is deliberately a small semantic-pair check, not a CSS/DOM contrast

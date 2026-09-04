@@ -160,6 +160,16 @@ export function SettingsList({ children }: Readonly<{ children: ReactNode }>) {
  */
 export type SettingRowProps = Readonly<{
   title: string;
+  /**
+   * A quiet second mark **on the title line** — a version, a count, a unit.
+   *
+   * Not a second title, and not a place for a sentence: it is set at the
+   * description's size and colour so the title still reads as one thing. It
+   * exists because a version belongs beside the name it versions, and pushing
+   * it into `description` made the row's second line a list of unrelated
+   * fragments (see the plugin row, which is where this came from).
+   */
+  titleSuffix?: ReactNode;
   /** One sentence. Omitted when the title already says everything. */
   description?: ReactNode;
   /** A badge or status mark before the title. */
@@ -169,11 +179,24 @@ export type SettingRowProps = Readonly<{
   | Readonly<{ onOpen: () => void; control?: never }>
 );
 
-export function SettingRow({ title, description, startContent, control, onOpen }: SettingRowProps) {
+export function SettingRow({
+  title, titleSuffix, description, startContent, control, onOpen,
+}: SettingRowProps) {
   return (
     <AstryxListItem
       className={styles.row}
-      label={title}
+      /* Plain string unless a suffix was asked for: the wrapper is only there
+         to hold the second mark, and a row without one must not inherit a
+         layout box it does not need. */
+      label={titleSuffix === undefined ? title : (
+        /* The locator is what lets a test ask "are these two on one line"
+           without reaching for a presentation class, which the DOM-query rule
+           forbids for the usual reason: a class is free to move. */
+        <span className={styles.rowTitle} data-nc-row-title="">
+          {title}
+          <span className={styles.rowTitleSuffix}>{titleSuffix}</span>
+        </span>
+      )}
       description={description}
       startContent={startContent}
       /* A drill-in row ends in a chevron and the whole row is the target; a
@@ -199,8 +222,15 @@ const THEME_OPTIONS = Object.freeze([
 
 const SAVED_NOTICE_MS = 4000;
 
-/** Every right-hand control is this wide, so the pane has one trailing edge. */
-const CONTROL_WIDTH = 260;
+/**
+ * Every right-hand control is this wide, so the pane has one trailing edge.
+ *
+ * Exported for the plugin configuration pane, which renders controls this
+ * module does not know the shape of (they come from a manifest's
+ * `config_schema`) and must still land on the same edge. A second constant
+ * there would be a second trailing edge as soon as either moved.
+ */
+export const CONTROL_WIDTH = 260;
 
 // ---------------------------------------------------------------------------
 // Network
