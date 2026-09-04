@@ -278,9 +278,11 @@ fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
 ///     card's row is still there, while this hydrator reads that row, so the
 ///     miss-deny never fires here. `track_delete_tx` (`db/sqlite/track.rs`)
 ///     removes from `TrackAreaCache` before commit in the same shape one level
-///     up; there the miss is not a deny at all — `enforce_card_self_scope`
-///     reaches it through `area_of(..).expect(..)` (`role_gate.rs`), which
-///     treats a missing entry under a known card as a hard invariant break.
+///     up. That one is *not* a divergence: `enforce_card_scope`
+///     (`role_gate.rs`) reaches the track→area lookup through a fail-closed
+///     `let ... else` that denies with `RoleLookupFailed` (#1381), and this
+///     hydrator leaves the same entry out when the `tracks` read returns no
+///     row, so both substrates deny alike on a track→area miss.
 ///
 /// These two are recorded as *evidence*, not as the argument: because the
 /// caches can drift either way, "the transaction read is always the stricter
@@ -1455,6 +1457,33 @@ mod tests {
         assert!(routed.is_ok(), "async passthrough should allow: {routed:?}");
         assert_eq!(tx.worker_session_reads, 0);
     }
+
+    #[tokio::test]
+    async fn tx_read_gate_denies_when_home_track_row_is_missing() {
+        // #1381 — under this substrate the track→area entry exists iff
+        // `SELECT area_id FROM tracks WHERE id = ?1` returned a row, so a
+        // card whose home track row is absent leaves the lookup empty. The
+        // gate runs inside the caller's write transaction (the same one the
+        // `events` row is inserted into), so that miss has to come back as
+        // `Err`, never as a panic unwinding out of a half-written write.
+        let card = CardId::from("orphan");
+        let mut tx = FakeWriteTx::new().with_card("orphan", CardRole::Worker, "w-gone");
+
+        let err = enforce_role_resolving_session_from_tx(
+            &mut tx,
+            &ActorId::AiCodex(card),
+            &area_updated(),
+            &card_scope("orphan", "w-gone", "c"),
+        )
+        .await
+        .expect_err("a card with no home track row must be denied, not panic");
+
+        assert!(
+            matches!(err, RoleViolation::RoleLookupFailed { ref subject }
+                if subject == "tracks.area_id(w-gone)"),
+            "unexpected violation: {err:?}"
+        );
+    }
     // -----------------------------------------------------------------
     // #1252 S3′ — equivalence matrix.
     //
@@ -1528,6 +1557,10 @@ mod tests {
                 ("report", CardRole::ReportCard, "w"),
                 ("assistant", CardRole::Assistant, "w"),
                 ("foreign-worker", CardRole::Worker, "w2"),
+                // #1381 — a card whose home track has no row / no cache
+                // entry. Both substrates must deny its own-scope write with
+                // `RoleLookupFailed` rather than one of them panicking.
+                ("orphan", CardRole::Worker, "w-gone"),
             ],
             tracks: vec![("w", "c"), ("w2", "c2")],
             session: Some(worker_session("s-live", Some(CardId::from("planner")))),
@@ -1549,6 +1582,7 @@ mod tests {
             ActorId::AiCodex(CardId::from("assistant")),
             ActorId::AiCodex(CardId::from("foreign-worker")),
             ActorId::AiCodex(CardId::from("ghost")),
+            ActorId::AiCodex(CardId::from("orphan")),
             ActorId::AiCodex(CardId::from("")),
             ActorId::AiClaude(CardId::from("worker")),
             // Session actors: live (resolves to the planner card), unknown
@@ -1578,6 +1612,8 @@ mod tests {
             card_scope("worker", "w", "c2"),
             card_scope("foreign-worker", "w2", "c2"),
             card_scope("ghost", "w", "c"),
+            // #1381 — own-scope write by a card whose home track row is gone.
+            card_scope("orphan", "w-gone", "c"),
         ]
     }
 
@@ -1648,6 +1684,7 @@ mod tests {
         let (cache, area_cache) = world.caches();
         let mut compared = 0usize;
         let mut denials = 0usize;
+        let mut lookup_failures = 0usize;
 
         for actor in matrix_actors() {
             for (event_label, event) in matrix_events() {
@@ -1677,16 +1714,26 @@ mod tests {
                     if from_tx.starts_with("deny") {
                         denials += 1;
                     }
+                    if from_tx.contains("role lookup failed") {
+                        lookup_failures += 1;
+                    }
                 }
             }
         }
 
         // Guard against the matrix silently collapsing to nothing (an empty
         // or all-allow matrix would agree trivially and prove nothing).
-        assert_eq!(compared, 20 * 7 * 12, "matrix size changed unexpectedly");
+        assert_eq!(compared, 21 * 7 * 13, "matrix size changed unexpectedly");
         assert!(
             denials > compared / 4,
             "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"
+        );
+        // #1381 — the `orphan` card / `w-gone` track rows exist so that both
+        // substrates meet an empty track→area lookup. If no row reaches that
+        // denial the agreement on it is vacuous.
+        assert!(
+            lookup_failures > 0,
+            "no matrix row reached the track→area lookup miss"
         );
     }
 }
