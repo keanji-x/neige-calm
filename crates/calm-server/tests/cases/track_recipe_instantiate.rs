@@ -282,6 +282,103 @@ async fn a_recipe_becomes_the_new_tracks_report() {
     );
 }
 
+/// A recipe whose *source* body carried `refs` instantiates to a task with
+/// no reference, and therefore to no blocking diagnostic.
+///
+/// The write boundary already dropped the field (S1,
+/// `normalize_recipe_body`), and `track_recipes.rs` asserts that on the
+/// stored row. This asserts the same thing one layer down, where the cost
+/// actually lands: `reference_missing` and `reference_cross_area` both carry
+/// the `"refs"` diagnostic path, which is in
+/// `TASK_BLOCKING_DIAGNOSTIC_PATHS`, so a surviving reference does not
+/// merely look untidy in the report — it makes the instantiated task
+/// unschedulable, in every track the recipe ever produces, until somebody
+/// edits each one by hand.
+///
+/// The reference is deliberately dangling. A recipe can only ever ship a
+/// block id it does not own — ids are minted per track at instantiation —
+/// so "names a track that does not exist here" is the ordinary case, not a
+/// contrived one.
+#[tokio::test]
+async fn a_recipe_that_carried_refs_instantiates_with_no_reference() {
+    let boot = boot().await;
+    let body = format!(
+        "# Plan\n\nSet the thing up.\n\n{}",
+        task_fence(json!({
+            "key": "setup",
+            "goal": "set the thing up",
+            "kind": "codex",
+            "cwd": "/srv/repos/thing",
+            // So the only thing that can make this task unschedulable is the
+            // reference — `schedulable` below is then a real assertion and
+            // not one absorbed by an unrelated `gate_required`.
+            "no_gate_reason": "nothing to check yet",
+            "refs": [calm_types::report_links::format_track_destination(
+                "some-other-track",
+                Some("b_1f3a"),
+            )],
+        })),
+    );
+    let recipe = create_recipe(boot.app.clone(), "refs flow", &body).await;
+
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(
+            &boot.area_id,
+            "from-refs-recipe",
+            json!({ "recipe_id": recipe["id"].as_str().unwrap() }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "track create: {created}");
+    let track_id = created["id"].as_str().unwrap().to_string();
+
+    let detail = track_detail(boot.app.clone(), &track_id).await;
+    let payload = report_payload(&detail);
+    let tasks = task_blocks(&payload);
+    assert_eq!(tasks.len(), 1, "tasks={tasks:?}");
+    assert!(
+        tasks[0].get("refs").is_none(),
+        "the instantiated task must carry no reference: {:?}",
+        tasks[0]
+    );
+    // Not stripped, and the reason it is not: a path is a value its author
+    // can mean, an id space that does not exist yet is not.
+    assert_eq!(tasks[0]["cwd"], json!("/srv/repos/thing"));
+
+    let blocks = payload.blocks.as_deref().expect("report blocks");
+    let verdicts = boot
+        .repo
+        .task_diagnostics(&track_id, blocks)
+        .await
+        .expect("task_diagnostics");
+    let blocking: Vec<_> = verdicts
+        .iter()
+        .flat_map(|verdict| &verdict.diagnostics)
+        .filter(|diagnostic| diagnostic.path == "refs")
+        .collect();
+    assert!(
+        blocking.is_empty(),
+        "a recipe-borne reference left the task unschedulable: {blocking:#?}"
+    );
+    // Stronger, and reachable because the fixture gave the task a
+    // `no_gate_reason`: the instantiated declaration raises *nothing*.
+    //
+    // Not `schedulable`, which is false here for a reason that has nothing
+    // to do with references: S1 normalization sets `ready: false` on every
+    // recipe task, so a recipe-created task is always waiting on its
+    // planner. Asserting it would have been an assertion that can never go
+    // green, and one that no mutation of this change could flip.
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| verdict.diagnostics.is_empty()),
+        "verdicts={verdicts:#?}"
+    );
+}
+
 /// A recipe id must not land on `tracks.template_id`: the track start path
 /// resolves that column against running plugins' manifests, and a recipe has
 /// no manifest — every recipe-created track would log a resolution failure
