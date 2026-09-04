@@ -378,7 +378,8 @@ describe('#1253 D5 the write-today’s-progress trigger', () => {
     });
     await screen.findByText(EMPTY_COPY);
     await userEvent.click(screen.getByRole('button', { name: WRITE }));
-    expect(await screen.findByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    const notice = await screen.findByText('Nothing has happened in this workspace today yet.');
+    expect(notice.getAttribute('role')).toBe('status');
     /* Not an alert: the user asked a question and got a straight answer, and
        interrupting a screen reader for it would be wrong. The document region
        also keeps saying what it said — a refusal changed nothing. */

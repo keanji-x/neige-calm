@@ -11,10 +11,11 @@ import {
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
-  mergeTranscript, readableCommand,
-  reconcileUserEchoes, toTrackConversation, trackConversationCardId,
+  isOptimisticConversationTurn, mergeTranscript, readableCommand,
+  reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
+  toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
-  type Conversation, type ConversationKind, type ConversationTurn,
+  type Conversation, type ConversationKind, type ConversationTurn, type OptimisticConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -51,6 +52,38 @@ describe('reconcileUserEchoes', () => {
   it('does not reconcile against server rows outside the bounded lookback', () => {
     const rows = [turn('old', 'same'), ...Array.from({ length: 50 }, (_, index) => turn(`recent-${index}`, `text-${index}`))];
     expect(reconcileUserEchoes(rows, [turn('echo', 'same')])).toHaveLength(1);
+  });
+});
+
+describe('optimistic conversation provenance', () => {
+  const serverTurn = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
+  const echo = (id: string, before: number): OptimisticConversationTurn => ({
+    id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before,
+  });
+
+  it('takes the highest persisted item id as the pre-send boundary', () => {
+    expect(serverItemHighWater([{ id: 4 }, { id: 9 }, { id: 2 }])).toBe(9);
+    expect(serverItemHighWater([])).toBe(0);
+  });
+
+  it('does not let an identical older row confirm a newer echo', () => {
+    expect(reconcileOptimisticConversationTurns([serverTurn('4')], [echo('echo-1', 4)]))
+      .toHaveLength(1);
+    expect(reconcileOptimisticConversationTurns([serverTurn('5')], [echo('echo-1', 4)]))
+      .toHaveLength(0);
+  });
+
+  it('lets one new server row confirm only one of two identical echoes', () => {
+    expect(reconcileOptimisticConversationTurns(
+      [serverTurn('5')], [echo('echo-1', 4), echo('echo-2', 4)],
+    ).map((turn) => turn.id)).toEqual(['echo-2']);
+  });
+
+  it('recognises only finite user turns carrying provenance', () => {
+    const invalid = { ...echo('echo-2', 4), serverHighWaterBefore: Number.NaN };
+    expect(isOptimisticConversationTurn(echo('echo-1', 4))).toBe(true);
+    expect(isOptimisticConversationTurn(serverTurn('5'))).toBe(false);
+    expect(isOptimisticConversationTurn(invalid)).toBe(false);
   });
 });
 

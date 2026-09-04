@@ -15,10 +15,10 @@ spec	fe	57
 spec	docs	7
 spec	e2e	1
 runtime_id	crates	1556
-runtime_id	fe	68
+runtime_id	fe	64
 runtime_id	docs	6
 runtime_id	e2e	7
 harness_item	crates	245
-harness_item	fe	106
+harness_item	fe	105
 harness_item	docs	2
 harness_item	e2e	0

@@ -28,10 +28,9 @@
   .page {
     /*
      * The document's gutter and measure, published for `features/report`'s
-     * `.doc` — the same two declarations the track page makes, character for
-     * character, and for the same reason (see the long note on
-     * `features/track/page`'s `.page`, which owns the derivation and the "568,
-     * not 504" argument).
+     * `.doc`. The target is the track page's 568px document measure (see the
+     * long note on `features/track/page`'s `.page`), clamped to this page's main
+     * column so the narrowest desktop layout cannot overflow sideways.
      *
      * They were missing. `.doc` is a three-column grid whose first track is
      * `var(--document-start)` with **no fallback**, so on a route that
@@ -45,9 +44,14 @@
      * the same `--space-10` inline padding, its `.content` takes the same
      * `--space-10` gap and the same trailing `--panel-span` track, so
      * `100cqi − 3×--space-10 − --panel-span` is the main column on both routes
-     * and the leftover halves the same way.
+     * and the leftover halves the same way. The `min()` is the narrow-desktop
+     * arm: once that available column is under 568px, the gutter becomes zero
+     * and the document uses exactly the space it has.
      */
-    --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
+    --document-measure: min(
+      calc(var(--measure-prose) + var(--space-12) * 2),
+      calc(100cqi - var(--space-10) * 3 - var(--panel-span))
+    );
     --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
 
     display: grid;
@@ -84,6 +88,7 @@
     gap: var(--space-8);
     min-inline-size: 0;
     min-block-size: 0;
+    container-type: inline-size;
   }
 
   .panelColumn {
@@ -166,12 +171,14 @@
    * The day's report, and the one place on this page that is a document rather
    * than a list of rows.
    *
-   * **It carries no measure of its own.** It used to cap itself at
-   * `--measure-prose`, which was wrong twice over: `.doc` explicitly sets
+   * It used to cap itself at `--measure-prose`, which was wrong twice over:
+   * `.doc` explicitly sets
    * `max-inline-size: none` because a document is wider than its own text — it
    * has two margins — and a cap here reached over that from the outside and
    * squeezed the whole three-column grid back to 504. The measure belongs to
-   * the block column, and `--document-measure` above is how it gets there.
+   * the block column. The page-level value aligns the header; this region
+   * recomputes it against its actual grid column, including a classic scrollbar
+   * gutter that the outer container's `100cqi` cannot see.
    *
    * `inline-size: 100%` rather than a stretch: the first-run branch places this
    * region in a `place-items: center` grid, where a flex/grid item is sized to
@@ -186,6 +193,12 @@
    * label rank below.
    */
   .document {
+    --document-measure: min(
+      calc(var(--measure-prose) + var(--space-12) * 2),
+      100cqi
+    );
+    --document-start: max(0px, calc((100cqi - var(--document-measure)) / 2));
+
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -358,6 +371,7 @@
     display: grid;
     place-items: center;
     min-block-size: 0;
+    container-type: inline-size;
   }
 
   /* The only 22px in the app, and only on a whole-page empty state. */

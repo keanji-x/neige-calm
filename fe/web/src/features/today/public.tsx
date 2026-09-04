@@ -223,7 +223,7 @@ function useNow(nowMs: number | undefined): Readonly<{ now: Date; today: Date }>
  * point of the split: what the phone leaves out is declared in the ledger, and
  * a prop declared as left out is *not a member of the type* the phone renderer
  * receives, so touching it does not compile. Before #1234 the phone branch sat
- * inside this function with all thirteen props in scope, and #1253 added six
+ * inside this function with the full prop bag in scope, and #1253 added six
  * of them that the phone never drew, with nobody the wiser.
  *
  * **This function does not know which viewport it is on**, and that is the
@@ -297,6 +297,38 @@ function TodayDesktop({
   const shownTracks = visibleTracks(tracks);
   const waiting = shownTracks.filter(needsUserAttention);
   const running = shownTracks.filter((track) => isRunning(track.lifecycle) && !needsUserAttention(track));
+  const panel = (
+    <aside className={styles.panelColumn} data-nc-panel="">
+      <PanelCard>
+        <PanelModule title="Calendar">
+          <Calendar
+            today={today}
+            tracks={shownTracks}
+            areas={areas}
+            scheduledEvents={scheduledEvents}
+            renderTrackRow={renderTrackRow}
+            nowMs={now.getTime()}
+          />
+        </PanelModule>
+        <PanelRows title="Running" tracks={running} render={renderTrackRow} />
+        <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
+      </PanelCard>
+    </aside>
+  );
+  const firstRun = (
+    <div className={styles.emptyPage}>
+      <p className={styles.hero}>Nothing here yet.</p>
+      <TodayDocument
+        launchpad={launchpad}
+        document={launchpadDocument}
+        error={launchpadError}
+        onWriteSummary={onWriteSummary}
+        pending={summaryPending}
+        phase={summaryPhase}
+        notice={summaryNotice}
+      />
+    </div>
+  );
 
   /*
    * A brand-new workspace: one hero line, and *still the document*.
@@ -315,18 +347,9 @@ function TodayDesktop({
           today={today} waiting={waiting.length} running={running.length}
           now={now}
         />
-        <div className={styles.emptyPage}>
-          <p className={styles.hero}>Nothing here yet.</p>
-          <TodayDocument
-            launchpad={launchpad}
-            document={launchpadDocument}
-            error={launchpadError}
-            onWriteSummary={onWriteSummary}
-            pending={summaryPending}
-            phase={summaryPhase}
-            notice={summaryNotice}
-          />
-        </div>
+        {launchpad === null || launchpad === undefined
+          ? firstRun
+          : <div className={styles.content}>{firstRun}{panel}</div>}
       </div>
     );
   }
@@ -362,15 +385,15 @@ function TodayDesktop({
         </div>
 
         {/*
-          One card, two modules — the skeleton every route now shares. The
+          One card, two modules — the skeleton the Today and Track routes share. The
           route-specific module comes first because it is why you are on this
           route; the conversation list is second and identical everywhere, so
           it can be found without reading it.
 
-          The conversation module was proposed for removal on 2026-09-03 as a
-          duplicate of the track pages' and kept: on Today it is the
-          cross-track index, and it is where G6 opens an assistant conversation
-          from. See `TodayPageProps.conversationList`.
+          The conversation module was proposed for removal on 2026-09-03 and
+          kept; #1341 then changed its source. On Today it is now the launchpad
+          Track's own list, and rows open in place. See
+          `TodayPageProps.conversationList`.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open: the drawer is a card on this exact track, and a
@@ -378,36 +401,11 @@ function TodayDesktop({
             Module class is not nameable from the shell's stylesheet, so the
             marker is the seam.
 
-            Today needs it more than the area and track pages do, not less. Their
-            panels are sticky at the same offset the drawer starts at, so they
-            stay behind it; this column is not sticky, so it scrolls up out from
+            Today needs it more than the track page does, not less. That panel
+            is sticky at the same offset the drawer starts at, so it stays
+            behind it; this column is not sticky, so it scrolls up out from
             under the drawer's top edge and would surface above it. */}
-        <aside className={styles.panelColumn} data-nc-panel="">
-          <PanelCard>
-            <PanelModule title="Calendar">
-              <Calendar
-                today={today}
-                tracks={shownTracks}
-                areas={areas}
-                scheduledEvents={scheduledEvents}
-                renderTrackRow={renderTrackRow}
-                nowMs={now.getTime()}
-              />
-            </PanelModule>
-            {/* Ambience, moved out of the reading column (#1253 D7). Follows
-                §6.1's rule that a section with zero rows is not rendered, which
-                is what `Section` already does in the main column — an empty
-                RUNNING module would read as a gap.
-
-                RECENT used to sit here and no longer does — a trade of reach
-                for focus, not a de-duplication. The criterion that decides what
-                the agenda above shows is `activeTracksOn`
-                (`fe/core/domain/track.ts`); this comment does not restate it.
-                See this feature's README for the decision. */}
-            <PanelRows title="Running" tracks={running} render={renderTrackRow} />
-            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
-          </PanelCard>
-        </aside>
+        {panel}
       </div>
     </div>
   );
@@ -590,12 +588,13 @@ function SummaryTrigger({ label, onWrite, pending, phase, notice }: {
         <button
           type="button"
           data-nc-action="tertiary"
-          // Disabled only while a request is actually in flight, so a double
-          // click cannot send two. Not a general "can you press this?" gate:
-          // whether there is anything to summarise is the server's answer.
-          disabled={busy}
-          aria-busy={busy}
-          onClick={onWrite}
+          // Busy stays focusable and in the action colour ladder; the click
+          // guard prevents a second request. Whether there is anything to
+          // summarise remains the server's answer.
+          aria-busy={busy ? true : undefined}
+          aria-disabled={busy ? true : undefined}
+          data-nc-state={busy ? 'busy' : undefined}
+          onClick={() => { if (!busy) onWrite(); }}
         >
           {busy ? (phase === 'preparing' ? PREPARING_LABEL : WRITING_LABEL) : label}
         </button>

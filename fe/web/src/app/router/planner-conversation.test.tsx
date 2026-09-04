@@ -226,9 +226,9 @@ describe('planner conversation regressions', () => {
 
     /* And once more from a fresh mount of the route, since a caller that fires
        on mount is the only kind the version this replaced could have caught.
-       It used to walk to Today for this; Today no longer lists another track's
-       conversations (#1341), and the claim was never about Today anyway. */
-    await act(async () => { await router.navigate({ to: '/area/c1' }); });
+       Today no longer lists another track's conversations (#1341), so it is a
+       neutral mounted route to cross before returning here. */
+    await act(async () => { await router.navigate({ to: '/' }); });
     await act(async () => { await router.navigate({ to: '/track/w1' }); });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     expect(requests.filter((request) => request.path.endsWith('/planner/reset'))).toHaveLength(0);

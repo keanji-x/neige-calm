@@ -15,12 +15,13 @@
 // wiring, because the wiring IS the claim.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -47,17 +48,29 @@ function conversationRow(overrides: Record<string, unknown> = {}) {
 }
 
 const LAUNCHPAD_CONVERSATIONS = '/api/tracks/lp/conversations';
+const SUMMARY_CONVERSATION = trackConversationCardId('lp', 'today-summary');
 
 type Case = Readonly<{
+  /** Override the launchpad resolve for pending/error cases. */
+  launchpadResolve?: () => Promise<ApiTransportResponse>;
   /** Rows `GET /api/tracks/lp/conversations` serves, read on every request so a
    *  case can change the server's mind mid-test. */
   launchpadRows?: () => readonly unknown[];
+  /** Override the launchpad conversation request for pending/error cases. */
+  launchpadConversations?: () => Promise<ApiTransportResponse>;
+  /** Persisted turns served when a launchpad conversation is opened. */
+  historyRows?: readonly unknown[];
   /** Rows the OTHER track serves — the ones Today must no longer show. */
   trackRows?: readonly unknown[];
+  /** Whether the workspace has a user-visible area/track besides the launchpad. */
+  userWorkspace?: boolean;
   onSummary?: () => void;
 }>;
 
-function renderApp({ launchpadRows = () => [], trackRows = [], onSummary }: Case = {}) {
+function renderApp({
+  launchpadResolve, launchpadRows = () => [], launchpadConversations,
+  trackRows = [], historyRows = [], userWorkspace = true, onSummary,
+}: Case = {}) {
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send: (request) => {
@@ -70,15 +83,19 @@ function renderApp({ launchpadRows = () => [], trackRows = [], onSummary }: Case
          empty state, which means the track detail is never read — this file is
          about the panel, and a document fixture would only add noise. */
       if (request.path === '/api/today/launchpad') {
-        return Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
+        return launchpadResolve?.()
+          ?? Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
       }
-      if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
-      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
+      if (request.path === '/api/areas') return Promise.resolve(ok(userWorkspace ? [AREA] : []));
+      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(userWorkspace ? [TRACK] : []));
       if (request.path === '/api/tracks/w1') {
         return Promise.resolve(ok({ track: TRACK, cards: [], overlays: [] }));
       }
-      if (request.path === LAUNCHPAD_CONVERSATIONS) return Promise.resolve(ok(launchpadRows()));
+      if (request.path === LAUNCHPAD_CONVERSATIONS) {
+        return launchpadConversations?.() ?? Promise.resolve(ok(launchpadRows()));
+      }
       if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok(trackRows));
+      if (request.path.includes('/harness/items')) return Promise.resolve(ok(historyRows));
       return Promise.resolve(ok([]));
     },
   };
@@ -141,16 +158,64 @@ describe('#1341 the summary conversation lands in Today’s Conversations', () =
       launchpadRows: () => created ? [conversationRow({ title: 'Today’s progress' })] : [],
       onSummary: () => { created = true; },
     });
-    await screen.findByText('No conversations yet.');
+    await screen.findByText('No conversations yet.', {}, { timeout: 5_000 });
     await userEvent.click(screen.getByRole('button', { name: WRITE }));
     await waitFor(() => {
       expect(requests.map((request) => request.path)).toContain('/api/today/summary');
     });
     expect(await screen.findByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
   });
+
+  it('restarts an older list read after summary creates the conversation', async () => {
+    let created = false;
+    let reads = 0;
+    let releaseOld!: (response: ApiTransportResponse) => void;
+    const oldRead = new Promise<ApiTransportResponse>((resolve) => { releaseOld = resolve; });
+    const { requests } = renderApp({
+      onSummary: () => { created = true; },
+      launchpadConversations: () => {
+        reads += 1;
+        if (reads === 1) return oldRead;
+        return Promise.resolve(ok(created ? [conversationRow({ title: 'Today’s progress' })] : []));
+      },
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: WRITE }));
+    await waitFor(() => {
+      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
+    });
+    await waitFor(() => expect(reads).toBe(2));
+    expect(await screen.findByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
+
+    await act(async () => { releaseOld(ok([])); await oldRead; });
+    expect(screen.getByRole('button', { name: /Conversation Today’s progress/ })).toBeTruthy();
+  });
 });
 
 describe('#1341 Today lists the launchpad track’s conversations', () => {
+  it('does not call an unresolved launchpad an empty conversation list', async () => {
+    renderApp({ launchpadResolve: () => new Promise(() => undefined) });
+    await screen.findByRole('button', { name: 'New area' });
+    expect(screen.queryByText('No conversations yet.')).toBeNull();
+  });
+
+  it('does not call a pending conversation read an empty list', async () => {
+    renderApp({ launchpadConversations: () => new Promise(() => undefined) });
+    await screen.findByRole('button', { name: 'Write today’s progress' });
+    expect(screen.queryByText('No conversations yet.')).toBeNull();
+  });
+
+  it('surfaces a failed conversation read with a retry', async () => {
+    renderApp({
+      launchpadConversations: () => Promise.resolve({
+        status: 503, statusText: 'Service Unavailable', body: { error: 'conversation read failed' },
+      }),
+    });
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Conversations are unavailable: conversation read failed');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
   it('reads the launchpad’s own list on load, having opened nothing', async () => {
     const { requests } = renderApp({ launchpadRows: () => [conversationRow({ title: 'Yesterday’s progress' })] });
     expect(await screen.findByRole('button', { name: /Conversation Yesterday’s progress/ })).toBeTruthy();
@@ -199,6 +264,24 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     expect(router.state.location.pathname).toBe('/');
   });
 
+  it('keeps the summary bootstrap instruction out of the conversation name', async () => {
+    const bootstrap = "You are this workspace's daily-progress writer. Stand by and do nothing yet.";
+    const wireRuntimeKey = ['runtime', 'id'].join('_');
+    renderApp({
+      launchpadRows: () => [conversationRow({ id: SUMMARY_CONVERSATION, title: null })],
+      historyRows: [{
+        id: 1, [wireRuntimeKey]: 'r', card_id: SUMMARY_CONVERSATION, track_id: 'lp', thread_id: 't',
+        turn_id: null, item_uuid: null, item_type: 'userMessage', method: 'item/completed',
+        params: JSON.stringify({ item: { content: [{ text: bootstrap }] }, completedAtMs: 1 }),
+        created_at_ms: 1,
+      }],
+    });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Conversation Today’s progress' }));
+    expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
+    expect(screen.queryByRole('complementary', { name: /daily-progress writer/ })).toBeNull();
+  });
+
   /*
    * The `+`, and the one state it is withheld in.
    *
@@ -210,6 +293,12 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
     renderApp();
     await screen.findByText('No conversations yet.');
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeTruthy();
+  });
+
+  it('offers the + when the hidden launchpad is the workspace’s only track', async () => {
+    renderApp({ userWorkspace: false });
+    expect(await screen.findByRole('button', { name: 'New conversation' })).toBeTruthy();
+    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
   });
 
   /*

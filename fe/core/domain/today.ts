@@ -27,6 +27,7 @@
 import { z } from 'zod';
 
 import type { ApiFailure, ApiOperation } from '../api/types.js';
+import { trackConversationCardId, type Conversation } from './conversation.js';
 
 export const todayLaunchpadSchema = z.object({
   track_id: z.string(),
@@ -84,6 +85,23 @@ export const todaySummarySchema = z.object({
 });
 
 export type TodaySummaryWire = z.infer<typeof todaySummarySchema>;
+
+/** The server's fixed idempotency key for the launchpad's summary writer. */
+export const TODAY_SUMMARY_CONVERSATION_KEY = 'today-summary';
+export const TODAY_SUMMARY_CONVERSATION_TITLE = 'Today’s progress';
+
+/**
+ * Give the server-synthesised summary writer a reader-facing name. Its first
+ * persisted user turn is an internal bootstrap instruction, so the ordinary
+ * "first thing said" fallback would expose implementation text as the title.
+ * A future explicit server title wins unchanged.
+ */
+export function nameTodaySummaryConversation(trackId: string, row: Conversation): Conversation {
+  if (row.title !== null || row.id !== trackConversationCardId(trackId, TODAY_SUMMARY_CONVERSATION_KEY)) {
+    return row;
+  }
+  return { ...row, title: TODAY_SUMMARY_CONVERSATION_TITLE };
+}
 
 /**
  * Ask the server to write today's progress into Today's document (#1253 D5).

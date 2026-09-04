@@ -214,12 +214,16 @@ export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: stri
 
 export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
-  const refresh = () => Promise.all([
-    client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
-    client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
-  ]).then(() => undefined);
-  const refreshAfter = async <T,>(result: T): Promise<T> => {
-    await refresh();
+  const refreshAfter = <T,>(result: T): T => {
+    /* A 200 from the write is the acknowledgement. Refetch is reconciliation,
+       and its failure must stay in the owning query's error channel rather
+       than turning an accepted send/interrupt into a failed write that invites
+       a duplicate retry. Do not await it: a hung read must not retain the
+       provider-wide send lease either. */
+    void Promise.all([
+      client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
+      client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
+    ]).catch(() => undefined);
     return result;
   };
   return {
@@ -513,9 +517,10 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * An earlier version invalidated `['track', id]` here while this comment claimed
  * it did not; the code was what moved.
  *
- * What IS true immediately is that the launchpad now carries a conversation, so
- * the conversation lists — and only those — are invalidated. That "and only
- * those" is asserted, not asserted-in-prose:
+ * Once the summary request has been attempted, the launchpad may carry a new
+ * conversation even when a later bootstrap/send step failed. The conversation
+ * lists — and only those — are therefore restarted when that request settles.
+ * That "and only those" is asserted, not asserted-in-prose:
  * `today-summary-write.contract.test.tsx` drives this hook and asserts the
  * invalidated set by EQUALITY, so a third key added here turns it red too —
  * "and only those" is the claim, and a denylist of the two keys that would hurt
@@ -523,9 +528,9 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * `app/router` could pass on a refetch from here instead of on the invalidation
  * policy they exist to pin.
  *
- * `['today-launchpad']` on the prepare path is the one addition, it is asserted
- * by the same equality test on its own case, and `onSettled` below says why the
- * two are not the same refetch.
+ * `['today-launchpad']` on the prepare path is the one addition. It is
+ * invalidated as soon as `ensure` settles, while the summary may still be in
+ * flight, because that request has already changed the resolve's answer.
  */
 /**
  * Which request the trigger is on. `'prepare'` exists only when there was no
@@ -599,42 +604,50 @@ export function useTodaySummaryMutation(
   const [step, setStep] = useState<TodaySummaryStep | null>(null);
   const entered: TodaySummaryStep = step ?? (hasLaunchpad ? 'write' : 'prepare');
   const mutation = useMutation({
-    mutationFn: async (): Promise<{ wire: TodaySummaryWire; prepared: boolean }> => {
+    mutationFn: async (): Promise<TodaySummaryWire> => {
       const prepared = !hasLaunchpad;
       if (prepared) {
         setStep('prepare');
-        await runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized);
+        try {
+          await runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized);
+        } finally {
+          /*
+           * `ensure` can create the launchpad and still answer 503 because its
+           * harness did not start. Refresh in both directions, immediately:
+           * delaying this to the two-step mutation's final settlement keeps
+           * the Conversations list and `+` hidden for the whole summary wait.
+           */
+          void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
+        }
       }
       setStep('write');
-      return { wire: await runOperation(transport, todaySummaryOperation(), unauthorized), prepared };
-    },
-    /*
-     * **`onSettled`, not `onSuccess`, and only on the prepare path.**
-     *
-     * `ensure` answers 503 when the launchpad exists but its harness would not
-     * start, so a failed press can still have created the very thing the
-     * resolve reports on. Refetching only on success would leave the page
-     * saying "no launchpad" about a launchpad that is now there, and the `+`
-     * withheld with it.
-     *
-     * This is not the refetch `today-summary-write.contract.test.tsx` forbids.
-     * That one is about the *document* keys after a summary: a 200 there means
-     * the message was enqueued, so re-reading the report fetches the old one
-     * and hides a broken invalidation chain behind a lucky refresh. Here the
-     * resolve's answer has genuinely changed, and it changed because of a
-     * request this hook made. It is also confined to the prepare path, so the
-     * document tests — which all run against an existing launchpad — see the
-     * same single invalidation they always did.
-     */
-    onSettled: () => {
-      if (!hasLaunchpad) void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
-    },
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: queryKeys.trackConversationsPrefix() });
+      try {
+        return await runOperation(transport, todaySummaryOperation(), unauthorized);
+      } finally {
+        const conversations = queryKeys.trackConversationsPrefix();
+        /*
+         * This runs on success and failure: the endpoint can create its card
+         * before a later bootstrap or send step fails.
+         *
+         * An invalidation alone cannot supersede a first load with no cached
+         * data; TanStack reuses that in-flight promise, so a pre-summary empty
+         * snapshot could land last. Cancel its ownership of the cache first,
+         * then start the post-attempt read. A transport that cannot abort may
+         * still finish, but its cancelled result cannot overwrite the restart.
+         */
+        await client.cancelQueries({ queryKey: conversations });
+        void client.invalidateQueries({ queryKey: conversations });
+      }
     },
   });
   return {
-    write: () => { mutation.mutate(); },
+    write: () => {
+      /* Replace a previous attempt's phase before the pending render. Without
+         this, retrying after `ensure` created the launchpad can briefly reuse
+         the old `prepare` label even though this attempt starts at `write`. */
+      setStep(hasLaunchpad ? 'write' : 'prepare');
+      mutation.mutate();
+    },
     pending: mutation.isPending,
     step: mutation.isPending ? entered : null,
     failure: mutation.error instanceof ApiError ? mutation.error.failure : null,

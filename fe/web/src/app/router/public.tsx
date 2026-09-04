@@ -28,7 +28,9 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { TodayPage } from '../../features/today/public.tsx';
-import { todayLaunchpadEnsureFailure, todaySummaryFailure } from '../../../../core/domain/today.ts';
+import {
+  nameTodaySummaryConversation, todayLaunchpadEnsureFailure, todaySummaryFailure,
+} from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
@@ -47,10 +49,10 @@ import {
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, mergeTranscript, reconcileUserEchoes,
-  trackConversationCardId,
+  conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
+  mergeTranscript, reconcileOptimisticConversationTurns, serverItemHighWater, trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
-  type ConversationTurn, type TranscriptEntry,
+  type OptimisticConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
@@ -99,47 +101,24 @@ type ConversationStore = Readonly<{
   working: boolean;
   stopping: boolean;
   sending: boolean;
+  sendBlocked: boolean;
+  historyReady: boolean;
+  historyLoading: boolean;
   hasEarlier: boolean;
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
   send: (conversationId: string, text: string) => void;
   interrupt: () => void;
+  retryHistory: () => void;
   loadEarlier: () => void;
 }>;
 
-/**
- * Where a route's conversation list comes from.
- *
- * `'all'` reads the session registry — conversations this tab has opened.
- * `'rows'` is the opposite: the server sends the list, so the registry is not
- * consulted for it.
- *
- * **`'all'` has no construction site left since #1341.** It lost its one caller when Today
- * stopped listing this tab's cross-track visiting history and started listing
- * the launchpad track's own conversations, from the server, like every other
- * surface — so no route reads the registry as a list any more.
- *
- * It is left standing rather than deleted because deleting it is not one line.
- * The same sweep takes `ConversationPanelSource`'s `'elsewhere'` arm,
- * `store.start`, and the navigate-on-open branch with it. It is also a sweep that may want undoing:
- * owner's plan for the cross-track index is a card of its own, on its own
- * issue, and that card is a list reader.
- *
- * What the sweep would **not** change is behaviour. Read every arm named here
- * as unreachable today, and do not read a live decision into one (#1189 review,
- * #1341).
- */
-type ConversationListIntent = Readonly<{ kind: 'all' }>;
-
-type ConversationRouteIntent =
-  | ConversationListIntent
-  | Readonly<{
-    kind: 'rows';
-    rows: readonly Conversation[];
-    /** The real, navigable Track whose rows may enter the tab registry. */
-    rememberOn: string;
-  }>;
+/** A server-backed list and the real Track whose rows may enter the tab registry. */
+type ConversationRouteIntent = Readonly<{
+  rows: readonly Conversation[];
+  rememberOn: string;
+}>;
 
 export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
@@ -207,6 +186,32 @@ function describeConversation(
   };
 }
 
+/** Project confirmed facts this tab learned back onto a server summary that
+ * cannot carry a transcript-derived title or turn count. Server facts still
+ * win when present, and time never moves backwards. */
+function withRememberedConversation(
+  row: Conversation, remembered: Conversation | undefined,
+): Conversation {
+  return {
+    ...row,
+    ...(remembered?.turns === undefined ? {} : { turns: remembered.turns }),
+    ...(row.title === null && remembered?.title != null ? { title: remembered.title } : {}),
+    updatedAt: Math.max(row.updatedAt, remembered?.updatedAt ?? 0),
+  };
+}
+
+/** A derived first-message title is stable for the conversation's lifetime and
+ * may be shown after close. Counts and activity time are snapshots, so only the
+ * open row may claim those values in the product list. */
+function withRememberedTitle(
+  row: Conversation, remembered: Conversation | undefined,
+): Conversation {
+  return {
+    ...row,
+    ...(row.title === null && remembered?.title != null ? { title: remembered.title } : {}),
+  };
+}
+
 export function useConversationStore(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
@@ -221,14 +226,14 @@ export function useConversationStore(
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
   const scopeState = scope?.state ?? null;
-  const serverRows = routeIntent.kind === 'rows' ? routeIntent.rows : null;
-  const rememberOn = routeIntent.kind === 'rows' ? routeIntent.rememberOn : null;
+  const serverRows = routeIntent.rows;
+  const rememberOn = routeIntent.rememberOn;
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
-  const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
+  const [echoes, setEchoes] = useState<readonly OptimisticConversationTurn[]>([]);
   /**
    * The echo whose `POST /planner/input` has not been answered yet, if any.
    *
@@ -237,22 +242,12 @@ export function useConversationStore(
    * report the first one as confirmed, which is exactly the false fact the
    * registry must never be told (`durableConversation`).
    *
-   * What holds it to one is `sendingRef` **plus** `activeSend` below. On its
-   * own `sendingRef` does not: the `cardId` effect clears it so a second
-   * conversation can be written in while the first one's POST is still out, and
-   * an in-flight request that cleared it again on the way out — as this one
-   * unconditionally did — would re-open the composer over a *new* conversation
-   * whose own echo was still unanswered. Two unanswered echoes, one slot. The
-   * settle handlers below therefore touch the send state only while they are
-   * still the active request, which is what makes "at most one" true rather
-   * than merely intended.
-   *
-   * "At most one" is a statement about **this mounted store**, and only about
-   * it. A store that unmounts with a send still out leaves that request holding
-   * an echo nobody here can see; the store mounted next has its own slot, and
-   * the two can be unanswered at the same time. That is why echo ids carry a
-   * per-instance nonce (`echoNonce`) — the shared registry is the one place
-   * those two lifetimes meet.
+   * `sendingRef` and `activeSend` govern this store's state; the provider's
+   * per-conversation send lease governs the lifetime they cannot see. Leaving
+   * and remounting the same conversation therefore cannot start a second send
+   * while the first request is unanswered, while a different conversation may
+   * still send independently. The settle handlers below touch local state only
+   * while they remain active, but always release the provider lease they own.
    */
   const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -268,43 +263,23 @@ export function useConversationStore(
    * to. (Its *own* result is still written through — see `send`.)
    */
   const activeSend = useRef<{ cardId: string; echoId: string } | null>(null);
-  /**
-   * Every echo id this store has minted, which is how a write-through tells an
-   * echo of its own apart from a user message the server sent back.
-   *
-   * Ids are `echo-<nonce>-N` off a counter that is never reset, so they stay
-   * unique across conversation switches for the life of the store.
-   */
-  const mintedEchoIds = useRef(new Set<string>());
-  const seq = useRef(0);
-  /**
-   * What makes an echo id unique beyond this store instance.
-   *
-   * `seq` and `mintedEchoIds` die with the store; the registry does not — it
-   * lives on `ConversationProvider` at the root and outlives every route. So a
-   * counter alone is only unique *within one mounted instance*: leave the route
-   * with a send still in flight and come back, and the new store starts at
-   * `echo-1` again while the old closure is still holding an `echo-1` of its
-   * own. Both write through on success, and two different messages enter the
-   * shared registry under one id — a duplicate React key in the transcript, and
-   * a `mintedEchoIds` answer given about the wrong message.
-   *
-   * A per-instance nonce is the bounded fix: ids stay collision-free across
-   * mounts without moving ownership of minting up to the provider. Minted off
-   * `getRandomValues` (via `mintIdempotencyKey`) because the app is served over
-   * plain http on the LAN, where `crypto.randomUUID` does not exist.
-   */
-  const [echoNonce] = useState(mintIdempotencyKey);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
-  const serverTurns = useMemo(() => [...items]
-    .sort((left, right) => left.id - right.id)
-    .flatMap(harnessItemToTurns), [items]);
-  /* Actions are read from the same rows, so they cannot disagree with the
-     messages about what happened or when (`buildTranscript`). */
-  const serverEntries = useMemo(() => buildTranscript(items), [items]);
-  useEffect(() => {
-    setEchoes((current) => reconcileUserEchoes(serverTurns, current));
-  }, [serverTurns]);
+  /* A remembered transcript is the reopen fallback while the first page is
+     unknown — initial pending, a failed read, or a query that was collected
+     after the drawer closed. Once any query data exists, the server wins even
+     when its answer is genuinely empty. */
+  const serverEntries = useMemo(
+    () => history.data === undefined
+      ? registry.turnsOf(cardId).filter((entry) => !isOptimisticConversationTurn(entry))
+      : buildTranscript(items),
+    [cardId, history.data, items, registry],
+  );
+  const serverTurns = useMemo(
+    () => history.data === undefined
+      ? serverEntries.filter((entry): entry is ConversationMessage => entry.author !== 'activity')
+      : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
+    [history.data, items, serverEntries],
+  );
   useEffect(() => {
     setEchoes([]);
     setUnconfirmedEchoId(null);
@@ -317,6 +292,23 @@ export function useConversationStore(
     setSending(false);
     setInterruptPending(false);
   }, [cardId]);
+  /* A send can settle through an older store after this card is already open in
+     a new one. Merge its confirmed optimistic turn from the provider, then give
+     every newer server row to the oldest eligible echo exactly once. */
+  useEffect(() => {
+    const remembered = registry.turnsOf(cardId).filter(isOptimisticConversationTurn);
+    setEchoes((current) => {
+      const present = new Set(current.map((turn) => turn.id));
+      const additions = remembered.filter((turn) => !present.has(turn.id));
+      const merged = additions.length === 0
+        ? current
+        : [...current, ...additions].toSorted((left, right) => left.atMs - right.atMs);
+      const next = reconcileOptimisticConversationTurns(serverTurns, merged);
+      return next.length === current.length && next.every((turn, index) => turn === current[index])
+        ? current
+        : next;
+    });
+  }, [cardId, registry, serverTurns]);
 
   const turns = useMemo(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
@@ -377,11 +369,11 @@ export function useConversationStore(
    *
    * Who still reads it, stated plainly because #1341 changed the answer and a
    * stale version of this note would be a lie about coverage. Today used to
-   * render this memory as its conversation list, and no route renders it as a
-   * list any more (`ConversationListIntent`). What is left are two live readers,
-   * and they both read the **turns**: `turnsBefore` in `send`, which is how a
-   * message the reader genuinely sent twice is counted twice, and the drawer's
-   * transcript fallback in `turnsOf`. The remembered `title` and `updatedAt`
+   * render this memory as its conversation list, and no route does so now.
+   * What is left are two live readers,
+   * and they both read the **turns**: optimistic reconciliation uses their
+   * persisted provenance, and the drawer falls back to them while history is
+   * unknown. The remembered `title` and `updatedAt`
    * currently have no reader at all — they are kept because the cross-track
    * conversation card (#1341, separate issue) is a list reader coming back, and
    * because the rule below is about what may be *written*, which is cheaper to
@@ -410,34 +402,30 @@ export function useConversationStore(
   useEffect(() => {
     if (durableConversation === null) return;
     /* Server rows enter the registry only under the Track that supplied them. */
-    if (serverRows !== null && durableConversation.trackId !== rememberOn) return;
+    if (durableConversation.trackId !== rememberOn) return;
     /* Remember the transcript so reopening the conversation preserves its
        activity lines and looks identical to the route the user just left — the
        confirmed one, for the reason `durableConversation` gives: a message that
        may still fail is not part of what this conversation *is*. */
     registry.remember(durableConversation, confirmedTranscript);
-  }, [confirmedTranscript, durableConversation, registry, rememberOn, serverRows]);
+  }, [confirmedTranscript, durableConversation, registry, rememberOn]);
   useEffect(() => {
     /*
      * A `'rows'` route that named a track remembers **every** row it lists.
      *
-     * Not only the open one, and not only on open. An assistant conversation
-     * exists nowhere but in this list — no other surface fetches it — so a
-     * registry that only learned about opened rows would leave Today permanently
-     * without them, and the whole Today → track path below would be dead code for
-     * the one kind of conversation it was written for (§5.1).
+     * Not only the open one, and not only on open. This gives every route row a
+     * stable place for confirmed facts learned from its transcript, so closing
+     * the drawer can project those facts back onto the server summary below.
      *
-     * `rememberOn` is compared against each row rather than merely consulted:
-     * Today navigates to `conversation.trackId`, so a row belonging to some other
-     * track — or to a hidden one — would be a link into a place this route never
-     * claimed. Remembering exactly the rows of the named track is the defence,
-     * held here rather than downstream.
+     * `rememberOn` is compared against each row rather than merely consulted: a
+     * row belonging to some other Track must not write facts into this route's
+     * registry scope. The comparison is the defence, held here rather than in a
+     * renderer.
      *
      * Turns are carried over from whatever the registry already holds, never
      * reset: the open row is remembered with its full transcript by the effect
      * above, and writing `[]` here would erase it on the next render.
      */
-    if (serverRows === null) return;
     for (const row of serverRows) {
       if (row.trackId !== rememberOn) continue;
       /* The open row belongs to the effect above, which knows its transcript
@@ -448,9 +436,9 @@ export function useConversationStore(
       /* A turn count this tab really read is not unread by a list that does not
          send one. The server will not count turns (`TrackConversationSummary`),
          so a row always arrives with `turns` absent; writing that over an entry
-         the drawer counted would make a conversation lose its count on Today
-         the moment its own track was visited again. The transcript is carried
-         over for the same reason and by the same rule.
+         the drawer counted would make the registry forget a confirmed turn the
+         moment its Track was refreshed. The transcript is carried over for the
+         same reason and by the same rule.
 
          And so is the **name**, which is that rule a third time and was the one
          omission: an assistant card is minted `title: None`
@@ -458,8 +446,8 @@ export function useConversationStore(
          permanently null on the wire. The name a reader sees is derived by the
          effect above from the conversation's first message. The moment the
          drawer closes — or opens on another row — this effect stops skipping
-         that row, and a plain `{...row}` would put the null back: Today would
-         fall from the derived name to the bare kind label `Assistant`. Only
+         that row, and a plain `{...row}` would put the null back: the route row
+         would fall to the bare kind label `Assistant`. Only
          the absent direction is carried — a title the server does send in a
          future backfill is the server's to change and wins, exactly as `turns`
          does. */
@@ -469,64 +457,45 @@ export function useConversationStore(
          injected planner row reads the card's `updated_at`, and neither moves
          when a turn is added to a conversation the drawer is reading. The
          drawer *does* know that time (`turns.at(-1)?.atMs`) and wrote it here.
-         Taking the later of the two keeps a conversation you have just been
-         talking in at the top of Today, instead of sinking it back to whenever
-         its card row was last touched. */
+         Taking the later of the two keeps the registry's memory monotonic. The
+         product list deliberately does not project this stale snapshot; only
+         the open row claims a current activity time. */
       const known = registry.conversations.find((candidate) => candidate.id === row.id);
       registry.remember(
-        {
-          ...row,
-          ...(known?.turns === undefined ? {} : { turns: known.turns }),
-          ...(row.title === null && known?.title != null ? { title: known.title } : {}),
-          updatedAt: Math.max(row.updatedAt, known?.updatedAt ?? 0),
-        },
+        withRememberedConversation(row, known),
         registry.turnsOf(row.id),
       );
     }
   }, [conversation?.id, registry, rememberOn, serverRows]);
 
-  const allConversations = conversation === null
-    ? registry.conversations
-    : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
-  const conversations = serverRows !== null
-    /* The open row is replaced in place by the live one: same id, but with the
-       turns and the name this route can only know from the transcript it is
-       already reading (§7 — the server has no title to send). */
-    ? (conversation === null
-      ? serverRows
-      : serverRows.map((row) => row.id === conversation.id ? conversation : row))
-    : allConversations;
+  const listedConversations = useMemo(
+    () => serverRows.map((row) => withRememberedTitle(
+      row, registry.conversations.find((candidate) => candidate.id === row.id),
+    )),
+    [registry.conversations, serverRows],
+  );
+  /* The open row is replaced in place by the live one: same id, but with the
+     turns and the name this route can only know from the transcript it is
+     already reading (§7 — the server has no title to send). */
+  const conversations = conversation === null
+    ? listedConversations
+    : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
   const send = (_conversationId: string, text: string) => {
-    if (sendingRef.current) return;
+    if (sendingRef.current || !registry.tryBeginSend(cardId)) return;
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
-    seq.current += 1;
-    const echo = {
-      id: `echo-${echoNonce}-${seq.current}`, author: 'you' as const, text, atMs: Date.now(),
+    const echo: OptimisticConversationTurn = {
+      id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
+      serverHighWaterBefore: serverItemHighWater(items),
     };
-    mintedEchoIds.current.add(echo.id);
     const sentTo = cardId;
-    /*
-     * Which server rows this conversation had *before* this message left.
-     *
-     * The write-through below asks whether the refresh already brought this very
-     * message back, and the only rows that can answer that are the ones that
-     * were not there yet. Asking the whole registry entry instead — as this did
-     * — makes an older identical message answer for this one: say `ping` twice
-     * and the server row for the first `ping` matches the second echo, so the
-     * second send is neither appended nor counted and the reader loses a message
-     * they watched being sent. `reconcileUserEchoes` pairs one-to-one only
-     * within the echoes of a single call, and this call passes one echo, so it
-     * cannot know the older row is already spoken for. Recording the ids here is
-     * how it is told.
-     */
-    const turnsBefore = new Set(registry.turnsOf(sentTo).map((entry) => entry.id));
     activeSend.current = { cardId: sentTo, echoId: echo.id };
     /* Still ours to answer for. False from the moment the reader moved to
        another conversation (the `cardId` effect) or started a later send. */
     const stillActive = () => activeSend.current?.echoId === echo.id;
+    let sendFailure: string | null = null;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
     void mutations.send(text).then(() => {
@@ -545,9 +514,10 @@ export function useConversationStore(
        *
        * Through `updateExisting`, not `remember`, because both halves of this
        * write have to happen at the moment of the write rather than at the
-       * moment of the send. `mutations.send` resolves two refreshes after its
-       * POST returned 200 (`usePlannerMutations`), and either of them can land a
-       * newer transcript, turn count or state in this entry first: merging into
+       * moment of the send. The POST acknowledgement starts two background
+       * refreshes (`usePlannerMutations`), and those reads — or an event that
+       * arrived while the POST was in flight — can put a newer transcript,
+       * turn count or state in this entry first. Merging into
        * `registry.conversations` and `registry.turnsOf` as captured here would
        * put the pre-send entry back and drop what just arrived. The
        * "only into an entry that already exists" check is the same story: a
@@ -561,39 +531,46 @@ export function useConversationStore(
         /*
          * The refresh may already have brought this very message back.
          *
-         * `POST /planner/input` is answered, the history query refetches, the
-         * server's own row for this message lands, and the effect above writes
-         * the transcript containing it — all before this promise settles.
-         * Appending the echo then would show the reader their message twice and
-         * count it twice. Matched by text through the same one-to-one rule the
-         * drawer reconciles echoes with (`reconcileUserEchoes`), against the
-         * rows that **arrived since the send** (`turnsBefore`) and that this
-         * store did not mint itself — so a reader who genuinely sends the same
-         * sentence twice still has it counted twice, and an echo of this store's
-         * own is never mistaken for the server's account of it.
+         * Every optimistic turn carries the server item high-water from before
+         * its own send. Reconcile all of them together, oldest first, so one new
+         * server row can confirm only one echo — including echoes minted by an
+         * older store instance. Provenance, rather than this store's local id
+         * set, is what survives a route remount.
          */
-        const serverSaid = knownTurns.filter((turn): turn is ConversationTurn =>
-          turn.author === 'you' && !mintedEchoIds.current.has(turn.id) && !turnsBefore.has(turn.id));
-        const recorded = reconcileUserEchoes(serverSaid, [echo]).length === 0;
+        const remembered = knownTurns.filter(isOptimisticConversationTurn);
+        const optimistic = remembered.some((turn) => turn.id === echo.id)
+          ? remembered
+          : [...remembered, echo].toSorted((left, right) => left.atMs - right.atMs);
+        const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
+          turn.author !== 'activity' && !isOptimisticConversationTurn(turn));
+        const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
+        const unresolvedIds = new Set(unresolved.map((turn) => turn.id));
+        const recorded = !unresolvedIds.has(echo.id);
+        const nextTurns = knownTurns.filter((turn) =>
+          !isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id));
+        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) nextTurns.push(echo);
         return {
           conversation: {
             ...known,
             title: known.title ?? conversationNameFrom(text),
             updatedAt: Math.max(known.updatedAt, echo.atMs),
-            ...(recorded ? {} : { turns: (known.turns ?? 0) + 1 }),
+            turns: nextTurns.filter((turn) => turn.author !== 'activity').length,
           },
-          turns: recorded ? knownTurns : [...knownTurns, echo],
+          turns: nextTurns,
         };
       });
     }).catch((error: unknown) => {
+      sendFailure = errorMessage(error, 'Could not send the message.');
       /* A failure belongs to the conversation that failed. Reported on another
          one it is a sentence under a composer the reader never sent from, and
-         dropping the echo there would be dropping someone else's. */
+         dropping the echo there would be dropping someone else's. The provider
+         still records this failure below for a remount of the owning card. */
       if (!stillActive()) return;
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
-      setActionError(errorMessage(error, 'Could not send the message.'));
+      setActionError(sendFailure);
     }).finally(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      registry.finishSend(sentTo, sendFailure);
       /* Re-opening the composer is a statement about the send in flight *now*.
          Made unconditionally, this is what let a second unanswered echo exist:
          the request left behind by a conversation switch cleared the flag of a
@@ -627,21 +604,29 @@ export function useConversationStore(
     }).finally(() => setInterruptPending(false));
   };
 
+  const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
+  const hasUnreconciledSend = echoes.length > 0
+    || registry.turnsOf(cardId).some(isOptimisticConversationTurn);
+  const sendBlocked = sending || sendingAcrossMounts || hasUnreconciledSend;
   return {
     conversations,
     turnsOf: (conversationId) => conversation?.id === conversationId
       ? transcript
       : registry.turnsOf(conversationId),
-    pending: pendingConversationIds(conversation, working, sending),
+    pending: pendingConversationIds(conversation, working, sending || sendingAcrossMounts),
     working,
     stopping,
-    sending,
+    sending: sending || sendingAcrossMounts,
+    sendBlocked,
+    historyReady: history.data !== undefined,
+    historyLoading: history.data === undefined && history.isFetching,
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
-    actionError,
+    actionError: actionError ?? registry.sendErrors[cardId] ?? null,
     send,
     interrupt,
+    retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
   };
 }
@@ -667,28 +652,8 @@ type PlannerConversationScope = Readonly<{
   state?: ConversationState | null;
 }>;
 
-/**
- * What the panel is looking at — two different things that were
- * previously told apart by whether `scope` was null.
- *
- * That conflated "there is a card open" with two facts that have nothing to do
- * with a card: whether this route can *hold* a drawer at all, and where a new
- * conversation would go. `'elsewhere'` is the route that cannot hold one, so
- * opening a row there navigates to wherever the row lives; a `'rows'` route can
- * hold one for every row it lists, so opening one must not navigate.
- *
- * **Every current route is `'rows'` now.** Today became one in #1341: it lists the
- * launchpad track's own conversations, so it has a single track in scope, it can
- * hold the drawer, and there is nowhere for it to navigate to — the launchpad's
- * own page is the page you are on. `'elsewhere'` is therefore selected by
- * nothing and is left standing for the reason given on
- * `ConversationListIntent`. Read every `source.kind === 'elsewhere'` branch
- * below as unreachable today.
- */
-type ConversationPanelSource =
-  | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
-  | Readonly<{
-    kind: 'rows';
+/** A route-owned server list whose rows open in this panel's drawer. */
+type ConversationPanelSource = Readonly<{
     /** The Track this draft belongs to. */
     scopeId: string;
     rows: readonly Conversation[];
@@ -859,14 +824,14 @@ function useConversationPanel(
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
-  const scope: PlannerConversationScope | null = source.kind === 'rows' && openRowId !== null
+  const scope: PlannerConversationScope | null = openRowId !== null
     ? source.scopeOf(openRowId)
     : null;
-  const routeIntent: ConversationRouteIntent = source.kind === 'rows'
-    ? { kind: 'rows', rows: source.rows, rememberOn: source.rememberOn }
-    : source.intent;
+  const routeIntent: ConversationRouteIntent = {
+    rows: source.rows, rememberOn: source.rememberOn,
+  };
 
-  const rows = source.kind === 'rows' ? source.rows : null;
+  const rows = source.rows;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
   const registry = useConversationRegistry();
   const go = useGo();
@@ -876,9 +841,9 @@ function useConversationPanel(
    * The provider keeps independent drafts for other Tracks, but only this
    * route's slot is visible, reopenable or sendable here.
    */
-  const sourceScopeId = source.kind === 'rows' ? source.scopeId : null;
-  const draft = sourceScopeId === null ? null : registry.draftOf(sourceScopeId);
-  const adoptedDraftId = sourceScopeId === null ? null : registry.adoptedDraftIdOf(sourceScopeId);
+  const sourceScopeId = source.scopeId;
+  const draft = registry.draftOf(sourceScopeId);
+  const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
   const creating = draft?.creating ?? false;
   const discardUnsentDraft = registry.discardUnsentDraft;
 
@@ -886,7 +851,6 @@ function useConversationPanel(
      only work whose request actually left the browser; an untouched or locally
      refused draft has no server identity that needs to outlive this route. */
   useEffect(() => {
-    if (sourceScopeId === null) return;
     return () => { discardUnsentDraft(sourceScopeId); };
   }, [discardUnsentDraft, sourceScopeId]);
 
@@ -898,7 +862,7 @@ function useConversationPanel(
    * instead of either opening the wrong Track or being lost.
    */
   useEffect(() => {
-    if (sourceScopeId === null || adoptedDraftId === null || rows === null) return;
+    if (adoptedDraftId === null) return;
     if (!rows.some((row) => row.id === adoptedDraftId)) return;
     setOpenTarget({ kind: 'row', id: adoptedDraftId });
     registry.finishDraftAdoption(sourceScopeId, adoptedDraftId);
@@ -943,9 +907,9 @@ function useConversationPanel(
   };
 
   /*
-   * Today asked for a conversation to be opened, and this Track route is where
-   * it lives. The request is consumed against the loaded rows because `scope`
-   * does not exist until one of those rows is already open.
+   * A Track route's planner-open intent asked for a conversation to be opened.
+   * The request is consumed against the loaded rows because `scope` does not
+   * exist until one of those rows is already open.
    *
    * The condition is "the rows are loaded **and** contain this id", never
    * "the rows do not contain it, so clear". The list arrives a round trip
@@ -963,7 +927,7 @@ function useConversationPanel(
        same commit that opens the row, so by the time the composer mounts the
        registry no longer remembers what was asked for. */
     const focusComposer = registry.requestedOpenFocusesComposer;
-    if (rows === null || !rows.some((row) => row.id === requestedOpenId)) return;
+    if (!rows.some((row) => row.id === requestedOpenId)) return;
     setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
@@ -1007,7 +971,6 @@ function useConversationPanel(
    * offered rather than offered and refused.
    */
   const start = () => {
-    if (source.kind !== 'rows') return;
     /*
      * A draft that was sent and failed is still open business, and `+` is the
      * only way back to it once the drawer was closed. Reopening it — same key,
@@ -1052,7 +1015,7 @@ function useConversationPanel(
    * scope, and it withholds the `+` in the one state that still has nothing to
    * attach to — no launchpad at all — from outside this hook, at the slot.
    */
-  const startAnother = source.kind === 'rows' ? start : undefined;
+  const startAnother = start;
 
   /*
    * The attempt `from` became row `row`: forget the draft and open the row.
@@ -1106,7 +1069,7 @@ function useConversationPanel(
   };
 
   const sendDraft = (text: string) => {
-    if (source.kind !== 'rows' || creating || draft === null) return;
+    if (creating || draft === null) return;
     const { create, refresh, scopeId, derivedCardId } = source;
     /*
      * Two different questions, and they are asked of two different strings —
@@ -1240,7 +1203,7 @@ function useConversationPanel(
   }
 
   const sendAsNewConversation = () => {
-    if (source.kind !== 'rows' || creating || draft === null || draft.text === null) return;
+    if (creating || draft === null || draft.text === null) return;
     const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
     let attempt = draft;
@@ -1296,17 +1259,7 @@ function useConversationPanel(
         activeId={open?.id ?? null}
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
-          /* Only a route that cannot hold the drawer sends the reader
-             somewhere else. A `'rows'` route holds one for every row it lists —
-             all three routes are `'rows'` since #1341, so the branch below is
-             the unreachable one and the open request it leaves has no producer
-             left (`ConversationPanelSource`). */
-          if (source.kind !== 'elsewhere') {
-            setOpenTarget({ kind: 'row', id: conversation.id });
-            return;
-          }
-          registry.requestOpen(conversation.id);
-          go({ name: 'track', trackId: conversation.trackId });
+          setOpenTarget({ kind: 'row', id: conversation.id });
         }}
       />
     ),
@@ -1317,18 +1270,16 @@ function useConversationPanel(
      * conversation on Today and did not recognise the control as an add — the
      * label said `New conversation` and it worked, but every other "make a new
      * one" in the app is a `+`: `New area` and `New track in {area}` in the
-     * shell sidebar, `New track` on the area page. The bubble named the *noun*
+     * shell sidebar. The bubble named the *noun*
      * while the rest of the app names the *verb*, so it read as a decoration of
      * the module title rather than as the module's action.
      *
-     * One element, and since #1341 all three `'rows'` routes render it — Today,
-     * the area page and the track page — so this is the same symbol in all three
-     * places rather than three that agree by coincidence.
+     * One element, and since #1341 both `'rows'` routes render it — Today and the
+     * track page — so this is the same symbol in both places rather than two
+     * that agree by coincidence.
      */
-    action: source.kind === 'elsewhere'
-      ? undefined
-      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
-    startConversation: source.kind === 'elsewhere' ? undefined : start,
+    action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
+    startConversation: start,
     drawer: (
       <Drawer
         open={open !== null || draftOpen}
@@ -1365,6 +1316,14 @@ function useConversationPanel(
           </>
         ) : open === null ? undefined : (
           <>
+            {store.historyError !== null && (
+              <ChatFooterNotice>
+                <ChatFooterError message={store.historyError} />
+                <ChatFooterRemedy disabled={store.historyLoading} onClick={store.retryHistory}>
+                  {store.historyLoading ? 'Loading…' : 'Try again'}
+                </ChatFooterRemedy>
+              </ChatFooterNotice>
+            )}
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
@@ -1377,7 +1336,7 @@ function useConversationPanel(
                  that thread is where the intent was delivered (#1299) and
                  where the next thing the reader says goes. */
               focusOnMount={composerFocusFor === open.id}
-              disabled={store.sending}
+              disabled={store.sendBlocked || !store.historyReady}
               onSend={(text) => store.send(open.id, text)}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
                  it is not passed down as a prop of its own, because the composer
@@ -1406,7 +1365,9 @@ function useConversationPanel(
                 {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
               </button>
             )}
-            {store.historyError !== null && <p role="alert">{store.historyError}</p>}
+            {!store.historyReady && store.historyError === null && (
+              <p role="status">Loading conversation…</p>
+            )}
             {/*
               * Keyed on the conversation, so switching threads in place builds
               * a new transcript rather than reusing the old one's state.
@@ -1516,7 +1477,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        asked about and got a straight answer to. The other two are failures and
        are announced. */
     return classified.kind === 'no-activity'
-      ? <span data-nc-role="hint">{classified.message}</span>
+      ? <span role="status" data-nc-role="hint">{classified.message}</span>
       : <span role="alert" data-nc-role="hint">{classified.message}</span>;
   }, [summary.failure, summary.failedStep]);
   /*
@@ -1559,14 +1520,14 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     transport, launchpadTrackId, unauthorized,
   );
   const launchpadRows = useMemo(
-    () => launchpadConversationsQuery.data ?? [],
-    [launchpadConversationsQuery.data],
+    () => (launchpadConversationsQuery.data ?? [])
+      .map((row) => nameTodaySummaryConversation(launchpadTrackId, row)),
+    [launchpadConversationsQuery.data, launchpadTrackId],
   );
   const chat = useConversationPanel(
     transport,
     unauthorized,
     {
-      kind: 'rows',
       scopeId: launchpadTrackId,
       rows: launchpadRows,
       /*
@@ -1578,7 +1539,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        * remembered, and that entry has live readers — the transcript the drawer
        * falls back to while a reopen is settling, and `turnsBefore` in `send`,
        * which is how a message the reader really did send twice is counted
-       * twice. An area route passes null and gets neither, deliberately.
+       * twice. A row whose own `trackId` does not match this scope is rejected
+       * by that same check.
        */
       rememberOn: launchpadTrackId,
       derivedCardId: (idempotencyKey) => trackConversationCardId(launchpadTrackId, idempotencyKey),
@@ -1600,6 +1562,25 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
        times — the same reason the track route hides it. */
     { showTrack: false },
   );
+  const conversationList = launchpadQuery.isPending || launchpadQuery.isError
+    /* The outer resolve is still unknown or failed; neither answer means an
+       empty conversation list. Its own error is already rendered in the
+       document region. */
+    ? null
+    : launchpad === null
+    /* No launchpad is a settled empty state and there is intentionally no list
+       request. The module still says it has no conversations yet. */
+    ? chat.list
+    : launchpadConversationsQuery.isPending
+      /* Unknown is not empty: do not flash a false empty state while the first
+         read is still on the wire. */
+      ? null
+      : launchpadConversationsQuery.isError
+        ? <ErrorBox
+            message={`Conversations are unavailable: ${launchpadConversationsQuery.error.message}`}
+            onRetry={() => { void launchpadConversationsQuery.refetch(); }}
+          />
+        : chat.list;
   /* The document itself comes from the ordinary track detail — the resolve
      carries no `report_card_id` because `readTrackReport` locates the card by
      `kind === 'track-report'` and that field would have no consumer (§5.1).
@@ -1699,7 +1680,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           onDelete={options.variant === 'panel' ? deletion.request : undefined}
         />
       )}
-      conversationList={chat.list}
+      conversationList={conversationList}
       /*
        * The `+`, which Today did not have and now does (#1341).
        *
@@ -2275,7 +2256,6 @@ function TrackRouteBody({ transport, unauthorized, track, cards, cardRuntime }: 
     transport,
     unauthorized,
     {
-      kind: 'rows',
       scopeId: track.id,
       rows,
       /* Unlike an area's, these rows are on a track the reader can be sent to —

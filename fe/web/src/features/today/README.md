@@ -43,8 +43,10 @@ are looking at*. The cross-track index does not stay here — it becomes a card 
 its own, on its own issue. The 18 assertions were adjudicated one by one in the
 #1341 PR description (9 withdrawn together with the #1189 S5 delivery they
 belonged to, 5 rewritten to question the registry directly, 2 narrowed, 2
-carried unchanged), so a later reader who finds this paragraph before that table
-should read the table.
+carried unchanged). The later Area-navigation refactor (#1354) deleted the Area
+route and its Conversations flow, so the two Area compatibility assertions are
+not resurrected by this PR's rebase. A later reader who finds this paragraph
+before the table should read both decisions together.
 
 What the module is today, and which parts of it are load-bearing, is written up
 under **The Conversations module (#1341)** below.
@@ -219,7 +221,10 @@ around it stays interface-sized. Running is ambience and lives in the panel.
   The button says what it does before it is pressed ("an agent reads today's
   activity and writes it up here"), and while a press is in flight it names the
   step it is on — preparing the workspace is the slow half and does not get to
-  be described as writing.
+  be described as writing. Busy is `aria-disabled` rather than native-disabled,
+  so the focused control stays in the accessibility tree; a click guard still
+  prevents a second request. A no-activity answer is a polite status update,
+  while an actual failure remains an alert.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
   reason for putting it above the document, so an uncapped list would not be a
   cosmetic problem — it would falsify the layout's justification. The overflow
@@ -228,7 +233,8 @@ around it stays interface-sized. Running is ambience and lives in the panel.
 - **The first-run page owns a document too.** `areas` is the *user-visible*
   list — #175 filters the system area out of `GET /api/areas` and the launchpad
   lives there — so "no tracks, no areas" is an ordinary state for a workspace
-  whose only content is the day's report.
+  whose only content is the day's report. Once that hidden launchpad exists, the
+  same first-run layout also keeps the Conversations panel and its `+` reachable.
 
 ### The refresh chain, and why nothing generated protects it
 
@@ -289,6 +295,35 @@ Consequences worth knowing before "fixing" one of them:
 - Rows carry no track name (`showTrack: false`) — this page is about the one
   track they are on — and no turn count, because `toTrackConversation` leaves
   `turns` absent: the endpoint does not count them.
+- Pending and failed list reads are not empty lists. Pending renders no claim;
+  failure renders an error with Retry; only a successful `[]` says there are no
+  conversations yet. The same applies one level earlier to the launchpad
+  resolve: unknown or failed cannot be reworded as an empty list.
+- A summary attempt restarts the launchpad conversation read on both success and
+  failure, because the endpoint can create the card before a later send step
+  fails. The restart first cancels ownership of an older in-flight snapshot;
+  otherwise TanStack can reuse a pre-summary first load and let its empty result
+  land after the mutation.
+- A transcript-derived first-message name is projected back onto the server row
+  after the drawer closes, because it is stable and the endpoint does not carry
+  it. Turn counts and activity times remain open-row snapshots rather than stale
+  exact claims. The list must not fall back to `Assistant` after showing the
+  confirmed name while open. The summary writer is the one named exception: its
+  first persisted user turn is a server-owned bootstrap instruction, so its
+  deterministic card id is projected as `Today’s progress` and that internal
+  prompt never becomes reader-facing chrome. An explicit server title still wins.
+- A conversation composer does not accept a follow-up until its initial history
+  read has succeeded. This is the baseline that lets an optimistic echo tell a
+  genuinely new server item from an older identical message. A failed read keeps
+  its own error and Retry beside the disabled composer; it is never reworded as
+  a failed send.
+- The provider grants one in-flight send per conversation across route remounts.
+  A write's 200 is its acknowledgement and releases that lease without waiting
+  for the two background reads: a failed or hung history refresh is not a failed
+  send. The confirmed optimistic turn still blocks another same-card send until
+  a server item above its pre-send high-water confirms it. Different conversations
+  remain independent. A write failure is stored under that same conversation id,
+  so it follows the request across a remount and never appears under another drawer.
 
 ## Deliberate gaps (do not "fix" these by accident)
 

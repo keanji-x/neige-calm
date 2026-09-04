@@ -307,9 +307,13 @@ describe('#1253 the first-run page still owns a document', () => {
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
+      conversationList={<p>Launchpad conversations</p>}
+      conversationAction={<button type="button">New conversation</button>}
     />);
     expect(screen.getByText('Nothing here yet.')).toBeTruthy();
     expect(screen.getByText("the day's report")).toBeTruthy();
+    expect(screen.getByText('Launchpad conversations')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New conversation' })).toBeTruthy();
   });
 
   it('surfaces a failed resolve on a workspace with no user areas', () => {
@@ -425,6 +429,9 @@ describe('#1253 D5 the document’s trigger', () => {
     />);
     const button = screen.getByRole('button', { name: 'Writing…' });
     expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('data-nc-state')).toBe('busy');
+    expect(button.hasAttribute('disabled')).toBe(false);
     await userEvent.click(button);
     expect(pressed).toEqual([]);
   });

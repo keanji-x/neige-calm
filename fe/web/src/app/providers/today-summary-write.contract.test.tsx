@@ -17,7 +17,7 @@
 // only those" with nothing testing the hook at all. An assertion about what a
 // function does not do needs a test more than most, not less.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -35,7 +35,11 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
  * whether the press prepares a launchpad first.
  */
 async function press(
-  { hasLaunchpad, ensure }: { hasLaunchpad: boolean; ensure?: ApiTransportResponse },
+  { hasLaunchpad, ensure, summary }: {
+    hasLaunchpad: boolean;
+    ensure?: ApiTransportResponse;
+    summary?: ApiTransportResponse;
+  },
 ) {
   const paths: string[] = [];
   const transport: ApiTransportPort = {
@@ -48,7 +52,7 @@ async function press(
         return Promise.resolve(ensure ?? { status: 201, statusText: 'Created', body: { track_id: 'lp' } });
       }
       expect(request.path).toBe('/api/today/summary');
-      return Promise.resolve({
+      return Promise.resolve(summary ?? {
         status: 200, statusText: 'OK', body: { track_id: 'lp', card_id: 'conv-1' },
       });
     },
@@ -112,11 +116,11 @@ it('invalidates the conversation lists and nothing the document is read through'
 it('prepares the launchpad before writing when there is none, and refetches the resolve', async () => {
   const { paths, invalidated } = await press({ hasLaunchpad: false });
   expect(paths).toEqual(['/api/today/launchpad/ensure', '/api/today/summary']);
-  // `onSuccess` before `onSettled`, which is react-query's order and not
-  // something this contract has an opinion about — the claim is the set.
+  // The resolve refresh starts as soon as `ensure` settles; the conversation
+  // invalidation follows only after the summary itself succeeds.
   expect(invalidated).toEqual([
-    [...queryKeys.trackConversationsPrefix()],
     [...queryKeys.todayLaunchpad()],
+    [...queryKeys.trackConversationsPrefix()],
   ]);
 });
 
@@ -133,4 +137,56 @@ it('refetches the resolve even when the preparation fails', async () => {
   });
   expect(paths).toEqual(['/api/today/launchpad/ensure']);
   expect(invalidated).toEqual([[...queryKeys.todayLaunchpad()]]);
+});
+
+it('refreshes conversations when the summary fails after it may have created the card', async () => {
+  const { paths, invalidated } = await press({
+    hasLaunchpad: true,
+    summary: { status: 503, statusText: 'Service Unavailable', body: { error: 'send failed' } },
+  });
+  expect(paths).toEqual(['/api/today/summary']);
+  expect(invalidated).toEqual([[...queryKeys.trackConversationsPrefix()]]);
+});
+
+it('refetches the resolve as soon as preparation settles, without waiting for the summary', async () => {
+  const paths: string[] = [];
+  let finishSummary!: (response: ApiTransportResponse) => void;
+  const summary = new Promise<ApiTransportResponse>((resolve) => { finishSummary = resolve; });
+  const transport: ApiTransportPort = {
+    send(request) {
+      paths.push(request.path);
+      if (request.path === '/api/today/launchpad/ensure') {
+        return Promise.resolve({ status: 201, statusText: 'Created', body: { track_id: 'lp' } });
+      }
+      return summary;
+    },
+  };
+  const invalidated: unknown[][] = [];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const original = client.invalidateQueries.bind(client);
+  client.invalidateQueries = (filters?: { queryKey?: readonly unknown[] }) => {
+    if (filters?.queryKey !== undefined) invalidated.push([...filters.queryKey]);
+    return original(filters);
+  };
+  let write: (() => void) | null = null;
+  function Probe() {
+    write = useTodaySummaryMutation(transport, unauthorized, false).write;
+    return null;
+  }
+  render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>);
+
+  act(() => { write?.(); });
+  await waitFor(() => expect(paths).toEqual([
+    '/api/today/launchpad/ensure', '/api/today/summary',
+  ]));
+  expect(invalidated).toEqual([[...queryKeys.todayLaunchpad()]]);
+
+  await act(async () => {
+    finishSummary({ status: 200, statusText: 'OK', body: { track_id: 'lp', card_id: 'conv-1' } });
+    await summary;
+  });
+  await waitFor(() => expect(invalidated).toEqual([
+    [...queryKeys.todayLaunchpad()],
+    [...queryKeys.trackConversationsPrefix()],
+  ]));
 });

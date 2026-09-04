@@ -85,12 +85,12 @@ function track(overrides: Partial<Track> = {}): Track {
  * conditions they run under. If the shell renames or re-derives either, this
  * host is where the mirror goes stale.
  */
-function Main({ children }: { children: ReactNode }) {
+function Main({ children, inlineSize = '1080px' }: { children: ReactNode; inlineSize?: string }) {
   return (
     <div style={{
       containerType: 'inline-size',
       ['--panel-span' as string]: 'max(15rem, 25cqi)',
-      inlineSize: '1080px',
+      inlineSize,
       display: 'flex',
       flexDirection: 'column',
       blockSize: '760px',
@@ -249,6 +249,29 @@ describe('the document region owns the column the report will stand in', () => {
     // And the region really did stop being 504 wide, so the centring above is
     // not being satisfied by a box that happens to sit mid-column.
     expect(region.getBoundingClientRect().width).toBeGreaterThan(504);
+  });
+
+  it('clamps the document measure to a narrow desktop main column', async () => {
+    await page.viewport(1024, 800);
+    const { container } = render(
+      <Main inlineSize="824px"><TodayPage
+        renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
+        launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
+        launchpadDocument={<div data-document-measure="" style={{
+          inlineSize: 'var(--document-measure)', blockSize: '1000px',
+        }} />}
+      /></Main>,
+    );
+    const measure = container.querySelector('[data-document-measure]') as HTMLElement;
+    const mainColumn = measure.parentElement?.parentElement as HTMLElement;
+    /* Chromium uses overlay scrollbars on some hosts. Force the classic gutter
+       that Windows/Linux desktop browsers reserve so the cross-platform
+       constraint is tested deterministically. */
+    const scrollport = mainColumn.parentElement?.parentElement as HTMLElement;
+    scrollport.style.scrollbarGutter = 'stable';
+    scrollport.style.overflowY = 'scroll';
+    expect(measure.getBoundingClientRect().width)
+      .toBeLessThanOrEqual(mainColumn.getBoundingClientRect().width);
   });
 });
 

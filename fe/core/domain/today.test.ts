@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ApiFailure } from '../api/types.js';
 import {
-  NOTHING_TO_SUMMARISE, todayLaunchpadOperation, todaySummaryFailure, todaySummaryOperation,
+  nameTodaySummaryConversation, NOTHING_TO_SUMMARISE, TODAY_SUMMARY_CONVERSATION_KEY,
+  TODAY_SUMMARY_CONVERSATION_TITLE, todayLaunchpadOperation, todaySummaryFailure, todaySummaryOperation,
 } from './today.js';
+import { trackConversationCardId, type Conversation } from './conversation.js';
 
 const http = (status: number, code: string, message: string): ApiFailure =>
   ({ kind: 'http', status, code, message });
@@ -35,6 +37,16 @@ describe('the Today summary trigger (#1253 D5)', () => {
      two writes, and it is never the one on the render path. */
   it('leaves the page-load resolve a pure read', () => {
     expect(todayLaunchpadOperation().method).toBe('GET');
+  });
+
+  it('names the fixed summary writer without exposing its bootstrap instruction', () => {
+    const summary: Conversation = {
+      id: trackConversationCardId('lp', TODAY_SUMMARY_CONVERSATION_KEY),
+      trackId: 'lp', title: null, kind: 'track-assistant', state: 'idle', updatedAt: 1,
+    };
+    expect(nameTodaySummaryConversation('lp', summary).title).toBe(TODAY_SUMMARY_CONVERSATION_TITLE);
+    expect(nameTodaySummaryConversation('lp', { ...summary, title: 'Server title' }).title).toBe('Server title');
+    expect(nameTodaySummaryConversation('other-track', summary)).toBe(summary);
   });
 });
 
