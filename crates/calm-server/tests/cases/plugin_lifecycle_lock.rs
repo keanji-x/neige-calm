@@ -2924,25 +2924,35 @@ async fn rotate_token_reconciles_a_plugin_left_running_beside_a_disabled_row() {
     );
 }
 
-/// B2. A `plugin_token_delete` that fails may not be reported as a successful
-/// rotation.
+/// B2 + C1. A failing `plugin_token_delete` means opposite things on the two
+/// branches, and the test has to say so branch by branch.
 ///
-/// The pre-fix shape was `let _ = self.repo.plugin_token_delete(id).await;`, so
-/// a store that refused the DELETE answered `Ok` with the old hash still in
-/// place: the rotation silently did not happen. The break here is a real one —
-/// a `BEFORE DELETE` trigger that aborts — so the row survives and can be read
-/// back, which is the half a `DROP TABLE` cannot show.
+/// The break is a real one — a `BEFORE DELETE` trigger that aborts — so the row
+/// survives and can be read back, which is the half a `DROP TABLE` cannot show.
 ///
-/// **Both branches, because they are two separate `?`s.** The enabled branch
-/// deletes before restarting; the disabled branch stops, then deletes. A
-/// mutation restoring `let _ =` on one of them would be invisible to a test of
-/// the other.
+/// **Enabled branch: the rotation still happens, so refusing would be a lie.**
+/// `restart_under` → `spawn_under` → `ensure_plugin_token` writes through
+/// `plugin_token_set`, an `INSERT … ON CONFLICT DO UPDATE`
+/// (`calm-truth/src/db/sqlite/out_of_domain.rs:630`). It never DELETEs, so the
+/// hash is overwritten whether or not the DELETE landed. Round 2 of this fix
+/// propagated the error here and turned a working rotation into a 500 that did
+/// nothing; the fixture missed it because it never spawned the plugin, so no
+/// restart followed and there was nothing to re-mint. **This test therefore
+/// runs the enabled arm against a live plugin, and asserts the two things that
+/// prove the rotation really happened: the stored hash changed, and the pid
+/// changed.** Asserting `Ok` alone would pass on a rotation that did nothing.
 ///
-/// Mutation witness: put `let _ =` back on either `plugin_token_delete` call in
-/// `rotate_plugin_token_under` → this test goes red on that branch's "must not
-/// report success" assertion.
+/// **Disabled branch: nothing follows, so the delete IS the rotation.** The
+/// branch returns without restarting, so a swallowed failure is a 200 over an
+/// unchanged hash.
+///
+/// Mutation witnesses, one per branch (each applied alone):
+/// * put `?` back on the enabled branch's `plugin_token_delete` → the enabled
+///   arm goes red on "the rotation must still happen";
+/// * put `let _ =` back on the disabled branch's → the disabled arm goes red on
+///   "the disabled branch must report the failed delete".
 #[tokio::test]
-async fn a_failed_token_delete_is_not_reported_as_a_successful_rotation() {
+async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let fx = boot_with(BootOpts {
@@ -2951,10 +2961,23 @@ async fn a_failed_token_delete_is_not_reported_as_a_successful_rotation() {
     })
     .await;
 
-    fx.repo
-        .plugin_token_set(ID, "the-old-hash", i64::MAX)
+    // ---- enabled branch, against a LIVE plugin. -------------------------
+    fx.host.spawn(ID).await.expect("spawn");
+    let before_hash = fx
+        .repo
+        .plugin_token_get(ID)
         .await
-        .expect("seed a token to watch");
+        .unwrap()
+        .expect("the spawn minted a token")
+        .0;
+    let before_pid = fx
+        .host
+        .status(ID)
+        .await
+        .expect("running")
+        .pid
+        .expect("a live pid");
+
     sqlx::query(
         "CREATE TRIGGER block_token_delete BEFORE DELETE ON plugin_tokens \
          BEGIN SELECT RAISE(ABORT, 'blocked'); END",
@@ -2963,41 +2986,63 @@ async fn a_failed_token_delete_is_not_reported_as_a_successful_rotation() {
     .await
     .expect("arm the failing delete");
 
-    // (1) the enabled branch: the delete precedes the restart.
-    let err = fx
-        .host
-        .rotate_plugin_token(ID)
-        .await
-        .expect_err("a rotation whose token delete failed must not report success");
-    assert!(
-        err.to_string().contains("plugin_token_delete"),
-        "the failure must name what could not be done: {err}"
-    );
-    assert_eq!(
-        fx.repo.plugin_token_get(ID).await.unwrap().map(|t| t.0),
-        Some("the-old-hash".to_string()),
-        "fixture: the trigger has to have actually blocked the delete, or this \
-         test proved nothing"
+    fx.host.rotate_plugin_token(ID).await.expect(
+        "the rotation must still happen: the restart's UPSERT does not \
+                 need the DELETE, so refusing here would be a false 500",
     );
 
-    // (2) the disabled branch: the stop precedes the delete.
+    let after_hash = fx
+        .repo
+        .plugin_token_get(ID)
+        .await
+        .unwrap()
+        .expect("the restart re-minted through the UPSERT")
+        .0;
+    assert_ne!(
+        before_hash, after_hash,
+        "the rotation must still happen even though the DELETE was refused — \
+         `ensure_plugin_token` overwrites the row through \
+         `INSERT … ON CONFLICT DO UPDATE` and never needs the delete"
+    );
+    let after_pid = fx
+        .host
+        .status(ID)
+        .await
+        .expect("still running after the rotation")
+        .pid
+        .expect("a live pid");
+    assert_ne!(
+        before_pid, after_pid,
+        "…and the restart half really ran: a rotation that left the same \
+         process behind would have handed the plugin a token it never \
+         handshook with"
+    );
+
+    // ---- disabled branch: nothing re-mints, so the delete is the whole
+    // ---- rotation and its failure is the rotation's failure.
     fx.repo
         .plugin_update_enabled(ID, false)
         .await
         .expect("bypass write");
+    let armed_hash = fx.repo.plugin_token_get(ID).await.unwrap().expect("row").0;
+
     let err = fx
         .host
         .rotate_plugin_token(ID)
         .await
-        .expect_err("the disabled branch must report the failed delete too");
+        .expect_err("the disabled branch must report the failed delete");
     assert!(
         err.to_string().contains("plugin_token_delete"),
         "the failure must name what could not be done: {err}"
     );
     assert_eq!(
         fx.repo.plugin_token_get(ID).await.unwrap().map(|t| t.0),
-        Some("the-old-hash".to_string()),
+        Some(armed_hash),
         "the old hash is still there — which is exactly why answering `Ok` \
          would have been a lie"
+    );
+    assert!(
+        fx.host.status(ID).await.is_none(),
+        "the branch still stopped the plugin before it tried the delete"
     );
 }
