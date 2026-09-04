@@ -126,6 +126,32 @@ async fn full_hard_queue_then_incoming_hard_drops_new() {
 }
 
 #[tokio::test]
+async fn durable_user_message_batch_rolls_back_every_message_when_one_cannot_fit() {
+    let original = (0..255)
+        .map(|i| worker_hook_stop(format!("hook-{i}")))
+        .collect::<Vec<_>>();
+    let harness = harness_from_snapshot(HarnessSnapshot::initial(0, original.clone())).await;
+    // Four individually legal planner inputs exceed the harness's folded-tail
+    // cap only after earlier members have already been accepted. This creates
+    // the partial-batch window rather than merely failing the first message.
+    let message = "x".repeat(32_768);
+
+    let error = harness
+        .observe_user_messages_durable(vec![message.clone(); 4])
+        .await
+        .expect_err("the fourth message must exceed the full hard queue");
+    assert!(matches!(
+        error,
+        calm_server::error::CalmError::ServiceUnavailable(_)
+    ));
+    assert_eq!(
+        harness.pending_queue_for_test().await,
+        original,
+        "a rejected durable batch must restore the queue instead of retaining a prefix"
+    );
+}
+
+#[tokio::test]
 async fn full_soft_queue_incoming_hard_preserves_hard_and_evicts_oldest_soft() {
     let observations = (0..256)
         .map(|i| Observation::TrackGoal {

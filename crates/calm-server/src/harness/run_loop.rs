@@ -134,7 +134,7 @@ pub struct HarnessObservationDelivery {
 enum HarnessObservationCommand {
     Delivery(HarnessObservationDelivery),
     Durable {
-        delivery: HarnessObservationDelivery,
+        deliveries: Vec<HarnessObservationDelivery>,
         persisted: oneshot::Sender<Result<()>>,
     },
 }
@@ -251,21 +251,40 @@ impl PlannerHarness {
 
     /// Fold and persist non-replayable user intent before acknowledging it.
     pub async fn observe_user_message_durable(&self, text: String) -> Result<()> {
+        self.observe_user_messages_durable(vec![text]).await
+    }
+
+    /// Persist a sequence of user messages as one all-or-nothing queue change.
+    ///
+    /// The launchpad conversation create uses this for its server briefing plus
+    /// the reader's first message. Persisting them independently opens a state
+    /// where the briefing is durable, the user message fails, and a retry sees
+    /// "some user message" and permanently skips the words the user supplied.
+    pub async fn observe_user_messages_durable(&self, texts: Vec<String>) -> Result<()> {
+        if texts.is_empty() {
+            return Err(CalmError::BadRequest(
+                "at least one user message is required".into(),
+            ));
+        }
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "planner harness is shutting down; refusing new observation".into(),
             ));
         }
+        let deliveries = texts
+            .into_iter()
+            .map(|text| HarnessObservationDelivery {
+                observation: Observation::UserMessage { text },
+                envelope_id: None,
+            })
+            .collect::<Vec<_>>();
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (persisted, confirmation) = oneshot::channel();
                 sender
                     .try_send(HarnessObservationCommand::Durable {
-                        delivery: HarnessObservationDelivery {
-                            observation: Observation::UserMessage { text },
-                            envelope_id: None,
-                        },
+                        deliveries,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -278,10 +297,15 @@ impl PlannerHarness {
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
                 let checkpoint = checkpoint_durable_user_message(&self.inner).await;
-                if !on_observation(&self.inner, Observation::UserMessage { text }, None).await {
-                    return Err(CalmError::ServiceUnavailable(
-                        "planner harness pending queue full, retry shortly".into(),
-                    ));
+                for delivery in deliveries {
+                    if !on_observation(&self.inner, delivery.observation, delivery.envelope_id)
+                        .await
+                    {
+                        restore_durable_user_message(&self.inner, checkpoint).await;
+                        return Err(CalmError::ServiceUnavailable(
+                            "planner harness pending queue full, retry shortly".into(),
+                        ));
+                    }
                 }
                 if let Err(error) = persist_snapshot(&self.inner).await {
                     restore_durable_user_message(&self.inner, checkpoint).await;
@@ -698,15 +722,22 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { delivery, persisted } => {
+                    HarnessObservationCommand::Durable { deliveries, persisted } => {
                         let checkpoint = checkpoint_durable_user_message(&inner).await;
-                        let result = if on_observation(
-                            &inner,
-                            delivery.observation,
-                            delivery.envelope_id,
-                        )
-                        .await
-                        {
+                        let mut accepted = true;
+                        for delivery in deliveries {
+                            if !on_observation(
+                                &inner,
+                                delivery.observation,
+                                delivery.envelope_id,
+                            )
+                            .await
+                            {
+                                accepted = false;
+                                break;
+                            }
+                        }
+                        let result = if accepted {
                             match persist_snapshot(&inner).await {
                                 Ok(()) => Ok(()),
                                 Err(error) => {
@@ -715,6 +746,7 @@ async fn run_loop(
                                 }
                             }
                         } else {
+                            restore_durable_user_message(&inner, checkpoint).await;
                             Err(CalmError::ServiceUnavailable(
                                 "planner harness pending queue full, retry shortly".into(),
                             ))

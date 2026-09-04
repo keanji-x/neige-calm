@@ -41,7 +41,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{SendPlannerInputRequest, send_planner_input};
+use crate::routes::cards::send_planner_inputs;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
     user_message_already_enqueued, validate_first_message,
@@ -302,10 +302,10 @@ pub(crate) async fn create_track_conversation_inner(
         // fold both into one turn — but within that turn the briefing precedes
         // the question, which is the property that matters.
         //
-        // Inside the claim and under the same predicate as the first message,
-        // not beside it: the predicate is "has this card ever been sent a user
-        // message", so a retry that skips the first message skips the briefing
-        // too, and the two can never be delivered a different number of times.
+        // Inside the claim and in one durable batch with the first message, not
+        // as two independent sends. If the briefing committed and the user's
+        // message failed, a retry would see "some user message" and permanently
+        // skip the user's words. The batch persists both or restores both.
         //
         // **It is not part of the create operation's payload, and must not
         // become part of it.** `first_message_sha256` above binds the first
@@ -320,27 +320,20 @@ pub(crate) async fn create_track_conversation_inner(
             }
             OpeningBriefing::CallerSuppliesItsOwn => None,
         };
+        let mut first_inputs = Vec::with_capacity(2);
         if let Some(briefing) = opening {
-            let _briefed = send_planner_input(
-                State(s.clone()),
-                State(w.clone()),
-                State(cs.clone()),
-                actor.clone(),
-                Path(derived.card_id.clone()),
-                Json(SendPlannerInputRequest { text: briefing }),
-            )
-            .await?;
+            first_inputs.push(briefing);
         }
-        // Call the real handler rather than reimplementing it: the first
-        // message and every later message must go through byte-identical
-        // validation, locking, harness recovery and audit.
-        let _queued = send_planner_input(
-            State(s.clone()),
-            State(w.clone()),
-            State(cs),
+        first_inputs.push(text);
+        // The public one-message handler and this batch share validation,
+        // harness recovery, durable persistence and audit in one implementation.
+        let _queued = send_planner_inputs(
+            s.clone(),
+            w.clone(),
+            cs,
             actor,
-            Path(derived.card_id.clone()),
-            Json(SendPlannerInputRequest { text }),
+            derived.card_id.clone(),
+            first_inputs,
         )
         .await?;
     }
