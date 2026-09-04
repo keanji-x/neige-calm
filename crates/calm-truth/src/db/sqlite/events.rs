@@ -212,6 +212,101 @@ mod gated {
     }
 }
 
+/// #1252 S3′ PR-B — the crate-internal escape probe.
+///
+/// Enabling `append-seam-escape-probe` compiles this module, whose only job is
+/// to **fail to compile**. Each function is one of the four bypasses that were
+/// written and compiled against PR-A's seam during review; the CI step asserts
+/// the exact diagnostic each one must produce, because "the build failed" is
+/// something any typo achieves.
+///
+/// **`calm-truth` can therefore never be built with `--all-features`.** That is
+/// the point of the feature, and the repository already pays this price for
+/// `calm-proc-supervisor`'s `pgid-escape-probe`. Enable features explicitly.
+///
+/// **Why this is not a `trybuild` case or a `compile_fail` doctest**: both
+/// compile the sample as an *external* crate, where `gated::Authorized`
+/// (`pub(in crate::db::sqlite::events)`) and `SqlxRepo::event_append_in_tx`
+/// (private to this module) cannot even be named, so the sample would "fail" on
+/// an unresolved path and the gate would pass vacuously. The property here is
+/// crate-internal, module-external visibility, so the sample has to live inside
+/// the crate — the same conclusion `calm-proc-supervisor/src/lib.rs` records
+/// next to its own probe. The cross-crate half *is* a `trybuild` suite; it is in
+/// `tests/append_seam_trybuild.rs` and it guards a different statement.
+///
+/// This module is a **descendant** of `events`, which is deliberate and is what
+/// makes the four samples sharp: a descendant can name `Authorized` and can
+/// name `event_append_in_tx`. Everything it still cannot do is what the seam is
+/// made of.
+#[cfg(any(
+    feature = "append-seam-escape-probe-retarget",
+    feature = "append-seam-escape-probe-forge",
+    feature = "append-seam-escape-probe-functional-update",
+    feature = "append-seam-escape-probe-ungated-append",
+))]
+mod append_seam_escape_probe {
+    #[allow(unused_imports)]
+    use super::gated;
+    #[allow(unused_imports)]
+    use super::{ActorId, Event, EventScope, SqlxRepo};
+    #[allow(unused_imports)]
+    use crate::error::Result;
+    #[allow(unused_imports)]
+    use sqlx::{Sqlite, Transaction};
+
+    /// P1 — retarget an earned capability at a different event before the
+    /// insert. This is the bypass that a review channel actually compiled
+    /// against PR-A's first draft, when the fields were `pub`. Must be
+    /// **E0616** (`field ... of struct ... is private`).
+    #[cfg(feature = "append-seam-escape-probe-retarget")]
+    pub(super) fn retarget<'a>(authorized: &mut gated::Authorized<'a>, other: &'a Event) {
+        authorized.event = other;
+    }
+
+    /// P2 — forge a capability by literal construction, with no gate call
+    /// anywhere. Must be **E0451** (`field ... of struct ... is private`
+    /// in a struct expression).
+    #[cfg(feature = "append-seam-escape-probe-forge")]
+    pub(super) fn forge<'a>(
+        actor: &'a ActorId,
+        scope: &'a EventScope,
+        event: &'a Event,
+    ) -> gated::Authorized<'a> {
+        gated::Authorized {
+            actor,
+            scope,
+            event,
+        }
+    }
+
+    /// P3 — the functional-update spelling of P2: keep the gate's `actor` and
+    /// `scope`, swap the event. Must be **E0451**.
+    #[cfg(feature = "append-seam-escape-probe-functional-update")]
+    pub(super) fn functional_update<'a>(
+        authorized: gated::Authorized<'a>,
+        other: &'a Event,
+    ) -> gated::Authorized<'a> {
+        gated::Authorized {
+            event: other,
+            ..authorized
+        }
+    }
+
+    /// P4 — reach the appender with a loose `(actor, scope, event)` triple, the
+    /// pre-PR-A signature. Must be **E0061** (wrong number of arguments): the
+    /// triple is not a thing this function accepts any more, so there is no
+    /// "call it without authorizing" to write.
+    #[cfg(feature = "append-seam-escape-probe-ungated-append")]
+    pub(super) async fn append_without_authorize(
+        tx: &mut Transaction<'_, Sqlite>,
+        actor: &ActorId,
+        scope: &EventScope,
+        event: &Event,
+    ) -> Result<i64> {
+        SqlxRepo::event_append_in_tx(tx, actor, scope, event, None).await
+    }
+}
+
 /// #1252 S3′ negative nail. Records the `kind_tag` of every event that passes
 /// through the two public `append_decision_event*_in_tx` entrances, so a test
 /// can assert which write paths do — and above all do **not** — flow through
