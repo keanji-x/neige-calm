@@ -213,6 +213,8 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
 async fn boot_fixture() -> Fixture {
     let tmp = short_tempdir("mgf").expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
+    // #1439: 这条路径挂在数据根下，越限时把路径和字节数说清楚。
+    calm_test_sockets::assert_fits(&socket_path);
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let track_cwd = tmp.path().join("track-cwd");

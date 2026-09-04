@@ -46,7 +46,7 @@ const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
 #[tokio::test]
 async fn pipe_procs_are_not_signalable_via_the_signal_rpc() {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = calm_test_sockets::socket_dir("ps");
     let supervisor = InProcessProcSupervisor::start()
         .await
         .expect("start supervisor");
@@ -66,7 +66,9 @@ async fn pipe_procs_are_not_signalable_via_the_signal_rpc() {
                 "--id".into(),
                 proc_id.into(),
                 "--sock".into(),
-                temp.path().join("session.sock").display().to_string(),
+                calm_test_sockets::socket_path(temp.path(), "session.sock")
+                    .display()
+                    .to_string(),
                 "--ready-fd".into(),
                 "0".into(),
             ],

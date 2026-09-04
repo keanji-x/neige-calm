@@ -86,8 +86,9 @@ pub async fn boot_shared_daemon_with_planner_thread() -> CardBoot {
 }
 
 async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<String>) -> CardBoot {
-    let tmp = TempDir::new().expect("tempdir for MCP socket");
-    let socket_path = tmp.path().join("kernel.sock");
+    // #1439: 短路径 socket 目录，与 `$TMPDIR` 长度无关。
+    let tmp = calm_test_sockets::socket_dir("mcp");
+    let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")

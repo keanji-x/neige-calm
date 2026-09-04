@@ -13,8 +13,17 @@ use tokio::time::timeout;
 const NEIGE_BIN: &str = env!("CARGO_BIN_EXE_neige");
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
+/// #1439: socket 路径由 `calm_test_sockets` 发放短路径；这里再断言一次，
+/// 越限时把路径和它的字节数一起打出来。
 fn listen(socket_path: &Path) -> UnixListener {
-    UnixListener::bind(socket_path).expect("bind stub UDS")
+    calm_test_sockets::assert_fits(socket_path);
+    UnixListener::bind(socket_path).unwrap_or_else(|e| {
+        panic!(
+            "bind stub UDS at {} ({} bytes): {e}",
+            socket_path.display(),
+            socket_path.as_os_str().as_encoded_bytes().len()
+        )
+    })
 }
 
 async fn write_frame(stream: &mut tokio::net::unix::OwnedWriteHalf, value: Value) {
@@ -231,8 +240,8 @@ async fn unknown_command_reports_available_commands_and_help_hint() {
 
 #[tokio::test]
 async fn ls_root_lists_top_level_entries() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["ls"]).await;
 
@@ -273,8 +282,8 @@ async fn ls_root_lists_top_level_entries() {
 
 #[tokio::test]
 async fn cli_uses_per_card_token_only_not_daemon_token() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
     let out = timeout(
         TEST_BUDGET,
@@ -301,8 +310,8 @@ async fn cli_uses_per_card_token_only_not_daemon_token() {
 
 #[tokio::test]
 async fn cat_report_writes_report_content() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["cat", "report.md"]).await;
 
@@ -339,8 +348,8 @@ async fn cat_report_writes_report_content() {
 
 #[tokio::test]
 async fn state_outputs_pretty_track_state_json() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["state"]).await;
 
@@ -372,8 +381,8 @@ async fn state_outputs_pretty_track_state_json() {
 
 #[tokio::test]
 async fn state_json_outputs_compact_track_state_json() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["--json", "state"]).await;
 
@@ -407,8 +416,8 @@ async fn state_json_outputs_compact_track_state_json() {
 
 #[tokio::test]
 async fn diff_passthrough_renders_patch() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["diff", "abc123", "def456", "report.md"]).await;
 
@@ -455,8 +464,8 @@ async fn diff_passthrough_renders_patch() {
 
 #[tokio::test]
 async fn cat_at_passthrough_writes_historical_content() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["cat-at", "abc123", "report.md"]).await;
 
@@ -495,8 +504,8 @@ async fn cat_at_passthrough_writes_historical_content() {
 
 #[tokio::test]
 async fn log_passthrough_renders_commit_lines() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["log", "report.md", "--limit", "3"]).await;
 
@@ -618,8 +627,8 @@ async fn token_argv_flag_is_rejected() {
 
 #[tokio::test]
 async fn ls_json_outputs_parseable_array() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["ls", "--json"]).await;
 
@@ -647,8 +656,8 @@ async fn ls_json_outputs_parseable_array() {
 
 #[tokio::test]
 async fn server_unknown_path_error_is_clear_and_json_parseable() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("cli");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["ls", "missing"]).await;
 
@@ -677,7 +686,7 @@ async fn server_unknown_path_error_is_clear_and_json_parseable() {
         "stderr = {stderr}"
     );
 
-    let socket_path: PathBuf = tmp.path().join("kernel-json.sock");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel-json.sock");
     let listener = listen(&socket_path);
     let child = spawn_neige(&socket_path, &["ls", "--json", "missing"]).await;
     let (mut reader, mut wr) = accept_initialized(listener).await;

@@ -422,6 +422,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "calm-session",
+ "calm-test-sockets",
  "clap",
  "libc",
  "portable-pty",
@@ -460,6 +461,7 @@ dependencies = [
  "calm-provider",
  "calm-server",
  "calm-session",
+ "calm-test-sockets",
  "calm-truth",
  "calm-truth-test-harness",
  "calm-types",
@@ -513,6 +515,14 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vte",
+]
+
+[[package]]
+name = "calm-test-sockets"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
 ]
 
 [[package]]
@@ -974,6 +984,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "e2e-egress-proxy"
 version = "0.1.0"
 dependencies = [
+ "calm-test-sockets",
  "tempfile",
  "tokio",
 ]
@@ -1815,6 +1826,7 @@ dependencies = [
 name = "neige-cli"
 version = "0.1.0"
 dependencies = [
+ "calm-test-sockets",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1824,6 +1836,7 @@ dependencies = [
 name = "neige-mcp-stdio-shim"
 version = "0.1.0"
 dependencies = [
+ "calm-test-sockets",
  "serde_json",
  "tempfile",
  "tokio",

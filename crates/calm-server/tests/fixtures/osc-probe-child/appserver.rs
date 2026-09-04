@@ -147,8 +147,15 @@ pub fn run_fake_app_server() {
         .expect("fake app-server: build tokio runtime");
     rt.block_on(async move {
         let control = WedgeControl::for_sock(&sock);
-        let listener = UnixListener::bind(&sock)
-            .unwrap_or_else(|e| panic!("fake app-server: bind {}: {e}", sock.display()));
+        let listener = UnixListener::bind(&sock).unwrap_or_else(|e| {
+            // #1439: 把路径的字节数也打出来 —— sun_path 只有 107 字节可用，
+            // 光看 "path must be shorter than SUN_LEN" 判不出是长了多少。
+            panic!(
+                "fake app-server: bind {} ({} bytes): {e}",
+                sock.display(),
+                sock.as_os_str().as_encoded_bytes().len()
+            )
+        });
         // Serve connections forever; the kernel opens one, and the test
         // kills us at teardown. Each connection is handled to completion.
         loop {

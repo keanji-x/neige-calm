@@ -40,6 +40,7 @@ tokio = { version = "1", features = [
 ] }
 
 [dev-dependencies]
+calm-test-sockets = { path = "../calm-test-sockets" }
 # Integration tests spin up an in-process stub upstream (a tiny TCP listener
 # acting as sing-box) + our proxy over a real unix socket — fully hermetic, no
 # real network. time for bounded per-probe reads; tempfile (forced under /tmp)

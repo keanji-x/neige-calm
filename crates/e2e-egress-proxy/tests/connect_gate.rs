@@ -72,13 +72,10 @@ async fn spawn_stub_upstream() -> StubUpstream {
 /// Bind our proxy on a short-path (/tmp) unix socket and serve it. Returns the
 /// TempDir (keep it alive) + the socket path.
 async fn spawn_proxy(upstream: String) -> (TempDir, PathBuf) {
-    // Force the socket under /tmp so its path stays well under SUN_LEN (~108),
-    // independent of the (long) worktree path or $TMPDIR.
-    let dir = tempfile::Builder::new()
-        .prefix("e2e-egress-proxy-")
-        .tempdir_in("/tmp")
-        .expect("tempdir");
-    let sock = dir.path().join("proxy.sock");
+    // #1439: 短路径 socket 目录由 `calm_test_sockets` 统一发放，
+    // 与（很长的）worktree 路径或 `$TMPDIR` 无关。
+    let dir = calm_test_sockets::socket_dir("egp");
+    let sock = calm_test_sockets::socket_path(dir.path(), "proxy.sock");
     let listener = UnixListener::bind(&sock).expect("bind proxy sock");
     tokio::spawn(async move {
         loop {

@@ -2860,8 +2860,11 @@ pub mod test_support {
         }
 
         async fn start_with_registry(registry: ProcRegistry) -> anyhow::Result<Self> {
-            let temp = tempfile::tempdir()?;
+            // #1439: 控制 socket 的目录钉在短基址上 —— `$TMPDIR`
+            // 在自托管 runner 上有 49 字节，会把 `sun_path` 吃掉一半。
+            let temp = calm_test_sockets::try_socket_dir("ps")?;
             let sock = temp.path().join("proc-supervisor.sock");
+            calm_test_sockets::assert_fits(&sock);
             let serve_registry = registry.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
             // Bind the listener synchronously here so the socket is
