@@ -913,13 +913,40 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
 /// the transaction) on a path that a rollback does not undo. Same caveat as
 /// `assert_old_spelling_is_an_unknown_field`'s.
 ///
-/// 第一轮评审 (#1321 S2) — the same blindness covers the **filesystem**, and
-/// that is not hypothetical: under `MUTATION-1321S2-1` the deferred create
-/// commits and `materialize_workspace` really does mint the workspace
-/// directory, which then survives the 400. Two snapshots of the SQLite tables
-/// see none of it. So the leg's claim is "no *database* write before the
-/// transaction", which is what #1321's acceptance asks for — not "no side
+/// 第一轮评审 (#1321 S2) — the same blindness covers the **filesystem**: two
+/// snapshots of the SQLite tables would see nothing at all of a directory
+/// minted and left behind. So the leg's claim is "no *database* write before
+/// the transaction", which is what #1321's acceptance asks for — not "no side
 /// effect of any kind", a statement this file has no instrument for.
+///
+/// 第二轮评审 MAJOR-1 (#1321 S2) — that blindness is stated as a **limit of
+/// the instrument**, not as an observation, because in *this* case there is no
+/// directory to be blind to, and the reason is structural rather than
+/// measured-once:
+///
+/// * `create_body` (`:194-208`) sends `"cwd"` + `"attach_folder": true`
+///   unconditionally, and all three of this case's `POST /api/tracks` calls
+///   (the source, leg 1's refused one, leg 2's fork) go through it;
+/// * an explicit `cwd` is `cwd_omitted == false` in `routes/tracks.rs`, whose
+///   `workspace_plan` is then `TrackWorkspacePlan::AttachedFromCwd` (the
+///   `ManagedUnder` branch is the *omitted*-`cwd` one);
+/// * `workspace_materialize.rs`'s `materialize_workspace` answers
+///   `TrackWorkspaceKind::Attached => Ok(())` — attached workspaces point at
+///   directories the user owns, so that arm performs no filesystem operation
+///   whatsoever.
+///
+/// The branch that mints a server-owned directory is **managed**, and no
+/// create in this file takes it: `"cwd"` appears exactly three times here —
+/// `create_body`'s, and the two deliberately-bad ones in
+/// `pre_transaction_400_relative_cwd_with_template_does_not_seed` /
+/// `pre_transaction_400_non_repo_cwd_with_template_does_not_seed`, both of
+/// which 400 before any create. An earlier revision of this block asserted the
+/// opposite — that under `MUTATION-1321S2-1` `materialize_workspace` "really
+/// does mint the workspace directory, which then survives the 400" — which no
+/// run of that mutation supports and the three facts above contradict. Pinning
+/// the filesystem half would take a managed-workspace leg plus an instrument
+/// that looks at the workspace root; this file has neither, and says so rather
+/// than claiming the coverage.
 #[tokio::test]
 async fn a_template_and_an_explicit_fork_source_are_a_400() {
     let boot = boot().await;

@@ -545,10 +545,20 @@ rows.
 rather than an extractor 422. `template_id`, `recipe_id` and `fork_report_from`
 each name where the new track's report comes from, and they are now mutually
 exclusive **pairwise**. Until this release only `template_id + recipe_id` was
-refused (#1292); the other two pairs were resolved silently — an explicit
-`fork_report_from` won, and the row was still stamped with the `template_id`
-and its plugin owner, claiming a provenance the report did not have. An
-out-of-repo script sending two of the three now gets
+refused (#1292); the other two pairs were resolved silently, in favour of the
+fork — but they were not silent in the same way, so they are worth splitting:
+
+* `template_id + fork_report_from`: the fork won **and the row was still
+  stamped** with the `template_id` and its plugin owner, claiming a provenance
+  the report did not have. This is the shape #1321 opened on.
+* `recipe_id + fork_report_from`: the fork won and left **no** false recipe
+  provenance behind — a fork arm records no `recipe_id`/`recipe_revision` at
+  all, deliberately and by the same rule that already applied when the fork
+  source was itself recipe-born (pinned by
+  `a_fork_of_a_recipe_born_track_has_no_provenance`). What this pair lost was
+  the request's own intent, silently, with no 400 to say so.
+
+An out-of-repo script sending two of the three now gets
 
 ```
 400  track create: `template_id` and `fork_report_from` each name a starting

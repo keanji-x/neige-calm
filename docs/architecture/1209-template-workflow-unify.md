@@ -2399,7 +2399,28 @@ artifact**。检查方式：release 前确认两个 PR 的 commit 都在待发�
 > （「把 `if fork_report_from.is_none()` 改成无条件赋值」）随之失效：那个 `if` 已不存在。
 > 旧测试里**仍然成立**的那一半——fork 的正文确实来自源 track 的当前报告——
 > 以 fork-only 请求的形式保留为新测试的第二条腿。
-> 本行以外的各行不受影响。
+>
+> **第二轮评审 MAJOR-2 —— 上面最后那句归属写反了，且漏了行 3。**
+> 本行「生产侧变异」列引的 `if fork_report_from.is_none()`，在本切片的基线
+> `97108cfb` 上**就已经不存在**（`git show 97108cfb:crates/calm-server/src/routes/tracks.rs`
+> 里该串零命中；当时的优先级是 `let init = match (&admission, recipe_id, fork_report_from)`
+> 的**臂序**——`(_, _, Some(source_track_id)) => TrackInit::Fork` 排在模板臂之前）。
+> 所以那一处失效**不是本切片造成的**，早于本切片；本切片消灭的是那条优先级规则本身，
+> 也就是这一行的不变量。
+>
+> **真正被本切片删掉的是行 3 的变异**：「删掉 `p.plugin_scope = bound_plugin.map(..)` 那行」
+> 逐字位于 `97108cfb:crates/calm-server/src/routes/tracks.rs:764`，其 `bound_plugin` 在 `:742`，
+> 本切片把这两处**一起**删除。行 3 的不变量（有绑定 template ⇒ `plugin_scope` 落库）
+> 与它钉的测试都还在，失效的只是变异的写法；今天的等价变异是
+> **让 `CreationSource::stamp`（`routes/tracks.rs`）的 `TrackInit::Template` 臂把
+> `plugin_scope` 交回 `None`，或删掉其后的 `p.plugin_scope = plugin_scope;`**。
+>
+> 本补记只核过这两行（行 7、行 3）。能对其余各行机械说的只有一句：本切片改动的**生产**代码
+> 只有 `crates/calm-server/src/routes/tracks.rs` 一个文件（`git diff --stat 97108cfb..71924805`：
+> 其余改动是两个测试文件、三份生成的前端契约产物、`fe/core/domain/track.ts` 的一段
+> 文档注释，以及本文档与 `deploy-and-upgrade.md`），
+> 所以任何不引用该文件的行不可能被本切片影响；引用它的各行**本轮未逐条复核**。
+> 原来那句「本行以外的各行不受影响」是没核过的全称，行 3 自己就是它的反例。
 
 #### 关于 #8 的测试设计（最重要的一条）
 

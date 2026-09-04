@@ -314,10 +314,26 @@ impl CreateTrackRequest {
 ///
 /// Observed, not inferred — **about this repository's own callers**: neither
 /// frontend (`web/src`, `fe/`, enumerated by directory) sends
-/// `fork_report_from` at all (zero hits outside the generated OpenAPI types),
-/// no Rust caller constructs a [`CreateTrackRequest`], and the MCP tool face
-/// reaches `track_create_tx` directly rather than through this body. The only
-/// producers of the two-source shape were the four tests #1321 S2 rewrote.
+/// `fork_report_from` at all, no Rust caller constructs a
+/// [`CreateTrackRequest`], and the MCP tool face reaches `track_create_tx`
+/// directly rather than through this body. The only producers of the
+/// two-source shape were the four tests #1321 S2 rewrote.
+///
+/// 第二轮评审 MINOR-1 (#1321 S2) — the frontend half, as a command a reader can
+/// re-run, because the shorthand this sentence used to carry ("zero hits
+/// outside the generated OpenAPI types") was falsified by this very slice:
+///
+/// ```text
+/// grep -rn fork_report_from web/src fe | grep -vE 'generated|openapi\.json'
+/// ```
+///
+/// Three hits, all of them **prose** in `fe/core/domain/track.ts`'s doc comment
+/// — this slice added them to state the exclusivity on the FE side. The nine
+/// remaining hits are three lines each in the three generated artifacts
+/// (`fe/core/api/generated/openapi.json`, `web/src/api/generated.ts`,
+/// `web/src/api/openapi.json`). No request construction on either side names
+/// the field, which is the claim above; "no occurrence of the string" is not,
+/// and never was, the same claim.
 ///
 /// 第一轮评审 MINOR-5 (#1321 S2) — that is a statement about first-party
 /// clients, and it is the widest one the evidence carries. It is **not** the
@@ -469,10 +485,32 @@ impl CreationSource {
     /// create whose report did not come from a template can leave neither.
     ///
     /// 第一轮评审 NIT-2 (#1321 S2) — "derived here and nowhere else" is true of
-    /// **this route**, not of the columns. `operation/child_track_adapter.rs`
-    /// builds its own `NewTrack` and inherits `plugin_scope` from the parent
-    /// track (it is a different creation path with a different provenance
-    /// rule, not a second writer racing this one).
+    /// **this route**, not of the columns.
+    ///
+    /// 第二轮评审 MINOR-2 (#1321 S2) — the previous wording named only
+    /// `child_track_adapter` while reading like an enumeration. The other
+    /// writers of `tracks.plugin_scope` outside this route, from
+    /// `git grep plugin_scope -- 'crates/**/*.rs' 'crates/**/*.sql'` with test
+    /// files dropped, are:
+    ///
+    /// * `operation/child_track_adapter.rs:265` — a different creation path
+    ///   with a different provenance rule: the child inherits the parent's
+    ///   owner (read at `:229`, bound at `:234`), so it can mint a row with an
+    ///   owner and **no** `template_id`. Not a second writer racing this one.
+    /// * `routes/today.rs:393` — the launchpad adopting a legacy `Today` row
+    ///   writes `plugin_scope=NULL` (a write, even though it only clears). Its
+    ///   sibling INSERT at `:406` leaves the column off the list entirely, so a
+    ///   freshly minted launchpad defaults to NULL; `:396` / `:411` are the
+    ///   in-memory mirrors of those two, not additional SQL.
+    /// * migration `0076` (`crates/calm-truth/migrations`, the one that adds
+    ///   the column), its `SET plugin_scope = COALESCE(..)` at line 22 — the
+    ///   one-time backfill run when the column was added. Cited by number
+    ///   rather than by file name because the name carries retired
+    ///   vocabulary that the #1316 S0 terminology ratchet counts; same
+    ///   convention as `track_binding/mod.rs`'s entry 4.
+    ///
+    /// None of the three reads a create request: this route is still the only
+    /// place a *request* can decide the column's value.
     fn stamp(&self, p: &mut NewTrack) {
         // #1110 S4 — the owning plugin id lands in `plugin_scope` in the same
         // insert. Unbound create leaves it None. Not a request field.
@@ -1564,11 +1602,31 @@ enum TrackInit {
         /// bound to a running ∧ trusted one.
         ///
         /// 第一轮评审 MINOR-2 (#1321 S2) — it lives **in this arm** rather than
-        /// beside the `TrackInit` in [`CreationSource`], so "there is a plugin
-        /// owner" cannot be stated about a source that is not a template. That
-        /// is a type-level fact, not a property of the current call sites: the
-        /// only constructor of this arm is [`NamedSource::resolve`]'s template
-        /// admission, and no other arm has a field to put a `Manifest` in.
+        /// beside the `TrackInit` in [`CreationSource`], so a source that is
+        /// not labelled `Template` has nowhere to put a plugin owner.
+        ///
+        /// 第二轮评审 NIT-1 (#1321 S2) — that, precisely, is the type-level
+        /// half: no other arm has a field a `Manifest` fits in, so
+        /// [`CreationSource::stamp`]'s two columns are read out of one arm and
+        /// cannot name different sources. The invariant the type pins is
+        /// therefore "anything carrying an owner is *labelled* `Template`" —
+        /// **not** "an owner implies the report came from an admitted
+        /// template". The latter is a property of today's call sites: the only
+        /// constructor of this arm is [`NamedSource::resolve`]'s template
+        /// admission, but an arm there reading
+        /// `Self::Fork(_) => TrackInit::Template { key: "issue-development",
+        /// binding: None }` type-checks — compiled, #1321 S2 第二轮
+        /// `MUTATION-1321S2R2-1`: `cargo check -p calm-server` finished with the
+        /// arm in place, and the compiler's only complaint was that
+        /// [`TrackInit::Fork`] had become unconstructed — a `dead_code` warning
+        /// (an error only because CI runs with `-D warnings`), not a type error.
+        /// Nothing but that function's own text prevents the arm.
+        ///
+        /// Scoped to tracks born on this route, like [`CreationSource::stamp`]'s
+        /// note above: `operation/child_track_adapter.rs` mints children that
+        /// inherit the parent's `plugin_scope` without a `template_id`, so
+        /// "a plugin owner implies a template source" is false of the `tracks`
+        /// table at large — it is a statement about this handler's output.
         ///
         /// Boxed because a `Manifest` is ~864 bytes and the other arms carry a
         /// `String` at most; inline it and every `TrackInit` — including the
