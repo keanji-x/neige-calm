@@ -1,3 +1,5 @@
+#[path = "append_seam_trybuild.rs"]
+mod append_seam_trybuild;
 #[path = "bounded_track_tree_sql.rs"]
 mod bounded_track_tree_sql;
 #[path = "events_since_bound.rs"]
