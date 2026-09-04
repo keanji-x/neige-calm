@@ -32,11 +32,11 @@ use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TrackRecipeOrigin, TrackWorkspacePlan, area_folder_create_tx,
-    area_folders_list_all_tx, card_create_with_id_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, terminal_delete_tx,
-    track_create_idempotency_claim_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
-    track_update_tx,
+    MAX_TREE_TASK_BUDGET, TrackRecipeOrigin, TrackTreeTerm, TrackWorkspacePlan,
+    area_folder_create_tx, area_folders_list_all_tx, card_create_with_id_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx,
+    terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx, track_delete_tx,
+    track_recipe_get_tx, track_tree_term, track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -3578,6 +3578,26 @@ async fn finish_track_deletion(
     let (sweeps, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
+                // A leaf deletion changes N in the root budget's deterministic
+                // B/N split. Resolve the root while the leaf still exists, then
+                // rebuild every survivor after the row and its task inventory
+                // have gone. A structurally unresolved tree must fail closed:
+                // committing the delete without knowing which projections to
+                // refresh would leave directly claimable rows admitted under
+                // the old share.
+                let surviving_root = match track_tree_term(&mut **tx, track_id.as_str()).await?.term
+                {
+                    TrackTreeTerm::Share(share) if share.root_id != track_id.as_str() => {
+                        Some(share.root_id)
+                    }
+                    TrackTreeTerm::Share(_) => None,
+                    TrackTreeTerm::RootUnresolved => {
+                        return Err(CalmError::Conflict(format!(
+                            "track {} belongs to an unresolved tree; repair the tree before deleting it",
+                            track_id.as_str()
+                        )));
+                    }
+                };
                 for terminal in &terminals {
                     match terminal_delete_tx(tx, &terminal.id)
                         .await
@@ -3595,13 +3615,32 @@ async fn finish_track_deletion(
                 let mut events = release.events;
                 track_delete_tx(tx, track_id.as_str(), write_for_tx.area_cache()).await?;
                 events.push((
-                    actor,
+                    actor.clone(),
                     scope,
                     Event::TrackDeleted {
                         id: track_id,
                         area_id,
                     },
                 ));
+                if let Some(root_id) = surviving_root {
+                    for (projected_track, projection) in tasks_rebuild_tree_tx(tx, &root_id).await? {
+                        if !projection.changed_keys.is_empty() {
+                            events.push((
+                                actor.clone(),
+                                EventScope::Track {
+                                    track: projected_track.id.clone(),
+                                    area: projected_track.area_id.clone(),
+                                },
+                                Event::PlanUpdated {
+                                    track_id: projected_track.id,
+                                    changed_keys: projection.changed_keys,
+                                    agent_message: None,
+                                },
+                            ));
+                        }
+                        events.extend(projection.kernel_events);
+                    }
+                }
                 Ok((release.sweep.into_iter().collect::<Vec<_>>(), events))
             })
         })
@@ -3848,7 +3887,8 @@ pub(crate) async fn get_track_backlinks(
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    let page = report_backlinks::backlinks_for_track(s.repo.as_ref(), &id).await?;
+    let page =
+        report_backlinks::backlinks_for_track(s.repo.as_ref(), &id, s.task_budget_default).await?;
     Ok(Json(TrackBacklinksResponse::from(page)))
 }
 
@@ -3916,7 +3956,12 @@ pub(crate) async fn get_track_report(
     Path(id): Path<String>,
 ) -> Result<Response> {
     let (_, report_card, _) = resolve_report_for_track(s.repo.as_ref(), &id).await?;
-    let snapshot = load_report_read_snapshot(s.repo.as_ref(), report_card.id.as_str()).await?;
+    let snapshot = load_report_read_snapshot(
+        s.repo.as_ref(),
+        report_card.id.as_str(),
+        s.task_budget_default,
+    )
+    .await?;
     Ok((
         StatusCode::OK,
         Json(TrackReportReadResponse {

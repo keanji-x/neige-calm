@@ -42,22 +42,6 @@ pub struct ReportReadSnapshot {
 pub async fn load_report_read_snapshot(
     repo: &dyn RouteRepo,
     report_card_id: &str,
-) -> Result<ReportReadSnapshot, CalmError> {
-    load_report_read_snapshot_with_task_budget_default(
-        repo,
-        report_card_id,
-        crate::scheduler::Scheduler::budget_from_env(crate::scheduler::DEFAULT_TRACK_TASK_BUDGET),
-    )
-    .await
-}
-
-/// Explicit-default seam used by tests to prove that the server-resolved
-/// environment default reaches the wire and that a persisted track override
-/// wins over it. Production callers use [`load_report_read_snapshot`].
-#[doc(hidden)]
-pub async fn load_report_read_snapshot_with_task_budget_default(
-    repo: &dyn RouteRepo,
-    report_card_id: &str,
     task_budget_default: i64,
 ) -> Result<ReportReadSnapshot, CalmError> {
     let (card, bytes) = repo
@@ -215,7 +199,10 @@ mod tests {
 
     async fn assert_first_write_preserves_read_ids(legacy_crdt: bool) {
         let (repo, track, card) = fixture(legacy_crdt).await;
-        let before = load_report_read_snapshot(&repo, "report").await.unwrap();
+        let before =
+            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
+                .await
+                .unwrap();
         let before_ids: Vec<_> = before.blocks.iter().map(|block| block.id.clone()).collect();
         let current: TrackReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
         let next = TrackReportPayload::new(current.summary.clone(), current.body.clone());
@@ -246,7 +233,10 @@ mod tests {
             .into_iter()
             .map(|block| block.id)
             .collect();
-        let after = load_report_read_snapshot(&repo, "report").await.unwrap();
+        let after =
+            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
+                .await
+                .unwrap();
         let after_ids: Vec<_> = after.blocks.into_iter().map(|block| block.id).collect();
         assert_eq!(before_ids, persisted_ids);
         assert_eq!(persisted_ids, after_ids);

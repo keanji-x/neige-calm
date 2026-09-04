@@ -774,6 +774,7 @@ mod tests {
             write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
             daemon_token_hash: None,
             gate_logs_dir: tmp.path().join("gate-logs"),
+            task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host,
             operation_runtime,
         });

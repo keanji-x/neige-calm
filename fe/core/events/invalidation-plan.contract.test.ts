@@ -65,7 +65,20 @@ describe('invalidation plan contract', () => {
     expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
   });
 
-  it('pins track-report invalidation to exactly the derived kinds plus report edits', () => {
+  it('refreshes diagnostics after pending-task cancellation and tree membership changes', () => {
+    const planUpdated = { ev: 'plan.updated', data: { track_id: 'track-7' } } as Extract<
+      WireEvent,
+      { ev: 'plan.updated' }
+    >;
+    const trackDeleted = { ev: 'track.deleted', data: { id: 'child', area_id: 'area-1' } } as Extract<
+      WireEvent,
+      { ev: 'track.deleted' }
+    >;
+    expect(invalidationPlanFor(planUpdated).invalidate).toContainEqual(['track-report', 'track-7']);
+    expect(invalidationPlanFor(trackDeleted).invalidate).toContainEqual(['track-report']);
+  });
+
+  it('pins track-report invalidation to exactly the task-verdict invalidating kinds', () => {
     const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
       { ev: kind, data: {} } as WireEvent,

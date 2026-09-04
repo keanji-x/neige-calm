@@ -175,6 +175,7 @@ pub async fn boot() -> Boot {
         write,
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+        task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
     });

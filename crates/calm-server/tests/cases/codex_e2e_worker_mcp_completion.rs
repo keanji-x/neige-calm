@@ -306,6 +306,7 @@ async fn worker_completes_with_channel3_stripped() {
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("boot real McpServer");

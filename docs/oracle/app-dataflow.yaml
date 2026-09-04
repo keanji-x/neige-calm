@@ -635,18 +635,37 @@
   family: app-invalidation-policy
   statement: >
     `track.deleted` 必须失效 area 的 track 列表 + track overlay 快照 + `['tracks-range']`，
-    并且必须 **removeQueries** 掉该 track 的 detail（而不是仅 invalidate）。
+    广播失效 `['track-report']` 前缀，并且必须 **removeQueries** 掉该 track 的 detail
+    （而不是仅 invalidate）。
   why: >
     已删除的 track detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
-    继续作为 placeholder 上色。
-  source: web/src/app/invalidationPolicies.ts:140-147; web/src/app/eventBridge.tsx:252-253
-  authoritative_test: NONE
+    继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
+    所以所有打开的 task verdict 查询都必须重新读取服务端重投影结果。
+  source: fe/core/events/invalidation-plan.ts:204-211; fe/web/src/app/events/query-invalidation-adapter.ts:91-104
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:300
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
+
+- id: CAP-APP-103
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `plan.updated` 必须按事件携带的 track id 失效 `['track-report', trackId]`。
+  why: >
+    `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
+    缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
+  source: fe/core/events/invalidation-plan.ts:289
+  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:236
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-APP-034
   kind: invariant

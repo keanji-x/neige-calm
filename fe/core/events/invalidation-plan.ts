@@ -138,10 +138,12 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
  * scheduler moving a task. It does change the workspace, so it keeps its
  * `track-files` key.
  *
- * `track.updated` is the other deliberate addition. Task budget, planner
- * ceiling, and root tree budget all arrive on that event; the last can change
- * a child track's admission reason, so its policy invalidates the broad report
- * prefix rather than only the updated track's key.
+ * Three non-derived events deliberately join the list. `track.updated` carries
+ * task budget, planner ceiling, and root tree budget changes. `track.deleted`
+ * changes the surviving tree's membership and therefore its effective budget.
+ * Both use the broad report prefix because their effect can reach child or
+ * sibling tracks. `plan.updated` carries task-plan mutations such as canceling
+ * a pending task and can use its explicit track id.
  *
  * Invalidation is not free here. `['track-report', …]` resolves to a live query
  * on `GET /api/tracks/{id}/report`, which loads the track's CRDT, projects the
@@ -158,7 +160,7 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
 export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   return [
     ...TRACK_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
-    'track.report_edited', 'track.updated',
+    'track.report_edited', 'track.updated', 'track.deleted', 'plan.updated',
   ];
 }
 
@@ -199,7 +201,10 @@ function policies(): PolicyMap {
     ['track-files', event.data.id], ['tracks-range'], ['track-report'],
   ])),
   'track.deleted': plan((event) => result(
-    [['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range']],
+    [
+      ['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range'],
+      ['track-report'],
+    ],
     [['track', event.data.id]],
   )),
   'track.lifecycle_changed': plan((event) => result([
@@ -282,7 +287,7 @@ function policies(): PolicyMap {
   'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'plan.updated': noop('No task-plan query exists.'),
+  'plan.updated': plan((event) => result([['track-report', event.data.track_id]])),
   'task.dispatched': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   'task.context_frozen': noop('Frozen task context has no query consumer.'),
   'task.context_advanced': noop('Context advancement has no query consumer.'),

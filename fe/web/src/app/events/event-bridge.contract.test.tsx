@@ -229,6 +229,23 @@ describe('EventBridge contracts', () => {
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
       ['tracks', 'c1'],
       ['overlays', 'track'],
+      ['track-report'],
+    ]);
+  });
+
+  it('refreshes the affected task verdict after a pending task is canceled', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(10, {
+      ev: 'plan.updated',
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: 'canceled' },
+    }));
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ['track-report', 'w1'],
     ]);
   });
 

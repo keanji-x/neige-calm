@@ -359,14 +359,13 @@ async fn pending_reasons_distinguish_dependency_budget_and_admission() {
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let with_default =
-        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
-            boot.repo.as_ref(),
-            boot.report_card_id.as_str(),
-            1,
-        )
-        .await
-        .unwrap();
+    let with_default = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        1,
+    )
+    .await
+    .unwrap();
     let default_reason = with_default
         .task_diagnostics
         .iter()
@@ -382,14 +381,13 @@ async fn pending_reasons_distinguish_dependency_budget_and_admission() {
         }
     ));
 
-    let with_room =
-        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
-            boot.repo.as_ref(),
-            boot.report_card_id.as_str(),
-            2,
-        )
-        .await
-        .unwrap();
+    let with_room = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        2,
+    )
+    .await
+    .unwrap();
     assert!(
         with_room
             .task_diagnostics
@@ -404,14 +402,13 @@ async fn pending_reasons_distinguish_dependency_budget_and_admission() {
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    let override_wins =
-        calm_server::track_report_read::load_report_read_snapshot_with_task_budget_default(
-            boot.repo.as_ref(),
-            boot.report_card_id.as_str(),
-            9,
-        )
-        .await
-        .unwrap();
+    let override_wins = calm_server::track_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+        9,
+    )
+    .await
+    .unwrap();
     assert!(override_wins.task_diagnostics.iter().any(|verdict| {
         verdict.key == "budget-queued"
             && matches!(

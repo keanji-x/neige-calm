@@ -98,6 +98,9 @@ pub struct RouteState {
     /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
     /// request time.
     pub workspace_root: PathBuf,
+    /// Server-resolved default used by both scheduler admission and report
+    /// diagnostics. Read once at boot; request handlers never consult env.
+    pub task_budget_default: i64,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -207,6 +210,7 @@ pub struct BootState {
     /// when the state drops instead of accumulating a git repository per test
     /// run under the system temp dir.
     pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
+    pub task_budget_default: i64,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -239,6 +243,7 @@ impl BootState {
         let route = RouteState {
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
+            task_budget_default: self.task_budget_default,
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -858,6 +863,9 @@ impl AppState {
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
+        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
+            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        );
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -880,6 +888,7 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 Dispatcher::permits_from_env(8),
+                task_budget_default,
             ),
         );
         let worker_flow = WorkerFlowDriver::from_state_parts(
@@ -896,6 +905,7 @@ impl AppState {
             // wants to *inspect* the tree calls `with_workspace_root`.
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             workspace_root_guard: Some(workspace_root_sandbox),
+            task_budget_default,
             events,
             daemon,
             terminal_renderer,
@@ -1077,6 +1087,9 @@ impl AppState {
         }
 
         let events = EventBus::new();
+        let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
+            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        );
 
         // PR3 (#136) — boot-time role cache. Seed from the cards table
         // *after* migrations have run (which `SqlxRepo::open` did) and
@@ -1183,6 +1196,7 @@ impl AppState {
             plugin_host_cell.clone(),
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
+            task_budget_default,
         )
         .await?;
         if let Err(e) = codex
@@ -1289,6 +1303,7 @@ impl AppState {
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
+                task_budget_default,
             ),
         );
 
@@ -1340,6 +1355,7 @@ impl AppState {
             workspace_root,
             // Production: the root is the user's real directory, never swept.
             workspace_root_guard: None,
+            task_budget_default,
             events,
             daemon,
             terminal_renderer,

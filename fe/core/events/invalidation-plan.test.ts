@@ -71,8 +71,21 @@ describe('invalidation plan behavior', () => {
 
   it('removes deleted track detail after invalidating its remaining projections', () => {
     expect(invalidationPlanFor(event({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
-      invalidate: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range']],
+      invalidate: [
+        ['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report'],
+      ],
       remove: [['track', 'w1']],
+      writeThrough: [],
+    });
+  });
+
+  it('refreshes pending diagnostics after a task plan mutation', () => {
+    expect(invalidationPlanFor(event({
+      ev: 'plan.updated',
+      data: { track_id: 'w1', changed_keys: ['task-1'], agent_message: null },
+    }))).toEqual({
+      invalidate: [['track-report', 'w1']],
+      remove: [],
       writeThrough: [],
     });
   });

@@ -144,6 +144,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .expect("spawn McpServer");

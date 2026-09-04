@@ -604,6 +604,29 @@ impl Scheduler {
             operation_runtime,
             semaphore,
             Self::task_run_timeout_from_env(),
+            Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
+        )
+    }
+
+    /// Production boot seam: the environment-backed task budget is resolved
+    /// once by `AppState` and shared with every read surface that explains the
+    /// scheduler's decision.
+    pub fn new_with_task_budget_default(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        operation_runtime: Weak<OperationRuntime>,
+        semaphore: Arc<Semaphore>,
+        task_budget_default: i64,
+    ) -> Arc<Self> {
+        Self::new_with_timeouts(
+            repo,
+            events,
+            write,
+            operation_runtime,
+            semaphore,
+            Self::task_run_timeout_from_env(),
+            task_budget_default,
         )
     }
 
@@ -623,6 +646,7 @@ impl Scheduler {
             operation_runtime,
             semaphore,
             task_run_timeout,
+            Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
         )
     }
 
@@ -633,6 +657,7 @@ impl Scheduler {
         operation_runtime: Weak<OperationRuntime>,
         semaphore: Arc<Semaphore>,
         task_run_timeout: Duration,
+        task_budget_default: i64,
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
@@ -640,7 +665,7 @@ impl Scheduler {
             write,
             operation_runtime,
             semaphore,
-            budget_default: Self::budget_from_env(DEFAULT_TRACK_TASK_BUDGET),
+            budget_default: task_budget_default,
             task_run_timeout,
             track_locks: DashMap::new(),
             track_dirty: DashMap::new(),

@@ -104,6 +104,17 @@ describe('query invalidation adapter', () => {
     expect(mapped).toContainEqual(queryKeys.trackReportPrefix());
   });
 
+  it('maps a task-plan cancellation event to its track report query', () => {
+    const event = wireEventSchema.parse({
+      ev: 'plan.updated',
+      data: { track_id: 'w-7', changed_keys: ['alpha'], agent_message: 'canceled' },
+    });
+    const mapped = invalidationPlanFor(event).invalidate
+      .map(mapPlannedQueryKey)
+      .filter((key) => key !== null);
+    expect(mapped).toEqual([queryKeys.trackReport('w-7')]);
+  });
+
   it('never emits a key the built surface does not define', () => {
     // The mapped area-list key must be the very key the area query registers,
     // otherwise an invalidation silently refreshes nothing.
@@ -354,7 +365,7 @@ describe('query invalidation adapter', () => {
     ]);
   });
 
-  it('turns a real track.deleted plan into area-list plus overlay invalidation and a detail removal', () => {
+  it('turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup', () => {
     const plan = invalidationPlanFor({
       ev: 'track.deleted',
       data: { id: 'w1', area_id: 'c1' },
@@ -367,6 +378,7 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
+      { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
       { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
     ]);
   });

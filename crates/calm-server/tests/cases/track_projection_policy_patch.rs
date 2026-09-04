@@ -90,6 +90,19 @@ async fn patch(
         .unwrap()
 }
 
+async fn delete(state: AppState, track_id: &str) -> axum::http::Response<Body> {
+    app(state)
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tracks/{track_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 async fn columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, Option<String>) {
     sqlx::query_as("SELECT planner_task_ceiling, automation_policy FROM tracks WHERE id = ?1")
         .bind(track_id)
@@ -725,6 +738,89 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         "a task admitted under the old descendant share remained claimable"
     );
     tx.rollback().await.unwrap();
+}
+
+/// Removing a leaf changes N in the root's B/N split. The delete transaction
+/// must reproject the surviving members so a declaration whose share grows is
+/// admitted immediately, without waiting for another report edit or restart.
+#[tokio::test]
+async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
+    let (state, root_id, repo) = boot().await;
+    let root = repo.track_get(&root_id).await.unwrap().unwrap();
+    let victim = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: root.area_id.clone(),
+            title: "victim".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let survivor = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: root.area_id,
+            title: "survivor".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=2 WHERE id=?1")
+        .bind(&root_id)
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
+        .bind(&root_id)
+        .bind(victim.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
+        .bind(&root_id)
+        .bind(survivor.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let task_id = write_report_task(&state, &repo, survivor.id.as_str(), "newly-admitted").await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(before, 0, "premise: the third member has zero share at B=2");
+
+    let response = delete(state, victim.id.as_str()).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    let plan_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE kind='plan.updated' \
+         AND json_extract(payload,'$.track_id')=?1",
+    )
+    .bind(survivor.id.as_str())
+    .fetch_one(&repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(
+        plan_events, 1,
+        "the newly admitted survivor was not announced"
+    );
 }
 
 /// Pending overage is removable, but already-dispatched work is not. A budget
