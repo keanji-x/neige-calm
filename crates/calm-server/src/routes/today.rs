@@ -430,6 +430,7 @@ pub(crate) async fn reset_today_launchpad_report(
     let snapshot = crate::track_report_read::load_report_read_snapshot(
         s.repo.as_ref(),
         report_card.id.as_str(),
+        s.task_budget_default,
     )
     .await?;
     let target = crate::track_report::ReportEditTarget::resolve(s.repo.as_ref(), &track_id).await?;
