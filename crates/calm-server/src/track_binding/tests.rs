@@ -76,21 +76,25 @@ const OWNER_B: &str = "dev.trusted-owner-b";
 /// plugin-level `input_schema` (`Manifest::input_schema`, the thing
 /// `template_input` is validated against).
 #[derive(Clone)]
-struct OwnerSpec {
+struct OwnerFixture {
     id: &'static str,
     templates: Vec<&'static str>,
     input_schema: Option<Value>,
 }
 
-fn owner(id: &'static str, templates: &[&'static str], input_schema: Option<Value>) -> OwnerSpec {
-    OwnerSpec {
+fn owner(
+    id: &'static str,
+    templates: &[&'static str],
+    input_schema: Option<Value>,
+) -> OwnerFixture {
+    OwnerFixture {
         id,
         templates: templates.to_vec(),
         input_schema,
     }
 }
 
-/// A's contract: `issue_url` required. B's: `spec_url` required, with
+/// A's contract: `issue_url` required. B's: `plan_url` required, with
 /// `additionalProperties: false`, so an A-validated input is *invalid* under
 /// B. `owner_schemas_actually_disagree` pins that this fixture is not vacuous.
 fn owner_a_input_schema() -> Value {
@@ -105,8 +109,8 @@ fn owner_a_input_schema() -> Value {
 fn owner_b_input_schema() -> Value {
     json!({
         "type": "object",
-        "properties": { "spec_url": { "type": "string" } },
-        "required": ["spec_url"],
+        "properties": { "plan_url": { "type": "string" } },
+        "required": ["plan_url"],
         "additionalProperties": false
     })
 }
@@ -115,7 +119,7 @@ fn owner_a_input() -> Value {
     json!({ "issue_url": "https://github.com/o/r/issues/1321" })
 }
 
-fn both_owners() -> Vec<OwnerSpec> {
+fn both_owners() -> Vec<OwnerFixture> {
     vec![
         owner(OWNER_A, &[SHARED_TEMPLATE_ID], Some(owner_a_input_schema())),
         owner(OWNER_B, &[SHARED_TEMPLATE_ID], Some(owner_b_input_schema())),
@@ -188,22 +192,22 @@ struct Boot {
     _tmp: tempfile::TempDir,
 }
 
-fn manifest_json_for(spec: &OwnerSpec, version: &str) -> Value {
+fn manifest_json_for(entry: &OwnerFixture, version: &str) -> Value {
     let mut manifest_json = json!({
         "manifest_version": 2,
-        "id": spec.id,
+        "id": entry.id,
         "version": version,
         "min_kernel_version": "0.0.1",
         "display_name": "Owner binding stub",
         "entrypoint": { "command": "bin/stub" },
-        "templates": spec
+        "templates": entry
             .templates
             .iter()
             .map(|id| json!({ "id": id }))
             .collect::<Vec<_>>(),
         "permissions": {}
     });
-    if let Some(schema) = spec.input_schema.as_ref() {
+    if let Some(schema) = entry.input_schema.as_ref() {
         manifest_json["input_schema"] = schema.clone();
     }
     manifest_json
@@ -215,14 +219,14 @@ fn build_host(
     repo: Arc<dyn Repo>,
     plugins_dir: &Path,
     plugins_data_dir: &Path,
-    owners: &[OwnerSpec],
+    owners: &[OwnerFixture],
     version: &str,
     caches: (CardRoleCache, TrackAreaCache),
 ) -> Arc<PluginHost> {
     let mut builder = PluginRegistry::builder();
-    for spec in owners {
-        let install_dir = plugins_dir.join(spec.id);
-        let manifest = Manifest::parse(&manifest_json_for(spec, version).to_string())
+    for entry in owners {
+        let install_dir = plugins_dir.join(entry.id);
+        let manifest = Manifest::parse(&manifest_json_for(entry, version).to_string())
             .expect("owner manifest parses");
         builder = builder.with(manifest, Some(install_dir));
     }
@@ -237,7 +241,7 @@ fn build_host(
     ))
 }
 
-async fn boot(owners: &[OwnerSpec]) -> Boot {
+async fn boot(owners: &[OwnerFixture]) -> Boot {
     let tmp = tempfile::tempdir().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -263,17 +267,17 @@ async fn boot(owners: &[OwnerSpec]) -> Boot {
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     std::fs::create_dir_all(&plugins_data_dir).expect("create plugins data dir");
-    for spec in owners {
-        let bin_dir = plugins_dir.join(spec.id).join("bin");
+    for entry in owners {
+        let bin_dir = plugins_dir.join(entry.id).join("bin");
         std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
         std::os::unix::fs::symlink(stub_echo_bin(), bin_dir.join("stub"))
             .expect("symlink echo stub");
         repo_dyn
             .plugin_install(NewPlugin {
-                id: spec.id.to_string(),
+                id: entry.id.to_string(),
                 version: "0.1.0".into(),
-                install_path: plugins_dir.join(spec.id).display().to_string(),
-                manifest: manifest_json_for(spec, "0.1.0"),
+                install_path: plugins_dir.join(entry.id).display().to_string(),
+                manifest: manifest_json_for(entry, "0.1.0"),
                 enabled: true,
                 user_config: json!({}),
             })
@@ -370,7 +374,7 @@ impl Boot {
     /// A fresh `PluginHost` over the new registry is how a test reaches that
     /// state without a `pub(in crate::plugin_host)` registry mutator; the
     /// readers only ever consult the host they are handed.
-    fn upgraded_host(&self, owners: &[OwnerSpec]) -> Arc<PluginHost> {
+    fn upgraded_host(&self, owners: &[OwnerFixture]) -> Arc<PluginHost> {
         build_host(
             self.repo.clone() as Arc<dyn Repo>,
             &self.plugins_dir,
@@ -494,7 +498,7 @@ fn owner_schemas_actually_disagree() {
     let rejected = validate_template_input(&owner_b_input_schema(), &owner_a_input())
         .expect_err("A's input must NOT validate under B's schema");
     assert!(
-        rejected.contains("spec_url") || rejected.contains("issue_url"),
+        rejected.contains("plan_url") || rejected.contains("issue_url"),
         "the rejection should name the offending key: {rejected}"
     );
 }
