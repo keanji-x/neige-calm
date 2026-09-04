@@ -639,7 +639,7 @@ pub(crate) async fn create_track(
     // calls `start_planner_harness` unconditionally, so a `template_id` or
     // `recipe_id` create delivers the message exactly like a bare one. Pinned by
     // `track_create_first_message::a_template_create_delivers_the_first_message`
-    // and `…::a_recipe_create_delivers_the_first_message`.
+    // and `…::a_first_message_is_delivered_once_on_a_recipe_create`.
     let first_message = request.first_message.take();
     if let Some(text) = first_message.as_deref() {
         validate_first_message(text)?;
@@ -1864,6 +1864,25 @@ async fn start_planner_harness(
     {
         Ok(op_id) => match s.operation_runtime.wait(&op_id).await {
             Ok(result) => match result.outcome {
+                // `SucceededViaCollision` is unreachable from this call site
+                // today, and folding it in with `Succeeded` is only correct
+                // while that holds. Two independent reasons it holds: this
+                // path submits `idempotency_key: None`, and
+                // `find_by_idempotency_key` returns `None` without looking at
+                // the table when the key is absent, so `submit` never takes
+                // its collision short-circuit; and the sole producer of the
+                // variant (`operation_result_from`) needs a persisted
+                // `phase_detail.completion == "idempotency_collision"`, which
+                // nothing in this repository writes.
+                //
+                // #1384 changes the first reason. The moment a create carries
+                // an `Idempotency-Key` that reaches this `OperationKey`, a
+                // repeated create resolves to the FIRST operation and comes
+                // back here as `SucceededViaCollision` — i.e. "the message was
+                // delivered, by an earlier request, not by this one". Treating
+                // that as `Succeeded` then answers 201 for a create that
+                // delivered nothing. Split the arm in that slice, do not
+                // inherit it.
                 OperationOutcome::Succeeded { .. }
                 | OperationOutcome::SucceededViaCollision { .. } => {}
                 OperationOutcome::Failed {
