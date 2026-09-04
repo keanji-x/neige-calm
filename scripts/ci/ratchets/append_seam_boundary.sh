@@ -230,8 +230,20 @@ strip_comments() {
 CODE="$(strip_comments "$EVENTS_FILE")"
 GATE_CODE="$(strip_comments "$GATE_FILE")"
 
+# Every rule below feeds these two blobs to its matcher through a HERE-STRING
+# (`rg … <<<"$CODE"`), never through `printf '%s' "$CODE" | rg …`. With `set -o
+# pipefail`, a reader that stops early — `rg -q` exits at the first match, and
+# the two `awk` helpers `exit` at the line that closes the block — kills the
+# `printf` with SIGPIPE, and 141 becomes the pipeline's status. That is a
+# timing-dependent FALSE RED: the gate aborted at E3/E4 with 141, and D1
+# reported all four of its subjects "not found" while the file was untouched.
+# A here-string is fed by the shell itself, so there is no writer to signal.
+#
+# Pipelines whose reader consumes to EOF (`rg --replace`, `tr`, `sort`) cannot
+# raise this and are left as they are.
+
 # --- E0a: no block comment ---------------------------------------------------
-if printf '%s' "$CODE" | rg -q '/\*|\*/'; then
+if rg -q '/\*|\*/' <<<"$CODE"; then
   fail "E0a: $EVENTS_FILE contains a block comment. This gate strips only whole-line \`//\` comments, so a \`/* */\` can hide a declaration from every rule below. Use \`//\`."
 fi
 
@@ -240,7 +252,7 @@ fi
 # `r#"` is the raw-string opener and this file is full of SQL; `r#` followed by
 # an identifier character is a raw identifier, and `r#event_append_in_tx` is
 # `event_append_in_tx` to rustc but not to E2/E3/E5.
-if printf '%s' "$CODE" | rg -q 'r#[A-Za-z_]'; then
+if rg -q 'r#[A-Za-z_]' <<<"$CODE"; then
   fail "E0b: $EVENTS_FILE uses a raw identifier (\`r#name\`). It defeats every name-based rule below — \`r#event_append_in_tx\` *is* \`event_append_in_tx\` to rustc. Raw strings (\`r#\"…\"#\`) are allowed and are not what this matched."
 fi
 
@@ -288,11 +300,11 @@ fi
 # output (the entry was renamed or removed) fails the comparison, which is the
 # behaviour we want: E2 will also be red, and both messages print.
 flatten_signature() {
-  printf '%s' "$CODE" | awk -v pat="$1" '
+  awk -v pat="$1" '
     $0 ~ pat        { f = 1 }
     f               { printf "%s ", $0 }
     f && /^\)/      { exit }
-  ' | tr -s ' ' | sed 's/[[:space:]]*$//'
+  ' <<<"$CODE" | tr -s ' ' | sed 's/[[:space:]]*$//'
 }
 actual_sig_single="$(flatten_signature '^pub async fn append_decision_event_in_tx[(]')"
 if [ "$actual_sig_single" != "$EXPECTED_SIG_SINGLE" ]; then
@@ -315,11 +327,11 @@ fi
 # opening line through the first line that closes at the block's own
 # indentation (4 spaces — these are items inside `mod gated`).
 flatten_block() {
-  printf '%s' "$CODE" | awk -v pat="$1" '
+  awk -v pat="$1" '
     $0 ~ pat            { f = 1 }
     f                   { printf "%s ", $0 }
     f && /^    \}/      { exit }
-  ' | tr -s ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+  ' <<<"$CODE" | tr -s ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 actual_struct="$(flatten_block 'struct Authorized<')"
 if [ "$actual_struct" != "$EXPECTED_STRUCT" ]; then
@@ -354,10 +366,27 @@ fi
 
 # --- D1: the test-only gate abstraction keeps its cfg ------------------------
 d1_subject() {
-  local label="$1" pattern="$2"
-  if ! printf '%s' "$GATE_CODE" | rg -q "$pattern"; then
+  local label="$1" pattern="$2" attrs rc
+  if ! rg -q "$pattern" <<<"$GATE_CODE"; then
     fail "D1: no \`$label\` declaration found in $GATE_FILE matching /$pattern/ — if it was renamed or removed, update D1 in the same PR rather than letting the rule check nothing"
-  elif ! attrs_above "$GATE_CODE" "$pattern" | rg -q '^#\[cfg\(any\(test, feature = "test-helpers"\)\)\]$'; then
+    return
+  fi
+  # `attrs_above` lives in lib.sh and still ends in `printf … | awk`, and that
+  # awk `exit`s at the matched line — so its own writer can be killed by
+  # SIGPIPE and the function returns 141 under `pipefail`. awk has already
+  # printed the whole block by then, so the OUTPUT is complete and 141 is not a
+  # failure here; any other non-zero status is. (Reading it through a variable
+  # is also what keeps the `rg` below off the end of a pipeline: that is the
+  # form that made this rule report all four subjects missing at random.)
+  set +e
+  attrs="$(attrs_above "$GATE_CODE" "$pattern")"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 141 ]; then
+    fail "D1: reading the attribute block above /$pattern/ in $GATE_FILE failed (status $rc) — this is a gate malfunction, not a verdict on \`$label\`"
+    return
+  fi
+  if ! rg -q '^#\[cfg\(any\(test, feature = "test-helpers"\)\)\]$' <<<"$attrs"; then
     fail "D1: \`$label\` does not carry \`#[cfg(any(test, feature = \"test-helpers\"))]\` in its own attribute block. \`PermissiveGate\` was the only production \`impl DecisionGate\` in the tree; it leaked an allow-everything stub into fifteen production call sites, and #1252 S3′ deleted the parameter that carried it. Without the cfg it is production code again."
   fi
 }
