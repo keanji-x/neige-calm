@@ -1,5 +1,18 @@
 # #1209 — Template 与 workflow 合并为一个概念
 
+> **SUPERSEDED（#1321 S3 加注，2026-09-04）**——本文描述的世界已被三次改动取代，
+> 正文一概未改：改文只会得到一份半新半旧、更难判断的材料。
+>
+> * **#1300**：删掉了「seeded system-area template track + fork」这条实现路径。本文里
+>   凡是 template 报告存在数据库里、创建时 fork 一份的段落，都已不成立；模板现在是
+>   `crates/calm-server/src/templates.rs` 里的只读 Rust 常量，在 create 事务里实例化。
+> * **#1292**：新增用户可写的 recipe（`track_recipes`），与内置模板并列成为创建来源。
+> * **#1321 S3**：名册条目自持配方（`Template::build_recipe`），`GET /api/track-templates`
+>   与 `POST /api/tracks` 共用 `routes::tracks::compile_template` 这一个严格编译器。
+>
+> 另外本文成文于 #1316 改名之前，其中的退役词汇与 `path:line` 引用都按当时的树书写，
+> 不要按它们去定位今天的代码。
+
 状态：设计中（**v5**，五轮独立评审后修订；逐条裁决见 §11）。目标是让 `POST /api/tracks` 的
 模板字段只做一件事：**指名一个 template**；
 插件绑定（binding + `input_schema`）降级为 template 的一个可选属性。成功判据是

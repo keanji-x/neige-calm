@@ -3055,7 +3055,7 @@
             }
           },
           "500": {
-            "description": "Internal error",
+            "description": "A built-in recipe did not compile",
             "content": {
               "application/json": {
                 "schema": {
@@ -6851,7 +6851,7 @@
               "string",
               "null"
             ],
-            "description": "Owning plugin copied from the bound template. Immutable after creation."
+            "description": "The plugin that owns this track, recorded when the row is created.\n\nA separate persisted fact from the report's source: it says which plugin\nowns the track, not where the report's bytes came from. Two runtime\npaths put a plugin id here — over the crates' `src` directories, every\nother non-test hit is a read or a `None`; on writes from outside that\nset see the last paragraph — and they take it from different places:\n`POST /api/tracks` copies the plugin whose manifest claims the requested\n[`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a\nchild track inherits the parent's value and gets no `template_id` of its\nown (`calm-server/src/operation/child_track_adapter.rs:265`, pinned\nthere by \"plugin_scope must inherit so Only(X) does not widen to All\").\nSo a value here is not by itself a statement that this track named a\ntemplate.\n\nNot part of the ordinary track update (`calm-truth`'s `TrackUpdate`,\nINV-1110-004), so the ordinary track edit cannot change it. It is not\nimmutable in the strongest sense either: adopting an existing track as\nan area's launchpad clears it together with `template_id` and\n`template_input` (`calm-server/src/routes/today.rs:393`). Nor were the\noldest values in this column written by a runtime path at all —\nmigration 0076 added the column and backfilled the rows that already\nexisted. Deliberately no claim here about the full set of statements\nthat write it: the two runtime writers named above were found over the\ncrates' `src` directories, a set that does not contain the migrations."
           },
           "purpose": {
             "type": [
@@ -6884,7 +6884,7 @@
               "string",
               "null"
             ],
-            "description": "Template this track was created from.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
+            "description": "Template this track was created from.\n\nNames the birth snapshot only: later edits to the report do not touch\nthis column, and this column does not describe the report's current\ncontent.\n\nSeparate from [`Self::plugin_scope`], which records the owning plugin,\nand separate from where the report's bytes came from: naming a template\nhere is not by itself the statement that the report was born from that\ntemplate's recipe.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
           },
           "template_input": {
             "type": [
@@ -7679,7 +7679,7 @@
       },
       "TrackTemplateTask": {
         "type": "object",
-        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the seeded plan. Acceptance\ncriteria, dependencies and gate advice belong to the track's report once it\nexists, not to the chooser.",
+        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the recipe's own `task` block.\nAcceptance criteria, dependencies and gate advice belong to the track's\nreport once it exists, not to the chooser.",
         "required": [
           "key",
           "goal"
@@ -7691,7 +7691,7 @@
           },
           "key": {
             "type": "string",
-            "description": "The task block's `key` in the seeded report."
+            "description": "The task block's `key` in the recipe this template instantiates to."
           }
         }
       },

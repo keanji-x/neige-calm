@@ -19,10 +19,22 @@
 //!   the last moment (#1230); the projection also drops tombstones, which the
 //!   picker must not advertise.
 //!
-//! `tasks` is read from the same recipe body `POST /api/tracks` instantiates —
-//! not from a second, typed list of keys and goals. That is the property worth
+//! `tasks` is read from the same recipe `POST /api/tracks` instantiates — not
+//! from a second, typed list of keys and goals. That is the property worth
 //! keeping: a task the picker advertises and a task the created track contains
 //! cannot differ, because there is nothing to keep in sync.
+//!
+//! #1321 S3 made that share the *compiler* and not just the bytes: both roads
+//! go through `routes::tracks::compile_template`, and this endpoint projects
+//! the picker's task list off the blocks that call produced. Before it, this
+//! endpoint re-parsed the rendered body with the lenient `split_body` reader
+//! and swallowed the difference with `unwrap_or_default()`. Reading that
+//! deleted code, a recipe create refuses with 500 could be advertised here as
+//! a 200 with a shortened task list; that is a mechanism read off the code, not
+//! a measurement — see the note on `current_definition` for what was actually
+//! run. The paragraph is about this endpoint, `GET /api/track-templates`, and
+//! the built-in roster only — user recipes (`GET /api/track-recipes`, #1292)
+//! are a different read with a different, `BadRequest`-shaped write boundary.
 //!
 //! #1230 briefly moved that authority into a stored report so an editor could
 //! write to it; #1300 removed the editor (S1) and the stored report (S2), and
@@ -70,9 +82,9 @@
 //! removal quietly comes back.
 
 use crate::error::{ErrorBody, Result};
-use crate::routes::tracks::resolve_template_binding;
+use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
-use crate::templates::{TEMPLATES, task_payload_key_and_goal, template_task_payloads};
+use crate::templates::{TEMPLATES, Template, task_payload_key_and_goal};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -112,12 +124,12 @@ pub struct TrackTemplate {
 /// One pre-set task, projected from the template's own `PlanTaskInput`.
 ///
 /// `key` and `goal` only: those are the two facts a person choosing a starting
-/// point needs, and both are verbatim from the seeded plan. Acceptance
-/// criteria, dependencies and gate advice belong to the track's report once it
-/// exists, not to the chooser.
+/// point needs, and both are verbatim from the recipe's own `task` block.
+/// Acceptance criteria, dependencies and gate advice belong to the track's
+/// report once it exists, not to the chooser.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TrackTemplateTask {
-    /// The task block's `key` in the seeded report.
+    /// The task block's `key` in the recipe this template instantiates to.
     pub key: String,
     /// What that task is for, verbatim from the template.
     pub goal: String,
@@ -129,7 +141,11 @@ pub struct TrackTemplateTask {
     tag = "tracks",
     responses(
         (status = 200, description = "Selectable track templates", body = Vec<TrackTemplate>),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        // #1321 S3 — reachable, not boilerplate: a roster recipe that does not
+        // compile answers 500 here for the same reason `POST /api/tracks`
+        // answers 500 for it, instead of a 200 with an empty title and a
+        // shortened task list.
+        (status = 500, description = "A built-in recipe did not compile", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_track_templates(
@@ -144,7 +160,7 @@ pub(crate) async fn list_track_templates(
         let input_schema = resolve_template_binding(&s, template)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
-        let definition = current_definition(template.key());
+        let definition = current_definition(template)?;
         templates.push(TrackTemplate {
             id: template.key().to_string(),
             title: definition.title,
@@ -181,23 +197,56 @@ pub(crate) async fn list_track_templates(
 /// the property worth being able to point at.
 struct Definition {
     title: String,
-    /// Whole task-block payloads, never a narrowed struct — see
-    /// `template_task_payloads_from_body` for why that distinction is
-    /// load-bearing rather than stylistic.
+    /// Whole task-block payloads, never a narrowed struct — the projection to
+    /// `key` + `goal` happens at the last moment, in the handler.
     tasks: Vec<Value>,
 }
 
-fn current_definition(key: &str) -> Definition {
-    // `unwrap_or_default` is unreachable for a `TEMPLATES` key and stays a
-    // default rather than a panic: both tables are keyed off the same
-    // constants, and `listed_tasks_are_exactly_the_report_task_blocks` fails
-    // loudly if one ever grows an entry the other lacks.
-    Definition {
-        title: TEMPLATES
-            .iter()
-            .find(|template| template.key() == key)
-            .map(|template| template.title().to_string())
-            .unwrap_or_default(),
-        tasks: template_task_payloads(key).unwrap_or_default(),
-    }
+/// #1321 S3 — fallible, and reading the *compiled* recipe.
+///
+/// Both changes are one change. This used to call `template_task_payloads`,
+/// which re-parsed the rendered recipe body leniently, and then
+/// `unwrap_or_default()` on both halves. Neither degradation was reachable
+/// through a bad request — the only input is a roster entry — so both could
+/// only ever fire on a kernel defect, and both answered it with a 200 carrying
+/// an empty title or a silently shortened task list. `POST /api/tracks` refuses
+/// the same recipe with `CalmError::Internal`
+/// (`routes::tracks::prepare_template_report`); this endpoint now fails the same
+/// way, off the same `compile_template` call, so the picker cannot advertise a
+/// template create would refuse.
+///
+/// KNOWN GAP — no automated test covers the error arm. The handler iterates
+/// the [`TEMPLATES`] static itself, so covering it would mean making one of the
+/// three roster constants fail to compile at test time: there is no seam to
+/// inject an entry through, and in **safe** Rust no substitute can be built
+/// either, since every field of `Template` — `build_recipe` included — is
+/// private and a literal outside `templates.rs` is `E0451`. That safe-Rust
+/// scope is the one `templates::Template`'s own doc states and no wider; a
+/// `transmute`-built entry is outside it, with the consequences registered on
+/// `routes::tracks::admit_template`. It was verified by mutation instead:
+/// inserting an indented neige-block `task` fence opener into
+/// `SMALL_CHANGE_INTRO` turned
+/// `track_templates_read::lists_every_template_with_its_kernel_title` red — a
+/// case that issues only `GET /api/track-templates` and no create — with
+/// `left: 500, right: 200` and the response body "internal: track create:
+/// template `small-change` body: bad request: indented neige-block opener at
+/// byte 2785". Three sibling picker cases went red the same way.
+///
+/// What that measures and what it does not: it measures that this endpoint now
+/// answers 500 for a recipe the create path also refuses. It does **not**
+/// measure the pre-#1321 answer to the same mutation — the reason to expect a
+/// 200 there is that the old read went through `split_body`, which demotes an
+/// indented opener to prose (`templates::
+/// body_prose_and_foreign_fences_are_skipped_not_parsed`), and that is
+/// inference, not a run.
+fn current_definition(template: &Template) -> Result<Definition> {
+    let compiled = compile_template(template)?;
+    Ok(Definition {
+        title: template.title().to_string(),
+        tasks: compiled
+            .task_block_payloads()?
+            .into_iter()
+            .cloned()
+            .collect(),
+    })
 }

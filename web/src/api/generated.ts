@@ -2439,7 +2439,33 @@ export interface components {
             lifecycle?: components["schemas"]["TrackLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
-            /** @description Owning plugin copied from the bound template. Immutable after creation. */
+            /**
+             * @description The plugin that owns this track, recorded when the row is created.
+             *
+             *     A separate persisted fact from the report's source: it says which plugin
+             *     owns the track, not where the report's bytes came from. Two runtime
+             *     paths put a plugin id here — over the crates' `src` directories, every
+             *     other non-test hit is a read or a `None`; on writes from outside that
+             *     set see the last paragraph — and they take it from different places:
+             *     `POST /api/tracks` copies the plugin whose manifest claims the requested
+             *     [`Self::template_id`] (`calm-server/src/routes/tracks.rs:778`), while a
+             *     child track inherits the parent's value and gets no `template_id` of its
+             *     own (`calm-server/src/operation/child_track_adapter.rs:265`, pinned
+             *     there by "plugin_scope must inherit so Only(X) does not widen to All").
+             *     So a value here is not by itself a statement that this track named a
+             *     template.
+             *
+             *     Not part of the ordinary track update (`calm-truth`'s `TrackUpdate`,
+             *     INV-1110-004), so the ordinary track edit cannot change it. It is not
+             *     immutable in the strongest sense either: adopting an existing track as
+             *     an area's launchpad clears it together with `template_id` and
+             *     `template_input` (`calm-server/src/routes/today.rs:393`). Nor were the
+             *     oldest values in this column written by a runtime path at all —
+             *     migration 0076 added the column and backfilled the rows that already
+             *     existed. Deliberately no claim here about the full set of statements
+             *     that write it: the two runtime writers named above were found over the
+             *     crates' `src` directories, a set that does not contain the migrations.
+             */
             plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public track creation cannot set this. */
             purpose?: string | null;
@@ -2469,6 +2495,15 @@ export interface components {
             sort: number;
             /**
              * @description Template this track was created from.
+             *
+             *     Names the birth snapshot only: later edits to the report do not touch
+             *     this column, and this column does not describe the report's current
+             *     content.
+             *
+             *     Separate from [`Self::plugin_scope`], which records the owning plugin,
+             *     and separate from where the report's bytes came from: naming a template
+             *     here is not by itself the statement that the report was born from that
+             *     template's recipe.
              *
              *     The `serde(alias)` below is a deserialization-only compatibility read
              *     for pre-#1209 event-log rows; serialization emits only this name.
@@ -2881,14 +2916,14 @@ export interface components {
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
          *
          *     `key` and `goal` only: those are the two facts a person choosing a starting
-         *     point needs, and both are verbatim from the seeded plan. Acceptance
-         *     criteria, dependencies and gate advice belong to the track's report once it
-         *     exists, not to the chooser.
+         *     point needs, and both are verbatim from the recipe's own `task` block.
+         *     Acceptance criteria, dependencies and gate advice belong to the track's
+         *     report once it exists, not to the chooser.
          */
         TrackTemplateTask: {
             /** @description What that task is for, verbatim from the template. */
             goal: string;
-            /** @description The task block's `key` in the seeded report. */
+            /** @description The task block's `key` in the recipe this template instantiates to. */
             key: string;
         };
         /** @description A track's typed workspace. `path` is its single stored path. */
@@ -5598,7 +5633,7 @@ export interface operations {
                     "application/json": components["schemas"]["TrackTemplate"][];
                 };
             };
-            /** @description Internal error */
+            /** @description A built-in recipe did not compile */
             500: {
                 headers: {
                     [name: string]: unknown;
