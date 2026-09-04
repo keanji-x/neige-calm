@@ -129,7 +129,7 @@ impl PlannerHarnessStartAdapter {
         }
     }
 
-    async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
+    pub(crate) async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
         let track = match self.repo.track_get(track_id).await {
             Ok(track) => track,
             Err(error) => {
@@ -185,9 +185,9 @@ impl PlannerHarnessStartAdapter {
 /// #891 — a resolved template binding: the descriptor from the running
 /// trusted plugin plus the track row's persisted `template_input` (already
 /// schema-validated at create time).
-struct BoundTemplate {
-    descriptor: TemplateDescriptor,
-    input: Option<serde_json::Value>,
+pub(crate) struct BoundTemplate {
+    pub(crate) descriptor: TemplateDescriptor,
+    pub(crate) input: Option<serde_json::Value>,
 }
 
 /// The serialized names below are FROZEN, and deliberately out of step with the

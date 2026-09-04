@@ -684,6 +684,7 @@ pub mod report_backlinks;
 /// this whole arrangement exists to avoid — so the table stays at identities
 /// only, and those gaps are a decision rather than an oversight.
 pub mod templates;
+pub mod track_binding;
 pub mod track_fs_view;
 pub mod track_lifecycle;
 pub mod track_report;
