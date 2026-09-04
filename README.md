@@ -130,12 +130,22 @@ The Docker development port is published on **all host interfaces by default**. 
 
 ## Development
 
-Run the Rust gates used during normal development:
+During normal Rust development, run only the tests that cover the affected
+package and behavior (replace the placeholders with real selectors):
 
 ```bash
-scripts/local-rust-gates.sh --quick
-scripts/local-rust-gates.sh          # full local Rust gate; requires cargo-nextest
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  cargo nextest run --locked \
+  -p <package> <test-name-filter> --test-threads 8
 ```
+
+Add `--features calm-server/codex-e2e` only when the affected test requires it.
+Narrow further with `--lib` or `--test <test-target>` when useful. Use
+`scripts/local-rust-gates.sh --quick` when the change also needs the Rust compile,
+lint, and OpenAPI preflight. The full `scripts/local-rust-gates.sh` is not a
+routine development command: CI runs the broad workspace test suite. Run the
+full local gate only when explicitly requested or when maintaining the
+gate/nextest configuration itself.
 
 Run the next-generation frontend gates:
 

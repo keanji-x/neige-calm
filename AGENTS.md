@@ -85,13 +85,17 @@ repository mutation tooling rewrites files in place.
 
 ## Verification
 
-Run the smallest relevant tests while iterating, then the matching local
-preflight before delivery:
+Run only the smallest relevant tests while iterating and before delivery. Do
+not run workspace-wide `nextest` by default; the broad suite belongs to CI.
 
 ```bash
-# Rust: fast feedback, then the broad local Rust gate
+# Rust: select the affected package and test-name filter
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  cargo nextest run --locked \
+  -p <package> <test-name-filter> --test-threads 8
+
+# When the Rust change also needs the compile, lint, and OpenAPI preflight
 scripts/local-rust-gates.sh --quick
-scripts/local-rust-gates.sh
 
 # Next-generation frontend only
 (cd fe && npm ci && npm run lint && npm run build && npm test)
@@ -100,11 +104,16 @@ scripts/local-rust-gates.sh
 (cd fe && npx playwright install --with-deps chromium && npm run test:browser)
 ```
 
-- Use `scripts/local-rust-gates.sh` as the single local Rust entry point. Its full
-  run and CI both use `scripts/run-rust-nextest.sh`, which pins the CI profile and
-  unsets `NEIGE_CODEX_BIN`. Local and self-hosted CI runs supply explicit caps;
-  hosted CI uses its runner default. Never re-enable real Codex E2E on the shared
-  production host. Remote CI remains authoritative for runner-specific setup.
+- Add `--features calm-server/codex-e2e` to a targeted Rust command only when
+  the affected test requires that feature. Narrow further with `--lib` or
+  `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
+  concurrency on the shared production host.
+- Do not run the full `scripts/local-rust-gates.sh` as routine local
+  verification. Run it only when explicitly requested or when changing the
+  gate/nextest configuration itself. It uses `scripts/run-rust-nextest.sh` for
+  the broad workspace suite; remote CI remains authoritative for that suite and
+  runner-specific setup.
+- Never re-enable real Codex E2E on the shared production host.
 - Run the real generator after schema or generated-code changes and include every
   updated artifact.
 - Preview visible UI changes in a real browser and run the relevant E2E for

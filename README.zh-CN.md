@@ -130,12 +130,19 @@ Docker 开发端口默认发布到主机的**所有网络接口**。容器还会
 
 ## 开发与验证
 
-运行日常 Rust 门禁：
+日常 Rust 开发只运行覆盖受影响 package 和行为的测试（请将占位符替换为实际选择器）：
 
 ```bash
-scripts/local-rust-gates.sh --quick
-scripts/local-rust-gates.sh          # 完整本地 Rust 门禁，需要 cargo-nextest
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  cargo nextest run --locked \
+  -p <package> <test-name-filter> --test-threads 8
 ```
+
+仅当受影响测试确实需要时才添加 `--features calm-server/codex-e2e`；需要进一步缩小
+范围时，可添加 `--lib` 或 `--test <test-target>`。如果改动还需要 Rust 编译、lint 和
+OpenAPI 预检，运行 `scripts/local-rust-gates.sh --quick`。完整的
+`scripts/local-rust-gates.sh` 不是日常开发命令：全 workspace 测试由 CI 运行。只有在
+明确要求，或维护 gate/nextest 配置本身时，才在本地运行完整门禁。
 
 运行新前端门禁：
 
