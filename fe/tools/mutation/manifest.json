@@ -995,34 +995,34 @@
     "why_more_than_one": "The held-response witness isolates the same-id create-response reconciliation branch."
   },
   {
-    "mutation_id": "app-area-create-failure-skips-reconciliation",
+    "mutation_id": "app-area-create-failure-does-not-await-reconciliation",
     "defends": [
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -804,7 +804,6 @@\n     // A lost response does not prove the POST rolled back. Reconcile on both\n     // success and failure so retrying the still-open dialog cannot create a\n     // duplicate Area after an already-committed first request.\n-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -805,7 +805,7 @@\n     // before the caller exposes retry UI, so that UI first observes the latest\n     // Area list. This narrows the uncertainty window; POST itself is not an\n     // idempotent API and this client-side reconciliation does not pretend it is.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
     ],
     "selection_paths": [
       "web/src/app/providers/queries.contract.test.ts"
     ],
-    "why_more_than_one": "The failed-response witness observes reconciliation independently of the successful write-through path."
+    "why_more_than_one": "The held refetch proves the rejected mutation stays pending until reconciliation, not merely that invalidation was started."
   },
   {
-    "mutation_id": "app-area-update-failure-skips-reconciliation",
+    "mutation_id": "app-area-update-failure-does-not-await-reconciliation",
     "defends": [
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -824,7 +824,6 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -825,7 +825,7 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed PATCH"
     ],
     "selection_paths": [
       "web/src/app/providers/queries.contract.test.ts"
     ],
-    "why_more_than_one": "The PATCH failure witness separately pins the update mutation's onSettled branch."
+    "why_more_than_one": "The held PATCH refetch separately pins awaiting the update mutation's onSettled branch."
   },
   {
     "mutation_id": "events-derived-kind-list-drops-gate-result",

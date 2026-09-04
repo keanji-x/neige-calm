@@ -200,7 +200,9 @@ describe('delete mutation wiring', () => {
   it('invalidates Areas after a failed PATCH', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
-    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    let releaseRefetch!: () => void;
+    const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
     const transport: ApiTransportPort = {
       send: () => Promise.reject(new Error('PATCH failed')),
     };
@@ -208,15 +210,22 @@ describe('delete mutation wiring', () => {
       wrapper: mutationWrapper(client),
     });
 
-    await expect(result.current.update('c1', { name: 'Studio' })).rejects.toBeInstanceOf(ApiError);
-
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+    const pending = result.current.update('c1', { name: 'Studio' });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() }));
+    expect(settled).toBe(false);
+    releaseRefetch();
+    await expect(pending).rejects.toBeInstanceOf(ApiError);
+    expect(settled).toBe(true);
   });
 
   it('invalidates Areas after a failed POST that may already have committed', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
-    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    let releaseRefetch!: () => void;
+    const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
     const transport: ApiTransportPort = {
       send: () => Promise.reject(new Error('POST response lost')),
     };
@@ -224,10 +233,14 @@ describe('delete mutation wiring', () => {
       wrapper: mutationWrapper(client),
     });
 
-    await expect(result.current.create({ name: 'Reading', color: '#5B8DEF' }))
-      .rejects.toBeInstanceOf(ApiError);
-
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+    const pending = result.current.create({ name: 'Reading', color: '#5B8DEF' });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() }));
+    expect(settled).toBe(false);
+    releaseRefetch();
+    await expect(pending).rejects.toBeInstanceOf(ApiError);
+    expect(settled).toBe(true);
   });
 
   it('does not let a delayed Area PATCH response overwrite a newer event row', async () => {

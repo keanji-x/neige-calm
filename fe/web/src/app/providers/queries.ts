@@ -801,10 +801,11 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
         ]);
       });
     },
-    // A lost response does not prove the POST rolled back. Reconcile on both
-    // success and failure so retrying the still-open dialog cannot create a
-    // duplicate Area after an already-committed first request.
-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
+    // A lost response does not prove the POST rolled back. Await the refetch
+    // before the caller exposes retry UI, so that UI first observes the latest
+    // Area list. This narrows the uncertainty window; POST itself is not an
+    // idempotent API and this client-side reconciliation does not pretend it is.
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const update = useMutation({
     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>
@@ -824,7 +825,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     // Success and failure both reconcile with the server. A transport failure
     // may still follow a committed write, so failure cannot leave cached Area
     // defaults authoritative.
-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const remove = useMutation({
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>

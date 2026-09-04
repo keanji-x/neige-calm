@@ -2141,13 +2141,14 @@
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    Area 的 POST 与 PATCH 在成功或失败后都必须 invalidate `queryKeys.areas()`；transport
-    failure 不能被当作服务端未提交的证明。
+    Area 的 POST 与 PATCH 在成功或失败后都必须 return/await
+    `invalidateQueries({ queryKey: queryKeys.areas() })`；transport failure 不能被当作服务端
+    未提交的证明，调用者也不得在 reconciliation 完成前恢复交互。
   why: >
-    响应可能在服务端提交后丢失。若失败分支不重新拉取，创建对话框仍显示错误并允许重试，
-    从而创建第二个 Area；更新失败也会让默认 template/cwd 长期停留在旧 cache 中。
-  source: fe/web/src/app/providers/queries.ts:791-827
-  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:200-231
+    响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
+    template/cwd 回到 cache；这只缩小不确定窗口，不把非幂等的 POST 伪装成服务器幂等。
+  source: fe/web/src/app/providers/queries.ts:791-829
+  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:200-243
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
