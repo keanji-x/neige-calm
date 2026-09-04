@@ -1446,6 +1446,47 @@ export interface components {
              */
             cwd?: string | null;
             /**
+             * @description Issue #1299 S1 — the sentence the user typed on the synthesiser page,
+             *     delivered to the planner agent **with** this create instead of having to
+             *     be retyped after landing on the track.
+             *
+             *     It becomes an `Observation::UserMessage` seeded into the harness
+             *     snapshot inside the `planner-harness-start` transaction — not a
+             *     `TrackGoal`, which is a different semantic slot (see
+             *     `PlannerHarnessStartOperationPayload::first_message`). Validated exactly
+             *     like `POST /api/cards/{id}/planner/input` (non-blank after trim, at most
+             *     32768 **characters**) and validated before anything is minted.
+             *
+             *     Omitting it leaves this endpoint's behaviour byte-for-byte unchanged,
+             *     down to the operation payload, whose `first_message` key is
+             *     `skip_serializing_if`-omitted.
+             *
+             *     Supplying it also changes what a harness-start failure means. Without
+             *     it, a create whose `planner-harness-start` operation fails still returns
+             *     201 — "the track exists, its planner agent is inert" is a documented,
+             *     recoverable state. With it, that same failure is a 500, because the
+             *     sentence the user typed was only ever going to be written by that
+             *     operation, so a 201 would claim a delivery the create did not make.
+             *
+             *     The 500 does **not** undo the create: the track and its cards are
+             *     already committed and nothing compensates for them. Nor does it say the
+             *     message was not delivered — that depends on how far the start got, and
+             *     this endpoint cannot tell. A start that failed before the harness was
+             *     installed handed nothing to any agent; a start that failed *after* it
+             *     (the `Stuck` outcome) has already seeded the observation and fired the
+             *     turn, and nothing recalls it. So the 500 reports an unknown delivery and
+             *     asks the client to look at the track before resending, because resending
+             *     a message that did arrive delivers it twice (see the 500 description on
+             *     `create_track`). Teaching the endpoint to answer what actually happened
+             *     is #1384.
+             *
+             *     This slice delivers the message; it does not make the create
+             *     **retryable**. A client that retries a create carrying a
+             *     `first_message` gets a second track, exactly as a client retrying any
+             *     other create always has.
+             */
+            first_message?: string | null;
+            /**
              * @description One-time creation instruction: copy this track's report snapshot into
              *     the new report inside the track-create transaction.
              */
@@ -5637,7 +5678,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Track created */
+            /** @description Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -5646,7 +5687,16 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Internal error */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), or — with `first_message` — an empty or over-long message. Decided before anything is minted. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back, nothing compensates, and the create is not retryable — read the track back from `GET /api/tracks` and look before resending, because resending a message that did arrive delivers it twice. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it. */
             500: {
                 headers: {
                     [name: string]: unknown;
