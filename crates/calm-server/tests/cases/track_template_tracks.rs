@@ -865,12 +865,25 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
 /// transaction**". A status assertion cannot see a write, so the refusal is
 /// bracketed by `db_snapshot` (every user table, every column, `quote()`d).
 ///
-/// Mutation-verified (`MUTATION-1321S2-1`): moving the exclusivity refusal out
-/// of `NamedSource::from_request` and into the create transaction — i.e. still
-/// a 400, but decided after `track_create_tx` has inserted the track, its cards
-/// and their events — turns **this case's snapshot assertion** red while its
-/// status assertion stays green. That is the discrimination the snapshot exists
-/// for: without it, the same mutation is invisible.
+/// Mutation-verified (`MUTATION-1321S2-1`): deferring the exclusivity decision
+/// until after `create_track_with_planner_harness` has committed — the fork
+/// wins as it did before this slice, the create commits, and *then* the same
+/// 400 with the same message is returned — leaves this file's whole filtered
+/// suite green **except this case**, and inside it the failure is the snapshot
+/// assertion (`left` carried a freshly committed `tracks`/`cards`/`area_folders`
+/// row set) while every status and message assertion above it passed. Measured
+/// on `test(recipe_instantiate) or test(template_tracks) or test(report_fork) or
+/// test(first_message)`, `--no-fail-fast`: 65 tests run, 64 passed, 1 failed.
+/// That is the discrimination the snapshot exists for: without it, the mutation
+/// is invisible.
+///
+/// (`MUTATION-1321S2-2`, the coarser one — no exclusivity at all, last field
+/// named wins — turns four cases red on the same filter: this one,
+/// `a_recipe_and_an_explicit_fork_source_are_a_400`,
+/// `template_id_and_recipe_id_together_are_a_400` and
+/// `template_id_and_recipe_id_with_a_fork_source_are_still_a_400`. It is the
+/// weaker evidence: it moves the status code, so it says nothing about the
+/// snapshot leg.)
 ///
 /// What the snapshot is *not*: a proof that no code wrote anything. It is a
 /// per-table value digest with row order normalized, so it sees values, not
