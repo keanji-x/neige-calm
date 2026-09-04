@@ -13,19 +13,54 @@
 //!
 //! The #1292 design first tried to keep them honest with a meta-test
 //! asserting the two paths normalize *the same field set*. That equality is
-//! not expressible: fork also rewrites report links (it has a
-//! source track to rewrite against; a recipe does not) and **keeps**
-//! tombstones (they are that track's audit history), while a recipe **drops**
-//! them (a tombstone blocks re-declaring its key, so carrying one into a
-//! recipe would poison every track instantiated from it). The sets can never
-//! be equal, so the equation could only ever have been satisfied by
-//! weakening one side.
+//! not expressible, and the reason is a rule rather than a list.
+//!
+//! **The rule.** Sort what a task block carries by one question: does the
+//! value still mean the same thing in a track that did not author it?
+//!
+//!   * If yes, it is a claim about authority rather than about a track — the
+//!     three privilege fields. Both paths owe it the same treatment for the
+//!     same reason, so it is normalized once, by the function below.
+//!   * If no — the value names something that only exists relative to a
+//!     track — then the two paths *cannot* agree, because fork has a source
+//!     track to map the name onto and a recipe has none. Fork carries or
+//!     rewrites; a recipe mints fresh or withdraws. A value in this class
+//!     cannot live in the function below at all — the function has no way to
+//!     know which side called it — so each path answers it at its own
+//!     boundary.
+//!
+//! Instances of the second class, as illustrations rather than a closed
+//! list — the rule is what decides a new field, not this enumeration:
+//!
+//!   * **Block ids and revs** — fork writes the source snapshot through
+//!     `ReportDoc::from_blocks_exact`, which writes each id and rev exactly
+//!     as supplied. A recipe reaches `ReportDoc::from_payload` with a payload
+//!     built by `TrackReportPayload::new`, whose `blocks` is `None`, so the
+//!     `reassign_ids` inside it aligns against an empty old-block set: every
+//!     block takes the unmatched branch, minting a new id at rev 1.
+//!   * **Report links in prose and in `goal`/`acceptance`** — fork rewrites
+//!     them onto the copy (`report_links::rewrite_track_links`); a recipe
+//!     leaves them alone, having nothing to rewrite them to.
+//!   * **`refs`** — fork **rewrites** each entry through
+//!     `report_links::rewrite_track_destination`, so a reference to a copied
+//!     block follows the copy. A recipe **drops** the field
+//!     (`routes::track_recipes::normalize_recipe_body`); the argument for
+//!     that, and for why the report links in the previous bullet are kept
+//!     even though they reach the same consumers, is in that function's doc.
+//!   * **Tombstones** — fork **keeps** them (they are that track's audit
+//!     history), a recipe **drops** them (a tombstone blocks re-declaring
+//!     its key, so carrying one into a recipe would poison every track
+//!     instantiated from it).
+//!
+//! So the two field sets can never be equal, and the equation could only
+//! ever have been satisfied by weakening one side.
 //!
 //! What the two paths genuinely share is exactly this: the per-block
 //! privilege-field normalization below. Sharing it as a function makes
 //! "these two agree" a constructional fact rather than a claim needing an
-//! oracle. Link rewriting and tombstone policy stay where they differ, and
-//! are tested there.
+//! oracle. In particular, dropping `refs` must **not** be hoisted into that
+//! function: it belongs to the second class, and hoisting it would silently
+//! delete the references fork had just rewritten.
 
 use serde_json::{Map, Value};
 
@@ -163,5 +198,39 @@ mod tests {
             json!("user"),
             "fail closed downstream, do not repair"
         );
+    }
+
+    /// The shared middle must not touch `refs`.
+    ///
+    /// `refs` is on the track-scoped side of the module doc's rule: the
+    /// recipe write boundary drops the field, fork rewrites it onto the
+    /// copy, and neither belongs here. Hoisting the drop down here —
+    /// the refactor the two `remove` sites invite — would delete the
+    /// references fork had just rewritten, and fork's own end-to-end test
+    /// (`track_report_fork::forked_task_refs_are_rewritten_onto_the_copy_and_resolve`)
+    /// is in a different target than this one. Both spellings of the
+    /// asymmetry are checked, so a gate that builds only one still catches
+    /// it.
+    #[test]
+    fn refs_are_not_this_functions_business() {
+        // Built by the production formatter rather than spelled out: a
+        // literal here would be this test's own idea of what a reference
+        // looks like.
+        let reference = calm_types::report_links::format_track_destination("t1", Some("b_1f3a"));
+        let mut payload = map(json!({
+            "key": "k",
+            "goal": "g",
+            "refs": [reference],
+            "cwd": "/repo",
+            "declared_by": "user",
+            "ready": true,
+        }));
+        normalize_task_privilege_fields(&mut payload);
+        assert_eq!(
+            payload["refs"],
+            json!([reference]),
+            "fork's rewritten references must survive the shared normalization: {payload:?}"
+        );
+        assert_eq!(payload["cwd"], json!("/repo"));
     }
 }

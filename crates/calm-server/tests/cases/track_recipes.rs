@@ -126,6 +126,15 @@ fn task_payloads(body: &str) -> Vec<Value> {
         .collect()
 }
 
+/// A block reference to a track this test never creates, built by the
+/// production formatter rather than spelled as a literal — a hand-written
+/// URI would be this file's own idea of what `parse_destination` accepts.
+fn foreign_block_ref() -> String {
+    calm_types::report_links::format_track_destination(FOREIGN_TRACK, Some("b_1f3a"))
+}
+
+const FOREIGN_TRACK: &str = "some-other-track";
+
 /// Every parsed fence in a body, as `(kind, payload)`, in order.
 fn fences(body: &str) -> Vec<(String, Value)> {
     calm_types::report_blocks::split_body(body)
@@ -189,6 +198,83 @@ async fn create_normalizes_every_privilege_field_and_drops_tombstones() {
         stored.contains("intro"),
         "prose must survive verbatim: {stored}"
     );
+}
+
+/// `refs` is dropped, and the four fields beside it that look similar are
+/// not.
+///
+/// The first half is the behaviour: a recipe cannot own a block id (they are
+/// minted per track at instantiation), so a `refs` entry it ships names some
+/// other track's block — which either freezes that block into the
+/// instantiated task's prompt or, when it no longer resolves, raises a
+/// `refs`-path diagnostic that makes the task unschedulable.
+///
+/// The second half is the fence around it. `cwd`, `context`, `depends_on`
+/// and `gate` are the other fields a recipe carries in from wherever it was
+/// authored, and none of them is this function's business: `cwd` is a path
+/// its author can mean and the S4 editor shows her, `depends_on` names keys
+/// this same recipe declares, and `gate`/`context` are the work's own
+/// definition. Asserting them byte-identical is what stops the next edit
+/// here from generalising "drop what the recipe cannot own" into "drop
+/// whatever looks inherited".
+#[tokio::test]
+async fn create_drops_refs_and_touches_nothing_beside_them() {
+    let boot = boot().await;
+    let cwd = "/srv/repos/thing";
+    let context = json!({ "ticket": "AB-1", "nested": { "n": 3 } });
+    let gate = json!({ "steps": [{ "name": "accept", "cmd": "true" }] });
+    let body = format!(
+        "# Plan\n\nintro\n\n{}{}",
+        task_fence(json!({
+            "key": "setup",
+            "goal": "set up",
+            "kind": "codex",
+            "no_gate_reason": "nothing to check yet",
+        })),
+        task_fence(json!({
+            "key": "live",
+            "goal": "do the thing",
+            "kind": "codex",
+            // Well-formed and accepted by `report_blocks::kinds`, which is
+            // the point: nothing rejects this at the door, so the drop is
+            // the only thing standing between the recipe and a reference it
+            // does not own.
+            "refs": [foreign_block_ref()],
+            "cwd": cwd,
+            "context": context,
+            "depends_on": ["setup"],
+            "gate": gate,
+        })),
+    );
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": body })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+
+    let stored = created["body"].as_str().expect("body");
+    let tasks = task_payloads(stored);
+    assert_eq!(tasks.len(), 2, "tasks={tasks:?}");
+    let live = &tasks[1];
+    assert_eq!(live["key"], json!("live"));
+
+    assert!(
+        live.get("refs").is_none(),
+        "`refs` must be removed, not emptied: {live:?}"
+    );
+    assert!(
+        !stored.contains(FOREIGN_TRACK),
+        "no trace of the foreign reference may remain in the body: {stored}"
+    );
+
+    assert_eq!(live["cwd"], json!(cwd), "cwd is the author's to choose");
+    assert_eq!(live["context"], context, "context must survive whole");
+    assert_eq!(live["depends_on"], json!(["setup"]));
+    assert_eq!(live["gate"], gate);
 }
 
 /// A non-task fence is re-rendered into canonical form, with its payload
@@ -342,6 +428,16 @@ async fn dropping_a_tombstone_does_not_splice_its_prose_neighbours() {
 ///
 /// The body carries a **non-task** fence too, in compact spelling: the second
 /// pass is only the identity if the first pass already canonicalised it.
+///
+/// One task carries `refs`, and the assertion below is in two halves for a
+/// reason worth stating: **byte-identity alone cannot catch blanking.** An
+/// implementation that wrote `refs: []` rather than removing the key is a
+/// fixed point too — the second pass reads `[]` and writes `[]`. So the
+/// second half asserts the *shape* of the fixed point: no task in a stored
+/// recipe carries a `refs` key at all. Absent and `[]` are the same to every
+/// reader of a task declaration, but not to a diff of two stored recipes,
+/// nor to the "instantiation re-renders this to the same bytes"
+/// construction, which is what this whole file is defending.
 #[tokio::test]
 async fn normalization_is_byte_identical_the_second_time() {
     let boot = boot().await;
@@ -356,6 +452,8 @@ async fn normalization_is_byte_identical_the_second_time() {
             "key": "live",
             "goal": "do the thing",
             "kind": "codex",
+            "refs": [foreign_block_ref()],
+            "cwd": "/srv/repos/thing",
             "declared_by": "user",
             "ready": true,
             "released_by_user": true,
@@ -391,6 +489,19 @@ async fn normalization_is_byte_identical_the_second_time() {
     assert_eq!(
         second, first,
         "re-storing a stored body must be the identity"
+    );
+
+    // The shape of the fixed point, which byte-identity cannot pin on its
+    // own: `refs: []` would be just as stable as an absent key.
+    for task in task_payloads(second) {
+        assert!(
+            task.get("refs").is_none(),
+            "a stored recipe must carry no `refs` key, emptied or otherwise: {task:?}"
+        );
+    }
+    assert!(
+        second.contains("/srv/repos/thing"),
+        "`cwd` is not dropped and must survive both passes: {second}"
     );
 }
 

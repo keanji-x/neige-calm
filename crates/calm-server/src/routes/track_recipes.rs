@@ -75,17 +75,21 @@ pub fn router() -> Router<AppState> {
 /// made from it are byte-for-byte the same document" from a claim into a
 /// construction.
 ///
-/// Two further transforms apply to task fences only, and both are about
-/// **not carrying one track's authority into every track made from this
-/// recipe**:
+/// Three further transforms apply to task fences only, and each is about
+/// **not carrying something out of the track this fence was authored in**
+/// and into every track made from this recipe — either an authority granted
+/// there, or a name that only means anything there. `crate::task_privilege`'s
+/// module doc states the rule that sorts the two apart and says why only the
+/// authority half can be shared as one function with fork:
 ///
 /// 1. **Tombstones are dropped**, leaving a blank-line boundary behind. A
 ///    tombstone blocks re-declaring its key (`report_blocks::tasks`), so a
 ///    recipe carrying one would poison every instantiated track — that key
-///    could never be used again in any of them. This is the one place
-///    recipes deliberately diverge from fork, which *keeps* tombstones
-///    because they are that track's audit history. A recipe has no history
-///    to preserve; it describes work not yet done.
+///    could never be used again in any of them. Fork instead *keeps*
+///    tombstones, because they are that track's audit history. (That is one
+///    instance of the rule in `crate::task_privilege`'s module doc, not the
+///    only one — a tombstone claims a key, and keys are track-scoped.) A
+///    recipe has no history to preserve; it describes work not yet done.
 ///
 ///    The blank line is not cosmetic. Splicing the dropped fence's two prose
 ///    neighbours together makes them one Markdown paragraph context, and the
@@ -98,6 +102,96 @@ pub fn router() -> Router<AppState> {
 ///    [`normalize_task_privilege_fields`] the fork path calls, so
 ///    `declared_by`/`ready`/`released_by_user` cannot smuggle in authorship
 ///    or a human approval granted somewhere else.
+/// 3. **`refs` is dropped.** Every entry there must be a block reference —
+///    `report_blocks::kinds` rejects anything `parse_destination` cannot
+///    resolve to a `(track id, block id)` pair
+///    (`report_links::format_track_destination` is the spelling). Block ids
+///    are minted per track *at instantiation*: the recipe body reaches
+///    `ReportDoc::from_payload` inside a `TrackReportPayload::new`, whose
+///    `blocks` is `None`, so the `reassign_ids` there aligns against an empty
+///    old-block set and every block in the new track gets a freshly minted
+///    id; the new track's own id is fresh too. A recipe therefore owns no
+///    id it could reference. Whatever it ships names a block in some *other*
+///    track, and — unlike fork, nothing rewrites it here — goes on naming
+///    that same other track in every track instantiated from the recipe.
+///
+///    Exactly one of two outcomes then follows, and both are wrong. The
+///    "exactly one" is the projection's own reference loop. A stored `refs`
+///    entry is already `(track, Some(block))` — [`validate_recipe_body`]
+///    checks the fence on the way in and `prepare_initial_report_payload`
+///    checks it again at instantiation — so the loop skips its
+///    `reference_needs_block` arm, looks the entry up, and matches on the row
+///    it gets back, where the only arms are "resolves" and the two
+///    diagnostics below.
+///
+///      * the target still resolves (same area, or the system area, which
+///        `task_context::resolve_from_root_with_revs` exempts) — then
+///        `task_context::block_links` walks `refs` while building the frozen
+///        closure and freezes **another track's block** into this task's
+///        prompt. A recipe shared between tracks becomes a content channel
+///        between them;
+///      * the target is gone or lives in another area — the projection
+///        raises `reference_missing` / `reference_cross_area`, whose
+///        diagnostic path is `"refs"`, which is in
+///        `TASK_BLOCKING_DIAGNOSTIC_PATHS`. The instantiated task is not
+///        schedulable, and stays that way until somebody edits the reference
+///        out of that track's report — separately, in every track the recipe
+///        ever produces.
+///
+///    Fork faces the same fact and answers it the other way: it **rewrites**
+///    each entry onto the copied block (`prepare_fork_report` →
+///    `report_links::rewrite_track_destination`), because it has a source
+///    track to rewrite against. A recipe has no source track and no id space
+///    of its own, so there is nothing to rewrite to — only a claim to
+///    withdraw.
+///
+///    **What is not the reason: that the system consumes `refs` and leaves
+///    the rest of the task alone.** It consumes both. A markdown link with a
+///    block destination written into `goal` or `acceptance` reaches the same
+///    two consumers as an explicit `refs` entry, and this slice keeps those
+///    links:
+///
+///      * `calm_truth::db::sqlite::task_projection::declaration_references`
+///        concatenates `refs` with the block-bearing links it scans out of
+///        `goal` and `acceptance` into one list, and the reference loop reads
+///        only that list — so a broken link in the prose raises the same
+///        `reference_missing` / `reference_cross_area`, carrying the same
+///        `"refs"` path, and blocks the task exactly as hard;
+///      * `task_context::block_links` walks `refs` and then every field
+///        `report_blocks::scannable_text_fields` names for a task block
+///        (`goal`, `acceptance`) — so a link in either place freezes its
+///        target into the same closure.
+///
+///    So the hazard is not exclusive to `refs`, and dropping the field does
+///    not close it: a recipe whose `goal` links a foreign block still carries
+///    that link into every track made from it. That residual is left open
+///    deliberately, because of what this boundary can and cannot do.
+///
+///    A `refs` entry is nothing but a destination. `refs` is optional in the
+///    task schema (`report_blocks::kinds::validate_payload`), so removing the
+///    key removes the whole claim and leaves a complete, valid task fence:
+///    the withdrawal costs no content. A link inside `goal`/`acceptance` is a
+///    destination embedded in a sentence its author wrote, where the label
+///    and the words around it are content in their own right. Withdrawing it
+///    means editing that sentence — unlinking it, or cutting the clause —
+///    and this boundary does not edit the author's prose (prose slices pass
+///    through byte-identical, and a task's `goal` / `acceptance` strings are
+///    re-rendered unchanged). Fork can rewrite such a link only because it
+///    has a target to rewrite it to; a recipe would have to pick an edit to
+///    the prose, or invent a target.
+///
+///    The rule this boundary applies is therefore narrower than "a recipe
+///    carries no reference into another track": it withdraws the references
+///    it can withdraw without rewriting text its author wrote, and of these
+///    two carriers only `refs` qualifies.
+///
+///    `cwd` is deliberately **not** dropped alongside it, although it is the
+///    other field a recipe inherits from wherever it was authored. A `cwd`
+///    is something its author can mean and can be right about ("this recipe
+///    always runs in that repo"), because a path exists independently of any
+///    track. A `refs` entry is not a value she could get right at recipe
+///    scope at all: the ids it would have to name do not exist until the
+///    track that mints them does.
 ///
 /// Prose slices pass through byte-identical, and so does anything
 /// [`parse_fence`] declines — the lenient read treats those as prose too, and
@@ -128,6 +222,10 @@ fn normalize_recipe_body(body: &str) -> String {
                 }
                 match fence.payload {
                     Value::Object(mut payload) => {
+                        // Not folded into `normalize_task_privilege_fields`:
+                        // fork rewrites `refs`, it does not drop them. See
+                        // point 3 above and that function's module doc.
+                        payload.remove("refs");
                         normalize_task_privilege_fields(&mut payload);
                         render_fence(KIND_TASK, &Value::Object(payload))
                     }
