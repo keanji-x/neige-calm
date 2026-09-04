@@ -1,10 +1,12 @@
 //! Shared mechanics for lazily minting a Track assistant conversation on its
 //! first message: validation, retryable operation keys, the first-message
 //! digest that the track-create binding row stores, and the read that says
-//! whether a card has ever had a user message enqueued.
+//! whether a card's *currently active* runtime has already been sent a user
+//! message.
 
 use sha2::{Digest, Sha256};
 
+use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
 use crate::routes::cards::MAX_PLANNER_INPUT_CHARS;
@@ -114,32 +116,65 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
     )))
 }
 
-/// Has this conversation card ever had a user message enqueued?
+/// Has a user message been enqueued **onto this card's current ACTIVE
+/// runtime**?
 ///
-/// The truth read here is the same row the transcript, the tests and the audit
-/// log read — `harness.user_message.enqueued`. It has two writers, and they
-/// differ in exactly the way a caller has to know about:
+/// Not "has this card ever had one". The question is deliberately bound to the
+/// runtime that is live *right now*, because "ever" is the wrong question for
+/// every caller: a message enqueued onto a runtime that has since been replaced
+/// is not on any queue a live harness will drain, so suppressing a re-send on
+/// the strength of it strands the message forever (#1314; the measured shape is
+/// in the ACTIVE paragraph below).
+///
+/// **What "ACTIVE" means is not restated here.** The row is picked by
+/// [`session_projection_active_for_card_tx`], which owns the state filter
+/// (`starting | running | idle | turn_pending`) and the newest-first ordering.
+/// It is the same read `session_supersede_and_start_tx` and every dormancy check
+/// go through, so "this predicate's notion of active" and "the runtime a send
+/// would actually reach" cannot drift apart — a second copy of that state list
+/// here is exactly how they would.
+///
+/// **No active runtime ⇒ `false`.** There is nothing a queued message could be
+/// waiting on, so the next send is a re-send onto whatever runtime the caller's
+/// send path restarts. That is the self-healing direction and it is the point of
+/// the whole predicate.
+///
+/// The evidence row is `harness.user_message.enqueued`, the same row the
+/// transcript, the tests and the audit log read. It has two writers, and both
+/// stamp the runtime the message was enqueued onto:
 ///
 /// * `send_planner_input` writes it *after* the observation reached a live
-///   harness queue, so the row trails a delivery that already happened;
+///   harness queue, carrying that harness's `runtime.id`, so the row trails a
+///   delivery that already happened;
 /// * `PlannerHarnessStartAdapter::prepare_tx` writes it *inside* the mint
 ///   transaction that seeds the observation onto a session that has not started
-///   yet (#1299 S1, #1314), so the row commits before anything could have been
-///   handed over — and survives a later compensation that deletes the card,
-///   because `events` is append-only.
+///   yet (#1299 S1, #1314), carrying that session's id, so the row commits
+///   before anything could have been handed over — and survives a later
+///   compensation that deletes the card, because `events` is append-only.
 ///
-/// The only caller left is `today_summary`, and what it gets is "was the
-/// bootstrap ever enqueued", which is **not** "is the bootstrap still
-/// reachable". Measured: when a mint's compensation fails at `delete_card`, the
-/// card survives with the seeded observation on a `failed` session, this read
-/// answers true, and the dormant restart does **not** inherit that queue —
-/// `session_projection_active_for_card_tx` inherits from an ACTIVE row only —
-/// so the message is stranded and no later trigger re-sends it. Tracked as its
-/// own defect; do not read this function as evidence of reachability.
+/// **Why the event row and not the queue itself.** The queue is the state a
+/// caller actually cares about, and it is unusable as a predicate: the delivery
+/// path hands the text to the harness over an mpsc channel and the run loop
+/// persists it asynchronously, so a request cannot see its *own* just-sent
+/// message in `pending_queue` — two concurrent triggers would both read "empty"
+/// and both send. The event row is the only trace of a send that lands in the
+/// database synchronously with the send, which is what makes a read-then-send
+/// under a per-card lock actually exclusive.
 ///
-/// A caller that needs "did a delivery *reach* the agent?" must not use this
-/// either: see `routes/track_conversations.rs`, which deliberately reads
-/// nothing back, and #1384.
+/// **The residual, stated rather than papered over.** A runtime replacement that
+/// *inherits* the old runtime's still-undelivered queue (`/planner/reset`, a
+/// manual harness start against a live session) moves the message forward while
+/// leaving its row pointing at the superseded runtime, so this answers `false`
+/// and the caller re-sends a message that was still reachable. The cost is one
+/// duplicated standing instruction on a path a human explicitly asked for; the
+/// alternative — the dormant restart *not* inheriting, which is the common case
+/// — silently loses the message instead. A "still queued" conjunct would not fix
+/// it either: see the synchronous-visibility paragraph above.
+///
+/// A caller that needs "did a delivery *reach* the agent?" must not use this:
+/// see `routes/track_conversations.rs`, which deliberately reads nothing back,
+/// and #1384. Queued is not delivered — the run loop can still drop an
+/// observation on a full queue.
 ///
 /// There is deliberately no separate "first message sent" flag: a write-only
 /// marker would have to be set before or after the send and would be wrong in
@@ -147,18 +182,21 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 ///
 /// Both scope columns are bound: `scope_track` is indexed (`0007`), so the scan
 /// is bounded by one track rather than by every conversation in the DB.
+/// `json_valid` gates the `json_extract`, because SQLite *raises* on malformed
+/// JSON and one historical bad row would turn this read into a 500 for every
+/// trigger — the same fail-safe `events_prune.rs` takes over the same column.
 ///
 /// Durability premise, and it is a premise not a nice-to-have:
 /// `harness.user_message.enqueued` is **not** in `EVENTS_PRUNE_KINDS`
 /// (`calm-truth/src/events_prune.rs`). That allowlist is exact-kind and
-/// fails safe — a kind absent from it is permanent by construction — so this
-/// row outlives every retention pass and this answer never decays.
-/// Adding this kind to the allowlist would silently make every Today trigger
-/// against an aged conversation re-send the standing bootstrap instruction;
-/// `first_message_dedup_kind_is_never_prunable`
-/// (in `events_prune.rs`) fails closed if anyone tries. If that ever has to
-/// change, this read must move to a marker that cannot be pruned.
-pub(crate) async fn user_message_already_enqueued(
+/// fails safe — a kind absent from it is permanent by construction — so the row
+/// outlives every retention pass. What that buys is narrower than it was before
+/// the ACTIVE binding, and it is still load-bearing: an evicted row would make a
+/// trigger against a *live* runtime that has already been spoken to re-send the
+/// standing bootstrap instruction. `first_message_dedup_kind_is_never_prunable`
+/// (in `events_prune.rs`) fails closed if anyone tries to add the kind. If that
+/// ever has to change, this read must move to a marker that cannot be pruned.
+pub(crate) async fn user_message_enqueued_on_active_runtime(
     w: &WorkerState,
     track_id: &str,
     card_id: &str,
@@ -167,17 +205,27 @@ pub(crate) async fn user_message_already_enqueued(
         .repo
         .sqlite_pool()
         .ok_or_else(|| CalmError::Internal("conversations require a sqlite-backed repo".into()))?;
+    // One transaction for both reads, so the runtime this answer is about
+    // cannot be superseded between picking it and looking for its row. Read
+    // only — it is rolled back by the drop below either way.
+    let mut tx = pool.begin().await?;
+    let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id).await? else {
+        return Ok(false);
+    };
     let found: Option<i64> = sqlx::query_scalar(
         r#"SELECT 1
              FROM events
             WHERE kind = 'harness.user_message.enqueued'
               AND scope_track = ?1
               AND scope_card = ?2
+              AND json_valid(payload)
+              AND json_extract(payload, '$.runtime_id') = ?3
             LIMIT 1"#,
     )
     .bind(track_id)
     .bind(card_id)
-    .fetch_optional(&pool)
+    .bind(&runtime.id)
+    .fetch_optional(&mut *tx)
     .await?;
     Ok(found.is_some())
 }

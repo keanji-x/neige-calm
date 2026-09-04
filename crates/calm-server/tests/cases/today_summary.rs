@@ -1409,38 +1409,46 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
          between re-submitting a start and going through `/planner/reset`"
     );
     /*
-     * Identity, not a count. If the dormant retry re-sent the BOOTSTRAP text
-     * instead of the summary, a length assertion would read 3 and pass, the
-     * actor assertion would pass, and the trigger would have silently done
-     * nothing the user asked for. This is the one branch where a content error
-     * is uniquely possible — the retry re-sends a text the handler chose — and
-     * no other case covers it.
+     * Identity, not a count. The summary is the message the trigger was FOR, and
+     * a length assertion would read the right total whichever text arrived. This
+     * is the one branch where a content error is uniquely possible — the retry
+     * re-sends a text the handler chose — and no other case covers it.
      */
     /*
-     * Two messages, not three, and the missing one is the point. Since #1314
-     * the bootstrap ships inside the mint transaction and hard-fires as the
-     * session's own first turn, so the SAME trigger's summary lands behind it
-     * on that session's queue instead of folding into its turn. The dormancy
-     * staged above then supersedes that session, and the restart inherits
-     * nothing from it — `session_projection_active_for_card_tx` reads ACTIVE
-     * rows only — so the first trigger's summary is stranded on a queue no
-     * harness will ever drain again.
+     * Three messages: the mint's bootstrap, a SECOND bootstrap onto the
+     * restarted session, and the summary. The second bootstrap is the #1314
+     * ruling, not a regression — see [`TODAY_SUMMARY_BOOTSTRAP_TEXT`]. The
+     * predicate is bound to the card's ACTIVE runtime, and the dormancy staged
+     * above replaced it: the restarted session is a new codex thread holding
+     * none of the old one's context, so the standing instruction has to be said
+     * to it again or its first turn is exactly the bare-summary turn that text
+     * exists to prevent. Until #1314 the predicate answered "this card has had a
+     * message at some point" and the restarted session got the summary alone.
+     *
+     * The FIRST trigger's summary is the message missing from this total, and
+     * that half is unchanged. Since #1314 the bootstrap ships inside the mint
+     * transaction and hard-fires as the session's own first turn, so the same
+     * trigger's summary lands behind it on that session's queue; the dormancy
+     * supersedes that session and the restart inherits nothing from it —
+     * `session_projection_active_for_card_tx` reads ACTIVE rows only — so it is
+     * stranded on a queue no harness will drain again.
      *
      * `delivered` is deliberately the narrow read (every turn plus the card's
      * NEWEST session queue), because that is exactly the reachable set: a
      * stranded message must not be counted as delivered. A read widened to
-     * every persisted queue would total 3 here and would go on totalling 3 if
+     * every persisted queue would total 4 here and would go on totalling 4 if
      * the summary were stranded for any other reason, which is the dimension
      * this assertion exists to hold.
      */
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
             .await,
-        vec![1, 1],
-        "the recovery must deliver the SUMMARY the trigger was for, and not a \
-         second bootstrap: one bootstrap (from the mint) and one reachable \
-         summary — the first trigger's summary was stranded on the superseded \
-         session's queue"
+        vec![2, 1],
+        "the recovery must deliver the SUMMARY the trigger was for, onto a \
+         restarted session that was given the standing instruction first: the \
+         mint's bootstrap, the restarted session's own bootstrap, and one \
+         reachable summary — the first trigger's summary was stranded on the \
+         superseded session's queue"
     );
     /*
      * The restart is the kernel's, and it is the one place in this module that
@@ -1497,7 +1505,7 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 /// minted through the production endpoint under the production key, and then
 /// the audit rows that mint wrote are removed, leaving a live runtime and an
 /// empty transcript. That is the pair the predicate reads — `card_get` says
-/// yes, `user_message_already_enqueued` says no. It pins the predicate, not a
+/// yes, `user_message_enqueued_on_active_runtime` says no. It pins the predicate, not a
 /// reachable production sequence, and it must not be read as evidence that one
 /// exists.
 ///
@@ -1569,6 +1577,192 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
         "recovering the message must not mint a second conversation — \
          re-running the create against an existing card is what `validate` \
          refuses, which is why the message is sent directly instead"
+    );
+}
+
+/// #1314 — a bootstrap stranded on a `failed` session is re-sent by the next
+/// trigger, and only by the next one.
+///
+/// **The state is reachable in production**, which is what separates this case
+/// from its empty-transcript sibling above. The mint enqueues the bootstrap
+/// inside its own transaction; `thread/start` then fails; compensation runs
+/// `delete_card` and *that* fails too, so the operation lands `Stuck` and the
+/// card survives — `deletable: false`, carrying the bootstrap on a `failed`
+/// session's pending queue with its `harness.user_message.enqueued` row
+/// committed alongside it.
+///
+/// Nothing will ever drain that queue: the dormant restart mints a fresh runtime
+/// and `session_projection_active_for_card_tx` inherits from an ACTIVE row only.
+/// Under the old "has this card ever had a row" predicate every later trigger
+/// therefore read `true` and sent the summary alone — measured on this exact
+/// fixture, press 2 delivered `[0 bootstraps, 1 summary]` and press 3 the same,
+/// forever, on a card the user cannot delete. Binding the predicate to the
+/// **current active runtime** is what heals it: the surviving row names the
+/// `failed` runtime, so it does not answer for the restarted one.
+///
+/// Both directions are asserted, because either alone is satisfiable by a
+/// broken predicate: press 2 must deliver the bootstrap (a constant-`true`
+/// predicate never does), and press 3 must not (a constant-`false` one always
+/// does).
+///
+/// **Two fixture devices, both named rather than implied.**
+/// `fail_next_thread_start_for_test` is armed only after the launchpad has been
+/// materialized through its own endpoint, so the one armed failure is spent by
+/// the conversation mint and not by the launchpad's harness start. The
+/// `BEFORE DELETE` trigger is what makes `delete_card` fail; it is dropped
+/// immediately afterwards, because its job is to stage this one compensation
+/// failure and nothing later in the case should run against a database that
+/// refuses to delete cards.
+///
+/// The premises below are asserted rather than assumed: without them a green run
+/// could mean the mint never failed, the card was deleted after all, the session
+/// is still active, or there was no stranded evidence row to be fooled by — none
+/// of which exercise the hazard.
+#[tokio::test]
+async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger() {
+    let b = boot().await;
+    let track_id = b.user_track("stranded").await;
+    b.edit_report(&track_id, "something happened").await;
+
+    // The launchpad first, through its own endpoint, and **twice**. Every
+    // `ensure` submits a `planner-harness-start` and the fake mints a thread for
+    // it, so an armed failure would be spent there instead of on the
+    // conversation mint. The first call runs under the `bootstrap` idempotency
+    // key and the second under `reuse` — a *different* key, so it is a second
+    // real start, not a replay. Only from the third `ensure` on (the one
+    // `POST /api/today/summary` performs itself) does the key repeat and the
+    // operation replay without touching the app-server. Measured: with a single
+    // pre-`ensure` the armed failure landed on the launchpad's `reuse` start and
+    // the endpoint answered `launchpad exists but harness start failed`, having
+    // never reached the conversation at all.
+    let mut launchpad = Value::Null;
+    for _ in 0..2 {
+        let (status, body) = b
+            .request("POST", "/api/today/launchpad/ensure", None, None)
+            .await;
+        assert!(
+            status.is_success(),
+            "the launchpad must be materialized before the failure is armed: \
+             status={status} body={body}"
+        );
+        launchpad = body;
+    }
+    let launchpad_track = launchpad["track_id"].as_str().unwrap().to_string();
+    let card_id =
+        calm_server::routes::today_summary::today_summary_card_id_for_test(&launchpad_track);
+
+    sqlx::query(
+        "CREATE TRIGGER fixture_block_assistant_card_delete \
+           BEFORE DELETE ON cards WHEN OLD.role = 'assistant' \
+           BEGIN SELECT RAISE(ABORT, 'fixture: delete_card must fail'); END",
+    )
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+
+    let (status, failed) = b.summary(None).await;
+    assert!(
+        status.is_server_error(),
+        "a mint whose thread/start failed must not answer 2xx: status={status} \
+         body={failed}"
+    );
+    sqlx::query("DROP TRIGGER fixture_block_assistant_card_delete")
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    // Premise 1 — compensation really did fail, so the operation is stuck.
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
+               AND phase = 'stuck'"
+        )
+        .await,
+        1,
+        "premise: `delete_card` was blocked, so `plan_compensation` marks the \
+         operation stuck and never re-drives it"
+    );
+    // Premise 2 — and left the card behind.
+    assert_eq!(
+        b.scalar(&format!(
+            "SELECT COUNT(*) FROM cards WHERE id = '{card_id}'"
+        ))
+        .await,
+        1,
+        "premise: the card the retry re-derives survived the failed compensation"
+    );
+    // Premise 3 — with no active runtime on it.
+    assert_eq!(
+        b.scalar(&format!(
+            "SELECT COUNT(*) FROM worker_sessions WHERE card_id = '{card_id}' \
+               AND state IN ('starting','running','idle','turn_pending')"
+        ))
+        .await,
+        0,
+        "premise: the compensation marked the runtime failed, so the card is \
+         dormant — this is what makes the surviving evidence row point at a \
+         runtime nothing will ever drain"
+    );
+    // Premise 4 — and the stranded evidence row is there. This is the trap: it
+    // is what the old predicate read as "already sent, decline".
+    assert_eq!(
+        b.enqueued_char_counts(&card_id).await.len(),
+        1,
+        "premise: the mint's transaction committed the bootstrap's enqueued row \
+         before `thread/start` failed, and `events` is append-only"
+    );
+
+    // Press 2 — the self-heal.
+    let (status, second) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={second}");
+    assert_eq!(
+        second["card_id"],
+        json!(card_id),
+        "the recovery must land on the derived card, not mint a second one"
+    );
+    assert_eq!(
+        b.await_reached_appserver(&card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
+            .await,
+        1,
+        "the standing instruction must actually reach the agent — the first \
+         attempt started no thread at all, so every occurrence here belongs to \
+         the restarted session"
+    );
+    assert_eq!(
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
+            .await,
+        vec![1, 1],
+        "the trigger after a stranded bootstrap must deliver BOTH the bootstrap \
+         and the summary onto the restarted session. The old predicate delivered \
+         the summary alone, and `delivered` reads the card's NEWEST session queue \
+         — so the copy stranded on the `failed` session is correctly invisible \
+         here rather than being counted as reachable"
+    );
+
+    // Press 3 — and it does not keep re-sending.
+    let (status, third) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={third}");
+    assert_eq!(
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
+            .await,
+        vec![1, 2],
+        "the runtime has now been spoken to, so a third press sends the summary \
+         only: re-sending on every trigger is what a constant-false predicate does"
+    );
+    assert_eq!(
+        b.enqueued_char_counts(&card_id).await.len(),
+        4,
+        "…and the permanent record holds the stranded row plus the three \
+         messages the two live presses sent"
+    );
+    assert_eq!(
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
+        1,
+        "healing the conversation must not mint a second one"
     );
 }
 
@@ -1726,7 +1920,7 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
 /// The per-card first-message claim, which the recovery send must hold.
 ///
 /// **This is a race this handler owns.** The bootstrap arm is a read
-/// (`user_message_already_enqueued`) followed by a send, and nothing else
+/// (`user_message_enqueued_on_active_runtime`) followed by a send, and nothing else
 /// serializes it: two concurrent triggers against a card with an empty
 /// transcript both read "nothing enqueued" and both send, and the agent gets
 /// the same standing instruction twice. Measured — the case below is that
