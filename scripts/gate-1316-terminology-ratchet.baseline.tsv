@@ -11,7 +11,7 @@ wave	fe	28
 wave	docs	12
 wave	e2e	0
 spec	crates	502
-spec	fe	55
+spec	fe	57
 spec	docs	6
 spec	e2e	1
 runtime_id	crates	1645
