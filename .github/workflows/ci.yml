@@ -412,7 +412,20 @@ jobs:
           check_probe() {
             local feature="$1" want="$2"
             local out rc
-            out="$(cargo check -p calm-truth --features "$feature" 2>&1)" && rc=0 || rc=$?
+            # `CARGO_TERM_COLOR=never` is load-bearing, not cosmetic. This
+            # workflow sets `CARGO_TERM_COLOR: always` at the env level, which
+            # forces colour even when cargo's output is captured rather than
+            # attached to a terminal. rustc then writes the diagnostic as
+            # `<esc>[1m<esc>[91merror[E0061]<esc>[0m<esc>[1m: this function ...`,
+            # so the escape run lands exactly between `]` and `:` and the
+            # substring test below stops matching at that boundary — while
+            # `error[E0061]` on its own still matches, which is why a laxer
+            # pattern would have hidden this. Two of the four probes failed CI
+            # this way on the first push, each reporting "the probe is broken,
+            # not the invariant" while rustc had in fact emitted precisely the
+            # wanted diagnostic. Capturing output locally disables colour by
+            # default, so the local run cannot reproduce it: pin it here.
+            out="$(CARGO_TERM_COLOR=never cargo check -p calm-truth --features "$feature" 2>&1)" && rc=0 || rc=$?
             if [ "$rc" -eq 0 ]; then
               printf '%s\n' "$out"
               echo "::error::$feature compiled successfully — that bypass of the append seam is legal Rust again"
