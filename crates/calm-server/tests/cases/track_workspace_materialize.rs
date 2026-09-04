@@ -121,6 +121,11 @@ fn theme() -> Value {
     json!({"fg": [255, 255, 255], "bg": [0, 0, 0]})
 }
 
+/// The card a hypothetical first worker holds its lease for. Any valid path
+/// segment does — the lease target is derived from `<track_id>/<card_id>`, and
+/// no card row is read.
+const CARD_ID: &str = "card0000000000000000000000000001";
+
 fn head_resolves(path: &std::path::Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -409,6 +414,93 @@ async fn materialize_failure_fails_the_create() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
+}
+
+/// #1318 item 4 — the escape construction that shows `.git` + `HEAD` is not a
+/// materialization bar: a workspace that passes both checks can still be
+/// unusable by the first worker.
+///
+/// Construction: rename the materialized workspace's only branch to `neige`
+/// (`git branch -m neige`). `.git` is still a directory and `HEAD` still
+/// resolves, so **every** assertion the entry-point cases in this file make
+/// about a materialized workspace keeps passing. But `refs/heads/neige` now
+/// exists as a *file*, so the first worker's
+/// `git worktree add -b neige/<track_id>/<card_id>` cannot create
+/// `refs/heads/neige/…` under it, and the track is #1147 all over again: every
+/// codex task on it dies with nothing but `spawn-failed` visible.
+///
+/// This case pins both halves — the two old checks passing AND the production
+/// lease path failing — so that the "real provisioning" assertions the other
+/// cases now carry cannot be weakened back to `.git` + `HEAD` without a red
+/// test naming the exact gap. It is deliberately NOT a claim that production
+/// should tolerate this state: nothing in the server renames that branch, the
+/// construction is adversarial, and the fix belongs in what the tests assert.
+#[tokio::test]
+async fn a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker()
+{
+    let b = boot().await;
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/tracks",
+        json!({"area_id": b.area_id, "title": "escape", "theme": theme()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track: Value = serde_json::from_str(&body).unwrap();
+    let track_id = track["id"].as_str().unwrap().to_string();
+    let (_, path, _) = workspace_row(&b.repo, &track_id).await;
+    let path = PathBuf::from(path);
+
+    // The construction.
+    let renamed = Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args(["branch", "-m", "neige"])
+        .output()
+        .unwrap();
+    assert!(
+        renamed.status.success(),
+        "git branch -m neige: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+
+    // Half 1: the old bar sees nothing.
+    assert!(
+        path.join(".git").is_dir(),
+        "the construction was supposed to leave the repository in place"
+    );
+    assert!(
+        head_resolves(&path),
+        "the construction was supposed to leave HEAD resolvable — if this fails \
+         the case no longer demonstrates that `.git` + HEAD is a weak bar"
+    );
+
+    // Half 2: the production first-worker path (prepare lease target → commit →
+    // provision worktree, the `operation::codex_adapter` order) fails.
+    let err = calm_server::test_seams::provision_workspace_lease_for_test(
+        b.repo.pool(),
+        &track_id,
+        CARD_ID,
+        &b.workspace_root,
+    )
+    .await
+    .expect_err(
+        "a workspace whose only branch is `neige` must not provision a \
+         `neige/<track>/<card>` worktree — if this now succeeds, git changed \
+         its ref-namespace rules and this case's premise is stale",
+    );
+    let msg = err.to_string();
+    // Matched on the ref names, not on git's prose: the wording of the conflict
+    // is localized (`LANG`/`LC_ALL` reach the child), the two ref paths are not.
+    assert!(
+        msg.contains("git worktree add") && msg.contains("refs/heads/neige'"),
+        "the failure must be the `refs/heads/neige` file/directory conflict, \
+         not some other error that would make this case pass vacuously: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("refs/heads/neige/{track_id}/{CARD_ID}")),
+        "the blocked ref must be this worker's slice branch: {msg}"
+    );
 }
 
 /// #1147 S2 (red-team B5) — an orphaned track heals when a worker takes its
