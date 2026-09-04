@@ -938,6 +938,24 @@ pub trait RepoOutOfDomain: RepoRead {
         if_revision: i64,
     ) -> Result<TrackRecipe>;
     async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>>;
+
+    // ---- track-create idempotency binding (#1384) -------------------
+    //
+    // Out-of-domain for the same reason the recipes above are: the row is
+    // pure request-dedup bookkeeping, emits no `Event`, and no frontend
+    // invalidation policy names it. The WRITE side is deliberately absent
+    // from this trait — there is no `track_create_idempotency_claim` taking
+    // `&self`, because a pooled write is precisely the failure this table
+    // exists to remove. The only writer is the `_tx` free function composed
+    // into the create transaction; adding a pool-writing sibling here would
+    // re-open the window on the next caller who reached for the convenient
+    // one.
+    /// Which track `(area_id, Idempotency-Key)` already minted, if any.
+    async fn track_create_idempotency_get(
+        &self,
+        area_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<crate::db::sqlite::TrackCreateBinding>>;
     async fn track_recipe_delete(&self, id: &str) -> Result<()>;
     async fn track_recipe_list(&self) -> Result<Vec<TrackRecipe>>;
 

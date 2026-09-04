@@ -560,3 +560,86 @@ async fn track_delete_leaf_tx(
     track_area_cache.remove(&TrackId::from(id));
     Ok(())
 }
+
+/// #1384 — what one `(area_id, Idempotency-Key)` pair already minted.
+///
+/// Three ids, not one. `resume_prior_attempt` needs the planner and report
+/// card ids to resubmit the harness start, and in the variant-4 shape (the
+/// daemon refused before `insert_operation` ran) there is no operation payload
+/// to read them from. A role query would be well-defined —
+/// `idx_cards_one_planner_per_track` and `idx_cards_one_report_per_track` make
+/// both single-valued — but re-deriving a value the mint already knew is a
+/// second source of truth for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackCreateBinding {
+    pub track_id: String,
+    pub planner_card_id: String,
+    pub report_card_id: String,
+}
+
+/// Claim `(area_id, idempotency_key)` for a track, **inside the transaction
+/// that minted it**.
+///
+/// Takes `&mut Transaction` rather than `&self` for the one reason this whole
+/// mechanism exists: written on a pooled connection it would commit at some
+/// point after the track row, and the interval between the two commits is
+/// exactly the window in which a retry sees a track it cannot find the binding
+/// for and mints a second one. Composed into `create_track_structure`'s closure
+/// there is no such interval — the id and the fact of who owns it are one
+/// commit.
+///
+/// A duplicate `(area_id, idempotency_key)` violates the primary key and
+/// surfaces as an error that rolls the whole create back. That is the intended
+/// answer: the route maps it fail-closed rather than letting a second track
+/// commit behind a 409.
+pub async fn track_create_idempotency_claim_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    area_id: &str,
+    idempotency_key: &str,
+    binding: &TrackCreateBinding,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO track_create_idempotency \
+         (area_id, idempotency_key, track_id, planner_card_id, report_card_id, created_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(area_id)
+    .bind(idempotency_key)
+    .bind(&binding.track_id)
+    .bind(&binding.planner_card_id)
+    .bind(&binding.report_card_id)
+    .bind(now_ms())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The read side: one primary-key hit, on a pooled connection.
+///
+/// This is the new authority for "does a track already exist for this key".
+/// The `operations` row is not, and cannot be: it is written after
+/// `adapter.validate` and so is absent for the whole class of failures that
+/// refuse there.
+pub async fn track_create_idempotency_get_pool(
+    pool: &sqlx::SqlitePool,
+    area_id: &str,
+    idempotency_key: &str,
+) -> Result<Option<TrackCreateBinding>> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT track_id, planner_card_id, report_card_id FROM track_create_idempotency \
+         WHERE area_id = ?1 AND idempotency_key = ?2",
+    )
+    .bind(area_id)
+    .bind(idempotency_key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        row.map(
+            |(track_id, planner_card_id, report_card_id)| TrackCreateBinding {
+                track_id,
+                planner_card_id,
+                report_card_id,
+            },
+        ),
+    )
+}

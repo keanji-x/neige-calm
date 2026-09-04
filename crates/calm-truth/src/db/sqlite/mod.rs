@@ -133,8 +133,9 @@ pub use task_projection::{
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use track::{
-    AttachedInheritedPath, TrackRecipeOrigin, TrackWorkspacePlan, track_create_tx, track_delete_tx,
-    track_require_leaf_tx, track_update_tx,
+    AttachedInheritedPath, TrackCreateBinding, TrackRecipeOrigin, TrackWorkspacePlan,
+    track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
+    track_delete_tx, track_require_leaf_tx, track_update_tx,
 };
 pub use track_recipe::track_recipe_get_tx;
 pub use track_tree::{
@@ -553,6 +554,9 @@ mod track_plugin_scope_migration_tests;
 
 #[cfg(test)]
 mod track_workspace_migration_tests;
+
+#[cfg(test)]
+mod track_create_idempotency_tests;
 
 #[cfg(test)]
 mod track_template_rename_migration_tests;
