@@ -1062,10 +1062,10 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -264,7 +264,7 @@ function policies(): PolicyMap {\n    * `invalidation-plan.contract.test.ts` is the only guard there is.\n    */\n   'track.report_edited': plan((event) => result([\n-    ['track-files', event.data.track_id], ['track-report', event.data.track_id], ['track-backlinks'],\n+    ['track-files', event.data.track_id], ['track-backlinks'],\n     ['today-launchpad'], ['track', event.data.track_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -262,7 +262,7 @@ function policies(): PolicyMap {\n    * `invalidation-plan.contract.test.ts` is the only guard there is.\n    */\n   'track.report_edited': plan((event) => result([\n-    ['track-files', event.data.track_id], ['track-report'], ['track-backlinks'],\n+    ['track-files', event.data.track_id], ['track-backlinks'],\n     ['today-launchpad'], ['track', event.data.track_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
-      "invalidation plan contract pins track-report invalidation to exactly the derived kinds plus report edits"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts"
