@@ -28,7 +28,8 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },
-    { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
+    { path: '/next/settings', anchor: page.getByRole('spinbutton', { name: 'Task concurrency' }) },
+    { path: '/next/settings/network', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
   ];
 
   for (const route of routes) {

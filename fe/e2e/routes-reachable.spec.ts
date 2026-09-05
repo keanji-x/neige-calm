@@ -41,7 +41,8 @@ test('the application routes are reachable through the real kernel', async ({ pa
        no `data-nc-page-title` — deliberately, the greeting is its one title. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
     { path: `/next/track/${track.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: track.title }) },
-    { path: '/next/settings', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
+    { path: '/next/settings', anchor: page.getByRole('spinbutton', { name: 'Task concurrency' }) },
+    { path: '/next/settings/network', anchor: page.getByRole('textbox', { name: 'HTTP proxy' }) },
     { path: '/next/settings/appearance', anchor: page.getByRole('combobox', { name: 'Theme' }) },
   ];
 

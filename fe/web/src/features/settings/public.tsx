@@ -39,6 +39,7 @@
 
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
+import { NumberInput as AstryxNumberInput } from '@astryxdesign/core/NumberInput';
 import { Selector as AstryxSelector } from '@astryxdesign/core/Selector';
 import { SideNav as AstryxSideNav, SideNavItem as AstryxSideNavItem } from '@astryxdesign/core/SideNav';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
@@ -46,7 +47,10 @@ import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
-import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
+import {
+  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, TASK_BUDGET_DEFAULT_KEY, taskBudgetDefaultFrom,
+  type SettingsPatch,
+} from '../../../../core/domain/settings.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -56,24 +60,25 @@ import styles from './settings.module.css';
  * The groups the nav column lists, in the order it lists them.
  *
  * Ordered by how often a reader comes for them, with `about` last because it is
- * the one group you read rather than change. `network` is first and is what
+ * the one group you read rather than change. `general` is first and is what
  * `/settings` resolves to, so the bare route lands on a real group rather than
  * on a container page.
  */
-export type SettingsSection = 'network' | 'appearance' | 'plugins' | 'about';
+export type SettingsSection = 'general' | 'network' | 'appearance' | 'plugins' | 'about';
 
 /*
  * Icon names are astryx's built-in semantic set, which has 26 entries and none
- * of them called "network" or "appearance". Rather than draw four one-off
+ * of them called "network" or "appearance". Rather than draw five one-off
  * glyphs, each section takes the nearest available sense:
  *
+ *   menu          — the short list of workspace-wide General defaults
  *   externalLink — traffic leaving this machine, which is all Network is about
  *   viewColumns  — how the app is laid out and painted
- *   copy         — a template is the thing that gets copied into a new track
  *   wrench       — the workspace's tooling
  *   info         — read-only facts about the build
  */
 const SETTINGS_SECTIONS = Object.freeze([
+  Object.freeze({ id: 'general', label: 'General', icon: 'menu' }),
   Object.freeze({ id: 'network', label: 'Network', icon: 'externalLink' }),
   Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
   Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),
@@ -231,6 +236,149 @@ const SAVED_NOTICE_MS = 4000;
  * there would be a second trailing edge as soon as either moved.
  */
 export const CONTROL_WIDTH = 260;
+
+// ---------------------------------------------------------------------------
+// General
+// ---------------------------------------------------------------------------
+
+export type GeneralPaneProps = Readonly<{
+  /** `undefined` means "still loading" — never render a guessed control. */
+  settings: Readonly<Record<string, string>> | undefined;
+  loadError: string | null;
+  onSave: (patch: SettingsPatch) => void | Promise<void>;
+  onRetryLoad: () => void;
+  savedNoticeMs?: number;
+}>;
+
+type GeneralRowStatus =
+  | Readonly<{ phase: 'idle' }>
+  | Readonly<{ phase: 'saving'; value: number }>
+  | Readonly<{ phase: 'saved'; at: number; value: number }>
+  | Readonly<{ phase: 'failed'; message: string; value: number }>;
+
+const GENERAL_IDLE: GeneralRowStatus = Object.freeze({ phase: 'idle' });
+
+export function GeneralPane({
+  settings, loadError, onSave, onRetryLoad, savedNoticeMs = SAVED_NOTICE_MS,
+}: GeneralPaneProps) {
+  const loaded = settings !== undefined;
+  const incoming = taskBudgetDefaultFrom(settings ?? {});
+  const [seed, setSeed] = useState<number | null>(null);
+  const [draft, setDraft] = useState(incoming);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const sent = useRef<number | null>(null);
+  const sequence = useRef(0);
+  const [status, setStatus] = useState<GeneralRowStatus>(GENERAL_IDLE);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  if (loaded && seed !== incoming) {
+    const previous = seed;
+    setSeed(incoming);
+    if (statusRef.current.phase !== 'saving') sent.current = null;
+    setDraft((current) => (previous === null || current === previous ? incoming : current));
+  }
+
+  const base = seed ?? incoming;
+  const commit = (value: number) => {
+    if (!Number.isSafeInteger(value) || value < 1) return;
+    if (value === (sent.current ?? base)) return;
+    sent.current = value;
+    const ticket = (sequence.current += 1);
+    const settle = (next: GeneralRowStatus) => {
+      if (sequence.current !== ticket) return;
+      if (next.phase === 'failed') sent.current = null;
+      setStatus(next);
+    };
+    setStatus({ phase: 'saving', value });
+    void Promise.resolve(onSave({ [TASK_BUDGET_DEFAULT_KEY]: String(value) }))
+      .then(() => settle({ phase: 'saved', at: Date.now(), value }))
+      .catch((error: unknown) => settle({
+        phase: 'failed',
+        message: error instanceof Error ? error.message : 'Save failed.',
+        value,
+      }));
+  };
+
+  const pending = useRef({ draft, base, onSave });
+  pending.current = { draft, base, onSave };
+  useEffect(() => () => {
+    const { draft: last, base: seeded, onSave: save } = pending.current;
+    if (last === (sent.current ?? seeded)) return;
+    const verdict = statusRef.current;
+    if (verdict.phase === 'failed' && verdict.value === last) return;
+    void Promise.resolve(save({ [TASK_BUDGET_DEFAULT_KEY]: String(last) })).catch(() => {
+      // The next visit re-reads the authoritative value.
+    });
+  }, []);
+
+  const savedAt = status.phase === 'saved' ? status.at : null;
+  useEffect(() => {
+    if (savedAt === null) return;
+    const id = setTimeout(() => setStatus((current) => (
+      current.phase === 'saved' && current.at === savedAt ? GENERAL_IDLE : current
+    )), savedNoticeMs);
+    return () => clearTimeout(id);
+  }, [savedAt, savedNoticeMs]);
+
+  const inputStatus = status.phase !== 'idle' && status.value === draft
+    ? status.phase === 'failed'
+      ? { type: 'error' as const, message: status.message }
+      : status.phase === 'saved'
+        ? { type: 'success' as const }
+        : undefined
+    : undefined;
+
+  return (
+    <SettingsPane
+      title="General"
+      lede="Workspace-wide defaults for task scheduling. Changes apply to work that has not started yet."
+    >
+      {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
+      {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
+      {loaded && (
+        <SettingsList>
+          <SettingRow
+            title="Task concurrency"
+            description="Per-track default; server and track-specific limits still apply."
+            control={(
+              <>
+                <AstryxVisuallyHidden role="status">
+                  {inputStatus?.type === 'success' ? 'Saved.' : ''}
+                </AstryxVisuallyHidden>
+                <AstryxNumberInput
+                  label="Task concurrency"
+                  isLabelHidden
+                  value={draft}
+                  min={1}
+                  max={Number.MAX_SAFE_INTEGER}
+                  step={1}
+                  isIntegerOnly
+                  units="tasks"
+                  status={inputStatus}
+                  onChange={(value) => {
+                    draftRef.current = value;
+                    setDraft(value);
+                    setStatus((current) => (
+                      current.phase === 'idle' || current.phase === 'saving' || current.value === value
+                        ? current
+                        : GENERAL_IDLE
+                    ));
+                  }}
+                  onBlur={() => commit(draftRef.current)}
+                  onEnter={() => commit(draftRef.current)}
+                  width={CONTROL_WIDTH}
+                  data-nc-state={status.phase === 'saving' ? 'busy' : undefined}
+                />
+              </>
+            )}
+          />
+        </SettingsList>
+      )}
+    </SettingsPane>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Network

@@ -741,6 +741,12 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: renderNothing,
   });
 
+  const networkRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/network',
+    component: renderNothing,
+  });
+
   const pluginsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/plugins',
@@ -761,7 +767,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
 
   return rootRoute.addChildren([
     indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
-    pluginsRoute, appearanceRoute, aboutRoute,
+    networkRoute, pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
 

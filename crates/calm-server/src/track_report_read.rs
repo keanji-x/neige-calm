@@ -44,6 +44,12 @@ pub async fn load_report_read_snapshot(
     report_card_id: &str,
     task_budget_default: i64,
 ) -> Result<ReportReadSnapshot, CalmError> {
+    // Diagnostics must explain the same effective budget the scheduler uses,
+    // including a Settings change made after server boot.
+    let task_budget_default = crate::routes::settings::load_settings(repo)
+        .await?
+        .task_budget_default
+        .unwrap_or(task_budget_default);
     let (card, bytes) = repo
         .card_get_with_body_crdt(report_card_id)
         .await?

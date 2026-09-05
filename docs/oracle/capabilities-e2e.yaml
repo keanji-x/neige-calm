@@ -4899,7 +4899,7 @@
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-511,651-681;
-    fe/web/src/app/router/public.tsx:1905-1962
+    fe/web/src/app/router/public.tsx:1911-1968
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:401-443
   owner_slice: features/track/create
   intentional_omission: false
@@ -4920,7 +4920,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1942-1951
+  source: fe/web/src/app/router/public.tsx:1948-1957
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:520
   owner_slice: features/track/create
   intentional_omission: false
@@ -5025,7 +5025,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:1985-1992
+  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:1991-1998
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:583
   owner_slice: features/track/create
   intentional_omission: false
@@ -5059,7 +5059,7 @@
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-532;
-    fe/web/src/app/router/public.tsx:1905-1910,1959-1962
+    fe/web/src/app/router/public.tsx:1911-1916,1965-1968
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:209;
     fe/web/src/app/router/new-track-route.test.tsx:374
   owner_slice: features/track/create
@@ -5171,7 +5171,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:35,63-74,159-170,241-266;
-    fe/web/src/app/router/public.tsx:1330-1340,1984,2232-2256;
+    fe/web/src/app/router/public.tsx:1336-1346,1990,2238-2262;
     fe/web/src/features/chat/thread/public.tsx:1798-1800,1890,1951-1970
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

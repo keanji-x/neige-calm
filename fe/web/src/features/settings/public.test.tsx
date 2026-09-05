@@ -3,8 +3,12 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
-import { AppearancePane, NetworkPane, type NetworkPaneProps } from './public.tsx';
+import {
+  HTTPS_PROXY_KEY, HTTP_PROXY_KEY, TASK_BUDGET_DEFAULT_KEY,
+} from '../../../../core/domain/settings.ts';
+import {
+  AppearancePane, GeneralPane, NetworkPane, type GeneralPaneProps, type NetworkPaneProps,
+} from './public.tsx';
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -28,6 +32,47 @@ function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
     ...overrides,
   };
 }
+
+function generalProps(overrides: Partial<GeneralPaneProps> = {}): GeneralPaneProps {
+  return {
+    settings: { [TASK_BUDGET_DEFAULT_KEY]: '1' },
+    loadError: null,
+    onSave: vi.fn(),
+    onRetryLoad: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe('Settings general form', () => {
+  it('shows the effective task concurrency supplied by the kernel', () => {
+    render(<GeneralPane {...generalProps({
+      settings: { [TASK_BUDGET_DEFAULT_KEY]: '4' },
+    })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('4');
+  });
+
+  it('commits one positive integer when the field loses focus', async () => {
+    const onSave = vi.fn();
+    render(<GeneralPane {...generalProps({ onSave })} />);
+    const field = screen.getByLabelText('Task concurrency');
+    await userEvent.clear(field);
+    await userEvent.type(field, '3');
+    expect(onSave).not.toHaveBeenCalled();
+    await userEvent.tab();
+    expect(onSave).toHaveBeenCalledWith({ [TASK_BUDGET_DEFAULT_KEY]: '3' });
+  });
+
+  it('does not commit zero', async () => {
+    const onSave = vi.fn();
+    render(<GeneralPane {...generalProps({ onSave })} />);
+    const field = screen.getByLabelText('Task concurrency');
+    await userEvent.clear(field);
+    await userEvent.type(field, '0');
+    await userEvent.tab();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('1');
+  });
+});
 
 describe('Settings network form', () => {
   it('seeds the proxy fields from the settings bag', () => {

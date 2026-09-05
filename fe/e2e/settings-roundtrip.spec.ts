@@ -2,6 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 const createdAreaIds: string[] = [];
 let originalHttpProxy: string | null = null;
+let originalTaskBudgetDefault = '1';
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -10,26 +11,44 @@ function captureBrowserErrors(page: Page): string[] {
   return errors;
 }
 
-async function readHttpProxy(request: APIRequestContext): Promise<string | null> {
+async function readSettings(request: APIRequestContext): Promise<Record<string, string>> {
   const response = await request.get('/api/settings');
   const body = await response.json() as { settings: Record<string, string> };
-  return body.settings.http_proxy ?? null;
+  return body.settings;
 }
 
 test.beforeEach(async ({ request }) => {
   createdAreaIds.length = 0;
-  originalHttpProxy = await readHttpProxy(request);
+  const settings = await readSettings(request);
+  originalHttpProxy = settings.http_proxy ?? null;
+  originalTaskBudgetDefault = settings.task_budget_default ?? '1';
 });
 test.afterEach(async ({ request }) => {
-  await request.put('/api/settings', { data: { settings: { http_proxy: originalHttpProxy } } });
+  await request.put('/api/settings', { data: { settings: {
+    http_proxy: originalHttpProxy,
+    task_budget_default: originalTaskBudgetDefault,
+  } } });
   for (const id of createdAreaIds) await request.delete(`/api/areas/${id}`);
   createdAreaIds.length = 0;
 });
 
-test('persists network and appearance settings across reloads', async ({ page, request }) => {
+test('persists general, network and appearance settings across reloads', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
-  const proxy = `http://fe-e2e-${Date.now()}.invalid:3128`;
+  const concurrency = originalTaskBudgetDefault === '2' ? '3' : '2';
   await page.goto('/next/settings');
+  await page.getByRole('spinbutton', { name: 'Task concurrency' }).fill(concurrency);
+  await page.getByRole('spinbutton', { name: 'Task concurrency' }).blur();
+  const concurrencyRow = page.getByRole('listitem').filter({
+    has: page.getByRole('spinbutton', { name: 'Task concurrency' }),
+  });
+  await expect(concurrencyRow.getByRole('status')).toContainText('Saved.');
+  expect((await readSettings(request)).task_budget_default).toBe(concurrency);
+
+  await page.reload();
+  await expect(page.getByRole('spinbutton', { name: 'Task concurrency' })).toHaveValue(concurrency);
+
+  const proxy = `http://fe-e2e-${Date.now()}.invalid:3128`;
+  await page.goto('/next/settings/network');
   await page.getByLabel('HTTP proxy').fill(proxy);
   // There is no Save button: leaving the field is the commit. The confirmation
   // is that row's own live region — **scoped to the row**, because every proxy
@@ -39,7 +58,7 @@ test('persists network and appearance settings across reloads', async ({ page, r
   await page.getByLabel('HTTP proxy').blur();
   const httpRow = page.getByRole('listitem').filter({ has: page.getByLabel('HTTP proxy') });
   await expect(httpRow.getByRole('status')).toContainText('Saved.');
-  expect(await readHttpProxy(request)).toBe(proxy);
+  expect((await readSettings(request)).http_proxy).toBe(proxy);
 
   await page.reload();
   await expect(page.getByLabel('HTTP proxy')).toHaveValue(proxy);

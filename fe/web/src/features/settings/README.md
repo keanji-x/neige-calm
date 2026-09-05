@@ -9,9 +9,9 @@ props; `app/shell/settings-overlay` owns fetching and mutating.
 **One nav entry per group. One pane per entry. One row shape.**
 
 A settings group that wants a heading is a nav entry — not a block stacked on a
-pane. That is why Network, Appearance and About are three entries and not three
-headed sections of one "General" page: a pane holding three headed groups is a
-pile, and the reader has to scroll to discover what is in it.
+pane. General therefore holds workspace-wide defaults, while Network,
+Appearance and About remain their own entries instead of becoming headed blocks
+inside it.
 
 A row is:
 
@@ -47,6 +47,7 @@ is two groups, and the nav column is where the second one goes.
 | Kind of setting | Control |
 | --- | --- |
 | free text | `TextInput`, `isLabelHidden` (the row's title is the label) — **commits on blur / Enter** |
+| positive integer | `NumberInput`, `isLabelHidden` — **commits on blur / Enter** |
 | one of several | `Selector` — a dropdown that states the current value |
 | on / off | `Switch` |
 | opens a screen | nothing: `onOpen`, and the row ends in a chevron |
@@ -61,15 +62,16 @@ cannot grow — a fourth theme would have to change the control.
 Astryx's built-in registry only. That set has 26 semantic names and none of them
 is "network" or "appearance", so each nav entry takes the nearest available
 sense and says so where it is chosen (`externalLink` for traffic leaving the
-machine, `viewColumns` for how the app is painted, `copy` for the thing a new
-track is copied from, `wrench` for tooling, `info` for read-only facts). The app
-deliberately does not draw one-off glyphs for this.
+machine, `menu` for General's short list, `viewColumns` for how the app is
+painted, `wrench` for tooling, `info` for read-only facts). The app deliberately
+does not draw one-off glyphs for this.
 
 ## Sections and routes
 
 | Route | Section | Component |
 | --- | --- | --- |
-| `/settings` | Network | `NetworkPane` (`public.tsx`) |
+| `/settings` | General | `GeneralPane` (`public.tsx`) |
+| `/settings/network` | Network | `NetworkPane` (`public.tsx`) |
 | `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |

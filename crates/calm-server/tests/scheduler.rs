@@ -1490,6 +1490,34 @@ async fn budget_holds_second_task_until_first_done() {
 }
 
 #[tokio::test]
+async fn settings_budget_default_changed_after_construction_controls_the_next_pass() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "a", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.track_id, "b", TaskKind::Codex, &[])).await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 1);
+
+    // This lands after the scheduler was built: the setting is live state,
+    // not a boot-only copy of the deployment environment.
+    boot.repo
+        .settings_upsert("task_budget_default", "2")
+        .await
+        .unwrap();
+    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 2);
+
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Running);
+    assert_eq!(task_row(&boot, "b").await.status, TaskStatus::Running);
+}
+
+#[tokio::test]
 async fn draft_track_is_not_scheduled() {
     let boot = boot().await;
     // Track stays Draft (the create default) — §5.2 lifecycle gate holds.
@@ -6895,6 +6923,63 @@ async fn claim_aborts_when_budget_shrunk_pre_claim() {
         task_row(&boot, "held").await.status,
         TaskStatus::Pending,
         "in-tx budget revalidation must abort the claim"
+    );
+    assert!(event_rows(&boot, "task.dispatched").await.is_empty());
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+}
+
+#[tokio::test]
+async fn claim_aborts_when_settings_budget_is_lowered_pre_claim() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut occupying = plan_task(&boot.track_id, "occupying", TaskKind::Codex, &[]);
+    occupying.status = TaskStatus::Running;
+    seed_task(&boot, occupying).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
+    )
+    .await;
+    boot.repo
+        .settings_upsert("task_budget_default", "2")
+        .await
+        .expect("start with one free settings-budget slot");
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = Arc::clone(&semaphore)
+        .acquire_owned()
+        .await
+        .expect("test holds the only permit");
+    let (_runtime, scheduler) = build_scheduler_with_semaphore(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+        semaphore,
+    );
+    let handle = tokio::spawn({
+        let scheduler = Arc::clone(&scheduler);
+        let track_id = boot.track_id.clone();
+        async move { scheduler.schedule_track(track_id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // The pass saw budget 2 before waiting for the global permit. Lowering the
+    // live setting to 1 fills the only slot with `occupying`; the claim
+    // transaction must re-read it and roll the speculative flip back.
+    boot.repo
+        .settings_upsert("task_budget_default", "1")
+        .await
+        .expect("lower live settings budget");
+
+    drop(permit);
+    handle.await.expect("schedule_track task");
+
+    assert_eq!(
+        task_row(&boot, "held").await.status,
+        TaskStatus::Pending,
+        "in-tx settings-budget revalidation must abort the claim"
     );
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
