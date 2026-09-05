@@ -1,12 +1,4 @@
-# Plan
-
-## Activate the plan
-
-Pre-set issue-development plan. Treat the `task` blocks as the authoritative plan.
-Activate by replacing those task blocks and setting `ready: true` — use the read's block
-ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
-
-## Goal and inputs
+# Goal and inputs
 
 - Template input: the track's bound `template_input` JSON is the task's source of truth,
   not the track title.
@@ -16,7 +8,7 @@ ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks a
 - notes: optional advisory context from the requester; it never overrides the issue or
   the gates.
 
-### Check the repository
+## Check the repository
 
 Repo cross-check (inspect-issue acceptance): before any write action, compare input.repo
 against `git remote get-url origin` run in the track cwd (owner/name after stripping the
@@ -24,11 +16,17 @@ host and a trailing .git). On mismatch do NOT proceed: move working->blocked via
 calm.ratify.request with `reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"` (that exact prefix, then both observed values), and wait for
 the human decision.
 
-## Review convergence
+# Plan
+
+Pre-set issue-development plan. Treat the `task` blocks as the authoritative plan.
+Activate by replacing those task blocks and setting `ready: true` — use the read's block
+ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
+
+# Review convergence
 
 For this track, drive dual-review convergence for each review subject.
 
-### Record both verdicts
+## Record both verdicts
 
 - After BOTH channels for a phase complete, call calm.review.round with
   subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged,
@@ -41,7 +39,7 @@ For this track, drive dual-review convergence for each review subject.
 
 Record root_cause each round; repeated facets should drive a class fix.
 
-### Review rounds and fixes
+## Review rounds and fixes
 
 - For each subject, set n to the last observed review.round n for that same subject plus 1.
   cap is the fixed policy constant 8 for a subject's first review window; after a
@@ -50,7 +48,7 @@ Record root_cause each round; repeated facets should drive a class fix.
 - Always re-review. Every fix re-dispatches BOTH channels before the next
   calm.review.round.
 
-### When the review limit is reached
+## When the review limit is reached
 
 If n == cap and the round is non-approving, do not merge.
 
@@ -65,20 +63,20 @@ If n == cap and the round is non-approving, do not merge.
   authorize this for each subject that was already cap-exhausted when it was issued.
 - If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
 
-## Verification gates
+# Verification gates
 
 gates: author each agent task's `gate` from the TARGET repo's own toolchain — detect it
 (Cargo / npm / pytest / go / Make, etc.) and run that ecosystem's formatter, linter, and
 tests where present; do not hardcode `cargo test`.
 
-## Merge and approval
+# Merge and approval
 
-### Merge fence F4
+## Merge fence F4
 
 Merge fence F4: call gh.pr.merge for a subject ONLY when that subject's latest
 review.round has converged:true. Pass expected_head_sha equal to that round's head_sha.
 
-### Merge policy
+## Merge policy
 
 - merge_policy: `auto-merge` allows gh.pr.merge as soon as merge fence F4 is satisfied.
 - `hold-for-ratify` — also the semantics whenever merge_policy is absent — additionally

@@ -1,10 +1,8 @@
-# Plan
-
-## Purpose
+# Purpose
 
 Short inspect → implement → verify loop.
 
-## Activate the plan
+# Plan
 
 Treat these task blocks as the authoritative pre-set plan. Activate by replacing those
 task blocks, authoring a real `gate` from the target repo toolchain (formatter, linter,
