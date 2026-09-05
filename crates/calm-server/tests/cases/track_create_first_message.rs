@@ -389,6 +389,26 @@ impl Boot {
         )
     }
 
+    /// `DELETE /api/tracks/{id}` — the production route, not a `DELETE FROM
+    /// tracks`. The arm under test is reached through the binding row that
+    /// outlives the track, and only the real handler proves the row does
+    /// outlive it: a hand-written row delete would be this test asserting its
+    /// own premise.
+    async fn delete_track(&self, track_id: &str) -> StatusCode {
+        self.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/tracks/{track_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
     async fn workspace_row(&self, track_id: &str) -> (String, String) {
         sqlx::query_as("SELECT workspace_kind, workspace_path FROM tracks WHERE id=?1")
             .bind(track_id)
@@ -2822,6 +2842,85 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
          recovery produced a WORKING track"
     );
     b.shutdown_harnesses().await;
+}
+
+/// #1299 F2 — the `Resume` arm's fail-closed answer when the track is gone.
+///
+/// `resume_prior_attempt` reads `track_get(prior.track_id)` and turns `None`
+/// into a 500. Both the code and the OpenAPI description call that branch
+/// fail-closed, and until this case nothing drove it: the module header's
+/// "Pinned by the branch" identified the code, which is not an assertion about
+/// behaviour. #1299's review wrote the gap up rather than closing it, so it is
+/// closed here.
+///
+/// **Why the state is reachable.** The binding row is deliberately not
+/// `ON DELETE CASCADE` (see the comment on the branch), so deleting a track
+/// leaves its `Idempotency-Key` pointing at an id that no longer resolves. A
+/// user who creates a track, deletes it, and whose client then retries the
+/// original create — a retry the client believes is safe, because the key is
+/// what makes it safe — lands exactly here.
+///
+/// **Why 500 and not 201.** A 201 would have to mint a *replacement* track
+/// under a key that already names a different one, i.e. answer byte-identical
+/// requests with two different tracks, which is the one thing the key exists to
+/// prevent. A 404 would be worse than a 500 in a second way: it reads as "your
+/// track is gone", when what happened is that the server refuses to reuse a
+/// spent key, and the actionable instruction is to retry under a new one.
+///
+/// The premises are asserted rather than assumed. Without them a green run
+/// could mean "the delete never happened" or "the binding row went with it",
+/// neither of which exercises the branch — the request would simply be a fresh
+/// create that happens to fail.
+///
+/// Mutation that must redden it: replace the `ok_or_else` on that `track_get`
+/// with a path that mints, or make the branch answer anything but 5xx.
+#[tokio::test]
+async fn a_replay_whose_track_was_deleted_fails_closed() {
+    let b = boot().await;
+    let key = "idem-deleted-track";
+    let message = "the sentence whose track went away";
+    let (created, body) = b.create_track(Some(key), Some(message)).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(b.binding_count().await, 1, "premise: the key is bound");
+    b.shutdown_harnesses().await;
+
+    let deleted = b.delete_track(&track_id).await;
+    assert!(
+        deleted.is_success(),
+        "premise: the production delete route really removed the track: status={deleted}"
+    );
+    // Premise 1 — the track is gone, so `track_get` in the arm returns `None`.
+    assert_eq!(
+        b.track_count().await,
+        0,
+        "premise: the delete committed; otherwise the replay resolves a live track"
+    );
+    // Premise 2 — and the binding row outlived it. This is what routes the
+    // replay into `Resume` at all; without it the request is an ordinary mint
+    // and the branch under test is never entered.
+    assert_eq!(
+        b.binding_count().await,
+        1,
+        "premise: the binding row has no ON DELETE CASCADE, so the key still names the dead track"
+    );
+
+    let (status, body) = b.create_track(Some(key), Some(message)).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a byte-identical replay under a key whose track was deleted must fail closed: body={body}"
+    );
+
+    // And it minted nothing on the way out: a 500 that left a replacement track
+    // behind would be the exact outcome the branch exists to refuse, reported
+    // as an error.
+    assert_eq!(
+        b.track_count().await,
+        0,
+        "the refused replay must not mint a replacement track"
+    );
+    assert_eq!(b.binding_count().await, 1, "nor a second binding row");
 }
 
 /// T-HASH-1 — the same key with a different **create** is a conflict.
