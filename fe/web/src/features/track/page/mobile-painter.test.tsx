@@ -567,9 +567,7 @@ describe('what the painted Tasks module puts on screen', () => {
      attribute holds the bare token, so the projection can compare it by exact
      equality, and `title` holds the phrase, which is strictly more — the
      kernel's reason is appended, never substituted. Pending reasons are tested
-     separately above because their row root owns the single title. (Colour is a desktop-only affair: the
-     stylesheet keys `.taskDot[data-nc-status=…]`, and this surface prints the
-     word instead.) */
+     separately above because their row root owns the single title. */
   it('writes the bare token into the marker and the whole phrase into the title', () => {
     const container = paint(tasksModule);
     const status = container.querySelector('[data-nc-status]');

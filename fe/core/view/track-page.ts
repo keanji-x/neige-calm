@@ -63,14 +63,13 @@ import type { CardWire } from '../domain/track.js';
 import type { PanelRow, RowAction, RowBadge, RowModuleView, TrackPageView } from './panel.js';
 
 /**
- * What the status dot says, in words: the status, then the kernel's reason for
- * it when there is one (#1149 / #1147).
+ * What the status carrier says: the status, then the kernel's reason when one
+ * exists (#1149 / #1147).
  *
  * The status word comes **first and always**, because this string is the
- * run-state phrase inside the dot's accessible name — the desktop's label is
- * `Status: ${phrase}` (`desktop-painter.tsx`'s `statusDot`), and this produces only the
- * `${phrase}` half. The colour carries nothing on its own, and a reader
- * who lands here must get `failed` before any prose about it. The reason is
+ * run-state phrase exposed by the visible status word's native tooltip and by
+ * the reveal control's accessible description. A reader who lands here must
+ * get `failed` before any prose about it. The reason is
  * appended, never substituted: `failed — track … is not a git repository` is
  * strictly more than `failed`, whereas a name that printed the reason alone
  * would have traded the one fact the row must carry for a nicer one.
@@ -83,14 +82,13 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, TrackPageView } from
  * which is where the wording used to live and is why the mobile surface had no
  * status at all. **S1b-3b deleted the page's copy** and **S1b-4b closed the
  * other surface**: both painters word a task's status from here, so this is now
- * the only authority on either surface. Neither surface *prints* this string —
- * the desktop's status dot is a graphic with no text, and the mobile row's
- * status carrier prints `status.token`, the bare word. What the phrase reaches
- * on mobile is that carrier's `title` and, since S1b-4b's
+ * the only authority on either surface. Both surfaces print only
+ * `status.token`, the compact bare word. What the phrase reaches on mobile is
+ * that carrier's `title` and, since S1b-4b's
  * accessible-description channel, the text the row's `aria-describedby` names;
- * on the desktop it is both the dot's `title` / `Status: ${phrase}` accessible
- * name and a compact visible copy for scanning. The visible copy is
- * `aria-hidden` so the button does not announce the same status twice.
+ * on the desktop it is the status word's `title` and the reveal button's
+ * accessible description. The visible copy is `aria-hidden` so the button does
+ * not announce the same status twice.
  * `mobile-projection.test.tsx` carries a source scan holding that the mobile
  * page words no task state of its own.
  */
@@ -197,10 +195,9 @@ function cardRow(card: CardWire): PanelRow {
  * make the derivation right by coincidence of an upstream invariant it does not
  * state, and S1b's painters would inherit a rule the page does not have.
  *
- * `status.phrase` deliberately does **not** carry the `Status: ` prefix: that
- * prefix exists only in the desktop's accessible name, while the dot's `title`
- * carries the bare phrase. The prefix is renderer chrome (see
- * `panel.ts`'s `RowStatus`), not wording the view model owns.
+ * `status.phrase` deliberately carries no renderer prefix. It is the complete
+ * status-plus-reason sentence shared by the status word's tooltip and the
+ * reveal action's accessible description.
  *
  * **Both controls here have visible text and so take no `aria-label`**: the
  * reveal button wraps the task key and the kind button shows the kind. The
@@ -216,18 +213,19 @@ function taskRow(task: ReportTaskRow): PanelRow {
   const badges: RowBadge[] = task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
-  const status = task.status !== null
-    ? { token: task.status, phrase: taskStatusPhrase(task.status, task.statusDetail) }
-    : null;
   const reason = task.pendingReason?.message ?? null;
+  const status = task.status !== null
+    ? {
+        token: task.status,
+        phrase: [taskStatusPhrase(task.status, task.statusDetail), reason].filter(Boolean).join(' — '),
+      }
+    : null;
   const actions: RowAction[] = [{
     kind: 'reveal-block',
     blockId: task.blockId,
     label: null,
     hint: reason,
-    description: reason === null
-      ? status?.phrase ?? null
-      : (status === null ? reason : `${status.phrase} — ${reason}`),
+    description: status?.phrase ?? reason,
   }];
   if (task.kind !== null && workerCardId !== null) {
     actions.push({

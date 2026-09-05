@@ -10,16 +10,15 @@
 // `data-nc-role`, `aria-label` and `title` the desktop panel rendered before is
 // reproduced verbatim, because a stack of suites is measuring it:
 // `task-row.browser.test.tsx` hit-tests the task row's invisible reveal sheet
-// and the trailing lane, `public.test.tsx` reads the reveal button's accessible
-// name as one sentence, and `public.contract.test.tsx` counts the buttons inside
+// and compact status word, while `public.contract.test.tsx` counts the buttons inside
 // `[data-nc-task-inventory]`. What is new is the marker layer, and nothing else.
 //
 // **Why `T` is not `ReactNode`.** `RowPainter.row` is handed a `PanelRow` and
 // nothing else — no module context — but the desktop's two modules compose a row
 // differently in ways no shared shape covers: a Cards row is a body button whose
 // meta lane holds the kind tag and the ownership badge, with the delete × as a
-// sibling; a Task row is a reveal button holding the key, the declaration and
-// the status dot, with the kind as a sibling. Deciding between them by sniffing
+// sibling; a Task row is a reveal button holding the key, declaration and
+// status word, with the kind as a sibling. Deciding between them by sniffing
 // the row (`does it carry a reveal-block action?`) would make this file correct
 // only by an invariant of `track-page.ts` that nothing states, which is the
 // mistake `track-page.ts`'s own docstrings warn about twice. So a row or empty
@@ -40,7 +39,7 @@ import type { ReactNode } from 'react';
 
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
-  ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, RowStatus, TrackPageView,
+  ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, TrackPageView,
 } from '../../../../../core/view/panel.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -130,37 +129,6 @@ function wording(action: Control): Readonly<Record<string, string>> {
   };
 }
 
-/**
- * The status dot, moved verbatim out of the track page's former inline Tasks
- * module (S1b-3b).
- *
- * Three carriers, unchanged. `data-nc-status` holds the **bare token**, which is
- * what the stylesheet keys colour off — folding the kernel's reason into it
- * would leave a failed row uncoloured. `title` holds the phrase a pointer gets,
- * except when a pending reason already gives the enclosing reveal its one
- * native title; then the dot inherits that tooltip instead of replacing it.
- * `aria-label` holds `Status: ${phrase}`, and that prefix is **painter chrome**:
- * it is deliberately not part of `RowStatus.phrase` (see `core/view/panel.ts`),
- * and the projection reads the other two carriers only, which is what leaves the
- * prefix this renderer's decision to make.
- *
- * It sits *inside* the reveal button on purpose — the row's whole job is to
- * reveal the block, and being a DOM child is what makes the click bubble, so the
- * dot owns its hover without owning the click. Its trailing position is CSS.
- */
-function statusDot(status: RowStatus, ownsTitle: boolean): ReactNode {
-  return (
-    <span
-      key="status"
-      className={styles.taskDot}
-      {...mark(MARKER.status, status.token)}
-      role="img"
-      aria-label={`Status: ${status.phrase}`}
-      {...(ownsTitle ? { title: status.phrase } : {})}
-    />
-  );
-}
-
 function cardBadge(badge: RowBadge): ReactNode {
   return (
     <span key={badge.id} className={styles.kernelOwned} {...mark(MARKER.badge, badge.id)}>
@@ -236,8 +204,8 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
  * `<button>`, which is the mechanical reason the row is a plain `<li>`.
  *
  * **"The row reveals the block" is a CSS fact, not DOM containment.**
- * `.taskReveal::before` paints an invisible sheet over the whole `<li>`, and the
- * two things that stay above it are the kind button and the status dot. That
+ * `.taskReveal::before` paints an invisible sheet over the whole `<li>`, while
+ * the kind button keeps its separate worker-card action. That
  * claim is hit-tested in `task-row.browser.test.tsx`; jsdom reports this same
  * tree whether the sheet covers the row or nothing, which is why the geometry is
  * not asserted anywhere near here.
@@ -246,7 +214,7 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
  * carrier *and*, when there is a card, the `open-card` host — and
  * `data-nc-row-action` is a host annotation, not a content marker, so the
  * one-content-marker-per-element rule is not engaged. The declaration badge and
- * the status dot sit inside the reveal button for the same reason: an action
+ * status word sit inside the reveal button for the same reason: an action
  * host does not own the field text underneath it.
  *
  * The kind is drawn from `row.kind`, and the *control* form from the presence of
@@ -259,7 +227,6 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
-  const statusText = row.status === null ? null : reveal?.description ?? row.status.phrase;
   const revealControl = (
     <button
       type="button"
@@ -277,22 +244,20 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           {...mark(MARKER.badge, badge.id)}
         >{badge.text}</span>
       ))}
-      {row.status !== null && statusDot(
-        row.status,
-        row.status.token !== 'pending' || reveal === null || reveal.hint === null,
+      {row.status !== null && (
+        <span
+          className={styles.taskStatusText}
+          data-nc-task-status-text=""
+          {...mark(MARKER.status, row.status.token)}
+          aria-hidden="true"
+          title={row.status.phrase}
+        >{row.status.token}</span>
       )}
     </button>
   );
   return (
     <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
       {revealControl}
-      {statusText !== null && (
-        <span
-          className={styles.taskStatusText}
-          data-nc-task-status-text=""
-          aria-hidden="true"
-        >{statusText}</span>
-      )}
       {/* The kind is a word either way — what changes is whether it is a
           control. `title` describes the destination without touching the
           accessible name, which stays the visible word (WCAG 2.5.3). */}

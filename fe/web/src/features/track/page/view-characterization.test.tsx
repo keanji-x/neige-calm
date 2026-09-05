@@ -67,8 +67,8 @@
 // `row.kind` (when non-null), `badge.text`.
 //
 // Separately, two fields of `row.status`. These are **not** lower bounds but
-// exact equalities against the carrier the panel marks — the status dot painted
-// by `desktop-painter.tsx`'s `statusDot`: `status.phrase` against that node's
+// exact equalities against the carrier the panel marks — the compact status
+// word painted by `desktop-painter.tsx`: `status.phrase` against that node's
 // `title`, and `status.token` against its `data-nc-status` attribute. A row
 // whose derived `status` is null must have no such node.
 //
@@ -115,7 +115,7 @@
 //    invented no wording for the row body", `track-page.ts`'s `cardRow`). No
 //    assertion here holds that: the row's subtree carries other `title` /
 //    `aria-label` values (the delete control's, and on Task rows the status
-//    dot's), so "no such attribute exists in this row" would be false against a
+//    carrier's), so "no such attribute exists in this row" would be false against a
 //    correct page, and any weaker phrasing would not be checking the null. The
 //    claim that a null wording stays null is `core/view/track-page.test.ts`'s;
 //    the claim that a painter emits no attribute for it is the projection's.
@@ -299,21 +299,19 @@ function rowFields(row: PanelRow): readonly string[] {
  *
  * Exact equality, not an occurrence bound. All three carriers are written by
  * `desktop-painter.tsx`'s `statusDot`: the phrase's is `title`, which is the
- * bare phrase; the token's is the `data-nc-status` attribute. The dot's
- * `aria-label` is `Status: ${phrase}` and is deliberately **not** asserted — that prefix is
- * renderer chrome the view model does not own (`core/view/panel.ts`,
- * `RowStatus.phrase`), and asserting the label would license moving the prefix
- * into `core`, which is a mutation this suite has been shown to miss.
+ * phrase; the token's is the `data-nc-status` attribute. The status word is
+ * `aria-hidden` because the same phrase is already the reveal control's
+ * accessible description.
  */
 function expectStatus(rowElement: Element, row: PanelRow, where: string): void {
-  const dot = rowElement.querySelector('[data-nc-status]');
+  const carrier = rowElement.querySelector('[data-nc-status]');
   if (row.status === null) {
-    expect(dot, `${where}: derived no status, so the page must paint no dot`).toBeNull();
+    expect(carrier, `${where}: derived no status, so the page must paint no carrier`).toBeNull();
     return;
   }
-  expect(dot, `${where}: status dot`).not.toBeNull();
-  expect(dot?.getAttribute('title'), `${where}: phrase`).toBe(row.status.phrase);
-  expect(dot?.getAttribute('data-nc-status'), `${where}: token`).toBe(row.status.token);
+  expect(carrier, `${where}: status carrier`).not.toBeNull();
+  expect(carrier?.getAttribute('title'), `${where}: phrase`).toBe(row.status.phrase);
+  expect(carrier?.getAttribute('data-nc-status'), `${where}: token`).toBe(row.status.token);
 }
 
 /**

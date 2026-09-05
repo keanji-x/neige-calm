@@ -208,37 +208,25 @@ describe('TrackPage task inventory', () => {
    * happening. Each of these words answers a different question a user staring
    * at a working track actually has.
    */
-  /*
-   * CHANGED EXPECTATION — the run used to be spelled out beside the key as one
-   * word (`running · codex`). The status is now a dot, and the dot's *label* is
-   * what carries the word: `role="img"` + `aria-label` puts it inside the row
-   * button's own accessible name, so a screen reader reads the row once and
-   * gets the status with it, and no reader anywhere is left with only a colour.
-   *
-   * That is the assertion here, and it is deliberately made through the
-   * accessible name rather than through a class: a dot whose colour is right
-   * and whose label is missing is exactly the failure this row must not have,
-   * and it would pass a class assertion.
-   */
-  it('keeps the status in the row accessible name through the named status graphic', () => {
-    renderPage({
+  /* The visible word is hidden from the accessibility tree to avoid duplicate
+     speech; the same complete phrase stays on the reveal control's accessible
+     description. */
+  it('keeps the full status on the reveal control without a duplicate status graphic', () => {
+    const { container } = renderPage({
       tasks: [
         running('alpha', 'running', 'card-9', 'terminal'),
         running('beta', 'pending', null),
         running('delta', 'failed', 'card-4'),
       ],
     });
-    expect(screen.getByRole('button', { name: /^alpha.?Status: running$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^beta.?Status: pending$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^delta.?Status: failed$/ })).toBeTruthy();
-    /* The dot is a named graphic, and hovering it says the same word — the two
-       carriers the colour is a shorthand for. */
-    const dot = screen.getByRole('img', { name: 'Status: running' });
-    expect(dot.getAttribute('title')).toBe('running');
-    expect(dot.dataset.ncStatus).toBe('running');
+    expect(screen.getByRole('button', { name: 'alpha' }).getAttribute('aria-description')).toBe('running');
+    expect(screen.getByRole('button', { name: 'beta' }).getAttribute('aria-description')).toBe('pending');
+    expect(screen.getByRole('button', { name: 'delta' }).getAttribute('aria-description')).toBe('failed');
+    expect(container.querySelectorAll('[data-nc-task-status-text]')).toHaveLength(3);
+    expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
-  it('prints scannable desktop status text and a task summary without replacing the accessible dot', () => {
+  it('prints compact desktop status words, keeps detail on hover, and removes the trailing status icon', () => {
     const queued: ReportTaskRow = {
       ...running('beta', 'pending', null),
       pendingReason: {
@@ -252,57 +240,37 @@ describe('TrackPage task inventory', () => {
     const inventory = container.querySelector('[data-nc-task-inventory]');
     expect(inventory).not.toBeNull();
     expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
-      .toEqual(['running', 'pending — Queued 1/1']);
-    expect(screen.getByText('2 tasks · 1 active · 1 queued')).toBeTruthy();
-    expect(screen.getByRole('img', { name: 'Status: running' })).toBeTruthy();
+      .toEqual(['running', 'pending']);
+    expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Queued 1/1"]')).not.toBeNull();
+    expect(screen.getByText('1 active · 1 queued')).toBeTruthy();
+    expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
-  /*
-   * ── The kernel's reason, on the same two carriers (#1147 / #1149) ─────
-   *
-   * `failed` is the word the reader can already see; *why* is what they were
-   * about to go looking for, and #1147 made the kernel say it. The dot's hover
-   * is where it lands, because it qualifies exactly the fact the dot states.
-   *
-   * Asserted on both carriers and in this order:
-   *  - the accessible name still **begins** with the status word, so the one
-   *    fact the colour is a shorthand for is never traded away for prose — a
-   *    name that printed the reason alone would pass a "mentions the detail"
-   *    assertion and fail the reader;
-   *  - the `title` carries the same string, which is what a sighted pointer
-   *    gets;
-   *  - `data-nc-status` stays the bare status word, because it is what the
-   *    colour selector keys on: folding the reason into it would leave a failed
-   *    row uncoloured.
-   */
-  it('says why a failed task failed on the dot, without losing the status word', () => {
-    renderPage({
+  /* The compact carrier prints the bare word and keeps the full kernel reason
+     in its tooltip and the row control's accessible description. */
+  it('shows only the failed word and keeps its reason on hover and the reveal description', () => {
+    const { container } = renderPage({
       tasks: [
         running('alpha', 'running', 'card-9', 'terminal'),
         running('delta', 'failed', 'card-4', 'codex', 'track 9a4c is not a git repository'),
       ],
     });
-    const dot = screen.getByRole('img', { name: /^Status: failed/ });
-    expect(dot.getAttribute('aria-label')).toBe('Status: failed — track 9a4c is not a git repository');
-    expect(dot.getAttribute('title')).toBe('failed — track 9a4c is not a git repository');
-    expect(dot.dataset.ncStatus).toBe('failed');
-    /* And the row it sits in reads as one sentence, key first. */
-    expect(screen.getByRole('button', {
-      name: /^delta.?Status: failed — track 9a4c is not a git repository$/,
-    })).toBeTruthy();
-    /* A row the kernel said nothing about keeps the bare word — the separator
-       is not printed with nothing after it. */
-    expect(screen.getByRole('img', { name: 'Status: running' }).getAttribute('title')).toBe('running');
+    const status = container.querySelector('[data-nc-row="b-delta"] [data-nc-task-status-text]');
+    expect(status?.textContent).toBe('failed');
+    expect(status?.getAttribute('title')).toBe('failed — track 9a4c is not a git repository');
+    expect(status?.getAttribute('data-nc-status')).toBe('failed');
+    expect(screen.getByRole('button', { name: 'delta' }).getAttribute('aria-description'))
+      .toBe('failed — track 9a4c is not a git repository');
   });
 
   /*
    * **The same reason, on the phone**, and written beside the desktop assertion
    * on purpose — the two are each other's control.
    *
-   * The desktop's reveal button *encloses* the dot, so the kernel's reason is
-   * part of the button's accessible **name** (the regex above). Astryx lays the
-   * mobile row's meta lane out as a sibling of its invisible button, so the same
-   * shape there would leave the focused control named `delta` and nothing more:
+   * The desktop attaches the kernel's reason to the reveal button's accessible
+   * description. Astryx lays the mobile row's meta lane out as a sibling of its
+   * invisible button, so leaving the phrase on the visible carrier alone would
+   * leave the focused control named `delta` and nothing more:
    * `failed — track 9a4c is not a git repository` would be on screen and
    * unreachable. It arrives as the control's accessible **description** instead,
    * which adds the reason without overwriting the visible key.
@@ -324,10 +292,9 @@ describe('TrackPage task inventory', () => {
       .toBe('failed — track 9a4c is not a git repository');
   });
 
-  /* A row with no run has no dot at all: `Not ready` is a fact about the
-     declaration, not a status, and giving it a coloured dot would state that
-     something has been dispatched. */
-  it('draws no status dot for a declaration the kernel has not dispatched', () => {
+  /* A row with no run has no status carrier: `Not ready` belongs to the
+     declaration and must not pretend work was dispatched. */
+  it('draws no status carrier for a declaration the kernel has not dispatched', () => {
     renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
     /* By name, not by role alone: the header's lifecycle badge is a named
        graphic too, and asserting "no img on the page" would pass for the wrong
@@ -360,7 +327,7 @@ describe('TrackPage task inventory', () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
-    await userEvent.click(screen.getByRole('button', { name: /^alpha.?Status: running$/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
     expect(onOpenTask).toHaveBeenCalledWith('b-alpha');
     expect(onOpenCard).not.toHaveBeenCalled();
   });

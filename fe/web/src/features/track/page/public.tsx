@@ -170,13 +170,13 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
       waiting += 1;
     }
   }
-  const parts = [`${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`];
+  const parts: string[] = [];
   if (active > 0) parts.push(`${active} active`);
   if (failed > 0) parts.push(`${failed} failed`);
   if (queued > 0) parts.push(`${queued} queued`);
   if (waiting > 0) parts.push(`${waiting} waiting`);
   if (done > 0) parts.push(`${done} done`);
-  return parts.join(' · ');
+  return parts.length === 0 ? null : parts.join(' · ');
 }
 
 export function TrackPage({

@@ -34,43 +34,6 @@ function luminance(color) { return 0.2126 * color[0] + 0.7152 * color[1] + 0.072
 function ratio(a, b) { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); }
 
 /**
- * ── The dimmest frame of an animation is a colour too ─────────────────────
- *
- * This file used to measure token *values*, which meant it could not see the
- * one thing that was actually dimming a mark below the floor: the in-flight dot
- * pulses, `opacity` composites, and a fill at 0.35 over a near-white card is
- * 1.43:1 whatever the token says. Both contrast checks stayed green on it.
- *
- * So the floor is read out of the stylesheet that declares it rather than
- * restated here — lowering the keyframe reddens this gate, which is the only
- * arrangement in which the gate is worth running. Fail-closed: a stylesheet
- * this cannot find the keyframe in is an error, not a skipped recipe.
- *
- * @param {URL} url @param {string} name
- */
-function keyframeOpacityFloor(url, name) {
-  const css = fs.readFileSync(url, 'utf8');
-  const start = css.indexOf(`@keyframes ${name}`);
-  if (start === -1) throw new Error(`Missing @keyframes ${name} in ${url.pathname}`);
-  let depth = 0;
-  let end = -1;
-  for (let i = css.indexOf('{', start); i < css.length; i += 1) {
-    if (css[i] === '{') depth += 1;
-    else if (css[i] === '}' && (depth -= 1) === 0) { end = i; break; }
-  }
-  if (end === -1) throw new Error(`Unterminated @keyframes ${name} in ${url.pathname}`);
-  const opacities = [...css.slice(start, end).matchAll(/opacity:\s*([\d.]+)/g)].map((m) => Number(m[1]));
-  if (opacities.length === 0) throw new Error(`@keyframes ${name} declares no opacity`);
-  /* The implicit 0%/100% frames are the element's own `opacity: 1`. */
-  return Math.min(1, ...opacities);
-}
-
-const taskDotPulseFloor = keyframeOpacityFloor(
-  new URL('../../web/src/features/track/page/page.module.css', import.meta.url),
-  'task-dot-pulse',
-);
-
-/**
  * ── Recipes that live outside `tokens.css` ────────────────────────────────
  *
  * Settings › Plugins paints its five state chips with per-theme `oklch()`
@@ -217,51 +180,6 @@ const pairs = [
   { label: 'warning fill on page ground', foreground: '--warn', background: '--bg', underlay: '--bg', minimum: 3 },
   { label: 'error text on soft error over ground', foreground: '--error-text', background: '--error-soft', underlay: '--bg' },
 ];
-/*
- * The TASKS panel's status dot (`features/track/page`), as a second list rather
- * than four more entries above — and the difference is what each list governs.
- *
- * A dot is a non-text graphic, so 3:1 is the bar; it is a real bar, because the
- * dot is the shorthand for a status word and a smudge is not a shorthand. But
- * the recipe introduces **no new colour**: every value is a semantic fill or a
- * text rank the token system already ships, and `web/src/styles` is frozen
- * (§6.8). `gamutTokens` above is a check on token *definitions*, so pulling
- * `--surface-card` and dark's `--accent` into it through a new recipe would
- * have this file start failing on values it does not own and did not change —
- * both are outside this crude linear-sRGB conversion's gamut today, on this
- * branch and on main. The ratios are what this recipe is accountable for, and
- * they are checked.
- *
- * `--text-4` is deliberately absent: the muted rank measures ~2.2:1 against the
- * card in both themes, which is why the neutral dot takes `--text-3`.
- *
- * Each recipe now names the *form* the fill paints as well, because the dot
- * stopped being colour-coded and became shape-coded with colour on top: the
- * four fills clear 3:1 against the card but only 1.06–1.58:1 against each
- * other (dark's `--success` and `--error` are the same lightness exactly), so
- * hue alone was never going to separate four states. What this file can check
- * is unchanged — a fill against the surface it is painted on — and the labels
- * keep it honest about which mark each number belongs to. The form channel
- * itself is measured where forms exist, in a real engine:
- * `features/track/page/task-row.browser.test.tsx`.
- *
- * The in-flight ring is the same `--accent` as its core, so it needs no fifth
- * entry; and there is deliberately none for a soft halo, because there is no
- * such halo — `--accent-soft` over the card measures 1.13:1 in light, which is
- * a tint, not a mark, and a state may not rest on one.
- */
-const nonTextPairs = [
-  { label: 'in-flight task dot (ringed disc) on panel card', foreground: '--accent', background: '--surface-card', underlay: '--surface-card', minimum: 3 },
-  { label: 'done task dot (filled disc) on panel card', foreground: '--success', background: '--surface-card', underlay: '--surface-card', minimum: 3 },
-  { label: 'failed task dot (filled square) on panel card', foreground: '--error', background: '--surface-card', underlay: '--surface-card', minimum: 3 },
-  { label: 'neutral task dot (hollow ring stroke) on panel card', foreground: '--text-3', background: '--surface-card', underlay: '--surface-card', minimum: 3 },
-  /* The in-flight dot again, at the dimmest frame of its pulse — see
-     `keyframeOpacityFloor`. This is the same fill as the first entry and it is
-     a second recipe rather than a replacement for it, because the mark has to
-     clear the floor at *both* ends of the breath and only one of them is a
-     token value. */
-  { label: `in-flight task dot at its ${taskDotPulseFloor} pulse floor on panel card`, foreground: '--accent', alpha: taskDotPulseFloor, background: '--surface-card', underlay: '--surface-card', minimum: 3 },
-];
 const gamutTokens = ['--warn', '--error-text', ...pairs.flatMap(({ foreground, background }) => [foreground, background])];
 
 for (const [theme, vars] of themes) {
@@ -272,7 +190,7 @@ for (const [theme, vars] of themes) {
     }
   }
   /** @type {ReadonlyArray<{ label: string, foreground: string, background: string, underlay: string, alpha?: number, minimum?: number }>} */
-  const recipes = [...pairs, ...nonTextPairs];
+  const recipes = pairs;
   for (const { label, foreground, background, underlay, alpha, minimum = 4.5 } of recipes) {
     const foregroundRgb = rgb(resolve(foreground, vars));
     const fill = rgb(resolve(background, vars));
