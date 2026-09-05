@@ -604,3 +604,55 @@ fn test_temp_dir(name: &str) -> PathBuf {
     std::fs::create_dir_all(&path).expect("create temp dir");
     path
 }
+
+#[test]
+fn alpha_frontend_config_is_forwarded_to_the_server() {
+    let tmp = test_temp_dir("alpha-frontend-config");
+    let config = tmp.join("config.toml");
+    std::fs::write(&config, "[child]\nfe_dist = \"/opt/alpha/web/dist/next\"\n").unwrap();
+    let cfg = AppConfig::load(Some(&config)).expect("accept the next frontend directory");
+    let child = calm_server_supervisor_config(&cfg);
+    assert!(
+        child
+            .child_envs
+            .contains(&("CALM_FE_DIST".into(), "/opt/alpha/web/dist/next".into()))
+    );
+}
+
+#[test]
+fn alpha_package_cli_accepts_both_frontends() {
+    Cli::try_parse_from([
+        "neige-app",
+        "system",
+        "package",
+        "--release-dir",
+        "/tmp/alpha-package",
+        "--app-bin",
+        "/tmp/neige-app",
+        "--web-dist",
+        "/tmp/web/dist",
+        "--fe-dist",
+        "/tmp/fe/web/dist",
+    ])
+    .expect("next frontend must be expressible through the real package CLI");
+}
+
+#[test]
+fn alpha_frontend_cli_override_and_legacy_config_are_explicit() {
+    let mut cfg = AppConfig::starter(PathBuf::from("/tmp/alpha-config"));
+    assert!(
+        !calm_server_supervisor_config(&cfg)
+            .child_envs
+            .iter()
+            .any(|(key, _)| key == "CALM_FE_DIST")
+    );
+    cfg.apply_serve_overrides(ServeOverrides {
+        calm_fe_dist: Some(PathBuf::from("/opt/alpha/next")),
+        ..ServeOverrides::default()
+    });
+    assert!(
+        calm_server_supervisor_config(&cfg)
+            .child_envs
+            .contains(&("CALM_FE_DIST".into(), "/opt/alpha/next".into()))
+    );
+}

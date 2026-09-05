@@ -77,7 +77,7 @@ PROD_AUTH_PASSWORD=choose-a-local-password make prod
 
 打开 <http://localhost:4040/next/>，以用户名 `owner` 和刚才选择的密码登录。该模式默认只监听回环地址，数据保存在 `~/.local/share/neige-calm`，并会把两个辅助二进制链接到 `~/.local/bin`。
 
-新前端仍处于切换阶段。当前的新建 Track 合成器还不能在创建事务中原子投递第一条意图：创建 Track 后，需要在该 Track 的规划会话中再次发送这条意图。
+新建 Track 时，合成器中的第一条消息会随创建请求一起提交，无需再次发送。准备 Alpha 安装包或从安装包部署，请按[Linux Alpha 打包与安装流程](docs/alpha-release.md)操作。
 
 `make prod` 是前台宿主机运行模式。需要进程监管安装与升级流程时，请参阅[部署与升级指南](docs/deploy-and-upgrade.md)。
 

@@ -43,6 +43,7 @@ backups = "~/.local/share/neige-app/backups"
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
+fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
@@ -60,7 +61,7 @@ restart_delay_ms = 1000
 [systemd]
 unit_path = "~/.config/systemd/user/neige-app.service"
 unit_name = "neige-app"
-bin = "/usr/local/bin/neige-app"
+bin = "~/.local/bin/neige-app"
 
 [upgrade]
 current_version_file = ""
@@ -71,7 +72,7 @@ branch = "main"
 # Optional: web-only, server-only, or bundle. Omit to infer from manifest.
 mode = ""
 checkout_dir = "~/.cache/neige-app/source"
-build_args = ["make", "build"]
+build_args = ["make", "build", "fe-build"]
 # v2 package compatibility is probed from the freshly built calm-server.
 # DB migration policy defaults to forwardOnly; set NEIGE_DB_MIGRATION_POLICY
 # in the service build environment to override it.
@@ -82,6 +83,17 @@ The default child paths are split by component:
 
 - server binaries use `release.current_server`
 - web assets use `release.current_web`
+
+`child.fe_dist` (or `system serve --calm-fe-dist`) explicitly selects the new
+frontend directory. With `system package --fe-dist`, that directory is packaged
+as `web/dist/next` within the same hashed Web unit. Omit `fe_dist` for a legacy-only
+package. Existing configs that omit it remain legacy-only; new starter configs
+include it for Alpha packages. When configured, the browser root redirects to
+`/next/`, and `web_dist` continues to serve `/calm/`.
+
+For a first install, use the [Alpha runbook](alpha-release.md) before running
+`system install`: the package and executable symlinks must exist, and owner
+credentials must be set in the private config file.
 
 The legacy `release.current` and `release.previous` keys are still accepted.
 They are retained as legacy fields only; when split keys are omitted,
@@ -97,6 +109,11 @@ machine or another access-control layer.
 `auth_username` and `auth_password` are passed through to calm-server as
 `CALM_AUTH_USERNAME` and `CALM_AUTH_PASSWORD`. Set `auth_dev_autologin=true`
 only for local development; it disables the normal owner login flow.
+
+The generated systemd unit records PATH but does not import the interactive
+shell's proxy variables. On hosts requiring a proxy, configure Settings → Network
+before the first agent task; those persisted settings apply to new agent cards.
+See the [Alpha network setup](alpha-release.md#network-setup-before-the-first-agent-task).
 
 ## Install
 
@@ -118,6 +135,33 @@ start systemd automatically.
 passed. M1 also rejects systemd `ExecStart` paths containing whitespace or
 control characters instead of trying to quote them.
 
+## Enabling the new frontend on an existing source installation
+
+Old config files keep their saved `build_args = ["make", "build"]` and omit
+`child.fe_dist`. They remain explicitly legacy-only: source packaging does not
+require or pick up a stray `fe/web/dist` tree. To opt into both frontends, update
+**both** settings before a source build:
+
+```toml
+[child]
+fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
+[source]
+build_args = ["make", "build", "fe-build"]
+```
+
+For an existing running instance, opt in during planned downtime **after**
+installing a package that includes the next frontend. `neige-app` reads its admin
+configuration at host startup: after editing these settings, restart the
+`neige-app` service (or stop/start the foreground host) before using its admin
+source-upgrade endpoint. `POST /restart` restarts only calm-server and does not
+reload this configuration. CLI source builds read the file on each invocation,
+but the running host still needs a restart to serve the newly enabled frontend.
+
+Custom build commands must also rebuild `fe/web/dist` when `fe_dist` is enabled;
+a directory left from a prior build is not evidence of a current frontend. For
+release artifacts use the Alpha build script, which unconditionally performs
+both production builds and records their source revision.
+
 ## Staged Upgrade
 
 `system upgrade` can run without `--package`. In that mode it reads `[source]`,
@@ -137,7 +181,7 @@ existing checkout directory unless the marker and `origin` URL match the
 current config. The default build command is:
 
 ```text
-["make", "build"]
+["make", "build", "fe-build"]
 ```
 
 No arbitrary shell command is executed. Package compatibility is probed from

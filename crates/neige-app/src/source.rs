@@ -41,6 +41,13 @@ pub(crate) fn build_source_package_from_source(
         release_id,
         app_bin: Some(source_dir.join("target").join("release").join("neige-app")),
         web_dist: Some(source_dir.join("web").join("dist")),
+        // The serving configuration is the explicit frontend selection. Old
+        // configs/build commands stay legacy-only, even if a stale FE tree exists.
+        fe_dist: cfg
+            .child
+            .fe_dist
+            .as_ref()
+            .map(|_| source_dir.join("fe/web/dist")),
         bins: required_bins(&source_dir),
     })
 }
@@ -160,7 +167,7 @@ fn write_source_marker(checkout: &Path, url: &str, branch: &str) -> anyhow::Resu
 
 fn run_build(source_dir: &Path, build_args: &[String]) -> anyhow::Result<()> {
     let args: Vec<String> = if build_args.is_empty() {
-        vec!["make".into(), "build".into()]
+        vec!["make".into(), "build".into(), "fe-build".into()]
     } else {
         build_args.to_vec()
     };
@@ -258,12 +265,17 @@ mod tests {
         cfg.source.url = Some(source.display().to_string());
         cfg.source.build_args = vec!["true".into()];
 
+        cfg.child.fe_dist = Some(tmp.join("releases/current-web/web/dist/next"));
         let package = build_source_package(&cfg, None).expect("package");
         let manifest: crate::manifest::ReleaseManifestV2 = serde_json::from_slice(
             &std::fs::read(package.join("manifest.json")).expect("read manifest"),
         )
         .expect("parse manifest");
 
+        assert_eq!(
+            std::fs::read_to_string(package.join("web/dist/next/index.html")).unwrap(),
+            "next frontend"
+        );
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.units.len(), 7);
         assert!(
@@ -272,6 +284,22 @@ mod tests {
                 .contains_key(&crate::manifest::UnitName::CalmServer)
         );
         assert!(manifest.units.contains_key(&crate::manifest::UnitName::Web));
+    }
+
+    #[test]
+    fn source_package_legacy_config_does_not_require_next_assets() {
+        let tmp = test_temp_dir("source-legacy-only");
+        let source = tmp.join("checkout");
+        fake_build_output(&source);
+        std::fs::remove_dir_all(source.join("fe")).unwrap();
+        let mut cfg = AppConfig::starter(tmp.join("config.toml"));
+        cfg.release.root = tmp.join("releases");
+        cfg.source.url = Some(source.display().to_string());
+        cfg.source.build_args = vec!["true".into()];
+        let package =
+            build_source_package(&cfg, None).expect("legacy source build remains supported");
+        assert!(package.join("web/dist/index.html").is_file());
+        assert!(!package.join("web/dist/next").exists());
     }
 
     #[test]
@@ -296,6 +324,8 @@ mod tests {
     }
 
     fn fake_build_output(source: &Path) {
+        std::fs::create_dir_all(source.join("fe/web/dist")).unwrap();
+        std::fs::write(source.join("fe/web/dist/index.html"), "next frontend").unwrap();
         let release = source.join("target").join("release");
         std::fs::create_dir_all(&release).expect("create release dir");
         std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");

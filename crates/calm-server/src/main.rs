@@ -187,12 +187,10 @@ fn mount_frontends(
             web_dist = %web_dist.display(),
             "serving built web bundle under /calm/"
         );
-        app = app
-            .route("/", get(|| async { Redirect::temporary("/calm/") }))
-            .nest_service(
-                "/calm",
-                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
-            );
+        app = app.nest_service(
+            "/calm",
+            ServeDir::new(web_dist).fallback(ServeFile::new(index)),
+        );
     }
 
     if let Some(fe_dist) = fe_dist {
@@ -207,6 +205,11 @@ fn mount_frontends(
         );
     }
 
+    if fe_dist.is_some() {
+        app = app.route("/", get(|| async { Redirect::temporary("/next/") }));
+    } else if web_dist.is_some() {
+        app = app.route("/", get(|| async { Redirect::temporary("/calm/") }));
+    }
     app
 }
 
@@ -359,7 +362,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(root.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(root.headers()[axum::http::header::LOCATION], "/calm/");
+        assert_eq!(root.headers()[axum::http::header::LOCATION], "/next/");
         assert_eq!(
             response_body(app.clone(), "/calm/track/deep-link").await,
             (StatusCode::OK, legacy_index.to_vec())
@@ -372,6 +375,23 @@ mod tests {
             response_body(app, "/next/track/deep-link").await,
             (StatusCode::OK, b"next-index-exact\n".to_vec())
         );
+    }
+
+    #[tokio::test]
+    async fn frontend_root_tracks_the_configured_bundle() {
+        let assets = tempfile::tempdir().unwrap();
+        for (web, fe, destination) in [
+            (Some(assets.path()), None, "/calm/"),
+            (None, Some(assets.path()), "/next/"),
+        ] {
+            let app = super::mount_frontends(axum::Router::new(), web, fe);
+            let root = app
+                .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(root.status(), StatusCode::TEMPORARY_REDIRECT);
+            assert_eq!(root.headers()[axum::http::header::LOCATION], destination);
+        }
     }
 
     #[tokio::test]
