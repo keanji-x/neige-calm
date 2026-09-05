@@ -251,6 +251,41 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
   };
 }
 
+/**
+ * What became of one send, for a caller that has to decide whether the text is
+ * still the reader's to hold (#1449).
+ *
+ * The five cases are not degrees of success. They differ in what the caller may
+ * conclude about the server's store:
+ *
+ * - `delivered` — the server answered 2xx. It has the text.
+ * - `refused` — the server answered that it stored nothing. Only a refusal the
+ *   server *names* qualifies; see `SEND_REFUSAL_CODES`.
+ * - `unresolved` — the request left the browser and its fate is unknown: a 5xx,
+ *   a dropped connection, a body that did not decode. `POST /planner/input`
+ *   carries no `Idempotency-Key`, so re-sending here can deliver the message
+ *   twice, and a second `UserMessage` starts a second turn.
+ * - `not-sent` — the send never left the browser, refused by a guard in this
+ *   tab. Nothing was stored and nothing failed.
+ * - `abandoned` — the answer arrived after the reader moved on, so it is no
+ *   longer about the conversation in front of them.
+ *
+ * Restoring the text into a composer is sound for `refused` and for `not-sent`,
+ * where this tab knows the send never reached the server. The other three do
+ * not license it.
+ */
+export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
+
+/**
+ * The `ErrorBody.code` values that mean the server stored nothing.
+ *
+ * A refusal has to say so in a code, because a status alone does not: a 409 is
+ * also how a conflicting write that *did* land is reported elsewhere.
+ */
+export const SEND_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  'planner_harness_runtime_superseded',
+]);
+
 export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },

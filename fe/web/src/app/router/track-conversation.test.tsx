@@ -501,6 +501,56 @@ describe('track conversations', () => {
   });
 
   /*
+   * #1449 review round 7 — a refusal answers for the conversation that sent it.
+   *
+   * The store already keeps every *other* effect of a failure inside the
+   * conversation that failed: the error line and the echo removal are both
+   * behind `stillActive()`. The outcome the composer reads has to obey the same
+   * rule, and when it was a bare `false` it did not: the reader walked to
+   * another conversation while the POST was out, the 409 came back, and the
+   * first conversation's sentence was put into the second conversation's
+   * composer — with no error line, because that half was suppressed correctly.
+   * One Enter would then have delivered it to the wrong card, which is worse
+   * than the loss the restore exists to prevent.
+   */
+  it('does not put a refused sentence into the conversation the reader walked to', async () => {
+    const held = new Map<string, () => void>();
+    setup(async (request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      const cardId = pathCardId(request.path);
+      await new Promise<void>((resolve) => { held.set(cardId, resolve); });
+      return {
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          error: 'this runtime is no longer the card\'s; your message was not stored — send it again',
+          code: 'planner_harness_runtime_superseded',
+        },
+      };
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('sentence meant for assistant');
+    await waitFor(() => expect(held.has(ASSISTANT_CARD.id)).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+
+    await act(async () => { held.get(ASSISTANT_CARD.id)?.(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    /* The premise: the refusal really was delivered to this store, which is
+       what the error line being absent must not be allowed to stand for. */
+    expect(held.has(ASSISTANT_CARD.id)).toBe(true);
+    expect(messageField().textContent).toBe('');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  /*
    * ── G4 ─────────────────────────────────────────────────────────────────────
    *
    * A track with no planner card is exactly the track that most needs to start a

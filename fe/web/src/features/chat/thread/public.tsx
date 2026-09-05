@@ -36,6 +36,7 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
+  type ChatComposerInputHandle,
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
 import { Markdown } from '@astryxdesign/core/Markdown';
@@ -47,7 +48,7 @@ import { useState } from '../../../ui/state/public.ts';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
-  type Conversation, type ConversationActivity, type TranscriptEntry,
+  type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import styles from './thread.module.css';
 
@@ -1791,6 +1792,17 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 });
 
 /**
+ * `onSend` answers either way, and the caller's choice decides which.
+ *
+ * Checked by shape rather than by `!== undefined`: the `void` half of the
+ * signature is a return the caller does not make, and a caller that returns
+ * some other value would otherwise be awaited as if it were an outcome.
+ */
+function isThenable(value: unknown): value is Promise<SendOutcome> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
+}
+
+/**
  * The composer is Astryx's ChatComposer: rounded well, auto-grow, send/stop
  * geometry, Enter-to-send with IME guard. We own the value and the send
  * callback so the kernel path stays a string.
@@ -1798,13 +1810,8 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false,
 }: {
-  /**
-   * #1449 — resolving `false` means the text is still the reader's: the server
-   * refused it and nothing was stored. The composer puts it back rather than
-   * leaving an error with nothing to retry. A caller with its own draft
-   * persistence returns `void` and keeps today's behaviour.
-   */
-  onSend: (text: string) => void | Promise<boolean>;
+  /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
+  onSend: (text: string) => void | Promise<SendOutcome>;
   /**
    * Interrupt the turn in flight. Its presence is what turns Send into Stop.
    *
@@ -1892,6 +1899,9 @@ export function ChatComposer({
   newConversationRef.current = onNewConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
+  /** Astryx's handle on the editable, used to read what is in the field now
+   *  rather than what React has last rendered into it. See `onSubmit`. */
+  const fieldRef = useRef<ChatComposerInputHandle>(null);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on — the perch or the field.
@@ -2123,14 +2133,28 @@ export function ChatComposer({
           if (text === '' || disabled || stopShown) return;
           const outcome = onSend(text);
           setDraft('');
-          /* Cleared optimistically, restored if the send was refused — the same
-             shape as the optimistic echo this sits beside, which is added on
-             submit and removed by the failure path. Restored only into an empty
-             field: the reader may have started something else while the request
-             was in flight, and that is theirs. */
-          if (outcome !== undefined) {
-            void outcome.then((accepted) => {
-              if (accepted) return;
+          /*
+           * Cleared optimistically, put back for the one outcome that says the
+           * server has nothing and named it. `unresolved` is excluded on
+           * purpose — the endpoint carries no idempotency key, so offering the
+           * text back there is one Enter away from a second delivery.
+           * `abandoned` is excluded because that answer is about a conversation
+           * this composer is no longer showing. `not-sent` is excluded because
+           * a second submission's text must not take the field from an earlier
+           * send that is still waiting to hear whether it was refused; the
+           * residual that leaves is in #1449's list.
+           *
+           * The field is asked, not the state: `getValue()` serializes the
+           * contenteditable the reader is typing into, which is authoritative
+           * for what is on screen at this instant. `draft` is a copy of it that
+           * an update still in React's queue can leave one keystroke behind, and
+           * the whole point of the check is the keystroke. The `current === ''`
+           * arm below still runs, for a composer whose handle is not attached.
+           */
+          if (isThenable(outcome)) {
+            void outcome.then((result) => {
+              if (result !== 'refused') return;
+              if ((fieldRef.current?.getValue() ?? '').trim() !== '') return;
               setDraft((current) => current === '' ? text : current);
             });
           }
@@ -2145,6 +2169,7 @@ export function ChatComposer({
         }}
         input={(
           <ChatComposerInput
+            handleRef={fieldRef}
             label="Message"
             placeholder="Say something"
             /* No triggers where there is no command to offer: without them the

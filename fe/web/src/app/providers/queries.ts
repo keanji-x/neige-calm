@@ -76,6 +76,18 @@ export class ApiError extends Error {
  * `'body' in failure` is the narrowing: transport and decode failures never
  * carry one, and reading `.body` off the union without it does not compile.
  */
+/**
+ * The `ErrorBody.code` a rejected request carried, or `null`.
+ *
+ * `'code' in failure` is the narrowing: transport and decode failures never
+ * carry one, so their absence of a code is reported as `null` rather than
+ * guessed at from the message.
+ */
+export function apiFailureCodeOf(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  return 'code' in error.failure ? error.failure.code : null;
+}
+
 export function folderConflictOf(error: unknown): FolderConflict | null {
   if (!(error instanceof ApiError)) return null;
   return 'body' in error.failure ? asFolderConflict(error.failure.body) : null;

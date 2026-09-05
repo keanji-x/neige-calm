@@ -1151,6 +1151,49 @@ describe('ChatComposer', () => {
     expect(document.activeElement).toBe(messageField());
   });
 
+  /*
+   * ── #1449 — what the composer may put back, and when ──────────────────────
+   *
+   * The field is cleared on submit so the optimistic echo can stand in for the
+   * sentence. Putting it back is only sound when the outcome says the server
+   * stored nothing, and only into a field the reader has not moved on in. Each
+   * case below is a distinct answer that used to be the same `false`.
+   */
+  it.each([
+    ['refused', 'Rebuild it'],
+    ['unresolved', ''],
+    ['not-sent', ''],
+    ['abandoned', ''],
+    ['delivered', ''],
+  ] as const)('after %s the field holds %o', async (outcome, expected) => {
+    let answer: (result: typeof outcome) => void = () => {};
+    render(<ChatComposer onSend={() => new Promise((resolve) => { answer = resolve; })} />);
+    const field = messageField();
+    await userEvent.type(field, 'Rebuild it{Enter}');
+    expect(fieldText(field).trim()).toBe('');
+    await act(async () => { answer(outcome); await Promise.resolve(); });
+    expect(fieldText(messageField()).trim()).toBe(expected);
+  });
+
+  /*
+   * The restore must not take the field from the keystroke that is in it.
+   *
+   * The reader can type again the moment the field is cleared, and the answer
+   * to their first sentence arrives whenever the server gets round to it. The
+   * check that decides this asks the editable itself: `draft` is a copy that a
+   * state update still in React's queue can leave one keystroke behind, and
+   * that keystroke is the entire subject.
+   */
+  it('leaves a refused sentence out when the reader has already typed the next one', async () => {
+    let answer: (result: 'refused') => void = () => {};
+    render(<ChatComposer onSend={() => new Promise((resolve) => { answer = resolve; })} />);
+    const field = messageField();
+    await userEvent.type(field, 'Rebuild it{Enter}');
+    await userEvent.type(messageField(), 'new words after');
+    await act(async () => { answer('refused'); await Promise.resolve(); });
+    expect(fieldText(messageField()).trim()).toBe('new words after');
+  });
+
   it('turns Send into Stop while a turn is running', async () => {
     const onStop = vi.fn();
     render(<ChatComposer onSend={vi.fn()} onStop={onStop} />);
