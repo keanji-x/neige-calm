@@ -277,6 +277,21 @@ describe('track conversations', () => {
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-worker"]')).toBeTruthy();
   });
 
+  it('opens an Assistant input notification in its conversation instead of treating it as a worker card', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [trackNeedsInputOverlay, cardStatusOverlay(ASSISTANT_CARD.id, 'AwaitingInput', 4)],
+        })
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Assistant notification' }));
+    expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    expect(window.location.search).not.toContain('card=');
+  });
+
   it('lists simultaneous Planner and Worker requests with a truthful count', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({

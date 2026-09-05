@@ -2234,7 +2234,9 @@ function cardInputNotifications(
     if (card === undefined) continue;
     const source = card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
       ? 'Planner'
-      : card.title ?? card.kind;
+      : card.kind === 'codex' && isAssistantHarnessPayload(card.payload)
+        ? card.title ?? 'Assistant'
+        : card.title ?? card.kind;
     const current = statusByCard.get(card.id);
     if (current !== undefined && current.updatedAt >= overlay.updated_at) continue;
     statusByCard.set(card.id, {
@@ -2515,6 +2517,13 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
   const inputNotifications = useMemo(
     () => cardInputNotifications(cards, overlays),
     [cards, overlays],
+  );
+  const conversationNotificationCardIds = useMemo(
+    () => new Set(cards
+      .filter((card) => card.kind === 'codex'
+        && (isPlannerHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)))
+      .map((card) => card.id)),
+    [cards],
   );
   /*
    * A task row may only offer its worker card when that card can actually be
@@ -2840,7 +2849,7 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
       conversationOpen={chat.isOpen}
       inputNotifications={inputNotifications}
       onOpenInputNotification={(cardId) => {
-        if (plannerCard?.id === cardId) {
+        if (conversationNotificationCardIds.has(cardId)) {
           registry.requestOpen(cardId, { focusComposer: true });
           return;
         }
