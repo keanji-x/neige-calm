@@ -400,10 +400,22 @@ where
     .await?;
 
     let mut harvested = HarvestedQueues::default();
+    let mut seen_rows: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
         let id: String = row.try_get("id")?;
         let state: Option<String> = row.try_get("handle_state_json")?;
         if let Some(state) = state.as_deref() {
+            // #1449 — once per row, and the decoder MINTS ids for entries that
+            // have none, so calling it twice on one row would mint twice and
+            // the second set would name instances nothing else knows about. The
+            // loop visits each row once by construction (the query returns
+            // distinct primary keys); this asserts it rather than leaving the
+            // decoder's only caller to be read for it.
+            assert!(
+                seen_rows.insert(id.clone()),
+                "harvest read runtime {id} twice in one pass; the decoder mints ids and must \
+                 not run twice on a row"
+            );
             let outcome = extract(id.as_str(), state);
             // #1449 S2 — a MOVE, not a copy. The source row keeps whatever the
             // caller did not take and loses what it did, in this transaction.
