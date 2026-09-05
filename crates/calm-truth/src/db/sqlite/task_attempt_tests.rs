@@ -658,3 +658,5 @@ async fn task_recovery_domain_deletion_removes_allocations_after_rows() {
         );
     }
 }
+
+mod followup;

@@ -74,6 +74,46 @@ pub async fn task_attempt_current_pool(
     current_on(&mut *pool.acquire().await?, track_id, key).await
 }
 
+/// Bounded current allocation inventory, including withdrawn/missing pending
+/// projections. Page in logical key order, passing the last key as the next
+/// exclusive cursor. Scheduling continues to consume current task rows only.
+async fn current_by_track_on(
+    conn: &mut SqliteConnection,
+    track_id: &str,
+    after_key: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TaskAttemptAllocation>> {
+    let rows = sqlx::query_as::<_, AllocationRow>(
+        "SELECT * FROM current_task_attempt_allocations WHERE track_id=?1 \
+         AND (?2 IS NULL OR key>?2) ORDER BY key ASC LIMIT ?3",
+    )
+    .bind(track_id)
+    .bind(after_key)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(AllocationRow::decode).collect()
+}
+
+pub async fn task_attempt_current_by_track_pool(
+    pool: &SqlitePool,
+    track_id: &str,
+    after_key: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TaskAttemptAllocation>> {
+    current_by_track_on(&mut *pool.acquire().await?, track_id, after_key, limit).await
+}
+
+/// Use this variant while enumerating multiple pages in one read snapshot.
+pub async fn task_attempt_current_by_track_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &str,
+    after_key: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TaskAttemptAllocation>> {
+    current_by_track_on(tx, track_id, after_key, limit).await
+}
+
 pub async fn task_attempt_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     attempt_id: &str,

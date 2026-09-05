@@ -23,6 +23,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
+mod gate_logs;
+pub use gate_logs::task_gate_log_path;
+
 pub(crate) const RESERVED_RUN_KEYS: &[&str] = &["index"];
 pub(crate) const HOOK_EVENT_TRANSCRIPT_CAP: usize = 500;
 
@@ -216,6 +219,12 @@ impl<'a> TrackFsView<'a> {
                 }
             }
             path if path.starts_with("runs/") => {
+                let parts: Vec<&str> = path.split('/').collect();
+                if parts.len() == 4 && parts[2] == "gates" {
+                    return self
+                        .cat_execution_gate_log(track, path, parts[1], parts[3])
+                        .await;
+                }
                 let runs = self.runs_for_track(track).await?;
                 let run_path = path.trim_start_matches("runs/");
                 if let Some(key) = run_path.strip_suffix(".md") {
@@ -240,54 +249,6 @@ impl<'a> TrackFsView<'a> {
                 self.cat_gate_log(track, parts[1]).await
             }
             other => Err(path_not_available(other)),
-        }
-    }
-
-    /// `plan/<key>/gate.log` (issue #644 PR-C): planner-role-gated read of
-    /// `<gate_logs_dir>/{task_id}-g{gate_attempt}.log`. Advisory
-    /// content per §6.7 — the log is worker-reachable on disk; the
-    /// verdict rides the wrapper exit status, never this file.
-    async fn cat_gate_log(&self, track: &Track, key: &str) -> Result<TrackFsContent, TrackFsError> {
-        let Some((role, gate_logs_dir)) = &self.gate_log_access else {
-            return Err(TrackFsError::Forbidden(
-                "track_file: forbidden: plan/<key>/gate.log is not available on this surface"
-                    .to_string(),
-            ));
-        };
-        if *role != CardRole::Planner {
-            return Err(TrackFsError::Forbidden(format!(
-                "track_file: forbidden: plan/{key}/gate.log is planner-only (§6.7); caller role {role:?}"
-            )));
-        }
-        let task = self
-            .repo
-            .task_current_get(track.id.as_str(), key)
-            .await
-            .map_err(|e| TrackFsError::Internal(format!("track_file: task lookup: {e}")))?
-            .ok_or_else(|| path_not_available(&format!("plan/{key}/gate.log")))?;
-        if task.gate_json.is_none() {
-            return Err(path_not_available(&format!(
-                "plan/{key}/gate.log (task declares no gate)"
-            )));
-        }
-        if task.gate_attempt < 1 {
-            return Err(path_not_available(&format!(
-                "plan/{key}/gate.log (no gate attempt has run yet)"
-            )));
-        }
-        let log_path = gate_logs_dir.join(format!("{}-g{}.log", task.id, task.gate_attempt));
-        match tokio::fs::read_to_string(&log_path).await {
-            Ok(content) => Ok(TrackFsContent {
-                content,
-                content_type: "text/plain".into(),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(path_not_available(
-                &format!("plan/{key}/gate.log (log file not present yet)"),
-            )),
-            Err(e) => Err(TrackFsError::Internal(format!(
-                "track_file: gate log read {}: {e}",
-                log_path.display()
-            ))),
         }
     }
 
