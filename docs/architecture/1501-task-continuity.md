@@ -77,9 +77,9 @@ Admission does not prove replay safety. Before replacement execution starts,
 reconcile and fence the prior execution so it can no longer write the same input
 or repeat an external action concurrently. A failed task row can precede process
 cleanup. Request idempotency and late-callback rejection do not stop that process.
-Uncertain prior external effects require an actionable blocker or an explicitly
-authorized recovery decision; they must not be replayed merely because an attempt
-row says failed.
+Uncertain prior external effects block the initial recovery path until
+reconciliation establishes replay safety. An ordinary recovery request does not
+override this prerequisite, and a failed row alone is not proof of safety.
 
 Initial authority is deliberately bounded:
 
@@ -293,10 +293,12 @@ retaining failed history. This is derived state, not a second persisted status
 writer or a reinterpretation of the historical failed row.
 
 Recovery composes the already-permitted transition to Working for an appropriate
-nonterminal Track. It must not strand ordinary failure behind an additional manual
-lifecycle command. A user-blocked or terminal Track expresses separate intent;
-Planner recovery cannot silently reopen it. Capability replies must state that
-specific prerequisite, and user reopening keeps the existing lifecycle authority.
+nonterminal Track. In particular, both User and Planner already have the
+Blocked-to-Working edge; do not infer an additional user-only pause authority from
+the Blocked label. Declaration readiness/release withdrawal remains a separate
+fence. Ordinary failure must not require another manual lifecycle command. A
+terminal Track needs the existing explicit user reopening action; Planner recovery
+cannot silently reopen it. Capability replies state that specific prerequisite.
 
 ## Delivery ledger
 
