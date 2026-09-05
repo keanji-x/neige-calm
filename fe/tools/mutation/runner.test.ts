@@ -379,22 +379,22 @@ describe('shared test-harness dependencies reach the entries that need them', ()
 });
 
 describe('dynamic shard plan', () => {
-  it('keeps the 72-entry full-sweep capacity inside one eight-runner browser-install batch', () => {
+  it('keeps the 72-entry full-sweep capacity inside one nine-runner browser-install batch', () => {
     expect(shardPlan(72, 'full')).toEqual({
-      total: 8,
-      shards: [1, 2, 3, 4, 5, 6, 7, 8],
+      total: 9,
+      shards: [1, 2, 3, 4, 5, 6, 7, 8, 9],
       clamped: false,
     });
   });
 
-  it.each([[0, 1], [1, 1], [9, 1], [10, 2], [71, 8], [72, 8]])(
+  it.each([[0, 1], [1, 1], [8, 1], [9, 2], [71, 9], [72, 9]])(
     '%i selected entries plan %i shards without clamping', (selectedCount, total) => {
       expect(shardPlan(selectedCount))
         .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
     });
   it('never plans fewer than one shard nor more than the cap', () => {
-    expect(entriesPerShard).toBe(9);
-    expect(fullMaxShards).toBe(8);
+    expect(entriesPerShard).toBe(8);
+    expect(fullMaxShards).toBe(9);
     expect(shardPlan(0).shards).toEqual([1]);
     expect(shardPlan(10_000).total).toBe(fullMaxShards);
   });
@@ -425,7 +425,7 @@ describe('dynamic shard plan', () => {
     });
   });
   it('keeps full scope as the safe default and rejects unknown CLI scope values', () => {
-    expect(entriesPerShard).toBe(9);
+    expect(entriesPerShard).toBe(8);
     expect(witnessEntriesPerShard).toBe(12);
     expect(shardPlan(65)).toEqual(shardPlan(65, 'full'));
     expect(parseMutationTestScope('full')).toBe('full');

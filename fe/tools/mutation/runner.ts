@@ -709,15 +709,15 @@ export function selectedEntries(
 }
 
 /**
- * Nine full-suite entries keep the current 71-entry manifest in one eight-runner batch. Historical
- * four-entry shards spent 6–9.5 minutes in evidence, so nine entries retain headroom under the
- * 25-minute job timeout while cutting repeated browser/system setup from 18 jobs to eight.
+ * Eight full-suite entries keep the current 71-entry manifest in one nine-runner batch. An
+ * eight-shard trial put its slowest nine-entry job at 24:05 against a 25-minute timeout; the ninth
+ * shard removes one entry from every busy shard while still halving repeated browser/system setup.
  */
-export const entriesPerShard = 9;
+export const entriesPerShard = 8;
 /** Witness runs execute named files only; larger shards cut matrix fan-out without becoming critical-path jobs. */
 export const witnessEntriesPerShard = 12;
-/** Match the full sweep's eight-way hosted-runner limit: a second batch only repeats browser setup. */
-export const fullMaxShards = 8;
+/** Match the full sweep's nine-way hosted-runner limit: a second batch only repeats browser setup. */
+export const fullMaxShards = 9;
 /** Witness jobs skip unrelated test projects, so preserve their larger growth ceiling. */
 export const witnessMaxShards = 32;
 
