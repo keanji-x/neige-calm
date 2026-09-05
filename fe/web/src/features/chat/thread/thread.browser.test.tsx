@@ -39,7 +39,8 @@ import '../../../styles/entry.css';
 
 import { ChatComposer, ChatThread } from './public.tsx';
 import type {
-  Conversation, ConversationActivity, ConversationSystemEntry, ConversationTurn, TranscriptEntry,
+  Conversation, ConversationActivity, ConversationSystemEntry, ConversationTurn,
+  OptimisticConversationTurn, TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
@@ -325,7 +326,7 @@ describe('the / command menu, as the engine lays it out', () => {
    */
   it('right-edges the queued caption onto its message and keeps it legible', async () => {
     await page.viewport(1400, 900);
-    const queuedTurn: TranscriptEntry = {
+    const queuedTurn: OptimisticConversationTurn = {
       id: 'echo-1', author: 'you', text: 'A message that is waiting its turn.',
       atMs: 4_000, serverHighWaterBefore: 0, queued: true,
     };
