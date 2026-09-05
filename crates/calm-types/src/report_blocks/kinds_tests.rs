@@ -268,6 +268,33 @@ fn task_payload_validates_every_field_and_unknown_fields() {
 }
 
 #[test]
+fn task_instruction_field_is_discriminated_by_worker_kind() {
+    for kind in ["codex", "claude"] {
+        let mut agent = valid_task();
+        agent["kind"] = json!(kind);
+        assert_eq!(validate_payload(KIND_TASK, &agent), Ok(()));
+
+        agent.as_object_mut().unwrap().remove("goal");
+        agent["command"] = json!("cargo test");
+        let error = validate_payload(KIND_TASK, &agent).unwrap_err();
+        assert!(error.contains("goal: required"), "{kind}: {error}");
+        assert!(error.contains("command: must be absent"), "{kind}: {error}");
+    }
+
+    let mut terminal = valid_task();
+    terminal["kind"] = json!("terminal");
+    terminal.as_object_mut().unwrap().remove("goal");
+    terminal["command"] = json!("cargo test");
+    assert_eq!(validate_payload(KIND_TASK, &terminal), Ok(()));
+
+    terminal.as_object_mut().unwrap().remove("command");
+    terminal["goal"] = json!("Run the test suite");
+    let error = validate_payload(KIND_TASK, &terminal).unwrap_err();
+    assert!(error.contains("command: required"), "{error}");
+    assert!(error.contains("goal: must be absent"), "{error}");
+}
+
+#[test]
 fn acceptance_4_missing_explicit_in_track_and_null_spawn_normalize_identically() {
     let mut missing = valid_task();
     missing.as_object_mut().unwrap().remove("spawn");

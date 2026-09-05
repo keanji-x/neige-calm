@@ -2076,7 +2076,8 @@ async fn terminal_hook_completes_task_on_exit() {
     seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "compile ok\n", false)
+        .await;
 
     let row = task_row(&boot, "term").await;
     assert_eq!(row.status, TaskStatus::Done);
@@ -2089,10 +2090,19 @@ async fn terminal_hook_completes_task_on_exit() {
         completed[0].0
     );
     assert_eq!(completed[0].1["idempotency_key"], json!(task_id));
+    assert_eq!(
+        completed[0].1["result"]["pty_output"],
+        json!("compile ok\n")
+    );
+    assert_eq!(
+        completed[0].1["result"]["pty_output_truncated"],
+        json!(false)
+    );
 
     // Idempotency: a second exit delivery (or a racing sweep) no-ops —
     // no extra event, row untouched.
-    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
+        .await;
     assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
     assert_eq!(task_row(&boot, "term").await.status, TaskStatus::Done);
 }
@@ -2117,7 +2127,8 @@ async fn terminal_exit_beats_running_stamp() {
     seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
+        .await;
 
     let row = task_row(&boot, "fast-term").await;
     assert_eq!(
@@ -2172,7 +2183,14 @@ async fn terminal_hook_nonzero_exit_fails_task() {
     seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&terminal_id, Some(2), false).await;
+    hook.on_terminal_exit(
+        &terminal_id,
+        Some(2),
+        false,
+        "tail of failing output\n",
+        true,
+    )
+    .await;
 
     let row = task_row(&boot, "term-fail").await;
     assert_eq!(row.status, TaskStatus::Failed);
@@ -2191,6 +2209,11 @@ async fn terminal_hook_nonzero_exit_fails_task() {
         reason.contains("code 2"),
         "reason carries the exit code: {reason:?}"
     );
+    assert_eq!(
+        failed[0].1["details"]["pty_output"],
+        json!("tail of failing output\n")
+    );
+    assert_eq!(failed[0].1["details"]["pty_output_truncated"], json!(true));
 }
 
 #[tokio::test]
@@ -2207,7 +2230,13 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     task.worker_card_id = Some(card_id.as_str().to_string());
     seed_task(&boot, task).await;
     boot.repo
-        .terminal_set_exit(&terminal_id, Some(-1), false)
+        .terminal_set_exit_with_output(
+            &terminal_id,
+            Some(-1),
+            false,
+            "durable output before restart\n",
+            true,
+        )
         .await
         .expect("persist synthetic exit");
 
@@ -2236,6 +2265,11 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.contains("KernelDispatcher"));
+    assert_eq!(
+        failed[0].1["details"]["pty_output"],
+        json!("durable output before restart\n")
+    );
+    assert_eq!(failed[0].1["details"]["pty_output_truncated"], json!(true));
 
     // Sweeping again is a no-op (guarded completion, first writer won).
     scheduler.sweep_all().await;
@@ -3123,7 +3157,8 @@ async fn codex_task_pty_exit_does_not_complete_task() {
     let (_card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
+        .await;
     assert_eq!(
         task_row(&boot, "cx").await.status,
         TaskStatus::Running,
@@ -3132,7 +3167,8 @@ async fn codex_task_pty_exit_does_not_complete_task() {
     assert!(event_rows(&boot, "task.completed").await.is_empty());
 
     // Non-zero exits are equally not the hook's business for codex.
-    hook.on_terminal_exit(&terminal_id, Some(2), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(2), false, "", false)
+        .await;
     assert_eq!(task_row(&boot, "cx").await.status, TaskStatus::Running);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
@@ -3151,7 +3187,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
     let (_card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&terminal_id, Some(0), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
+        .await;
     assert_eq!(
         task_row(&boot, "claude-exit").await.status,
         TaskStatus::Running,
@@ -3159,7 +3196,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
     );
     assert!(event_rows(&boot, "task.completed").await.is_empty());
 
-    hook.on_terminal_exit(&terminal_id, Some(2), false).await;
+    hook.on_terminal_exit(&terminal_id, Some(2), false, "", false)
+        .await;
     assert_eq!(
         task_row(&boot, "claude-exit").await.status,
         TaskStatus::Running
@@ -3254,7 +3292,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
             id: "b_task_root".into(),
             kind: "task".into(),
             rev: 1,
-            payload: json!({"key": key, "kind": "terminal", "goal": "echo hi"}),
+            payload: json!({"key": key, "kind": "terminal", "command": "echo hi"}),
         }]),
     };
     sqlx::query(
@@ -3431,7 +3469,7 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
     insert_report_payload(
         &boot,
         "empty-report",
-        json!({"schemaVersion": 3, "docRev": 1, "summary": "", "body": ""}),
+        json!({"schemaVersion": 4, "docRev": 1, "summary": "", "body": ""}),
     )
     .await;
     let monitor =
@@ -3452,14 +3490,14 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
         &boot,
         "mixed-report",
         json!({
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "docRev": 2,
             "summary": "",
             "body": "",
             "blocks": [
                 {"id": "b_broken", "kind": 7, "rev": "bad", "payload": null},
                 {"id": "b_target", "kind": "task", "rev": 1,
-                 "payload": {"key": "target", "kind": "terminal", "goal": "ok"}}
+                 "payload": {"key": "target", "kind": "terminal", "command": "ok"}}
             ]
         }),
     )
@@ -3641,7 +3679,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         set_lifecycle(&boot, TrackLifecycle::Draft).await;
         let key = format!("root-{case}");
         let valid_root = json!({
-            "key": key, "kind": "terminal", "goal": "true",
+            "key": key, "kind": "terminal", "command": "true",
             "declared_by": "spec", "ready": true
         });
         insert_report_payload(
@@ -3693,7 +3731,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 root_id,
                 "task",
                 json!({
-                    "key": key, "kind": "terminal", "goal": "true",
+                    "key": key, "kind": "terminal", "command": "true",
                     "declared_by": "spec", "ready": true,
                     "refs": ["not-a-neige-link"]
                 }),
@@ -3795,7 +3833,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
                     kind: "task".into(),
                     rev: 1,
                     payload: json!({
-                        "key": "blocked-head", "kind": "terminal", "goal": "true",
+                        "key": "blocked-head", "kind": "terminal", "command": "true",
                         "declared_by": "spec", "ready": true,
                         "refs": [format!("neige://wave/{}#b_cafe", boot.track_id)]
                     }),
@@ -3817,7 +3855,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
                     kind: "task".into(),
                     rev: 1,
                     payload: json!({
-                        "key": "healthy-tail", "kind": "terminal", "goal": "true",
+                        "key": "healthy-tail", "kind": "terminal", "command": "true",
                         "declared_by": "spec", "ready": true
                     }),
                 },
@@ -3926,7 +3964,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
                 kind: "task".into(),
                 rev: 1,
                 payload: json!({
-                    "key": key, "kind": "terminal", "goal": "true", "priority": 1,
+                    "key": key, "kind": "terminal", "command": "true", "priority": 1,
                     "refs": [format!("neige://wave/{}#b_3002", boot.track_id)]
                 }),
             },
@@ -3998,7 +4036,7 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
             id: "b_1000".into(),
             kind: "task".into(),
             rev: 3,
-            payload: json!({"key": key, "kind": "terminal", "goal": "original contract"}),
+            payload: json!({"key": key, "kind": "terminal", "command": "original contract"}),
         }]),
     };
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -4047,7 +4085,7 @@ async fn seed_production_report_context_fixture(
     let task_payload = json!({
         "key": key,
         "kind": "terminal",
-        "goal": "use the referenced contract",
+        "command": "true",
         "refs": [format!("neige://wave/{}#{target_id}", boot.track_id)],
         "ready": true,
         "declared_by": "spec",
@@ -5643,7 +5681,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
             kind: "task".into(),
             rev: 1,
             payload: json!({
-                "key": key, "kind": "terminal", "goal": "true",
+                "key": key, "kind": "terminal", "command": "true",
                 "refs": [format!("neige://wave/{}#b_dead", referenced.id)]
             }),
         }]),
@@ -6086,7 +6124,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             kind: "task".into(),
             rev: 1,
             payload: json!({
-                "key": key, "kind": "terminal", "goal": "true",
+                "key": key, "kind": "terminal", "command": "true",
                 "refs": [format!("neige://wave/{}#b_1000", boot.track_id)]
             }),
         });
@@ -6137,7 +6175,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         id: "b_ca900".into(),
         kind: "task".into(),
         rev: 1,
-        payload: json!({"key": "sweep-cap", "kind": "terminal", "goal": "true"}),
+        payload: json!({"key": "sweep-cap", "kind": "terminal", "command": "true"}),
     });
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
@@ -7154,7 +7192,7 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
     let (_forged_card_id, forged_terminal_id) = seed_terminal_worker(&boot, &task_id).await;
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    hook.on_terminal_exit(&forged_terminal_id, Some(0), false)
+    hook.on_terminal_exit(&forged_terminal_id, Some(0), false, "", false)
         .await;
 
     let row = task_row(&boot, "forged-term").await;
@@ -7170,7 +7208,7 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
     );
 
     // The real worker's exit still completes the task.
-    hook.on_terminal_exit(&real_terminal_id, Some(0), false)
+    hook.on_terminal_exit(&real_terminal_id, Some(0), false, "", false)
         .await;
     let row = task_row(&boot, "forged-term").await;
     assert_eq!(row.status, TaskStatus::Done);

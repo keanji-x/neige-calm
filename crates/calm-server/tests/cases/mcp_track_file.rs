@@ -486,6 +486,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
         Event::TaskFailed {
             idempotency_key: key.into(),
             reason: reason.into(),
+            details: None,
             agent_message: None,
         },
     )
@@ -1554,6 +1555,7 @@ async fn track_scoped_dispatcher_failure_is_not_planner_verdict() {
         Event::TaskFailed {
             idempotency_key: "dispatcher-track-failed".into(),
             reason: "spawn failed".into(),
+            details: None,
             agent_message: None,
         },
     )

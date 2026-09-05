@@ -585,6 +585,7 @@ pub(crate) async fn converge_dead_worker(
                 Event::TaskFailed {
                     idempotency_key: task_id.clone(),
                     reason,
+                    details: None,
                     agent_message: None,
                 },
             )];

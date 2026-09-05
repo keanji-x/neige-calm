@@ -140,7 +140,7 @@ fn seed_fixture_body() -> String {
     let duplicate_task = json!({
         "key": "build",
         "kind": "terminal",
-        "goal": "Second declaration with the same key",
+        "command": "true",
         "acceptance": "Second declaration remains exact",
         "refs": [],
         "ready": true,
@@ -699,7 +699,7 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
             "rev": source_truth[6].1,
             "payload": {
                 "key": "build", "kind": "terminal",
-                "goal": "Second declaration with the same key",
+                "command": "true",
                 "acceptance": "Second declaration remains exact",
                 "refs": [], "ready": false, "declared_by": "spec"
             }
@@ -982,7 +982,7 @@ async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(target_report["schemaVersion"], 3);
+    assert_eq!(target_report["schemaVersion"], 4);
     assert_eq!(target_report["docRev"], 0);
     assert_eq!(target_report["summary"], source_report["summary"]);
     assert_eq!(target_report["body"], source_report["body"]);
@@ -1087,7 +1087,7 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
     assert_eq!(
         target_card.payload,
         json!({
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "docRev": 0,
             "summary": "",
             "body": "",

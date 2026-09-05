@@ -255,6 +255,7 @@ async fn task_verdict(
             // for "no reason given" — we don't second-guess the
             // verdict).
             reason: reason.unwrap_or_default(),
+            details: None,
             agent_message: Some(write_args.message.clone()),
         },
         other => {

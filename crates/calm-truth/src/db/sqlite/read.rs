@@ -889,7 +889,8 @@ impl RepoRead for SqlxRepo {
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, pid,
-                      theme_fg, theme_bg, exit_code, signal_killed, created_at
+                      theme_fg, theme_bg, exit_code, signal_killed,
+                      pty_output, pty_output_truncated, created_at
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
@@ -901,7 +902,8 @@ impl RepoRead for SqlxRepo {
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, pid,
-                      theme_fg, theme_bg, exit_code, signal_killed, created_at
+                      theme_fg, theme_bg, exit_code, signal_killed,
+                      pty_output, pty_output_truncated, created_at
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
@@ -921,6 +923,7 @@ impl RepoRead for SqlxRepo {
                       t.pid,
                       t.theme_fg, t.theme_bg,
                       t.exit_code, t.signal_killed,
+                      t.pty_output, t.pty_output_truncated,
                       t.created_at
                FROM terminals t
                WHERE NOT EXISTS (
@@ -942,6 +945,7 @@ impl RepoRead for SqlxRepo {
                       pid,
                       theme_fg, theme_bg,
                       exit_code, signal_killed,
+                      pty_output, pty_output_truncated,
                       created_at
                FROM terminals
                WHERE exit_code IS NULL AND signal_killed = 0"#,

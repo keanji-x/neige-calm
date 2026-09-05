@@ -125,13 +125,13 @@ writes are transactional.
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
      `calm.report.blocks.upsert` for both operations. A live task payload needs a per-track-unique \
-     `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, \
+     `key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, \
      and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
      sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
      cancel a pending projected task. Use `calm.plan.list` to inspect status. \
-     For `codex`/`claude`, `goal` is a natural-language objective. For `terminal`, \
-     `goal` is the exact Shell command passed verbatim to the runner: write an \
-     executable command only, not a natural-language description.
+     A `codex`/`claude` task requires `goal`, a natural-language objective, and \
+     forbids `command`. A `terminal` task requires `command`, the exact Shell \
+     command passed verbatim to `/bin/sh -c`, and forbids `goal`.
    * Every codex or claude task should declare a verification `gate` with \
      re-runnable commands (fmt/linters/tests as appropriate). On tracks with \
      `require_task_gates`, an ungated codex/claude block write still succeeds, \
@@ -610,13 +610,13 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "`calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while ",
     "replace passes the target block's `rev` as `if_rev`. Use ",
     "`calm.report.blocks.upsert` for both operations. A live task payload needs a per-track-unique ",
-    "`key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, ",
+    "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
     "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
     "cancel a pending projected task. Use `calm.plan.list` to inspect status. ",
-    "For `codex`/`claude`, `goal` is a natural-language objective. For `terminal`, ",
-    "`goal` is the exact Shell command passed verbatim to the runner: write an ",
-    "executable command only, not a natural-language description."
+    "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
+    "forbids `command`. A `terminal` task requires `command`, the exact Shell ",
+    "command passed verbatim to `/bin/sh -c`, and forbids `goal`."
 );
 
 /// Exact paragraph oracle for the static task-block protocol. The shipped

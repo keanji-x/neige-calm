@@ -543,7 +543,7 @@ async fn read_returns_initial_seeded_body() {
         Some(TrackReportPayload::initial().body.as_str())
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(3));
+    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(4));
     assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(0));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,

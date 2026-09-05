@@ -204,7 +204,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { track_id: TrackId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { track_id: TrackId, reason: string, } } | { "ev": "ratify.resolved", "data": { track_id: TrackId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
  * Submitting plugin. Injected kernel-side from the callback
  * connection (never trusted from plugin input) and
@@ -602,7 +602,7 @@ updated_at: number, };
  *
  * ```json
  * {
- *   "schemaVersion": 3,
+ *   "schemaVersion": 4,
  *   "docRev": 7,
  *   "summary": "Refactored the dispatcher into a typed actor",
  *   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
@@ -618,9 +618,9 @@ export type TrackReportPayload = {
 /**
  * Tier A persistence contract — see
  * `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
- * `validation.rs`. `3` since #979 added document-wide optimistic
- * concurrency; blocks remain authoritative and `body` is their
- * flat projection. v1/v2 rows remain readable and are lazily
+ * `validation.rs`. `4` since #1456 discriminated terminal `command`
+ * from agent `goal`; blocks remain authoritative and `body` is their
+ * flat projection. Older rows remain readable and are lazily
  * upgraded at the next persist via the CRDT-layer migrator
  * (`ReportDoc::ensure_blocks_layout`).
  */

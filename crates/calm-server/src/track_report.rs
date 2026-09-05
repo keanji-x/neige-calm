@@ -32,9 +32,10 @@
 //! See `docs/upgrade-stability.md`. The struct carries `schema_version`
 //! explicitly + matches it against
 //! [`crate::validation::TRACK_REPORT_PAYLOAD_SCHEMA_VERSION`] at every
-//! write boundary. The current shape is v3 (`docRev` + optional block
-//! index). During a downgrade window, an old binary can overwrite the JSON
-//! payload back to v2, drop `docRev`, and fail to advance CRDT `doc_rev`;
+//! write boundary. The current shape is v4 (`docRev` + optional block
+//! index + kind-discriminated task instruction fields). During a downgrade
+//! window, an old binary can overwrite the JSON payload back to v3 and write
+//! an ambiguous terminal `goal`;
 //! mixed-version report writes therefore have a real lost-write window and
 //! are unsupported.
 //!
@@ -929,7 +930,7 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "schemaVersion": 3,
+                "schemaVersion": 4,
                 "docRev": 0,
                 "summary": "hi",
                 "body": "# A\n\nb\n",

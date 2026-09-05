@@ -335,21 +335,21 @@ mod tests {
         let registry = CardKindRegistry::builtins();
         assert!(
             registry
-                .validate_payload("track-report", &json!({ "schemaVersion": 3, "body": "x" }))
+                .validate_payload("track-report", &json!({ "schemaVersion": 4, "body": "x" }))
                 .is_err()
         );
         assert!(
             registry
                 .validate_payload(
                     "track-report",
-                    &json!({ "schemaVersion": 3, "docRev": "x", "summary": "s", "body": "x" }),
+                    &json!({ "schemaVersion": 4, "docRev": "x", "summary": "s", "body": "x" }),
                 )
                 .is_err()
         );
         registry
             .validate_payload(
                 "track-report",
-                &json!({ "schemaVersion": 3, "docRev": 0, "summary": "s", "body": "x" }),
+                &json!({ "schemaVersion": 4, "docRev": 0, "summary": "s", "body": "x" }),
             )
             .unwrap();
     }

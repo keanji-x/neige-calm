@@ -127,10 +127,7 @@ const taskGateStepSchema = z.strictObject({
   cmd: z.string(),
 });
 
-const liveTaskBlockPayloadSchema = z.strictObject({
-  key: z.string(),
-  kind: z.enum(['codex', 'claude', 'terminal']),
-  goal: z.string(),
+const liveTaskSharedShape = {
   acceptance: z.string().optional(),
   gate: z.strictObject({
     cwd: z.string().optional(),
@@ -148,7 +145,34 @@ const liveTaskBlockPayloadSchema = z.strictObject({
   released_by_user: z.boolean().optional(),
   spawn: z.enum(['in-wave', 'sub-wave']).optional(),
   tombstone: z.null().optional(),
+} as const;
+
+const agentTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.enum(['codex', 'claude']),
+  goal: z.string(),
+  ...liveTaskSharedShape,
 });
+
+const terminalTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.literal('terminal'),
+  command: z.string(),
+  ...liveTaskSharedShape,
+});
+
+const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.literal('terminal'),
+  goal: z.string(),
+  ...liveTaskSharedShape,
+}).transform(({ goal, ...payload }) => ({ ...payload, command: goal }));
+
+const liveTaskBlockPayloadSchema = z.union([
+  agentTaskBlockPayloadSchema,
+  terminalTaskBlockPayloadSchema,
+  legacyTerminalTaskBlockPayloadSchema,
+]);
 
 const tombstoneTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),

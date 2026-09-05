@@ -27,7 +27,7 @@ pub struct ReportBlock {
 ///
 /// ```json
 /// {
-///   "schemaVersion": 3,
+///   "schemaVersion": 4,
 ///   "docRev": 7,
 ///   "summary": "Refactored the dispatcher into a typed actor",
 ///   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
@@ -44,9 +44,9 @@ pub struct ReportBlock {
 pub struct TrackReportPayload {
     /// Tier A persistence contract — see
     /// `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-    /// `validation.rs`. `3` since #979 added document-wide optimistic
-    /// concurrency; blocks remain authoritative and `body` is their
-    /// flat projection. v1/v2 rows remain readable and are lazily
+    /// `validation.rs`. `4` since #1456 discriminated terminal `command`
+    /// from agent `goal`; blocks remain authoritative and `body` is their
+    /// flat projection. Older rows remain readable and are lazily
     /// upgraded at the next persist via the CRDT-layer migrator
     /// (`ReportDoc::ensure_blocks_layout`).
     pub schema_version: u32,
@@ -149,7 +149,7 @@ impl TrackReportPayload {
     /// [`crate::card_kind::TrackReportCardHandler`] and the matching
     /// frontend zod schema in
     /// `web/src/api/schemas.ts`.
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 4;
 
     pub fn new(summary: impl Into<String>, body: impl Into<String>) -> Self {
         Self {

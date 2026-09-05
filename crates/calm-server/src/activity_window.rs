@@ -486,6 +486,7 @@ mod tests {
         let failed = Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "e".into(),
+            details: None,
             agent_message: None,
         };
         assert_eq!(

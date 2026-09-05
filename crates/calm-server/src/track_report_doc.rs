@@ -62,9 +62,10 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
+use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_block;
 use calm_types::report_blocks::{
     BlockSlice, KIND_PROSE, flat_text, mint_id, parse_fence, reassign_ids, reassign_ids_with_hints,
-    split_body,
+    render_fence, split_body,
 };
 
 use crate::track_report::{ReportBlock, TrackReportPayload};
@@ -241,29 +242,61 @@ impl ReportDoc {
 
     /// Lazily migrate a legacy (pre-#960) doc to the v2 block layout.
     ///
-    /// Returns `Ok(false)` when the doc already has the `blocks` map
-    /// (O(1) check, the common case). Otherwise: read the legacy
+    /// Also performs the v3→v4 task-vocabulary migration in place: a terminal
+    /// task's legacy `goal` field becomes `command` without changing its block
+    /// revision. The rename preserves the executable value, so invalidating a
+    /// caller's existing `if_rev` anchor would create a spurious conflict.
+    ///
+    /// Returns whether either migration changed the in-memory document.
+    /// When the doc lacks the `blocks` map: read the legacy
     /// `ROOT.body` text, split it, align the slices against
     /// `hint_blocks` (the payload JSON's PR1-derived `blocks` cache,
     /// so best-effort ids become durable ones), write the
     /// `blocks`/`order` layout, delete `ROOT.body`, and return
     /// `Ok(true)`.
     pub fn ensure_blocks_layout(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
-        if self.blocks_map().context("probe blocks map")?.is_some() {
-            return Ok(false);
+        let layout_changed = if self.blocks_map().context("probe blocks map")?.is_some() {
+            false
+        } else {
+            let (_, body_id) = self
+                .0
+                .get(&ROOT, LEGACY_FIELD_BODY)
+                .context("probe legacy body")?
+                .context("legacy doc missing both blocks map and body Text")?;
+            let body = self.0.text(&body_id).context("read legacy body text")?;
+            let blocks = reassign_ids(hint_blocks.unwrap_or_default(), &split_body(&body));
+            Self::write_blocks_layout(&mut self.0, &blocks);
+            self.0
+                .delete(&ROOT, LEGACY_FIELD_BODY)
+                .context("delete legacy body")?;
+            true
+        };
+        let command_changed = self.normalize_legacy_terminal_commands()?;
+        Ok(layout_changed || command_changed)
+    }
+
+    fn normalize_legacy_terminal_commands(&mut self) -> Result<bool> {
+        let blocks_id = self
+            .blocks_map()?
+            .context("doc invariant: blocks map must exist after layout migration")?;
+        let mut changed = false;
+        for block in self.blocks_snapshot()? {
+            let normalized = normalize_legacy_terminal_task_block(&block);
+            if normalized == block {
+                continue;
+            }
+            let entry = self
+                .entry_at(&blocks_id, &block.id)?
+                .with_context(|| format!("block {} vanished during task migration", block.id))?;
+            replace_text_object(
+                &mut self.0,
+                &entry,
+                &render_fence(&normalized.kind, &normalized.payload),
+            )
+            .with_context(|| format!("migrate terminal task block {}", block.id))?;
+            changed = true;
         }
-        let (_, body_id) = self
-            .0
-            .get(&ROOT, LEGACY_FIELD_BODY)
-            .context("probe legacy body")?
-            .context("legacy doc missing both blocks map and body Text")?;
-        let body = self.0.text(&body_id).context("read legacy body text")?;
-        let blocks = reassign_ids(hint_blocks.unwrap_or_default(), &split_body(&body));
-        Self::write_blocks_layout(&mut self.0, &blocks);
-        self.0
-            .delete(&ROOT, LEGACY_FIELD_BODY)
-            .context("delete legacy body")?;
-        Ok(true)
+        Ok(changed)
     }
 
     /// Wholesale replace: the compatibility shim behind the legacy
@@ -1122,6 +1155,42 @@ changed.
         assert_eq!(
             reloaded.project().unwrap(),
             (summary.to_string(), body.to_string())
+        );
+    }
+
+    #[test]
+    fn task_v4_migration_renames_terminal_goal_without_bumping_block_rev() {
+        let legacy = ReportBlock {
+            id: "b_terminal".into(),
+            kind: calm_types::report_blocks::KIND_TASK.into(),
+            rev: 7,
+            payload: json!({
+                "key": "compile",
+                "kind": "terminal",
+                "goal": "cargo check",
+                "ready": true,
+                "declared_by": "spec"
+            }),
+        };
+        let mut payload = TrackReportPayload::new("legacy", flat_text(&legacy));
+        payload.schema_version = 3;
+        payload.blocks = Some(vec![legacy]);
+        let mut doc = ReportDoc::from_payload(&payload);
+
+        assert!(doc.ensure_blocks_layout(payload.blocks.as_deref()).unwrap());
+        let migrated = doc.blocks_snapshot().unwrap();
+        assert_eq!(
+            migrated[0].rev, 7,
+            "a semantic rename preserves the CAS anchor"
+        );
+        assert_eq!(migrated[0].payload["command"], "cargo check");
+        assert!(migrated[0].payload.get("goal").is_none());
+        let body = doc.project().unwrap().1;
+        assert!(body.contains(r#""command": "cargo check""#), "{body}");
+        assert!(!body.contains(r#""goal""#), "{body}");
+        assert!(
+            !doc.ensure_blocks_layout(None).unwrap(),
+            "migration is idempotent"
         );
     }
 

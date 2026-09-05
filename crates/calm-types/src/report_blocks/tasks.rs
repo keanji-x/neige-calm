@@ -142,6 +142,53 @@ pub struct TaskDeclaration {
     pub tombstone: bool,
 }
 
+/// Normalize the one pre-#1456 task shape that remains in persisted reports.
+///
+/// Terminal declarations used to store the executable shell command in
+/// `goal`. New write schemas reject that ambiguous shape and require
+/// `command`, but existing report JSON and CRDT snapshots must stay readable.
+/// This is deliberately narrow: only `kind == "terminal"`, a string `goal`,
+/// and an absent `command` are rewritten. Mixed/new-invalid shapes are left
+/// untouched so normal validation rejects them instead of guessing.
+pub fn normalize_legacy_terminal_command(payload: &Value) -> Value {
+    let mut payload = payload.clone();
+    let Some(map) = payload.as_object_mut() else {
+        return payload;
+    };
+    if map.get("kind").and_then(Value::as_str) != Some("terminal")
+        || map.contains_key("command")
+        || !matches!(map.get("goal"), Some(Value::String(_)))
+    {
+        return payload;
+    }
+    let command = map.remove("goal").expect("checked terminal goal");
+    map.insert("command".into(), command);
+    payload
+}
+
+/// Read-side/persist-migrator wrapper that preserves block identity and
+/// revision while updating only the terminal instruction field name.
+pub fn normalize_legacy_terminal_task_block(block: &ReportBlock) -> ReportBlock {
+    if block.kind != super::KIND_TASK {
+        return block.clone();
+    }
+    let payload = normalize_legacy_terminal_command(&block.payload);
+    if payload == block.payload {
+        return block.clone();
+    }
+    ReportBlock {
+        payload,
+        ..block.clone()
+    }
+}
+
+pub fn normalize_legacy_terminal_task_blocks(blocks: &[ReportBlock]) -> Vec<ReportBlock> {
+    blocks
+        .iter()
+        .map(normalize_legacy_terminal_task_block)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostic {
@@ -649,15 +696,18 @@ pub fn project_task_declarations(
         if block.kind != super::KIND_TASK {
             continue;
         }
-        if let Err(error) = super::validate_payload(super::KIND_TASK, &block.payload) {
+        let normalized_payload = normalize_legacy_terminal_command(&block.payload);
+        if let Err(error) = super::validate_payload(super::KIND_TASK, &normalized_payload) {
             diagnostics[index].push(Diagnostic::new("payload", error));
             // Preserve a keyed declaration when the payload is structurally
             // readable.  Its payload diagnostic keeps it unschedulable while
             // allowing both diagnostic read paths to explain why an existing
             // pending row was removed.
-            if block.payload.get("key").and_then(Value::as_str).is_none()
-                || block
-                    .payload
+            if normalized_payload
+                .get("key")
+                .and_then(Value::as_str)
+                .is_none()
+                || normalized_payload
                     .get("declared_by")
                     .and_then(Value::as_str)
                     .is_none()
@@ -665,8 +715,7 @@ pub fn project_task_declarations(
                 continue;
             }
         }
-        let payload = block
-            .payload
+        let payload = normalized_payload
             .as_object()
             .expect("validated task payload is an object");
         let tombstone = payload
@@ -682,7 +731,13 @@ pub fn project_task_declarations(
                 .unwrap_or("")
                 .to_string(),
             goal: payload
-                .get("goal")
+                .get(
+                    if payload.get("kind").and_then(Value::as_str) == Some("terminal") {
+                        "command"
+                    } else {
+                        "goal"
+                    },
+                )
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
@@ -1044,7 +1099,7 @@ mod tests {
                 id: "b_0002".into(),
                 kind: super::super::KIND_TASK.into(),
                 rev: 0,
-                payload: json!({"key":"a","kind":"terminal","goal":"g","ready":true,"declared_by":"spec"}),
+                payload: json!({"key":"a","kind":"terminal","command":"true","ready":true,"declared_by":"spec"}),
             },
         ];
         let (declarations, diagnostics) = project_task_declarations(&blocks);

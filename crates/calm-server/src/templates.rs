@@ -224,15 +224,16 @@ pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The editable projection of one task payload: `key` and `goal`, or `None` for
-/// a payload that has neither (a tombstone).
+/// The picker projection of one task payload: `key` and its display
+/// instruction (`goal` for agents, `command` for terminals), or `None` for a
+/// payload that has neither (a tombstone).
 ///
 /// Used by the read side to answer "what tasks does this template pre-set" for
 /// the New track picker (`routes::track_templates::current_definition`).
 /// Tombstones are *not* tasks the picker should advertise, but they must still
 /// survive the read untouched — which is why the filtering happens here, at the
 /// projection, and never in the reader that produced the payloads.
-pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
+pub fn task_payload_key_and_instruction(payload: &Value) -> Option<(String, String)> {
     if payload
         .get("tombstone")
         .is_some_and(|value| !value.is_null())
@@ -240,8 +241,13 @@ pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
         return None;
     }
     let key = payload.get("key")?.as_str()?.to_string();
-    let goal = payload.get("goal")?.as_str()?.to_string();
-    Some((key, goal))
+    let instruction_field = if payload.get("kind").and_then(Value::as_str) == Some("terminal") {
+        "command"
+    } else {
+        "goal"
+    };
+    let instruction = payload.get(instruction_field)?.as_str()?.to_string();
+    Some((key, instruction))
 }
 
 /// Placeholder so `require_task_gates` does not treat these as scheduled
@@ -691,7 +697,7 @@ mod tests {
                 .collect();
             let projected: Vec<(String, String)> = template_task_payloads_from_body(&recipe.body)
                 .iter()
-                .filter_map(task_payload_key_and_goal)
+                .filter_map(task_payload_key_and_instruction)
                 .collect();
             assert_eq!(projected, expected, "{}", recipe.summary);
         }

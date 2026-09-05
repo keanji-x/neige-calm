@@ -336,6 +336,7 @@ fn task_failed(idem: &str, reason: &str) -> Event {
     Event::TaskFailed {
         idempotency_key: idem.into(),
         reason: reason.into(),
+        details: None,
         agent_message: None,
     }
 }
@@ -924,6 +925,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             idempotency_key,
             reason,
             agent_message,
+            ..
         } => {
             assert_eq!(idempotency_key, &task_id);
             // FIX 3: the kernel TaskFailed carries the provider's interpreted

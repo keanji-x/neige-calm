@@ -1517,12 +1517,14 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         Event::TaskFailed {
             idempotency_key: gated_id.clone(),
             reason: "stale worker claim".into(),
+            details: None,
             agent_message: None,
         },
         // ... while the genuine pre-gate worker failure replays.
         Event::TaskFailed {
             idempotency_key: gated_failed_id.clone(),
             reason: "worker said no".into(),
+            details: None,
             agent_message: None,
         },
     ] {

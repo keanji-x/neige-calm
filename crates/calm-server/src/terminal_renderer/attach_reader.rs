@@ -9,6 +9,7 @@ use super::{SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitI
 use crate::db::RouteRepo;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
+use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
 
 // Copied from crates/calm-session/src/bin/daemon.rs::spawn_supervisor_attach_reader as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
@@ -29,12 +30,16 @@ pub fn spawn_supervisor_attach_reader(
     // the loop also ends on an attach-stream read error, which persists
     // nothing, so "the task finished" is not evidence that the exit landed.
     exit_persisted_tx: watch::Sender<bool>,
+    output_capture: SharedTerminalOutputCapture,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut exited_tx = Some(exited_tx);
         loop {
             match read_frame::<ControlReply, _>(&mut attach_conn).await {
                 Ok(ControlReply::Output { bytes, .. }) => {
+                    if let Ok(mut capture) = output_capture.lock() {
+                        capture.push(&bytes);
+                    }
                     let effects = match render_plane.lock() {
                         Ok(mut rp) => rp.on_pty_chunk(bytes),
                         Err(_) => Vec::new(),
@@ -70,9 +75,24 @@ pub fn spawn_supervisor_attach_reader(
                         let _ = tx.send(status);
                     }
                     let exit_code = if signalled { None } else { status };
+                    let output = output_capture
+                        .lock()
+                        .map(|capture| capture.snapshot())
+                        .unwrap_or_else(|_| {
+                            crate::terminal_renderer::output_capture::TerminalOutputSnapshot {
+                                text: String::new(),
+                                truncated: true,
+                            }
+                        });
                     if let Some(repo) = repo.as_ref()
                         && let Err(e) = repo
-                            .terminal_set_exit(&terminal_id, exit_code, signalled)
+                            .terminal_set_exit_with_output(
+                                &terminal_id,
+                                exit_code,
+                                signalled,
+                                &output.text,
+                                output.truncated,
+                            )
                             .await
                     {
                         tracing::warn!(
@@ -110,8 +130,14 @@ pub fn spawn_supervisor_attach_reader(
                     // exit. Errors are contained inside the hook; the
                     // sweep's running-terminal arm is the retry.
                     if let Some(hook) = task_hook.as_ref() {
-                        hook.on_terminal_exit(&terminal_id, exit_code, signalled)
-                            .await;
+                        hook.on_terminal_exit(
+                            &terminal_id,
+                            exit_code,
+                            signalled,
+                            &output.text,
+                            output.truncated,
+                        )
+                        .await;
                     }
                     // Sent last, after every persistence step above, so the
                     // signal means "the exit was written" rather than "Exited
@@ -126,6 +152,9 @@ pub fn spawn_supervisor_attach_reader(
                     earliest_cursor,
                     requested_cursor,
                 }) => {
+                    if let Ok(mut capture) = output_capture.lock() {
+                        capture.mark_gap();
+                    }
                     tracing::warn!(
                         proc_id = %proc_id,
                         earliest_cursor,

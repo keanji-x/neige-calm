@@ -43,7 +43,6 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-#[cfg(test)]
 use crate::model::TaskKind;
 use crate::model::{CardRole, Task, TaskStatus, Track, now_ms};
 use crate::track_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
@@ -427,7 +426,19 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                     "minItems": 1,
                     "items": {
                         "type": "object",
-                        "required": ["key", "kind", "goal"],
+                        "additionalProperties": false,
+                        "oneOf": [
+                            {
+                                "required": ["key", "kind", "goal"],
+                                "properties": { "kind": { "enum": ["codex", "claude"] } },
+                                "not": { "required": ["command"] }
+                            },
+                            {
+                                "required": ["key", "kind", "command"],
+                                "properties": { "kind": { "const": "terminal" } },
+                                "not": { "required": ["goal"] }
+                            }
+                        ],
                         "properties": {
                             "key": {
                                 "type": "string",
@@ -435,7 +446,8 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
                                 "description": "Stable per-track task key; also the completion correlation id."
                             },
                             "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                            "goal": { "type": "string", "minLength": 1, "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)" },
+                            "goal": { "type": "string", "minLength": 1, "description": "Natural-language objective; required only for codex/claude tasks and forbidden for terminal tasks." },
+                            "command": { "type": "string", "minLength": 1, "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`; required only for terminal tasks and forbidden for codex/claude tasks." },
                             "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
                             "acceptance_criteria": { "type": ["string", "null"] },
                             "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
@@ -803,10 +815,9 @@ fn task_list_entry(t: &Task) -> Value {
         .and_then(|g| serde_json::from_str::<Value>(g).ok())
         .unwrap_or(Value::Null);
 
-    json!({
+    let mut entry = json!({
         "key": t.key,
         "kind": t.kind,
-        "goal": t.goal,
         "status": t.status,
         "status_detail": t.status_detail,
         "depends_on": t.depends_on(),
@@ -816,7 +827,14 @@ fn task_list_entry(t: &Task) -> Value {
         "gate_result": gate_result,
         "created_at_ms": t.created_at_ms,
         "finished_at_ms": t.finished_at_ms,
-    })
+    });
+    let instruction_field = if t.kind == TaskKind::Terminal {
+        "command"
+    } else {
+        "goal"
+    };
+    entry[instruction_field] = json!(t.goal);
+    entry
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,20 +1063,55 @@ mod tests {
     }
 
     #[test]
-    fn upsert_schema_goal_description_distinguishes_agent_goals_from_terminal_commands() {
+    fn upsert_schema_discriminates_agent_goals_from_terminal_commands() {
         let descriptor = plan_upsert_descriptor();
-        let description = descriptor
+        let item = &descriptor.input_schema["properties"]["tasks"]["items"];
+        let goal_description = descriptor
             .input_schema
             .pointer("/properties/tasks/items/properties/goal/description")
             .and_then(Value::as_str)
             .expect("goal description");
 
         assert!(
-            description.contains("codex/claude: natural-language objective")
-                && description.contains("terminal: exact Shell command")
-                && description.contains("passed verbatim"),
-            "calm.plan.upsert goal description must document claude and terminal semantics: {description}"
+            goal_description.contains("Natural-language objective")
+                && goal_description.contains("forbidden for terminal"),
+            "calm.plan.upsert goal description must stay agent-only: {goal_description}"
         );
+        let command_description = item["properties"]["command"]["description"]
+            .as_str()
+            .expect("command description");
+        assert!(
+            command_description.contains("passed verbatim")
+                && command_description.contains("required only for terminal")
+                && command_description.contains("forbidden for codex/claude"),
+            "calm.plan.upsert command description must stay terminal-only: {command_description}"
+        );
+        assert_eq!(
+            item["oneOf"][0]["properties"]["kind"]["enum"],
+            json!(["codex", "claude"])
+        );
+        assert_eq!(item["oneOf"][1]["properties"]["kind"]["const"], "terminal");
+    }
+
+    #[test]
+    fn plan_list_uses_the_same_kind_discriminated_instruction_fields() {
+        let agent = task_row_from_normalized(
+            "track",
+            &normalize_task_input(raw_task("agent")).unwrap(),
+            1,
+        );
+        let agent = task_list_entry(&agent);
+        assert_eq!(agent["goal"], "do the thing");
+        assert!(agent.get("command").is_none());
+
+        let mut terminal = raw_task("terminal");
+        terminal.kind = "terminal".into();
+        terminal.goal = "cargo test".into();
+        let terminal =
+            task_row_from_normalized("track", &normalize_task_input(terminal).unwrap(), 1);
+        let terminal = task_list_entry(&terminal);
+        assert_eq!(terminal["command"], "cargo test");
+        assert!(terminal.get("goal").is_none());
     }
 
     #[test]

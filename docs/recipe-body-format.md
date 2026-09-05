@@ -164,13 +164,15 @@ yours, and `released_by_user` is gone.
 
 ## 5. The fields you actually need
 
-For an ordinary task block, only three fields are required from you:
+For an ordinary task block, provide `key`, `kind`, and exactly one
+kind-specific instruction field:
 
 | Field  | Required | Value |
 | ------ | -------- | ----- |
 | `key`  | yes | Identifier for the task, matching `^[a-z0-9][a-z0-9._-]{0,63}$` |
 | `kind` | yes | `"codex"`, `"claude"` or `"terminal"` |
-| `goal` | yes | For `codex`/`claude`, a natural-language objective. For `terminal`, the exact executable Shell command passed verbatim as `/bin/sh -c <goal>`—not a natural-language description. |
+| `goal` | agent tasks only | Natural-language objective for `codex`/`claude`; forbidden for `terminal`. |
+| `command` | terminal tasks only | Exact executable Shell command passed verbatim as `/bin/sh -c <command>`; forbidden for `codex`/`claude`. |
 
 Useful optional ones:
 

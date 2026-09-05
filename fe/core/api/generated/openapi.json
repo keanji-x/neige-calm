@@ -6940,6 +6940,8 @@
           "theme_bg",
           "exit_code",
           "signal_killed",
+          "pty_output",
+          "pty_output_truncated",
           "created_at"
         ],
         "properties": {
@@ -6977,6 +6979,14 @@
           },
           "program": {
             "type": "string"
+          },
+          "pty_output": {
+            "type": "string",
+            "description": "#1456 — bounded tail of the terminal's merged PTY byte stream, decoded\nlossily as UTF-8. A PTY has no separable stdout/stderr channels."
+          },
+          "pty_output_truncated": {
+            "type": "boolean",
+            "description": "True when bytes were dropped before `pty_output`, either by the\nsupervisor replay window or the smaller durable-evidence cap."
           },
           "signal_killed": {
             "type": "boolean",
@@ -7884,7 +7894,7 @@
       },
       "TrackReportPayload": {
         "type": "object",
-        "description": "The payload persisted in a track-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 3,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the TrackReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
+        "description": "The payload persisted in a track-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 4,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the TrackReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
         "required": [
           "schemaVersion",
           "docRev",
@@ -7915,7 +7925,7 @@
           "schemaVersion": {
             "type": "integer",
             "format": "int32",
-            "description": "Tier A persistence contract — see\n`TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `3` since #979 added document-wide optimistic\nconcurrency; blocks remain authoritative and `body` is their\nflat projection. v1/v2 rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
+            "description": "Tier A persistence contract — see\n`TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `4` since #1456 discriminated terminal `command`\nfrom agent `goal`; blocks remain authoritative and `body` is their\nflat projection. Older rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
             "minimum": 0
           },
           "summary": {

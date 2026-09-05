@@ -695,6 +695,14 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()>;
+    async fn terminal_set_exit_with_output(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+        pty_output: &str,
+        pty_output_truncated: bool,
+    ) -> Result<()>;
     async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()>;
     async fn terminal_delete(&self, id: &str) -> Result<()>;
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
@@ -775,6 +783,25 @@ where
         calm_truth::db::RepoOutOfDomain::terminal_set_exit(self, id, exit_code, signal_killed)
             .await
             .map_err(Into::into)
+    }
+    async fn terminal_set_exit_with_output(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+        pty_output: &str,
+        pty_output_truncated: bool,
+    ) -> Result<()> {
+        calm_truth::db::RepoOutOfDomain::terminal_set_exit_with_output(
+            self,
+            id,
+            exit_code,
+            signal_killed,
+            pty_output,
+            pty_output_truncated,
+        )
+        .await
+        .map_err(Into::into)
     }
     async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()> {
         calm_truth::db::RepoOutOfDomain::terminal_clear_exit_for_spawn(self, id)

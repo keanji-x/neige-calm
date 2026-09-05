@@ -350,6 +350,7 @@ async fn events_for_track_filters_since_in_query() {
             Event::TaskFailed {
                 idempotency_key: "before-watermark".into(),
                 reason: "before".into(),
+                details: None,
                 agent_message: None,
             },
         )
@@ -365,6 +366,7 @@ async fn events_for_track_filters_since_in_query() {
         Event::TaskFailed {
             idempotency_key: "other-track".into(),
             reason: "other".into(),
+            details: None,
             agent_message: None,
         },
     )
@@ -381,6 +383,7 @@ async fn events_for_track_filters_since_in_query() {
             Event::TaskFailed {
                 idempotency_key: "after-watermark".into(),
                 reason: "after".into(),
+                details: None,
                 agent_message: None,
             },
         )
@@ -1804,7 +1807,8 @@ async fn open_succeeds_on_fresh_and_current_db() {
 
 /// Round-trip every branch of `terminal_set_exit` so the SQL writes both
 /// columns coherently and the read path surfaces them via
-/// `Terminal.exit_code` + `signal_killed`. The four states correspond to
+/// `Terminal.exit_code` + `signal_killed` + durable PTY output evidence. The
+/// four states correspond to
 /// the four shapes the daemon can write to `<sock>.exit`:
 ///
 ///   - clean exit (`exit_code = Some(0)`)
@@ -1833,12 +1837,18 @@ async fn terminal_set_exit_round_trip_all_branches() {
     //   exit_code IS NULL, signal_killed = 0.
     assert_eq!(t.exit_code, None);
     assert!(!t.signal_killed);
+    assert_eq!(t.pty_output, "");
+    assert!(!t.pty_output_truncated);
 
     // (a) clean exit
-    repo.terminal_set_exit(&t.id, Some(0), false).await.unwrap();
+    repo.terminal_set_exit_with_output(&t.id, Some(0), false, "ok\n", true)
+        .await
+        .unwrap();
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, Some(0));
     assert!(!r.signal_killed);
+    assert_eq!(r.pty_output, "ok\n");
+    assert!(r.pty_output_truncated);
 
     // (b) non-zero exit
     repo.terminal_set_exit(&t.id, Some(137), false)
@@ -1847,6 +1857,8 @@ async fn terminal_set_exit_round_trip_all_branches() {
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, Some(137));
     assert!(!r.signal_killed);
+    assert_eq!(r.pty_output, "");
+    assert!(!r.pty_output_truncated);
 
     // (c) signal-killed (mutually exclusive: exit_code = None)
     repo.terminal_set_exit(&t.id, None, true).await.unwrap();

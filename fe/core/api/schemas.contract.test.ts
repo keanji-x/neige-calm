@@ -464,12 +464,16 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
       data: {
         idempotency_key: 'idem-4',
         reason: 'process exited with code 137',
+        details: { pty_output: 'failure\n', pty_output_truncated: false },
         agent_message: 'worker failed rationale',
       },
     });
     expect(parsed.ev).toBe('task.failed');
     if (parsed.ev === 'task.failed') {
       expect(parsed.data.reason).toBe('process exited with code 137');
+      expect(parsed.data.details).toEqual({
+        pty_output: 'failure\n', pty_output_truncated: false,
+      });
       expect(parsed.data.agent_message).toBe('worker failed rationale');
     }
   });

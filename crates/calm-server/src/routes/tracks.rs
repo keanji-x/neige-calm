@@ -969,15 +969,19 @@ fn prepare_initial_report_payload(
     label: &str,
     payload: TrackReportPayload,
 ) -> Result<InitialReportSnapshot> {
-    crate::track_report_guard::validate_body_fences(&payload.body).map_err(|error| {
-        CalmError::Internal(format!("track create: template `{label}` body: {error}"))
-    })?;
-    let doc = ReportDoc::from_payload(&payload);
+    let mut doc = ReportDoc::from_payload(&payload);
+    doc.ensure_blocks_layout(payload.blocks.as_deref())
+        .map_err(|error| {
+            CalmError::Internal(format!("track create: migrate template `{label}`: {error}"))
+        })?;
     let blocks = doc.blocks_snapshot().map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` blocks: {error}"))
     })?;
     let (summary, body) = doc.project().map_err(|error| {
         CalmError::Internal(format!("track create: project template `{label}`: {error}"))
+    })?;
+    crate::track_report_guard::validate_body_fences(&body).map_err(|error| {
+        CalmError::Internal(format!("track create: template `{label}` body: {error}"))
     })?;
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
@@ -2683,7 +2687,7 @@ fn prepare_fork_report(
         if block.kind == KIND_TASK
             && let Some(payload) = block.payload.as_object_mut()
         {
-            for field in ["goal", "acceptance"] {
+            for field in ["goal", "command", "acceptance"] {
                 if let Some(value) = payload.get_mut(field)
                     && let Some(source) = value.as_str()
                 {

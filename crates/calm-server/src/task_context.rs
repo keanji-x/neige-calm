@@ -1232,7 +1232,7 @@ mod tests {
             payload: serde_json::json!({
                 "key": "terminal",
                 "kind": "terminal",
-                "goal": "true",
+                "command": "true",
                 "ready": true,
                 "declared_by": "spec",
             }),

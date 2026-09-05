@@ -181,15 +181,27 @@ pub(super) fn kinds_table() -> Value {
                     },
                     "oneOf": [
                         {
+                            "description": "Agent task",
                             "required": ["key", "kind", "goal", "ready", "declared_by"],
-                            "properties": { "tombstone": { "type": "null" } },
-                            "not": { "required": ["tombstoned_by"] }
+                            "properties": { "kind": { "enum": ["codex", "claude"] } },
+                            "not": { "anyOf": [
+                                { "required": ["command"] }, { "required": ["tombstoned_by"] }
+                            ] }
+                        },
+                        {
+                            "description": "Terminal command task",
+                            "required": ["key", "kind", "command", "ready", "declared_by"],
+                            "properties": { "kind": { "const": "terminal" } },
+                            "not": { "anyOf": [
+                                { "required": ["goal"] }, { "required": ["tombstoned_by"] }
+                            ] }
                         },
                         {
                             "required": ["key", "tombstone", "declared_by", "tombstoned_by"],
                             "properties": { "tombstone": { "not": { "type": "null" } } },
                             "not": { "anyOf": [
                                 { "required": ["kind"] }, { "required": ["goal"] },
+                                { "required": ["command"] },
                                 { "required": ["acceptance"] }, { "required": ["gate"] },
                                 { "required": ["no_gate_reason"] }, { "required": ["depends_on"] },
                                 { "required": ["priority"] }, { "required": ["cwd"] },
@@ -207,7 +219,14 @@ pub(super) fn kinds_table() -> Value {
                             "minLength": 1,
                             "maxLength": report_blocks::MAX_STRING_CHARS,
                             "pattern": "\\S",
-                            "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)."
+                            "description": "Natural-language objective. Required only for codex/claude tasks; forbidden for terminal tasks."
+                        },
+                        "command": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": report_blocks::MAX_STRING_CHARS,
+                            "pattern": "\\S",
+                            "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for codex/claude tasks."
                         },
                         "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                         "gate": {
@@ -244,7 +263,7 @@ pub(super) fn kinds_table() -> Value {
                     },
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
                 },
-                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. For a terminal task, put an executable command only in `goal`; the runner passes it verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
+                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     })
@@ -469,18 +488,25 @@ mod task_kind_contract_tests {
         );
         let properties = &task["schema"]["properties"];
         assert_eq!(properties["acceptance"]["minLength"], 1);
-        for field in ["goal", "acceptance", "no_gate_reason"] {
+        for field in ["goal", "command", "acceptance", "no_gate_reason"] {
             assert_eq!(properties[field]["pattern"], "\\S");
         }
         let goal_description = properties["goal"]["description"]
             .as_str()
             .expect("task goal description");
         assert!(
-            goal_description.contains("codex/claude: natural-language objective")
-                && goal_description.contains("terminal: exact Shell command")
-                && goal_description.contains("passed verbatim"),
-            "task goal description must distinguish agent objectives from terminal commands: \
-             {goal_description}"
+            goal_description.contains("Natural-language objective")
+                && goal_description.contains("forbidden for terminal"),
+            "task goal description must stay agent-only: {goal_description}"
+        );
+        let command_description = properties["command"]["description"]
+            .as_str()
+            .expect("task command description");
+        assert!(
+            command_description.contains("passed verbatim")
+                && command_description.contains("Required only for terminal")
+                && command_description.contains("forbidden for codex/claude"),
+            "task command description must stay terminal-only: {command_description}"
         );
         assert_eq!(properties["priority"]["minimum"], i64::MIN);
         assert_eq!(properties["priority"]["maximum"], i64::MAX);
@@ -504,8 +530,8 @@ mod task_kind_contract_tests {
         let usage = task["usage"].as_str().unwrap();
         assert!(usage.contains("ready: true"));
         assert!(
-            usage.contains("terminal") && usage.contains("executable command only"),
-            "task usage must keep terminal goal semantics visible: {usage}"
+            usage.contains("terminal") && usage.contains("mutually exclusive"),
+            "task usage must keep discriminated instruction fields visible: {usage}"
         );
 
         let kinds = kinds_descriptor();

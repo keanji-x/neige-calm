@@ -725,6 +725,12 @@ golden_test!(
     Event::TaskFailed {
         idempotency_key: "idem-01".into(),
         reason: "compile error".into(),
+        details: Some(json!({
+            "exit_code": 2,
+            "pty_output": "compiler error\n",
+            "pty_output_truncated": false,
+            "source": "terminal-exit"
+        })),
         agent_message: Some("giving up".into()),
     }
 );
@@ -735,6 +741,7 @@ golden_test!(
     Event::TaskFailed {
         idempotency_key: "idem-01".into(),
         reason: "compile error".into(),
+        details: None,
         agent_message: None,
     }
 );

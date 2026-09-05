@@ -84,7 +84,7 @@
 use crate::error::{ErrorBody, Result};
 use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
-use crate::templates::{TEMPLATES, Template, task_payload_key_and_goal};
+use crate::templates::{TEMPLATES, Template, task_payload_key_and_instruction};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -171,7 +171,7 @@ pub(crate) async fn list_track_templates(
             tasks: definition
                 .tasks
                 .iter()
-                .filter_map(task_payload_key_and_goal)
+                .filter_map(task_payload_key_and_instruction)
                 .map(|(key, goal)| TrackTemplateTask { key, goal })
                 .collect(),
         });

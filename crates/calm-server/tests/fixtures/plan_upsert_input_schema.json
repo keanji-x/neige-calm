@@ -7,7 +7,19 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["key", "kind", "goal"],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": ["key", "kind", "goal"],
+            "properties": { "kind": { "enum": ["codex", "claude"] } },
+            "not": { "required": ["command"] }
+          },
+          {
+            "required": ["key", "kind", "command"],
+            "properties": { "kind": { "const": "terminal" } },
+            "not": { "required": ["goal"] }
+          }
+        ],
         "properties": {
           "key": {
             "type": "string",
@@ -15,7 +27,8 @@
             "description": "Stable per-track task key; also the completion correlation id."
           },
           "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-          "goal": { "type": "string", "minLength": 1, "description": "codex/claude: natural-language objective; terminal: exact Shell command passed verbatim as `/bin/sh -c <goal>` (executable command only, not a natural-language description)" },
+          "goal": { "type": "string", "minLength": 1, "description": "Natural-language objective; required only for codex/claude tasks and forbidden for terminal tasks." },
+          "command": { "type": "string", "minLength": 1, "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`; required only for terminal tasks and forbidden for codex/claude tasks." },
           "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
           "acceptance_criteria": { "type": ["string", "null"] },
           "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },

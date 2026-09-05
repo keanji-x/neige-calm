@@ -101,28 +101,56 @@ export const appBlockPayloadSchema = z.strictObject({
 
 const taskGateStepSchema = z.strictObject({ name: z.string(), cmd: z.string() });
 
-const liveTaskBlockPayloadSchema = z.strictObject({
-  key: z.string(),
-  kind: z.enum(['codex', 'claude', 'terminal']),
-  goal: z.string(),
-  acceptance: z.string().nullish(),
-  gate: z.strictObject({
+function liveTaskSharedShape() {
+  return {
+    acceptance: z.string().nullish(),
+    gate: z.strictObject({
+      cwd: z.string().nullish(),
+      timeout_secs: z.number().int().nullish(),
+      steps: z.array(taskGateStepSchema),
+    }).nullish(),
+    no_gate_reason: z.string().nullish(),
+    depends_on: z.array(z.string()).nullish(),
+    priority: z.number().int().nullish(),
     cwd: z.string().nullish(),
-    timeout_secs: z.number().int().nullish(),
-    steps: z.array(taskGateStepSchema),
-  }).nullish(),
-  no_gate_reason: z.string().nullish(),
-  depends_on: z.array(z.string()).nullish(),
-  priority: z.number().int().nullish(),
-  cwd: z.string().nullish(),
-  context: z.unknown().nullish(),
-  refs: z.array(z.string()).nullish(),
-  ready: z.boolean(),
-  declared_by: z.enum(['spec', 'user']),
-  released_by_user: z.boolean().nullish(),
-  spawn: z.enum(['in-wave', 'sub-wave']).nullish(),
-  tombstone: z.null().nullish(),
+    context: z.unknown().nullish(),
+    refs: z.array(z.string()).nullish(),
+    ready: z.boolean(),
+    declared_by: z.enum(['spec', 'user']),
+    released_by_user: z.boolean().nullish(),
+    spawn: z.enum(['in-wave', 'sub-wave']).nullish(),
+    tombstone: z.null().nullish(),
+  };
+}
+
+const agentTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.enum(['codex', 'claude']),
+  goal: z.string(),
+  ...liveTaskSharedShape(),
 });
+
+const terminalTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.literal('terminal'),
+  command: z.string(),
+  ...liveTaskSharedShape(),
+});
+
+/** Read-only compatibility for report payloads persisted before #1456. New
+ * writes are rejected by the kernel unless terminal tasks use `command`. */
+const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.literal('terminal'),
+  goal: z.string(),
+  ...liveTaskSharedShape(),
+}).transform(({ goal, ...payload }) => ({ ...payload, command: goal }));
+
+const liveTaskBlockPayloadSchema = z.union([
+  agentTaskBlockPayloadSchema,
+  terminalTaskBlockPayloadSchema,
+  legacyTerminalTaskBlockPayloadSchema,
+]);
 
 /** A withdrawn task keeps its key and both attributions: who declared it and
  *  who withdrew it. Dropping the row instead would make a task the report once

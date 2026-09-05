@@ -143,6 +143,7 @@ fn dispatcher_filter_matches_push_kinds() {
     assert!(filter.matches(&env(Event::TaskFailed {
         idempotency_key: "k".into(),
         reason: "boom".into(),
+        details: None,
         agent_message: None,
     })));
     // Issue #644 PR-C — gate verdicts route to the push branch
@@ -457,6 +458,7 @@ async fn gated_self_report_predicate() {
     let failed = |key: &str| Event::TaskFailed {
         idempotency_key: format!("w:{key}"),
         reason: "boom".into(),
+        details: None,
         agent_message: None,
     };
     assert!(is_gated_self_report(&repo, &completed("gated")).await);
@@ -604,6 +606,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     let failed = Event::TaskFailed {
         idempotency_key: "fail".into(),
         reason: "boom".into(),
+        details: None,
         agent_message: None,
     };
     assert!(event_warrants_planner_push(
@@ -887,6 +890,7 @@ fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
     let failed = Event::TaskFailed {
         idempotency_key: "fail".into(),
         reason: "boom".into(),
+        details: None,
         agent_message: None,
     };
     // Every non-AiPlanner actor warrants a push for task terminal events —
@@ -990,6 +994,7 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::TaskFailed {
                 idempotency_key: "map-b".into(),
                 reason: "boom".into(),
+                details: None,
                 agent_message: None,
             }
         ),
@@ -1445,6 +1450,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
     let task_failed = || Event::TaskFailed {
         idempotency_key: "w:k".into(),
         reason: "boom".into(),
+        details: None,
         agent_message: None,
     };
     let card_sample = || crate::model::Card {

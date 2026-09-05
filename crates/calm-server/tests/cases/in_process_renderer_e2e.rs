@@ -587,6 +587,14 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
         "issue #993 R1: terminal exit was not persisted (signal_killed still false) — \
          drop_entry cut the attach reader off before `terminal_set_exit` ran; row = {row:?}"
     );
+    assert!(
+        row.pty_output.contains("up"),
+        "the attach reader must persist the real merged PTY output; row = {row:?}"
+    );
+    assert!(
+        !row.pty_output_truncated,
+        "the tiny fixture output fits the durable evidence cap"
+    );
     // (`row.exit_code.is_none()` used to be asserted here; #993 R3-D removed it
     // as vacuous — the writer computes `exit_code = if signalled { None } else
     // { .. }`, so once `signal_killed` above holds it is true by construction

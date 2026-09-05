@@ -776,7 +776,7 @@ async fn track_delete_removes_plan_rows() {
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     write_task_block(
         &boot,
-        json!({ "key": "b", "kind": "terminal", "goal": "cargo test" }),
+        json!({ "key": "b", "kind": "terminal", "command": "cargo test" }),
     )
     .await;
     assert_eq!(task_row_count(&boot).await, 2);
@@ -827,7 +827,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
     .await;
     write_task_block(
         &boot,
-        json!({ "key": "b", "kind": "terminal", "goal": "cargo test", "depends_on": ["a"] }),
+        json!({ "key": "b", "kind": "terminal", "command": "cargo test", "depends_on": ["a"] }),
     )
     .await;
 

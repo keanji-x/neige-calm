@@ -398,6 +398,7 @@ async fn task_fail(
     let event = Event::TaskFailed {
         idempotency_key,
         reason,
+        details: None,
         agent_message: None,
     };
     commit_worker_task_report_for_identity(&ctx, &identity, event).await?;

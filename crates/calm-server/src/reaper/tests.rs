@@ -1175,6 +1175,7 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
             idempotency_key,
             reason,
             agent_message,
+            ..
         } => {
             assert_eq!(idempotency_key, &task.id);
             // FIX 3: the provider's interpreted reason flows through, not
@@ -1780,6 +1781,8 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         track_id.as_str(),
         worker_card.id.as_str(),
         Some(0),
+        false,
+        "",
         false,
     )
     .await
