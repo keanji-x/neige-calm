@@ -370,16 +370,16 @@ export function useConversationStore(
     [createEcho, serverTurns],
   );
   /*
-   * A card whose transcript has an *earlier* page cannot be waiting for this.
+   * The transcript reports a page behind the one that is loaded.
    *
-   * A create's sentence is the first thing on its card. A window that reports
-   * more history behind it is therefore looking at a card that either has the
-   * sentence somewhere further back or never will — and the signal is already
-   * computed, by `getNextPageParam` in `app/providers/queries.ts`. Without
-   * this a placeholder minted against a card with a long history (a landing
-   * that failed, re-armed from its history entry, redeemed on a planner card
-   * that has been talking for days) pins a brand-new sentence above messages
-   * that are genuinely older than it.
+   * A create's sentence is the first thing on its card, so a card with a page
+   * of history behind the newest one either has it further back or never will.
+   * The signal is `getNextPageParam` in `app/providers/queries.ts`, and it is
+   * exactly "the last page came back full" — 300 rows. So this guard covers
+   * cards with at least a full page and nothing smaller: a slot minted against
+   * a card holding 1–299 rows still renders at the head, above rows that are
+   * genuinely older than it. It is a bound on the worst case, not the property
+   * itself.
    */
   const hasEarlierPage = history.hasNextPage;
   const retireCreateEcho = registry.retireCreateEcho;
@@ -406,33 +406,6 @@ export function useConversationStore(
      */
     if (createEchoShown || hasEarlierPage) retireCreateEcho(cardId);
   }, [cardId, createEcho, createEchoShown, hasEarlierPage, retireCreateEcho]);
-  /*
-   * Leaving the conversation ends the landing.
-   *
-   * The placeholder answers one question — "the conversation I just started has
-   * not shown my sentence yet" — and that question belongs to the visit that
-   * asked it. Held past it, a slot that never saw its row comes back on a later
-   * visit and prints the sentence over a conversation that has since been
-   * emptied by `POST /api/cards/{id}/planner/reset` from somewhere else: the
-   * reader opens an empty thread and is shown words from a session that no
-   * longer exists. Nothing on the client can tell that empty transcript from
-   * the empty one a brand-new card has, so the bound is the visit rather than
-   * a reading of the rows.
-   *
-   * Written from a ref rather than from an effect cleanup: StrictMode invokes
-   * mount → cleanup → mount on the same instance, and a cleanup-based version
-   * would retire the slot the moment it was minted.
-   */
-  const showedCreateEchoFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (createEcho !== null && cardId !== '') showedCreateEchoFor.current = cardId;
-  }, [cardId, createEcho]);
-  useEffect(() => {
-    const shownFor = showedCreateEchoFor.current;
-    if (shownFor === null || shownFor === cardId) return;
-    showedCreateEchoFor.current = null;
-    retireCreateEcho(shownFor);
-  }, [cardId, retireCreateEcho]);
   /* At the head, always: a create's sentence is by construction the oldest
      thing on the card, so its position is a fact rather than a comparison. */
   const transcript = useMemo(
@@ -824,13 +797,51 @@ const CREATE_ECHO_ID = 'create-echo';
  * narrowed here: the matcher is the send path's, shared on purpose, and
  * changing it is a change to the send path.
  *
- * **KNOWN GAP — a window that has not been asked to go back far enough.**
- * Retirement waits for this sentence to appear in a *loaded* page. If the
- * first page the drawer reads has already scrolled past it, the placeholder
- * stands. It is not stuck: pressing `Load earlier` until the page holding the
- * row arrives retires it there and then. What it means is that a placeholder
- * can outlive its own row on a busy card until somebody pages back.
+ * **KNOWN GAP — on a busy card the sentence is not shown at all.** The
+ * previous version of this note had the direction backwards and contradicted
+ * the test beside it. `hasEarlierPage` is true exactly when the newest page
+ * came back full (300 rows), so a card with that much history retires the slot
+ * on the next commit: the reader's sentence is never displayed, rather than
+ * lingering. Reachable through the redemption re-armed after a failed landing
+ * (`usePlannerOpenIntent`), which can mint a slot on a planner card that has
+ * been talking for days. Accepted here as the safer direction — not showing a
+ * new sentence is a feature that did not fire; showing it above genuinely
+ * older messages is a lie about the order of the conversation. Pinned by
+ * `track-conversation.test.tsx`'s "does not pin a new sentence above a card
+ * that has history behind it", which is this same fact seen from the other
+ * side.
  *
+ * **KNOWN GAP — a slot that never saw its row outlives the tab.** Nothing
+ * retires a placeholder whose sentence the agent never echoes, so if another
+ * client empties the conversation
+ * (`POST /api/cards/{id}/planner/reset`) the reader can open an emptied thread
+ * and be shown a line from a session that no longer exists. It is one stale
+ * line and nothing more: it is not in `turns`, `confirmedTurns`, `echoes` or
+ * `hasUnreconciledSend`, so it names nothing, orders nothing, consumes no
+ * server row and cannot shut the composer.
+ *
+ * A visit-scoped bound was tried and withdrawn: it did not close this — the
+ * store's effects see `cardId` change only while the hook stays mounted, so
+ * navigating away retired nothing — and it cost the feature outright, because
+ * closing and reopening the drawer erased the sentence. If this is to be
+ * closed, the signal is the `harness.transcript.cleared` event the frontend
+ * already consumes (`fe/core/events/invalidation-plan.ts`), which names the
+ * hazard itself. It is **not** the identity of the runtime the slot was minted
+ * under: a repoint changes the runtime too, and the kernel work in flight for
+ * #1449 exists precisely to carry an undelivered sentence across a repoint, so
+ * retiring on a runtime change would hide it at the moment the kernel saved
+ * it.
+ *
+ * **KNOWN GAP — the placeholder takes the first exchange's rail dot.**
+ * `exchangesOf` (`features/chat/thread`) opens an exchange at a `you` turn
+ * whose predecessor is not one. With the placeholder at index 0 and a server
+ * `you` turn at index 1 — reachable only in the stale-slot cases above, since
+ * otherwise the sentence's arrival retires the slot — that real message stops
+ * opening an exchange and the rail's first dot is labelled with the
+ * placeholder's text. Registered rather than fixed: excluding it from
+ * `exchangesOf` means teaching the rail about a kind of line that exists for
+ * one feature, and the mislabelled dot is downstream of gaps already listed
+ * above rather than a separate defect.
  */
 function createEchoLine(text: string, atMs = 0): ConversationTurn {
   return { id: CREATE_ECHO_ID, author: 'you', text, atMs };

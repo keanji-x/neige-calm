@@ -1489,48 +1489,54 @@ describe('create placeholder lifetime', () => {
   });
 
   /*
-   * ── ACTIONABLE 3 ──────────────────────────────────────────────────────────
+   * ── #1449 review round 5 — the slot belongs to the tab, not to the visit ──
    *
-   * A slot that never saw its row must not outlive the visit that minted it.
-   * The reader starts a conversation and closes the drawer before the agent
-   * echoes anything; the server does record the sentence, this tab never reads
-   * it, and another client empties the card with
-   * `POST /api/cards/{id}/planner/reset`. Reopening then reads `[]` — which is
-   * indistinguishable, from here, from the empty transcript of a brand-new
-   * card, so the bound has to be the visit and not a reading of the rows.
+   * A round-4 version of this file had a test called "does not print a
+   * placeholder from an earlier visit over a reset conversation" whose
+   * transport answered `[]` throughout. It never served the sentence back, so
+   * what it actually pinned was the *cost* of the bound it was defending —
+   * closing the drawer erases the line — under a name describing something
+   * else. Both the bound and that test are gone.
+   *
+   * This is the contract that replaces it, in the opposite direction: the
+   * reader presses Enter, closes the drawer before the agent has said
+   * anything, and opens it again. Their sentence is still there. No second
+   * client, no race, no reset — just the drawer, which on the track-create
+   * path opens itself, so an `Escape` and a reopen is the whole reproduction.
    */
-  it('does not print a placeholder from an earlier visit over a reset conversation', async () => {
-    let transcriptRows: readonly unknown[] = [];
+  it('keeps the sentence across closing and reopening the drawer', async () => {
     const transport: ApiTransportPort = {
       send(request) {
-        if (request.path.includes(HISTORY_PATH)) return Promise.resolve(ok([...transcriptRows]));
+        if (request.path.includes(HISTORY_PATH)) return Promise.resolve(ok([]));
         return Promise.resolve(request.path.endsWith('/planner/run') ? runIdle() : ok([]));
       },
     };
     const store = mountSlotStore(transport);
-    await store.note('old session A');
+    await store.note('the sentence that started it');
     await store.open();
-    expect(store.said()).toEqual(['old session A']);
+    expect(store.said()).toEqual(['the sentence that started it']);
 
-    /* The reader leaves before anything comes back. */
     await store.close();
-    /* Elsewhere: the sentence is recorded, then the card is reset. The tab read
-       neither, and comes back to an emptied conversation. */
-    transcriptRows = [];
     await store.open();
     await store.settle();
-    expect(store.said()).toEqual([]);
+    expect(store.said()).toEqual(['the sentence that started it']);
   });
 
   /*
-   * ── ACTIONABLE 7 ──────────────────────────────────────────────────────────
+   * ── The `hasEarlierPage` guard, and the gap that is its other side ────────
    *
    * A landing that failed leaves its sentence on the history entry, and Back or
    * a reload arms it again — on a planner card that may have been talking for
    * days. Pinned at the head with no guard, a sentence typed a minute ago
-   * prints above messages genuinely older than it. A transcript that reports an
+   * prints above messages genuinely older than it. A transcript reporting an
    * earlier page is the signal that this card is not waiting for its own first
    * line.
+   *
+   * The same run is the KNOWN GAP recorded at `createEchoLine`: `hasNextPage`
+   * means "the newest page came back full", so on any card with 300 or more
+   * persisted rows a genuinely new create sentence is retired on the next
+   * commit and never shown at all. This case is the assertion for both — the
+   * guard firing, and the cost of it firing.
    */
   it('does not pin a new sentence above a card that has history behind it', async () => {
     const transport: ApiTransportPort = {
