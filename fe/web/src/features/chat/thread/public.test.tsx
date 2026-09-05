@@ -1172,6 +1172,84 @@ describe('ChatComposer', () => {
    * belongs where the state that decides it lives, at the top of the router's
    * `interrupt()`; here Stop stays a button that reports what it did.
    */
+  /*
+   * ── #1505: a turn in flight is not a reason to swallow a sentence ────────
+   *
+   * `onSubmit` used to open with `if (text === '' || disabled || stopShown)
+   * return;`, and `stopShown` is true for the whole of a turn — so every press
+   * and every Enter left through that line, before `onSend` and before the
+   * `setDraft('')` under it. The message was not sent, not queued, not
+   * reported, and not even left in the box.
+   *
+   * Nothing about the kernel wanted that: `send_planner_input` never reads the
+   * phase, folds the text into the harness pending queue, and the run loop
+   * issues it as the next turn. These two say the refusal is gone in both
+   * directions a person can send.
+   */
+  it('sends while a turn is running, from the control that is on screen for it', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
+    await userEvent.type(messageField(), 'while it works');
+    /* Named for what it does, not "Send": Send is the *other* state of the one
+       button that is currently Stop, and two buttons cannot both be Send. */
+    await userEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    expect(onSend).toHaveBeenCalledWith('while it works');
+  });
+
+  it('sends with Enter while a turn is running', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
+    const field = messageField();
+    await userEvent.type(field, 'typed mid-turn');
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('typed mid-turn');
+  });
+
+  /*
+   * The queue control exists *because* the send button is showing Stop, so it
+   * has no business being there when Send is available — two controls doing
+   * the same thing, one of them describing the wrong mechanism. And while a
+   * turn does run it obeys the same emptiness rule Send does: nothing to send
+   * is nothing to queue.
+   */
+  it('offers the queue control only while a turn is running, and never over an empty draft', async () => {
+    const onSend = vi.fn();
+    const { rerender } = render(<ChatComposer onSend={onSend} />);
+    expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+
+    rerender(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
+    const queue = screen.getByRole('button', { name: 'Queue message' });
+    expect(queue.hasAttribute('disabled')).toBe(true);
+    await userEvent.click(queue);
+    expect(onSend).not.toHaveBeenCalled();
+
+    await userEvent.type(messageField(), 'now there is something');
+    expect(screen.getByRole('button', { name: 'Queue message' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  /*
+   * `disabled` is the router's `sendBlocked` — "the last POST has not settled"
+   * — and it is a different fact from "a turn is running". Letting the turn
+   * through must not let that one through with it, in either direction a
+   * person can send.
+   */
+  it('still refuses a send while the previous one is unsettled, turn running or not', async () => {
+    const onSend = vi.fn();
+    const { rerender } = render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
+    const field = messageField();
+    await userEvent.type(field, 'second message');
+    /* The words are already in the box when the block arrives — which is the
+       real sequence: `sendBlocked` goes true inside the send that precedes
+       this one, not before the reader started typing. */
+    rerender(<ChatComposer onSend={onSend} onStop={vi.fn()} disabled />);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    /* `fireEvent`, not `userEvent`: Astryx's disabled root sets
+       `pointer-events: none`, and a real pointer therefore never reaches the
+       button at all. What is under test is the handler behind it. */
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('keeps Stop live and lets a second press through to the caller', async () => {
     const onStop = vi.fn();
     render(<ChatComposer onSend={vi.fn()} onStop={onStop} />);

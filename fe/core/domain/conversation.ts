@@ -183,6 +183,18 @@ export type ConversationTurn = Readonly<{
  * remounts through the conversation registry. */
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
+  /**
+   * True when this message was posted while a turn was already running, so the
+   * kernel put it on the harness `pending_queue` instead of issuing it.
+   *
+   * Required rather than optional: every echo is minted at one call site, which
+   * knows the phase it was minted in, and a missing flag would be read as
+   * "already running" — the reading a queued message must never get. It is a
+   * fact about the *send*, not a live status, so nothing recomputes it: the
+   * echo it belongs to is reconciled away the moment the server hands the
+   * message back, which is exactly when it stops being queued.
+   */
+  queued: boolean;
 }>;
 
 /** A kernel observation delivered through Codex's user-message transport.
@@ -1021,6 +1033,18 @@ export function isOptimisticConversationTurn(
   if (entry.author !== 'you' || !('serverHighWaterBefore' in entry)) return false;
   const before = entry.serverHighWaterBefore;
   return typeof before === 'number' && Number.isFinite(before);
+}
+
+/**
+ * Whether this transcript entry is a message the kernel has queued behind the
+ * turn that was running when it was sent.
+ *
+ * Asked of a `TranscriptEntry` rather than of an echo, because the renderer
+ * holds the merged transcript and has no other way to tell the two apart —
+ * a queued message and a message being worked on look identical otherwise.
+ */
+export function isQueuedConversationTurn(entry: TranscriptEntry): boolean {
+  return isOptimisticConversationTurn(entry) && entry.queued;
 }
 
 /** Highest persisted item id observed before an optimistic send. */

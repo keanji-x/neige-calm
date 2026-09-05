@@ -46,7 +46,7 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 import {
-  isLiveConversation, opensAfterGap, opensExchange,
+  isLiveConversation, isQueuedConversationTurn, opensAfterGap, opensExchange,
   type Conversation, type ConversationActivity, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import styles from './thread.module.css';
@@ -524,7 +524,36 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
                 <p className={styles.gap}>{clockTime(turn.atMs)}</p>
               )}
               {turn.author === 'you' ? (
-                <p className={styles.said} data-nc-turn="you">{turn.text}</p>
+                <>
+                  {/*
+                    * The mark is on the turn and the words are under it, rather
+                    * than inside the `<p>`: the paragraph is the message
+                    * verbatim, and a caption folded into it would become part
+                    * of the message's own text — to a screen reader reading the
+                    * paragraph, and to every `getByText` that matches one.
+                    */}
+                  <p
+                    className={styles.said}
+                    data-nc-turn="you"
+                    {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
+                  >{turn.text}</p>
+                  {isQueuedConversationTurn(turn) && (
+                    /*
+                     * What separates "the agent is working on this" from "the
+                     * agent has not seen this yet", said in words because
+                     * nothing else on this surface says it. The live dot below
+                     * belongs to the turn already running, and a queued message
+                     * sits above it looking exactly like one being answered.
+                     *
+                     * `role="status"` rather than a bare caption: it appears
+                     * without the reader having moved, in response to their own
+                     * press, and it is the answer to "did that go anywhere?".
+                     */
+                    <p className={styles.queuedNote} data-nc-queued-note="" role="status">
+                      Queued · sends when this turn ends
+                    </p>
+                  )}
+                </>
               ) : (
                 <div className={styles.reply} data-nc-turn="agent">
                   <Reply text={turn.text} />
@@ -2061,6 +2090,39 @@ export function ChatComposer({
     },
   }], []);
 
+  /**
+   * Hand one message to the caller, from wherever the reader asked for it.
+   *
+   * **`stopShown` is deliberately not a reason to refuse (#1505).** It stood in
+   * this guard and it was the whole of the bug: a turn in flight puts `onStop`
+   * on this component, which turns Send into Stop, which made every press and
+   * every Enter return here — before `onSend`, and before the `setDraft('')`
+   * below, so the sentence was neither sent, nor queued, nor reported, nor even
+   * left in the field. The kernel never asked for that refusal:
+   * `POST /planner/input` (`send_planner_input`) does not read the phase at
+   * all, folds the text into the harness pending queue, and the run loop issues
+   * it as the next turn. The composer was refusing on the kernel's behalf a
+   * thing the kernel does happily.
+   *
+   * `disabled` stays, and means what it always meant on this path: the router
+   * passes `store.sendBlocked`, which is "the last POST has not settled yet",
+   * not "the agent is busy".
+   */
+  const submit = (value: string) => {
+    const text = value.trim();
+    if (text === '' || disabled) return;
+    onSend(text);
+    setDraft('');
+    /* The caret goes back to the field from the effect above, not from
+       here: `onSend` may have already queued the `disabled` that takes
+       the field away, and this handler runs before React flushes it. */
+    wantsFieldFocus.current = true;
+    /* A fresh request, so the effect's first run must not compare against
+       a perch left over from an earlier one — see the effect's note. */
+    parkedFocus.current = null;
+    setSendCount((count) => count + 1);
+  };
+
   return (
     <div
       ref={rootRef}
@@ -2112,20 +2174,48 @@ export function ChatComposer({
         /* Handed over whole — the "one interrupt at a time" rule is the
            router's, at the top of `interrupt()`. See the `onStop` prop note. */
         onStop={onStop}
-        onSubmit={(value) => {
-          const text = value.trim();
-          if (text === '' || disabled || stopShown) return;
-          onSend(text);
-          setDraft('');
-          /* The caret goes back to the field from the effect above, not from
-             here: `onSend` may have already queued the `disabled` that takes
-             the field away, and this handler runs before React flushes it. */
-          wantsFieldFocus.current = true;
-          /* A fresh request, so the effect's first run must not compare against
-             a perch left over from an earlier one — see the effect's note. */
-          parkedFocus.current = null;
-          setSendCount((count) => count + 1);
-        }}
+        /* Enter arrives here. Astryx's own `handleSubmit` refuses only on an
+           empty draft and on `isDisabled` — it has never consulted
+           `isStopShown` — so with the composer's guard corrected, Enter sends
+           while a turn runs exactly as the button does. */
+        onSubmit={submit}
+        /*
+         * ── The second door, open only while the first one says Stop ────────
+         *
+         * `sendButton` is one button in two states, and while a turn runs that
+         * state is Stop. Letting a send *through* therefore is not enough: with
+         * only that control on screen the reader who has typed a sentence can
+         * press nothing but Stop. So the send gets a control of its own for
+         * exactly as long as Send is not itself available.
+         *
+         * A plain `<button>` rather than a second `ChatSendButton`: that
+         * component takes its label, its variant and its `onClick` from
+         * `isStopShown`, so a second one would render Stop as well, and it
+         * accepts neither `isDisabled` nor the `tooltip` Astryx needs before it
+         * will announce one (measured — see the `onStop` and `sendButton` notes
+         * above). Nothing here reaches into vendor internals; it sits in the
+         * `sendActions` slot the composer documents for exactly this.
+         *
+         * **Named `Queue message`, not `Send`.** Two buttons cannot both be
+         * "Send", and this one is not Send: what it does is put the sentence on
+         * the harness's pending queue behind the turn in flight. The name is
+         * the promise the transcript then keeps, one line up, with `Queued ·
+         * sends when this turn ends`.
+         *
+         * Its own availability is `canSend` restated by hand, because
+         * `useChatComposerContext` is not exported — but restated over the same
+         * `draft` this component owns and hands Astryx as `value`, so there is
+         * no second source of truth for it to drift from.
+         */
+        sendActions={stopShown ? (
+          <button
+            type="button"
+            className={styles.queueSend}
+            data-nc-send-queued=""
+            disabled={disabled || draft.trim() === ''}
+            onClick={() => { submit(draft); }}
+          >Queue message</button>
+        ) : undefined}
         input={(
           <ChatComposerInput
             label="Message"

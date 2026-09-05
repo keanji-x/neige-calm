@@ -450,6 +450,98 @@ describe('planner conversation regressions', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
   });
 
+  /*
+   * ── #1505 ────────────────────────────────────────────────────────────────
+   *
+   * The whole bug and the whole fix, at the one tier that can see both: a real
+   * transport, a real phase query, and the composer the app actually builds.
+   *
+   * Before the fix this test's first assertion read `toHaveLength(0)` if you
+   * wrote it honestly — Enter during `turn_running` reached
+   * `ChatComposer`'s `onSubmit`, hit `if (… || stopShown) return;`, and no POST
+   * was ever attempted. Nothing else on the path refused: `send_planner_input`
+   * accepts at any phase and queues the text behind the running turn.
+   *
+   * The second half is what the reader is owed for it. A queued message and a
+   * message being worked on are the same paragraph on the same side of the
+   * transcript; `data-nc-queued` is the difference, and it is present only on
+   * the send that was actually queued.
+   */
+  it('posts a message sent while a turn is running, and marks it queued', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    /* The phase arrives a round trip after the drawer, and "running" is the
+       precondition — without it this would be an ordinary idle send. */
+    await screen.findByRole('button', { name: 'Stop' });
+
+    const field = messageField();
+    await typeInto(field, 'queued words');
+    await sendWithEnter(field);
+
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+    });
+    expect(await screen.findByText('queued words')).toBeTruthy();
+    const queued = document.querySelector('[data-nc-queued]');
+    expect(queued?.textContent).toBe('queued words');
+    expect(document.querySelector('[data-nc-queued-note]')?.textContent)
+      .toContain('sends when this turn ends');
+  });
+
+  /* The same send from an idle conversation is not queued behind anything, and
+     must not claim to be — the marker is a fact about the send, so the negative
+     is what keeps it from decaying into decoration on every optimistic turn. */
+  it('does not mark a message sent from an idle conversation as queued', async () => {
+    setup();
+    await openConversation();
+    const field = messageField();
+    await typeInto(field, 'idle words');
+    await sendWithEnter(field);
+    expect(await screen.findByText('idle words')).toBeTruthy();
+    expect(document.querySelector('[data-nc-queued]')).toBeNull();
+    expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+  });
+
+  /* Sending during a turn does not repeal the one-POST-at-a-time rule: that is
+     `sendBlocked`, and it is about the request in flight rather than about the
+     agent. Same shape as the idle test above, on the running path. */
+  it('still prevents a second send while the first is pending, with a turn running', async () => {
+    let settle!: (response: ApiTransportResponse) => void;
+    const pending = new Promise<ApiTransportResponse>((resolve) => { settle = resolve; });
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' });
+      }
+      return request.path.endsWith('/planner/input') ? pending : undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'first');
+    await sendWithEnter(field);
+    await typeInto(field, 'second');
+    await sendWithEnter(field);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+    settle(ok({ card_id: CARD.id, runtime_id: 'runtime' }));
+  });
+
+  /* And Stop is untouched by all of the above: the second control was added
+     beside it, not in place of it. */
+  it('keeps Stop working while the queue control is on screen', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    const stop = await screen.findByRole('button', { name: 'Stop' });
+    expect(screen.getByRole('button', { name: 'Queue message' })).toBeTruthy();
+    fireEvent.click(stop);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
+    });
+  });
+
   it('invalidates history and phase after a successful send', async () => {
     const { requests } = setup();
     await openConversation();

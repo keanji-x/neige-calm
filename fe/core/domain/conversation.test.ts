@@ -11,7 +11,7 @@ import {
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
-  isOptimisticConversationTurn, mergeTranscript, readableCommand,
+  isOptimisticConversationTurn, isQueuedConversationTurn, mergeTranscript, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
@@ -57,8 +57,10 @@ describe('reconcileUserEchoes', () => {
 
 describe('optimistic conversation provenance', () => {
   const serverTurn = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
-  const echo = (id: string, before: number): OptimisticConversationTurn => ({
-    id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before,
+  const echo = (
+    id: string, before: number, queued = false,
+  ): OptimisticConversationTurn => ({
+    id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before, queued,
   });
 
   it('takes the highest persisted item id as the pre-send boundary', () => {
@@ -84,6 +86,20 @@ describe('optimistic conversation provenance', () => {
     expect(isOptimisticConversationTurn(echo('echo-1', 4))).toBe(true);
     expect(isOptimisticConversationTurn(serverTurn('5'))).toBe(false);
     expect(isOptimisticConversationTurn(invalid)).toBe(false);
+  });
+
+  /*
+   * The queue flag is a property of the *send*, so it has to be readable off a
+   * merged transcript entry — the renderer holds `TranscriptEntry`, never the
+   * echo type — and it has to be false for everything that is not an echo at
+   * all. A server row has no `queued` field, and "no field" must not read as
+   * "queued": that is the direction that would put the caption under a message
+   * the agent already answered.
+   */
+  it('reads the queue flag only off an optimistic turn that carries it', () => {
+    expect(isQueuedConversationTurn(echo('echo-1', 4, true))).toBe(true);
+    expect(isQueuedConversationTurn(echo('echo-2', 4, false))).toBe(false);
+    expect(isQueuedConversationTurn(serverTurn('5'))).toBe(false);
   });
 });
 

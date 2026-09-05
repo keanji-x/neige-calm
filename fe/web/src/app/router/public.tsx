@@ -556,6 +556,21 @@ export function useConversationStore(
     const echo: OptimisticConversationTurn = {
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
       serverHighWaterBefore: serverItemHighWater(items),
+      /*
+       * Read at the moment of the press, which is the only moment it is true of
+       * this message.
+       *
+       * `POST /planner/input` does not look at the phase — `send_planner_input`
+       * accepts unconditionally and `observe_user_message_durable` folds the
+       * text into the harness pending queue — and `can_issue_turn()` only starts
+       * a turn from `Idle`/`TurnCompleted`. So a message posted while `working`
+       * is durably accepted *and* deliberately not being worked on yet, and the
+       * reader is owed that difference. Recomputing it from the live phase later
+       * would say the opposite twice over: a queued message would stop looking
+       * queued the instant the turn it is waiting behind finishes, and a message
+       * sent from idle would start looking queued as soon as its own turn began.
+       */
+      queued: working,
     };
     const sentTo = cardId;
     activeSend.current = { cardId: sentTo, echoId: echo.id };
