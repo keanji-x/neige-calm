@@ -74,11 +74,13 @@ role, not a lower-privilege plugin installer role. Protect that session and its
 login credentials as administrative access to service execution. A local-path
 install names a directory on the server, not a file on the browser's machine.
 
-Keep `CALM_DEV_AUTOLOGIN` / `auth.dev_autologin` disabled in production: enabling it
-promotes every request to owner without a session. `X-Calm-Actor` is attribution,
-not a substitute for owner authentication. Filesystem modification bypasses the
-REST interface entirely, so API authentication does not protect writable plugin
-code.
+Keep `CALM_DEV_AUTOLOGIN` false and do not pass `--auth-dev-autologin` to
+`calm-server` in production. When deploying through `neige-app`, set
+`auth_dev_autologin = false` in its `[child]` configuration section. Enabling
+development autologin promotes every request to owner without a session.
+`X-Calm-Actor` is attribution, not a substitute for owner authentication.
+Filesystem modification bypasses the REST interface entirely, so API
+authentication does not protect writable plugin code.
 
 This contract does not make an unsafe deployment safe. If an unintended writer
 can replace installed code or a link target, remove that access and restore code
