@@ -318,6 +318,33 @@
 #   both constituent lines path:line + content. If a later commit needs this
 #   cell higher, that is a NEW raise needing its own argument.
 #
+#   A SECOND raise of EXACTLY +2, taken ONCE by #1445, in `fe`. Same split
+#   again — a wire key is not prose and has no synonym — but the reason this one
+#   exists at all is the counting unit, so it is written up under #1445 below.
+#
+#     fe/web/src/app/providers/queries.contract.test.ts   1 ->  2
+#     fe/web/src/app/router/today-conversation.test.tsx   0 ->  1
+#                                                  fe    64 -> 66
+#
+#   Both added occurrences are the RESPONSE-BODY KEY `runtime_id` in a fixture,
+#   and in both the key is REQUIRED by a Zod object declared in
+#   `fe/core/domain/conversation.ts`, which this change does not touch:
+#   `sendPlannerInputOperation`'s `z.object({ card_id, runtime_id })` (line 257)
+#   and `harnessItemSchema`'s `runtime_id: z.string()` (line 217). Spelling the
+#   key any other way in the fixture is not a rewording, it is a fixture the
+#   parser rejects — `path: ["runtime_id"] … received undefined`. NOT ONE added
+#   line is prose and NOT ONE is an identifier: the change DELETES two
+#   identifiers (`wireRuntimeKey`) and adds none. If a later commit needs this
+#   cell higher, that is a NEW raise needing its own argument.
+#
+#   BOTH were mutation-verified — rename the key in the fixture, the test goes
+#   red — and the second one only after a repair. `today-conversation.test.tsx`
+#   asserted that the bootstrap text stays OUT of the conversation name, and a
+#   rejected history row is dropped silently, so a wrong key made that assertion
+#   true for the wrong reason: it stayed GREEN. #1445 added the positive half
+#   (the bootstrap text is rendered in the transcript) so the raise buys an
+#   occurrence that something actually reads.
+#
 #   Everything else spelled `Runtime` is
 #   a DIFFERENT concept and is not scanned: `PluginRuntimeStatus` (plugin
 #   process state), `OperationRuntime` (`operation/driver.rs`), `ProcRuntime`,
@@ -334,6 +361,45 @@
 #   `runtime` / `harness` / `worker_session` are three names for layers of one
 #   execution concept. That is a design question, not a rename, and #1316
 #   explicitly refuses to smuggle it into a mechanical slice.
+#
+# WHAT A TEXT COUNT CANNOT SEE — #1445, AND WHY THE ANSWER IS A RAISE
+#
+#   This gate counts TEXT. It therefore cannot see a retiring word that is
+#   ASSEMBLED at run time. Two lines on `main` did exactly that:
+#
+#     fe/web/src/app/providers/queries.contract.test.ts:405
+#     fe/web/src/app/router/today-conversation.test.tsx:219
+#       const wireRuntimeKey = ['runtime', 'id'].join('_');
+#
+#   `git grep runtime_id -- fe` returned zero for both files while the fixtures
+#   they fed produced the key `runtime_id` at run time. The failure mode is the
+#   exact inverse of what a ratchet is for: the scan was clean, the gate was
+#   green, and a real wire contract that a rename slice had to follow was
+#   invisible to every grep anyone would run. #1316 S4b (#1423) walked into it —
+#   it renamed the key everywhere grep could see, this gate stayed green, and
+#   the contract test failed in Zod on a key nothing had reported.
+#
+#   The motive was not evasion; it was to keep the `runtime_id/fe` cell from
+#   rising. That trade is backwards and #1445 reverses it: both lines now spell
+#   the key, and the cell is raised by the +2 enumerated above.
+#
+#   KNOWN GAP, STATED RATHER THAN PATCHED. Nothing here detects the idiom. An
+#   anti-evasion pattern was considered and rejected in both widths, because
+#   neither width is a gate:
+#     * narrow (`['x','y'].join(`) is defeated by the next spelling —
+#       `'runtime' + '_id'`, `String.fromCharCode`, `.replace`, a template
+#       literal, an index into an array of parts. Catching one shape and
+#       claiming the class is a stronger falsehood than saying nothing;
+#     * broad (any computed key, any `.join('_')`) fires on ordinary code —
+#       `.join('_')` and `{ [key]: value }` are unremarkable TypeScript — and in
+#       this repo a false red is worse than a missing check, because it teaches
+#       people to skip the gate. Deciding whether a computed key EVALUATES to a
+#       retiring word means evaluating the expression, which is a type checker's
+#       job and not a regex's.
+#   So the rule is stated as a contract instead: a retiring word assembled at
+#   run time is OUT OF CONTRACT here, and the sanctioned exit for a wire key you
+#   cannot rename yet is a registered raise, not concealment. This gate will not
+#   catch a violation; a reviewer reading the diff is the only thing that will.
 #
 # SCOPES
 #   Ratcheted: `crates` `fe` `docs` `e2e`.
