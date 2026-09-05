@@ -541,3 +541,6 @@ async fn codex_worker_prompt_includes_completion_task_id() {
         "Codex must receive the exact task id it is required to report"
     );
 }
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;

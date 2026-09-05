@@ -271,3 +271,9 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         "unexpected error: {err}"
     );
 }
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
+
+#[path = "gate_recovery_tests.rs"]
+mod gate_recovery_tests;

@@ -86,6 +86,37 @@ pub(crate) async fn spawn_terminal_with_parts(
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<Arc<RendererEntry>> {
+    renderer
+        .ensure(terminal_renderer_config(daemon, term, program, cwd, env).await?)
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))
+}
+
+pub(crate) async fn spawn_task_terminal_with_parts(
+    daemon: &DaemonClient,
+    renderer: &TerminalRendererRegistry,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+    launch: crate::operation::task_launch::TaskLaunch,
+) -> Result<Arc<RendererEntry>> {
+    renderer
+        .ensure_for_task(
+            terminal_renderer_config(daemon, term, program, cwd, env).await?,
+            launch,
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))
+}
+
+async fn terminal_renderer_config(
+    daemon: &DaemonClient,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+) -> Result<RendererConfig> {
     #[cfg(feature = "fixtures")]
     if matches!(
         std::env::var("FAKE_CODEX_PTY_FAIL").as_deref(),
@@ -104,22 +135,19 @@ pub(crate) async fn spawn_terminal_with_parts(
     // startup OSC 10/11 reply colors. Thread them into every renderer spawn.
     let envs = terminal_child_envs(env);
 
-    renderer
-        .ensure(RendererConfig {
-            terminal_id: term.id.clone(),
-            cols: 80,
-            rows: 24,
-            buffer_bytes: 1 << 20,
-            terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
-            terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
-            program: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), program.to_string()],
-            envs,
-            cwd: cwd.to_string(),
-            supervisor_sock: proc_supervisor_sock,
-        })
-        .await
-        .map_err(|e| CalmError::Internal(e.to_string()))
+    Ok(RendererConfig {
+        terminal_id: term.id.clone(),
+        cols: 80,
+        rows: 24,
+        buffer_bytes: 1 << 20,
+        terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
+        terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
+        program: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), program.to_string()],
+        envs,
+        cwd: cwd.to_string(),
+        supervisor_sock: proc_supervisor_sock,
+    })
 }
 
 /// Overlay `TERM` / `COLORTERM` / `TERM_PROGRAM=neige` so a server launched

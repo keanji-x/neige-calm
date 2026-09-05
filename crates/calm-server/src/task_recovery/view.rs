@@ -225,7 +225,7 @@ async fn current_blocking_reason_tx(
         task_budget_default,
     );
     let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
-        &mut **tx,
+        tx,
         track.id.as_str(),
         &declarations,
         &diagnostics,

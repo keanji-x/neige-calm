@@ -13,6 +13,7 @@ pub mod forge_action_adapter;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
+pub(crate) mod task_launch;
 pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod worker_cleanup;
@@ -42,7 +43,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
 use crate::proc_identity::verify_owned_pid;
-use crate::routes::terminal::spawn_terminal_with_parts;
+use crate::routes::terminal::{spawn_task_terminal_with_parts, spawn_terminal_with_parts};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -329,6 +330,30 @@ impl SpawnCtx {
             program,
             cwd,
             env,
+        )
+        .await?;
+        Ok(SpawnHandle::Terminal {
+            terminal_id: term.id.clone(),
+            renderer_id: entry.terminal_id.clone(),
+        })
+    }
+
+    pub(crate) async fn spawn_task_terminal(
+        &self,
+        term: &crate::model::Terminal,
+        program: &str,
+        cwd: &str,
+        env: &Value,
+        launch: task_launch::TaskLaunch,
+    ) -> Result<SpawnHandle> {
+        let entry = spawn_task_terminal_with_parts(
+            self.daemon.as_ref(),
+            self.terminal_renderer.as_ref(),
+            term,
+            program,
+            cwd,
+            env,
+            launch,
         )
         .await?;
         Ok(SpawnHandle::Terminal {

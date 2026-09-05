@@ -171,3 +171,6 @@ pub async fn recover_failed_task(
         Err(error) => Err(error),
     }
 }
+
+#[cfg(test)]
+pub(crate) mod launch_test_support;

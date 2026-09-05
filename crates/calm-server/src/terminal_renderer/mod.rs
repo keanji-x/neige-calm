@@ -329,11 +329,27 @@ impl TerminalRendererRegistry {
         &self,
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, None).await
+    }
+
+    pub(crate) async fn ensure_for_task(
+        &self,
+        cfg: RendererConfig,
+        launch: crate::operation::task_launch::TaskLaunch,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, Some(launch)).await
+    }
+
+    async fn ensure_with_launch(
+        &self,
+        cfg: RendererConfig,
+        launch: Option<crate::operation::task_launch::TaskLaunch>,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
         if let Some(existing) = self.get(&cfg.terminal_id) {
             return Ok(existing);
         }
 
-        let entry = Arc::new(ensure_entry(cfg, self.repo.clone(), self.task_hook()).await?);
+        let entry = Arc::new(ensure_entry(cfg, self.repo.clone(), self.task_hook(), launch).await?);
         let mut entries = self
             .entries
             .lock()
@@ -506,6 +522,7 @@ async fn ensure_entry(
     cfg: RendererConfig,
     repo: Option<Arc<dyn RouteRepo>>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
+    launch: Option<crate::operation::task_launch::TaskLaunch>,
 ) -> anyhow::Result<RendererEntry> {
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = UnixStream::connect(&cfg.supervisor_sock)
@@ -516,37 +533,51 @@ async fn ensure_entry(
                 cfg.supervisor_sock.display()
             )
         })?;
-    write_frame(
-        &mut control_conn,
-        &ControlMsg::EnsureProc(EnsureProcRequest {
-            proc_id: proc_id.clone(),
-            program: cfg.program.clone(),
-            args: cfg.args.clone(),
-            envs: cfg.envs.clone(),
-            cwd: cfg.cwd.clone(),
-            ready_timeout_ms: 0,
-            io_mode: IoMode::Pty {
-                cols: cfg.cols,
-                rows: cfg.rows,
-            },
-            replay_bytes: cfg.buffer_bytes,
-        }),
-    )
-    .await?;
-    // Kill-by-proc_id is only needed before Spawned{pid} is persisted: the
-    // compensation/sweeper paths reap by persisted pid, so they cannot reach an
-    // orphaned unacknowledged child. After this point, those existing
-    // reconciliation paths handle ready/attach abandonment; killing here would
-    // leave a dead-but-row-live terminal with no attach reader to observe exit.
-    match read_control_reply_or_kill(
-        &mut control_conn,
-        SPAWN_CONTROL_READ_TIMEOUT,
-        "spawn",
-        &cfg.supervisor_sock,
-        &proc_id,
-    )
-    .await?
-    {
+    let request = ControlMsg::EnsureProc(EnsureProcRequest {
+        proc_id: proc_id.clone(),
+        program: cfg.program.clone(),
+        args: cfg.args.clone(),
+        envs: cfg.envs.clone(),
+        cwd: cfg.cwd.clone(),
+        ready_timeout_ms: 0,
+        io_mode: IoMode::Pty {
+            cols: cfg.cols,
+            rows: cfg.rows,
+        },
+        replay_bytes: cfg.buffer_bytes,
+    });
+    let launch_sock = cfg.supervisor_sock.clone();
+    let launch_proc_id = proc_id.clone();
+    let exchange = async move {
+        write_frame(&mut control_conn, &request)
+            .await
+            .map_err(|error| crate::error::CalmError::Internal(error.to_string()))?;
+        // Unacknowledged launch cleanup remains in the existing bounded reader.
+        let reply = read_control_reply_or_kill(
+            &mut control_conn,
+            SPAWN_CONTROL_READ_TIMEOUT,
+            "spawn",
+            &launch_sock,
+            &launch_proc_id,
+        )
+        .await
+        .map_err(|error| crate::error::CalmError::Internal(error.to_string()))?;
+        Ok((reply, control_conn))
+    };
+    let (reply, mut control_conn) = match launch {
+        Some(launch) => {
+            launch
+                .run(
+                    repo.as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("task launch requires its repository"))?,
+                    exchange,
+                )
+                .await?
+        }
+        None => exchange.await?,
+    };
+    // The admission transaction is over before PID and session persistence.
+    match reply {
         ControlReply::Spawned { pid } => {
             if let Some(repo) = repo.as_ref()
                 && let Err(e) = repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await

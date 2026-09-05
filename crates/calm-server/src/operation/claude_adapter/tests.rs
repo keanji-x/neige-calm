@@ -653,3 +653,6 @@ async fn claude_worker_prompt_includes_completion_task_id() {
         "the worker must receive the task id it is required to echo"
     );
 }
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;

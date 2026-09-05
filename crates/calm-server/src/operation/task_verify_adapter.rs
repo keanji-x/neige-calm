@@ -525,11 +525,18 @@ pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
 pub struct TaskVerifyAdapter {
     /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files.
     gate_logs_dir: PathBuf,
+    #[cfg(test)]
+    pub(crate) before_release:
+        Option<std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl TaskVerifyAdapter {
     pub fn new(gate_logs_dir: PathBuf) -> Self {
-        Self { gate_logs_dir }
+        Self {
+            gate_logs_dir,
+            #[cfg(test)]
+            before_release: None,
+        }
     }
 
     /// Resolve the gate-logs dir for the GENUINELY config-less call
@@ -980,17 +987,25 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 }),
             };
             ctx.record_spawn_artifacts(op, &artifacts).await?;
+            #[cfg(test)]
+            if let Some(hook) = &self.before_release {
+                hook().await;
+            }
             // Release the go-token (newline-terminated — POSIX `read`
             // returns non-zero on EOF-before-newline).
             let mut stdin = child
                 .stdin
                 .take()
                 .ok_or_else(|| CalmError::Internal("gate wrapper stdin handle missing".into()))?;
-            stdin
-                .write_all(b"go\n")
-                .await
-                .map_err(|e| CalmError::Internal(format!("gate release write failed: {e}")))?;
-            drop(stdin);
+            super::task_launch::TaskLaunch::new(&frozen.task_id, op)
+                .run(ctx.repo.as_ref(), async move {
+                    stdin.write_all(b"go\n").await.map_err(|error| {
+                        CalmError::Internal(format!("gate release write failed: {error}"))
+                    })?;
+                    drop(stdin);
+                    Ok(())
+                })
+                .await?;
             Ok::<SpawnArtifacts, CalmError>(artifacts)
         };
         let artifacts = match tokio::time::timeout(RELEASE_TIMEOUT, record_release).await {

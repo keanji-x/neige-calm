@@ -94,6 +94,8 @@ pub struct CodexWorkerAdapter {
     /// re-runs materialization for a managed track (red-team B5). Boot-frozen
     /// config, threaded rather than read from a global.
     workspace_root: std::path::PathBuf,
+    #[cfg(feature = "fixtures")]
+    preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl CodexAdapter {
@@ -172,6 +174,8 @@ impl CodexWorkerAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            #[cfg(feature = "fixtures")]
+            preparation_hook: None,
         }
     }
 }
@@ -953,6 +957,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
             return Err(self.shared_codex_appserver.not_running_error());
         }
 
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.preparation_hook {
+            hook().await;
+        }
         let card = ctx
             .repo
             .card_get(&card_id)
@@ -962,6 +970,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
+            launch: super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op),
             shared_codex_appserver: &self.shared_codex_appserver,
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
@@ -1123,6 +1132,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
 pub(crate) struct CodexWorkerSpawnCtx<'a> {
     pub(crate) spawn_ctx: &'a SpawnCtx,
+    pub(crate) launch: super::task_launch::TaskLaunch,
     pub(crate) shared_codex_appserver: &'a Arc<SharedCodexAppServer>,
     pub(crate) mcp_server: Option<&'a McpServer>,
     pub(crate) card: &'a Card,
@@ -1217,12 +1227,15 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
 
     if persisted_turn_id.is_none() {
         let initial_turn_result = async {
+            let shared = Arc::clone(ctx.shared_codex_appserver);
+            let launch_thread = thread_id.clone();
+            let items = vec![InputItem::text(ctx.rendered_prompt.trim())];
             let turn_id = ctx
-                .shared_codex_appserver
-                .turn_start(
-                    &thread_id,
-                    vec![InputItem::text(ctx.rendered_prompt.trim())],
-                )
+                .launch
+                .clone()
+                .run(ctx.spawn_ctx.repo.as_ref(), async move {
+                    shared.turn_start(&launch_thread, items).await
+                })
                 .await?;
             persist_shared_worker_runtime_fields(
                 ctx.spawn_ctx,
@@ -1250,6 +1263,18 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
+    // A fast worker may report completion before its optional TUI viewer is
+    // attached. Preserve that result instead of treating a refused new viewer
+    // as a worker failure and compensating its completed workspace.
+    if ctx
+        .spawn_ctx
+        .repo
+        .task_get(ctx.launch.task_id())
+        .await?
+        .is_some_and(|task| task.status.is_terminal())
+    {
+        return Ok(SpawnHandle::NoOp);
+    }
     let mut env_for_spawn = ctx.legacy_env.clone();
     if let Some(map) = env_for_spawn.as_object_mut() {
         map.insert(
@@ -1270,7 +1295,13 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     );
     match ctx
         .spawn_ctx
-        .spawn_terminal(ctx.term, &command_line, ctx.cwd, &env_for_spawn)
+        .spawn_task_terminal(
+            ctx.term,
+            &command_line,
+            ctx.cwd,
+            &env_for_spawn,
+            ctx.launch.clone(),
+        )
         .await
     {
         Ok(handle) => {
