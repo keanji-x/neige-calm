@@ -1,0 +1,31 @@
+[package]
+name = "calm-worker-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+test-support = []
+
+[[bin]]
+name = "calm-worker-boundary"
+path = "src/main.rs"
+
+[[bin]]
+name = "boundary-test-provider"
+path = "tests/fixtures/provider.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "boundary"
+required-features = ["test-support"]
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
