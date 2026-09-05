@@ -46,10 +46,12 @@ failure-output = "immediate-final"   # print on failure + summarize at the end
 status-level = "slow"
 # #1453 — warn at 120s, then TERMINATE at 120s x 5 = 600s. Same ceiling and
 # same rationale as profile.default above (nothing legitimate is near 600s;
-# the worst known CI test peaks at ~250s). nextest SIGTERMs the test's process
-# group at the ceiling and SIGKILLs it after the grace period, so a wedged
-# binary now ends as a named failure in this run instead of holding the
-# self-hosted runner indefinitely.
+# the worst known CI test peaks at ~250s). Demonstrated with a deliberately
+# wedged test: nextest logged SLOW at 120/240/360/480s, then
+# `TERMINATING [>600.000s]` and `Summary [600.009s] 1 test run: 0 passed,
+# 1 timed out` — a named failure in this run instead of a runner held
+# indefinitely. Its `osc-probe-child` daemon died with it (the fixture arms
+# `PR_SET_PDEATHSIG`), leaving no orphan.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 [profile.ci.junit]
