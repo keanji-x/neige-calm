@@ -104,6 +104,8 @@
  * * `22` — issue #1450 adds required `can_resume` to Track detail. A bundle
  *   without that contract must refresh before it reads the new response, and a
  *   new bundle must not be deployed web-only against an API v4 server.
+ * * `23` — issue #1456 replaces terminal task `goal` with the discriminated
+ *   `command` field. A cached v22 bundle cannot parse the new task block.
  *
  * This constant must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and in
@@ -112,7 +114,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 22;
+export const WEB_COMPAT_VERSION = 23;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

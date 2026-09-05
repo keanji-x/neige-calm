@@ -523,6 +523,8 @@ mod task_context_migration_tests;
 #[cfg(test)]
 mod task_liveness_deadline_tests;
 #[cfg(test)]
+mod terminal_output_migration_tests;
+#[cfg(test)]
 mod track_tree_budget_tests;
 
 #[cfg(test)]

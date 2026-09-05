@@ -33,7 +33,7 @@ impl TerminalOutputCapture {
         if bytes.is_empty() {
             return;
         }
-        if bytes.len() >= TERMINAL_OUTPUT_MAX_BYTES {
+        if bytes.len() > TERMINAL_OUTPUT_MAX_BYTES {
             self.tail.clear();
             self.tail
                 .extend_from_slice(&bytes[bytes.len() - TERMINAL_OUTPUT_MAX_BYTES..]);
@@ -78,6 +78,16 @@ mod tests {
         assert_eq!(snapshot.text.len(), TERMINAL_OUTPUT_MAX_BYTES);
         assert!(snapshot.text.bytes().all(|byte| byte == b'x'));
         assert!(snapshot.truncated);
+    }
+
+    #[test]
+    fn exact_cap_without_prior_bytes_is_complete() {
+        let exact = vec![b'x'; TERMINAL_OUTPUT_MAX_BYTES];
+        let capture = TerminalOutputCapture::shared(0, &exact);
+        let snapshot = capture.lock().unwrap().snapshot();
+
+        assert_eq!(snapshot.text.len(), TERMINAL_OUTPUT_MAX_BYTES);
+        assert!(!snapshot.truncated, "no byte was dropped at the exact cap");
     }
 
     #[test]

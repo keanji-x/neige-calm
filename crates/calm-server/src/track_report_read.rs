@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn v3_terminal_goal_reads_as_v4_command_before_first_write() {
-        let (repo, _track, _card) = fixture(false).await;
+        let (repo, track, _card) = fixture(false).await;
         let block = ReportBlock {
             id: "b_terminal".into(),
             kind: calm_types::report_blocks::KIND_TASK.into(),
@@ -298,5 +298,32 @@ mod tests {
         assert_eq!(snapshot.blocks[0].payload["command"], "cargo check");
         assert!(snapshot.blocks[0].payload.get("goal").is_none());
         assert!(snapshot.body.contains(r#""command": "cargo check""#));
+
+        let card = repo.card_get("report").await.unwrap().unwrap();
+        let current: TrackReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
+        let mut next = TrackReportPayload::new(snapshot.summary, snapshot.body);
+        next.doc_rev = snapshot.doc_rev;
+        let persisted = persist_report(
+            &repo,
+            &EventBus::new(),
+            &WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
+            ActorId::Kernel,
+            EditAuthor::Kernel,
+            track,
+            card,
+            current,
+            next,
+            0,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("the first persist must migrate the legacy task before applying the edit");
+        let persisted: TrackReportPayload = serde_json::from_value(persisted.payload).unwrap();
+        assert_eq!(persisted.schema_version, 4);
+        let persisted_task = persisted.blocks.unwrap().remove(0);
+        assert_eq!(persisted_task.payload["command"], "cargo check");
+        assert!(persisted_task.payload.get("goal").is_none());
     }
 }

@@ -34,6 +34,11 @@ async fn stale_terminal_row_marked_exited() {
         .expect("terminal_get")
         .expect("terminal row");
     assert_eq!(got.exit_code, Some(-1));
+    assert_eq!(got.pty_output, "");
+    assert!(
+        got.pty_output_truncated,
+        "a missing supervisor means historical PTY output is unavailable"
+    );
 }
 
 #[tokio::test]

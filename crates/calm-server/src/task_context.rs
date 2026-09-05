@@ -43,6 +43,7 @@ enum RefsMatch {
 pub const ROOT_HASH_TASK_FIELDS: &[&str] = &[
     "kind",
     "goal",
+    "command",
     "acceptance",
     "gate",
     "no_gate_reason",
@@ -1146,8 +1147,21 @@ pub(crate) fn context_ref(track_id: &str, block: &ReportBlock, is_root: bool) ->
 fn task_root_projection(payload: &serde_json::Value) -> String {
     let mut projected = serde_json::Map::new();
     if let Some(object) = payload.as_object() {
+        let terminal = object.get("kind").and_then(serde_json::Value::as_str) == Some("terminal");
         for key in ROOT_HASH_TASK_FIELDS {
-            if let Some(value) = object.get(*key).filter(|value| !value.is_null()) {
+            // #1456 compatibility: frozen hashes written before the public
+            // field rename used the JSON key `goal` for terminal commands.
+            // Hash new `command` values under that same stable key so the
+            // rename itself does not stale every in-flight terminal task.
+            if *key == "command" {
+                continue;
+            }
+            let value = if terminal && *key == "goal" {
+                object.get("command").or_else(|| object.get("goal"))
+            } else {
+                object.get(*key)
+            };
+            if let Some(value) = value.filter(|value| !value.is_null()) {
                 projected.insert((*key).into(), value.clone());
             }
         }
@@ -1492,6 +1506,24 @@ mod tests {
             context_ref("w", &block, true).hash,
             "d914beed029c5ce2775bb930f45f2fccf1f011cd2bc3b878ce7b0c9f588305ff",
             "persisted claim hashes are a cross-version compatibility boundary"
+        );
+    }
+
+    #[test]
+    fn terminal_command_hashes_under_the_legacy_goal_key() {
+        let legacy = serde_json::json!({ "kind": "terminal", "goal": "cargo test" });
+        let current = serde_json::json!({ "kind": "terminal", "command": "cargo test" });
+        let changed = serde_json::json!({ "kind": "terminal", "command": "cargo check" });
+
+        assert_eq!(
+            task_root_projection(&current),
+            task_root_projection(&legacy),
+            "the field rename must not invalidate already-frozen terminal hashes"
+        );
+        assert_ne!(
+            task_root_projection(&current),
+            task_root_projection(&changed),
+            "editing the executable command must invalidate the frozen context"
         );
     }
 

@@ -6,3 +6,9 @@
 ALTER TABLE terminals ADD COLUMN pty_output TEXT NOT NULL DEFAULT '';
 ALTER TABLE terminals ADD COLUMN pty_output_truncated INTEGER NOT NULL DEFAULT 0
   CHECK (pty_output_truncated IN (0, 1));
+
+-- An already-exited row predates output capture. Empty text means "not
+-- available", not "the child produced no output".
+UPDATE terminals
+   SET pty_output_truncated = 1
+ WHERE exit_code IS NOT NULL OR signal_killed = 1;

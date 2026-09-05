@@ -25,6 +25,7 @@ use crate::model::now_ms;
 pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "kind",
     "goal",
+    "command",
     "context",
     "acceptance",
     "cwd",
@@ -41,7 +42,10 @@ fn declaration_field_changed(
     let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _) = row;
     Ok(match field {
         "kind" => kind != &declaration.kind,
-        "goal" => goal != &declaration.goal,
+        // Both public instruction spellings lower into the frozen `tasks.goal`
+        // storage column; listing both keeps the public field partition
+        // exhaustive without changing the released schema.
+        "goal" | "command" => goal != &declaration.goal,
         "context" => !context_eq(context, expected_context),
         "acceptance" => acceptance != &declaration.acceptance,
         "cwd" => cwd != &declaration.cwd,

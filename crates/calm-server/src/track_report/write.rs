@@ -816,7 +816,16 @@ async fn persist(
                     // blob between that read and this branch; once
                     // body_crdt is non-NULL we take the Some arm and
                     // ignore current_payload entirely.
-                    None => ReportDoc::from_payload(&current_payload),
+                    None => {
+                        let mut doc = ReportDoc::from_payload(&current_payload);
+                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
+                            .map_err(|e| {
+                                CalmError::Internal(format!(
+                                    "track_report: migrate seeded CRDT block layout for card {id}: {e}"
+                                ))
+                            })?;
+                        doc
+                    }
                 };
                 // 2. Capture the pre-write projection for the edit-log
                 //    entry. A malformed doc surfaces as Internal here

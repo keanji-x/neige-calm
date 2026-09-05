@@ -470,6 +470,9 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
             .unwrap()
             .contains("ready: true")
     );
+    let shape = out["migration"]["shape"].as_str().unwrap();
+    assert!(shape.contains("goal (codex/claude)"), "{shape}");
+    assert!(shape.contains("command (terminal)"), "{shape}");
     assert_eq!(
         all_persistent_rows(&boot).await,
         before,

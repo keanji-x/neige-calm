@@ -292,7 +292,8 @@ impl RepoOutOfDomain for SqlxRepo {
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()> {
-        self.terminal_set_exit_with_output(id, exit_code, signal_killed, "", false)
+        let output_unavailable = exit_code.is_some() || signal_killed;
+        self.terminal_set_exit_with_output(id, exit_code, signal_killed, "", output_unavailable)
             .await
     }
 

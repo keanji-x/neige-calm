@@ -1425,6 +1425,11 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown failure");
             out.push_str(&format!("- TaskFailed: {}\n", reason));
+            if let Some(details) = event.payload.get("details") {
+                out.push_str("\n```json\n");
+                out.push_str(&pretty_json(details));
+                out.push_str("\n```\n");
+            }
         }
         Some(event) => {
             out.push_str("- TaskCompleted:\n\n");

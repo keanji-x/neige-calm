@@ -1858,19 +1858,24 @@ async fn terminal_set_exit_round_trip_all_branches() {
     assert_eq!(r.exit_code, Some(137));
     assert!(!r.signal_killed);
     assert_eq!(r.pty_output, "");
-    assert!(!r.pty_output_truncated);
+    assert!(r.pty_output_truncated, "caller supplied no output evidence");
 
     // (c) signal-killed (mutually exclusive: exit_code = None)
     repo.terminal_set_exit(&t.id, None, true).await.unwrap();
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, None);
     assert!(r.signal_killed);
+    assert!(r.pty_output_truncated, "caller supplied no output evidence");
 
     // (d) clear back to unset
     repo.terminal_set_exit(&t.id, None, false).await.unwrap();
     let r = repo.terminal_get(&t.id).await.unwrap().unwrap();
     assert_eq!(r.exit_code, None);
     assert!(!r.signal_killed);
+    assert!(
+        !r.pty_output_truncated,
+        "unset means no output is missing yet"
+    );
 
     // Missing id → NotFound, mirroring `terminal_set_pid`.
     let err = repo
