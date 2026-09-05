@@ -560,13 +560,92 @@ fn claim_crash_point(path: &Path) {
     let _ = path;
 }
 
-/// Name of the staging directory the ownership claim is assembled in, before
+/// Prefix of the staging directory the ownership claim is assembled in, before
 /// it is published over `<path>` with a single `rename`. Dot-prefixed so it can
 /// never collide with a track id (ids are never dot-prefixed — the same
 /// reasoning [`crate::workspace_recycle::TRASH_DIR_NAME`] relies on), and it
 /// lives in `<path>`'s **parent** so a crash leaves the debris outside the
 /// directory whose emptiness the fence reads.
+///
+/// The full name is `<prefix><track>-<attempt>` (#1458): unique **per attempt**,
+/// not per track, so no two claimers ever address the same staging directory.
+/// See [`claim_attempt_id`] and [`claim_owner_marker`]'s `# Two claimers, one
+/// track`.
 const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
+
+/// How old a staging directory of this track must be before a later claim
+/// treats it as debris and removes it (#1458's reclaim story). A claim's
+/// staging lives for a handful of syscalls, so anything this old cannot be the
+/// in-flight staging of a healthy claimer; and even if it were, deleting it is
+/// fail-closed — see [`reclaim_stale_claim_staging`].
+const STALE_CLAIM_STAGING_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// A token that is unique to **this attempt** at claiming a workspace, across
+/// threads and across processes: pid (distinct processes), wall-clock nanos
+/// (the same pid after a restart, since pids recycle) and a process-wide
+/// counter (two attempts inside one process that read the same clock tick).
+///
+/// It only has to be unique; nothing parses it back.
+fn claim_attempt_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}-{seq}", std::process::id())
+}
+
+/// Remove staging directories of `track_segment` in `parent` that are old
+/// enough to be debris, skipping `ours`. Best effort throughout: this is
+/// garbage collection, and a claim must not fail because a leftover directory
+/// could not be read or removed.
+///
+/// This is what replaces the fixed name's reclaim (#1458). Before, the *name*
+/// did the reclaiming: the next claim of this track removed whatever sat under
+/// it. Per-attempt names removed that, so the sweep is explicit and age-gated.
+///
+/// Age-gating is what keeps this from re-opening #1458: it means a live peer's
+/// staging is never a candidate. Even if it somehow were — a claimer wedged for
+/// an hour mid-claim — the outcome is fail-closed rather than the brick state,
+/// because no claimer ever *recreates* another's name any more: every step left
+/// to the victim (`write_marker_file`, the `fsync`s, the publishing `rename`)
+/// then fails with `ENOENT` and `<path>` is not written at all. It was the
+/// delete-**and-recreate** pair on one shared name that made a peer publish an
+/// unmarked workspace.
+///
+/// Legacy debris left by the pre-#1458 fixed name (`<prefix><track>`, no
+/// attempt suffix) matches too, so an upgrade reclaims it on the same path.
+fn reclaim_stale_claim_staging(parent: &Path, track_segment: &str, ours: &Path) {
+    let fixed = format!("{CLAIM_STAGING_PREFIX}{track_segment}");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // `sanitize_path_segment` maps every non-alphanumeric byte to `_`, so
+        // `track_segment` never contains `-` and this separator is unambiguous:
+        // it can only match another attempt of *this* track.
+        let mine = name == fixed
+            || name
+                .strip_prefix(&fixed)
+                .is_some_and(|suffix| suffix.starts_with('-'));
+        if !mine || entry.path() == ours {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_CLAIM_STAGING_AGE);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
 
 /// Claim `path` for `track_id` **atomically** (#1427).
 ///
@@ -591,9 +670,9 @@ const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
 ///   filesystem (`rename` is only atomic within one) and, crucially, is *not*
 ///   an entry of `<path>`: debris from a crashed claim cannot itself trip the
 ///   "non-empty and unmarked" refusal.
-/// * The staging name is fixed per track, so a crashed claim's debris is
-///   reclaimed by the next attempt rather than accumulating. Only this track's
-///   own claims can ever use that name.
+/// * The staging name is unique per **attempt** (#1458), so no other claimer —
+///   in this process or another — can ever address, remove or recreate the
+///   directory this call is assembling.
 ///
 /// The marker keeps its historical location and format
 /// (`<path>/.git/neige-workspace`, `"<track id>\n"`), which is load-bearing:
@@ -611,15 +690,22 @@ const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
 /// commit steps that follow are deliberately *not* synced: they are
 /// reconstructible by the repair path, which the marker is what unlocks.
 ///
-/// # What a crashed claim leaves behind
+/// # What a crashed or losing claim leaves behind
 ///
 /// Death between staging and the publishing `rename` leaves
-/// `.neige-claim-<track>` in the area directory. The next materialize of this
-/// track reclaims it — debris exists only while `<path>` is still empty and
-/// unmarked, which is the arm that routes here, and the first thing this
-/// function does is `remove_dir_all(&staging)`. A track that is never retried
-/// keeps its entry: one per track that crashed mid-claim and was never
-/// retried, and it stays there.
+/// `.neige-claim-<track>-<attempt>` in the area directory; so would a claim
+/// that returns an error there, except that this function removes its **own**
+/// staging on every error path before returning (it can do that safely — the
+/// name is nobody else's).
+///
+/// So the residue is exactly what it was before #1458 — one directory per
+/// claim killed mid-flight by process death — but it is no longer reclaimed by
+/// *reusing the name*, since the name is never reused. It is reclaimed by
+/// [`reclaim_stale_claim_staging`] instead: the next claim of the same track
+/// removes this track's staging directories older than
+/// [`STALE_CLAIM_STAGING_AGE`]. So the residue is bounded by the crashes of one
+/// track within that window, and, exactly as before, a track that is never
+/// materialized again keeps its debris.
 ///
 /// The one reader that acts on it is `remove_empty_area_dir`
 /// (`workspace_recycle.rs:698`): its `rmdir` answers `ENOTEMPTY`, so
@@ -635,34 +721,25 @@ const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
 ///
 /// # Two claimers, one track
 ///
-/// The staging name is shared per track, so a second claimer entering this
-/// function can `remove_dir_all` a first one's staging mid-flight. The per-path
-/// mutex in [`materialize_managed_workspace_inner`] makes that unreachable
-/// within one instance; a second **process** holds no such mutex.
+/// The per-path mutex in [`materialize_managed_workspace_inner`] serializes two
+/// claims within one instance; a second **process** holds no such mutex. Until
+/// #1458 the staging name was fixed per track and therefore shared by both, so
+/// a peer could `remove_dir_all` a fully assembled claim and `create_dir_all` a
+/// bare, unmarked `.git` back under the same name, which the first claimer then
+/// published with its `rename` — returning `Ok` over a non-empty, unmarked
+/// `<path>`: the brick state #1427 abolished for process death, reached through
+/// a peer (#1430 measured it; #1458 closed it).
 ///
-/// #1430 drove both interleavings through `claim_crash_point` and **pinned
-/// them** (`tests.rs`), which corrected what this paragraph used to claim:
-///
-/// * If the peer wipes a staging that is still being assembled, the loser's
-///   marker write fails and it returns `Internal` having damaged nothing —
-///   `remove_dir_all` is called on `staging` and nowhere else in this module,
-///   and `<path>` is never a `remove_dir_all` target here. What `<path>` holds
-///   afterwards is the *winner's* correctly marked workspace, so the next
-///   materialization succeeds
-///   (`a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker`).
-/// * If the peer wipes a staging that is **fully assembled** — marker written,
-///   both fsyncs done — and `create_dir_all` puts a bare `.git` back under the
-///   same name, the first claimer renames *that* onto `<path>` and returns
-///   `Ok`. `<path>` is then non-empty and unmarked: the brick state this
-///   function exists to abolish, reached through a peer instead of through
-///   process death
-///   (`a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`).
-///   This is a **known defect**, recorded as
-///   `docs/design-1384-track-idempotency.md` §9 KNOWN GAP 13; the test
-///   characterizes it and must be inverted by the fix, not deleted.
-///
-/// So: crash-atomic against process death (#1427), **not** atomic against a
-/// concurrent second claimer on the same staging name.
+/// With one name per attempt, neither claimer can touch the other's staging.
+/// Both assemble their own; the `rename` decides. The winner publishes over an
+/// empty `<path>`; the loser's `rename` finds `<path>` non-empty and fails
+/// `ENOTEMPTY`, so it returns `Internal` having written nothing to `<path>` and
+/// having removed its own staging. What `<path>` holds afterwards is the
+/// winner's correctly marked workspace, and the next materialization takes the
+/// "ours, for this track" branch and succeeds. Both interleavings are pinned in
+/// `tests.rs`
+/// (`a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker`,
+/// `a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace`).
 fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         CalmError::Internal(format!(
@@ -671,25 +748,16 @@ fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
             path.display()
         ))
     })?;
+    let track_segment = sanitize_path_segment(track_id);
     let staging = parent.join(format!(
-        "{CLAIM_STAGING_PREFIX}{}",
-        sanitize_path_segment(track_id)
+        "{CLAIM_STAGING_PREFIX}{track_segment}-{}",
+        claim_attempt_id()
     ));
 
-    // Anything under this name is debris from one of *our* earlier claims for
-    // *this* track: nothing else ever writes it, and the per-path mutex is
-    // held. Removing it is what keeps repeated crashes from accumulating
-    // staging directories in the area folder.
-    match std::fs::remove_dir_all(&staging) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(CalmError::Internal(format!(
-                "materialize workspace: clear stale ownership claim {}: {error}",
-                staging.display()
-            )));
-        }
-    }
+    // Debris from *this track's* earlier claims, old enough that no live
+    // claimer can own it. Never this call's own staging, and never a name any
+    // other claimer is assembling under — that is the whole point of #1458.
+    reclaim_stale_claim_staging(parent, &track_segment, &staging);
 
     let staged_git = staging.join(".git");
     std::fs::create_dir_all(&staged_git).map_err(|error| {
@@ -698,14 +766,35 @@ fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
             staged_git.display()
         ))
     })?;
+
+    let published = assemble_and_publish_claim(path, parent, &staging, &staged_git, track_id);
+    if published.is_err() {
+        // Our own attempt's name, so this can only ever delete what this call
+        // built. A successful publish renamed the directory away already.
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    published
+}
+
+/// The half of [`claim_owner_marker`] that runs with `staged_git` already
+/// created, split out so every failure after that point routes through one
+/// cleanup of the staging directory. See that function for the reasoning; the
+/// `fsync` ordering here is #1427's and must not be reordered.
+fn assemble_and_publish_claim(
+    path: &Path,
+    parent: &Path,
+    staging: &Path,
+    staged_git: &Path,
+    track_id: &str,
+) -> Result<()> {
     claim_crash_point(path);
     write_marker_file(&staged_git.join(OWNER_MARKER), track_id)?;
     claim_crash_point(path);
-    fsync_dir(&staged_git)?;
-    fsync_dir(&staging)?;
+    fsync_dir(staged_git)?;
+    fsync_dir(staging)?;
     claim_crash_point(path);
 
-    std::fs::rename(&staging, path).map_err(|error| {
+    std::fs::rename(staging, path).map_err(|error| {
         CalmError::Internal(format!(
             "materialize workspace: publish ownership claim {} onto {}: {error}",
             staging.display(),
@@ -720,9 +809,11 @@ fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
 
 /// Reduce `segment` to characters that are unambiguous in a file name. Track
 /// ids are already used as path components by [`managed_workspace_path`], so
-/// this is belt-and-braces; a collision between two sanitized ids would only
-/// mean two of *our* claims sharing a staging name, which the mutex and the
-/// `rename`'s fail-closed behaviour already handle.
+/// this is belt-and-braces. Two ids that sanitize to the same segment share
+/// nothing but the staging *prefix*: the attempt suffix (#1458) still gives
+/// each claim its own directory, and they only share which debris
+/// [`reclaim_stale_claim_staging`] considers theirs — which is age-gated and
+/// best-effort either way.
 fn sanitize_path_segment(segment: &str) -> String {
     segment
         .chars()
