@@ -1,7 +1,7 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    harvest_pending_user_messages_tx, session_bind_attribution_tx,
+    HarvestedMessage, SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx,
+    card_with_terminal_create_tx, harvest_pending_user_messages_tx, session_bind_attribution_tx,
     session_clear_queue_harvested_tx, session_commit_exit_tx, session_complete_for_card_tx,
     session_complete_tx, session_fail_if_active_runtime_tx, session_insert_tx,
     session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
@@ -2824,14 +2824,21 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     )
     .await;
 
-    let extract = |_id: &str, state: &str| -> Vec<String> {
+    let extract = |_id: &str, state: &str| -> Vec<HarvestedMessage> {
         serde_json::from_str::<serde_json::Value>(state)
             .ok()
             .and_then(|state| state.get("pending_queue").cloned())
             .and_then(|queue| serde_json::from_value::<Vec<serde_json::Value>>(queue).ok())
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|obs| obs.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+            .filter_map(|obs| {
+                obs.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|text| HarvestedMessage {
+                        text: text.to_owned(),
+                        ids: Vec::new(),
+                    })
+            })
             .collect()
     };
 
@@ -2848,8 +2855,12 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     tx.commit().await.unwrap();
 
     assert_eq!(
-        harvested.messages,
-        vec!["carry me".to_string()],
+        harvested
+            .messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["carry me"],
         "the `failed` row and the successor's own row must contribute nothing"
     );
     assert_eq!(
@@ -2921,8 +2932,12 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
-        after_undo.messages,
-        vec!["carry me".to_string()],
+        after_undo
+            .messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["carry me"],
         "clearing the marker is what a failed mint's compensation does, and it has to make the \
          queue harvestable again"
     );

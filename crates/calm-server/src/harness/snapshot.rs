@@ -45,6 +45,31 @@ pub struct HarnessSnapshot {
     pub pending_queue: Vec<Observation>,
     #[serde(default)]
     pub pending_envelope_ids: Vec<Option<i64>>,
+    /// #1449 — one set of message ids per `pending_queue` entry, so two copies
+    /// of the same sentence can be told apart wherever they meet.
+    ///
+    /// **Identity only. Not a state machine.** These ids answer exactly one
+    /// question — "is this the same instance I moved?" — and they must not grow
+    /// a disposition, an accepted/canceled terminal state, or any other
+    /// semantics. A queue transfer that cannot tell instances apart degrades
+    /// into matching on message text, which is forgeable (two identical
+    /// sentences) and is the shape this repository has already been hurt by.
+    ///
+    /// A **set** per entry, not one id, because `try_fold_pending_tail`
+    /// concatenates two adjacent `UserMessage`s into a single entry under
+    /// backpressure (#615 F3). One id per entry would have to discard one of
+    /// the two, which is the very loss of identity the ids exist to prevent, so
+    /// a fold unions the sets instead.
+    ///
+    /// Empty for every non-`UserMessage` entry, and for every entry that was
+    /// enqueued before this field existed. An empty set means "enqueued before
+    /// the upgrade, instance not distinguishable"; the give-back skips such an
+    /// entry and leaves the message where it is, rather than falling back to
+    /// comparing text. Registered as a KNOWN GAP: a pre-upgrade sentence
+    /// stranded on a runtime whose mint later fails stays on the successor
+    /// rather than being returned.
+    #[serde(default)]
+    pub pending_message_ids: Vec<Vec<String>>,
     #[serde(default)]
     pub last_thread_id: Option<String>,
     #[serde(default)]
@@ -106,6 +131,7 @@ pub struct HarnessSnapshot {
 impl HarnessSnapshot {
     pub fn initial(push_watermark: i64, pending_queue: Vec<Observation>) -> Self {
         let pending_envelope_ids = vec![None; pending_queue.len()];
+        let pending_message_ids = vec![Vec::new(); pending_queue.len()];
         Self {
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
@@ -113,6 +139,7 @@ impl HarnessSnapshot {
             push_watermark,
             pending_queue,
             pending_envelope_ids,
+            pending_message_ids,
             last_thread_id: None,
             last_turn_id: None,
             last_report_body_sha256: None,
@@ -129,6 +156,7 @@ impl HarnessSnapshot {
         push_watermark: i64,
         pending_queue: Vec<Observation>,
         pending_envelope_ids: Vec<Option<i64>>,
+        pending_message_ids: Vec<Vec<String>>,
         last_thread_id: Option<String>,
         last_turn_id: Option<String>,
         last_report_body_sha256: Option<String>,
@@ -145,6 +173,7 @@ impl HarnessSnapshot {
             push_watermark,
             pending_queue,
             pending_envelope_ids,
+            pending_message_ids,
             last_thread_id,
             last_turn_id,
             last_report_body_sha256,
@@ -163,7 +192,7 @@ impl HarnessSnapshot {
         let mut snapshot: Self =
             serde_json::from_value(value).expect("deserialize PlannerHarness snapshot");
         snapshot.assert_known_schema();
-        snapshot.align_pending_envelope_ids();
+        snapshot.align_pending_side_arrays();
         snapshot
     }
 
@@ -180,10 +209,105 @@ impl HarnessSnapshot {
         );
     }
 
-    pub fn align_pending_envelope_ids(&mut self) {
+    /// Bring EVERY array that runs parallel to `pending_queue` back to its
+    /// length.
+    ///
+    /// One function for both, and renamed from `align_pending_envelope_ids`
+    /// deliberately: two aligners would mean every current and future call site
+    /// has to remember both, and a site that aligned one and forgot the other
+    /// would not fail — it would pair ids with the wrong entries and hand the
+    /// give-back the wrong messages to move. Silent mis-attribution is worse
+    /// than a missing id. There is nothing to forget if there is only one call
+    /// to make.
+    ///
+    /// This is also the upgrade seam: `from_value_strict` calls it on every
+    /// snapshot decoded from the database, so a pre-#1449 row — which has no
+    /// `pending_message_ids` at all and therefore decodes to an EMPTY outer vec
+    /// against an N-entry queue — comes out with N empty sets rather than a
+    /// length mismatch.
+    pub fn align_pending_side_arrays(&mut self) {
         self.pending_envelope_ids
             .resize(self.pending_queue.len(), None);
         self.pending_envelope_ids.truncate(self.pending_queue.len());
+        self.pending_message_ids
+            .resize(self.pending_queue.len(), Vec::new());
+        self.pending_message_ids.truncate(self.pending_queue.len());
+    }
+}
+
+#[cfg(test)]
+mod pending_side_array_tests {
+    use super::*;
+    use crate::harness::observation::Observation;
+
+    fn queued(texts: &[&str]) -> Vec<Observation> {
+        texts
+            .iter()
+            .map(|text| Observation::UserMessage {
+                text: (*text).to_string(),
+            })
+            .collect()
+    }
+
+    /// #1449 — a snapshot written before `pending_message_ids` existed decodes
+    /// with an EMPTY outer vec against a non-empty queue.
+    ///
+    /// That length mismatch is worse than having no ids at all: any code that
+    /// pairs the arrays by index would attribute an id to the wrong entry, and
+    /// the give-back would then move the wrong sentence. `from_value_strict`
+    /// aligns on the way in so the mismatch cannot leave the decoder.
+    #[test]
+    fn an_upgraded_snapshot_decodes_with_one_empty_id_set_per_entry() {
+        let mut legacy = serde_json::to_value(HarnessSnapshot::initial(
+            0,
+            queued(&["one", "two", "three"]),
+        ))
+        .expect("serialize");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("pending_message_ids");
+        assert!(
+            legacy.get("pending_message_ids").is_none(),
+            "premise: the field is absent, exactly as a pre-#1449 row has it"
+        );
+
+        let snapshot = HarnessSnapshot::from_value_strict(legacy);
+        assert_eq!(snapshot.pending_queue.len(), 3);
+        assert_eq!(
+            snapshot.pending_message_ids.len(),
+            snapshot.pending_queue.len(),
+            "the arrays must come out of the decoder the same length"
+        );
+        assert!(
+            snapshot.pending_message_ids.iter().all(Vec::is_empty),
+            "and every entry must say `no identity`, not borrow somebody else's"
+        );
+    }
+
+    /// The counter-fixture: a deliberately mismatched snapshot must be
+    /// CORRECTED by the aligner, not carried through.
+    ///
+    /// Both directions, because resize alone fixes only the short one — a long
+    /// array pairs ids with entries that do not exist and would survive a naive
+    /// `resize`-only aligner.
+    #[test]
+    fn alignment_corrects_both_a_short_and_a_long_id_array() {
+        let mut short = HarnessSnapshot::initial(0, queued(&["one", "two", "three"]));
+        short.pending_message_ids = vec![vec!["m1".into()]];
+        short.pending_envelope_ids = vec![Some(1)];
+        short.align_pending_side_arrays();
+        assert_eq!(short.pending_message_ids.len(), 3);
+        assert_eq!(short.pending_envelope_ids.len(), 3);
+        assert_eq!(short.pending_message_ids[0], vec!["m1".to_string()]);
+        assert!(short.pending_message_ids[1].is_empty());
+
+        let mut long = HarnessSnapshot::initial(0, queued(&["only one"]));
+        long.pending_message_ids = vec![vec!["m1".into()], vec!["stale".into()]];
+        long.pending_envelope_ids = vec![Some(1), Some(2)];
+        long.align_pending_side_arrays();
+        assert_eq!(long.pending_message_ids, vec![vec!["m1".to_string()]]);
+        assert_eq!(long.pending_envelope_ids, vec![Some(1)]);
     }
 }
 
@@ -250,6 +374,7 @@ mod tests {
             "push_watermark": 42,
             "pending_queue": [],
             "pending_envelope_ids": [],
+            "pending_message_ids": [],
             "last_thread_id": "thread-pre-1255",
             "last_turn_id": null,
             "last_report_body_sha256": null,

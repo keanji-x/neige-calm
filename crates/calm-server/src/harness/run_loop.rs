@@ -174,6 +174,9 @@ pub(super) struct Inner {
     last_phase: Mutex<HarnessPhaseTag>,
     pending_queue: Mutex<VecDeque<Observation>>,
     pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
+    /// #1449 — message ids, one set per `pending_queue` entry. Identity only;
+    /// see `HarnessSnapshot::pending_message_ids`.
+    pending_message_ids: Mutex<VecDeque<Vec<String>>>,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
@@ -259,6 +262,7 @@ struct DebounceState {
 struct DurableUserMessageCheckpoint {
     pending_queue: VecDeque<Observation>,
     pending_envelope_ids: VecDeque<Option<i64>>,
+    pending_message_ids: VecDeque<Vec<String>>,
     debounce: DebounceState,
 }
 
@@ -266,6 +270,7 @@ async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageChe
     DurableUserMessageCheckpoint {
         pending_queue: inner.pending_queue.lock().await.clone(),
         pending_envelope_ids: inner.pending_envelope_ids.lock().await.clone(),
+        pending_message_ids: inner.pending_message_ids.lock().await.clone(),
         debounce: *inner.debounce.lock().await,
     }
 }
@@ -273,6 +278,7 @@ async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageChe
 async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMessageCheckpoint) {
     *inner.pending_queue.lock().await = checkpoint.pending_queue;
     *inner.pending_envelope_ids.lock().await = checkpoint.pending_envelope_ids;
+    *inner.pending_message_ids.lock().await = checkpoint.pending_message_ids;
     *inner.debounce.lock().await = checkpoint.debounce;
 }
 
@@ -684,7 +690,7 @@ fn inner_from_params(
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
     let mut snapshot = params.snapshot;
-    snapshot.align_pending_envelope_ids();
+    snapshot.align_pending_side_arrays();
     truncate_snapshot_pending_queue(&mut snapshot);
     let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
     let state = state_from_snapshot(&snapshot);
@@ -706,6 +712,7 @@ fn inner_from_params(
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
         pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
+        pending_message_ids: Mutex::new(snapshot.pending_message_ids.into_iter().collect()),
         pending_queue: Mutex::new(pending_queue),
         recent_hook_keys: Mutex::new(recent_hook_keys),
         recent_hook_key_set: Mutex::new(recent_hook_key_set),
@@ -908,8 +915,14 @@ fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
         return;
     }
     let drop_count = len - MAX_PENDING_QUEUE_LEN;
+    // #1449 — align first, so this function does not depend on its caller
+    // having done it. The two side arrays are drained by the same range as the
+    // queue; against a shorter array that range is out of bounds and `drain`
+    // panics, and a hand-built or pre-#1449 snapshot has exactly that shape.
+    snapshot.align_pending_side_arrays();
     snapshot.pending_queue.drain(..drop_count);
     snapshot.pending_envelope_ids.drain(..drop_count);
+    snapshot.pending_message_ids.drain(..drop_count);
     tracing::warn!(
         target: "planner.harness.backpressure",
         original_len = len,
@@ -925,14 +938,33 @@ async fn enqueue_pending_observation(
 ) -> bool {
     let mut queue = inner.pending_queue.lock().await;
     let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+    let mut message_ids = inner.pending_message_ids.lock().await;
+    // #1449 — ONE of the two minting sites for a message id (the other is the
+    // `first_message` seed in `PlannerHarnessStartAdapter::prepare_tx`). Every
+    // observation that reaches a queue in this process reaches it here, so an
+    // id minted here is minted once. Every other path that moves a
+    // `UserMessage` between queues — the harvest, the inherit — CARRIES the id
+    // it finds; none of them may mint.
+    let minted: Vec<String> = match &obs {
+        Observation::UserMessage { .. } => vec![crate::model::new_id()],
+        _ => Vec::new(),
+    };
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
-        if try_fold_pending_tail(&mut queue, &mut envelope_ids, &obs, envelope_id) {
+        if try_fold_pending_tail(
+            &mut queue,
+            &mut envelope_ids,
+            &mut message_ids,
+            &obs,
+            envelope_id,
+            &minted,
+        ) {
             return true;
         }
         let hard = obs.is_hard_fire();
         if let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
             queue.remove(drop_idx);
             envelope_ids.remove(drop_idx);
+            message_ids.remove(drop_idx);
         } else {
             tracing::warn!(
                 target: "planner.harness.backpressure",
@@ -946,14 +978,17 @@ async fn enqueue_pending_observation(
     }
     queue.push_back(obs);
     envelope_ids.push_back(envelope_id);
+    message_ids.push_back(minted);
     true
 }
 
 fn try_fold_pending_tail(
     queue: &mut VecDeque<Observation>,
     envelope_ids: &mut VecDeque<Option<i64>>,
+    message_ids: &mut VecDeque<Vec<String>>,
     obs: &Observation,
     envelope_id: Option<i64>,
+    minted_message_ids: &[String],
 ) -> bool {
     let Some(last) = queue.back_mut() else {
         return false;
@@ -1010,6 +1045,14 @@ fn try_fold_pending_tail(
     };
     if folded && let Some(last_envelope_id) = envelope_ids.back_mut() {
         *last_envelope_id = envelope_id;
+    }
+    // #1449 — a fold turns two entries into one, so the surviving entry carries
+    // BOTH sets of ids. Overwriting instead of unioning would discard an
+    // instance the caller may later have to move back, which is exactly the
+    // loss of identity the ids exist to prevent; the ids are a set per entry
+    // rather than one id per entry for this reason alone.
+    if folded && let Some(last_message_ids) = message_ids.back_mut() {
+        last_message_ids.extend_from_slice(minted_message_ids);
     }
     folded
 }
@@ -1811,12 +1854,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.issued_input_segments.lock().await = None;
     persist_snapshot(inner).await?;
 
-    let (drained, drained_envelope_ids) = {
+    let (drained, drained_envelope_ids, drained_message_ids) = {
         let mut queue = inner.pending_queue.lock().await;
         let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+        let mut message_ids = inner.pending_message_ids.lock().await;
         (
             queue.drain(..).collect::<Vec<_>>(),
             envelope_ids.drain(..).collect::<Vec<_>>(),
+            message_ids.drain(..).collect::<Vec<_>>(),
         )
     };
     if drained.is_empty() {
@@ -1835,7 +1880,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained, drained_envelope_ids).await;
+        rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
@@ -1877,7 +1922,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             persist_issuance_outcome(inner).await?;
         }
         Err(e) => {
-            rebuffer_head(inner, drained, drained_envelope_ids).await;
+            rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::TurnCompleted {
@@ -2079,14 +2124,21 @@ async fn rebuffer_head(
     inner: &Arc<Inner>,
     drained: Vec<Observation>,
     drained_envelope_ids: Vec<Option<i64>>,
+    drained_message_ids: Vec<Vec<String>>,
 ) {
     let mut queue = inner.pending_queue.lock().await;
     let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+    let mut message_ids = inner.pending_message_ids.lock().await;
     for obs in drained.into_iter().rev() {
         queue.push_front(obs);
     }
     for envelope_id in drained_envelope_ids.into_iter().rev() {
         envelope_ids.push_front(envelope_id);
+    }
+    // #1449 — a re-buffered batch keeps the ids it was drained with: it is the
+    // same instances going back, not new ones.
+    for ids in drained_message_ids.into_iter().rev() {
+        message_ids.push_front(ids);
     }
     let now = Instant::now();
     *inner.debounce.lock().await = DebounceState {
@@ -2242,6 +2294,13 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         .iter()
         .copied()
         .collect();
+    let pending_message_ids = inner
+        .pending_message_ids
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
@@ -2255,6 +2314,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         push_watermark,
         queue,
         pending_envelope_ids,
+        pending_message_ids,
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
@@ -2553,18 +2613,22 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         queue.push_back(Observation::UserMessage {
             text: "first message".into(),
         });
         env_ids.push_back(Some(1));
+        msg_ids.push_back(vec!["first-instance".to_string()]);
 
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "second message".into(),
             },
             Some(2),
+            &["second-instance".to_string()],
         );
 
         assert!(folded);
@@ -2578,6 +2642,16 @@ mod tests {
             Some(2),
             "folded envelope id should advance to the newest send"
         );
+        // #1449 — the envelope id ADVANCES to the newest send, but the message
+        // ids UNION. They answer different questions: one is "which push am I
+        // acknowledging", the other is "which instances am I still holding",
+        // and a fold is still holding both.
+        assert_eq!(
+            msg_ids.back().cloned().unwrap_or_default(),
+            vec!["first-instance".to_string(), "second-instance".to_string()],
+            "a fold must keep BOTH instances identifiable; dropping one is the loss of \
+             identity the ids exist to prevent"
+        );
     }
 
     #[test]
@@ -2588,6 +2662,7 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         queue.push_back(Observation::TrackGoal {
             text: "goal".into(),
         });
@@ -2596,10 +2671,12 @@ mod tests {
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "user".into(),
             },
             None,
+            &[],
         );
 
         assert!(!folded, "UserMessage must not fold into TrackGoal");
@@ -2702,6 +2779,7 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         let seed = "a".repeat(MAX_FOLDED_USER_MESSAGE_CHARS - 1);
         queue.push_back(Observation::UserMessage { text: seed });
         env_ids.push_back(Some(1));
@@ -2709,10 +2787,12 @@ mod tests {
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "x".repeat(10),
             },
             Some(2),
+            &["second-instance".to_string()],
         );
 
         assert!(!folded, "fold must refuse when result would exceed cap");

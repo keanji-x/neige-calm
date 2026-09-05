@@ -344,6 +344,11 @@ async fn replay_harness_events_since(
         };
         snapshot.pending_queue.push(obs);
         snapshot.pending_envelope_ids.push(Some(row.id));
+        // #1449 — replayed events are never `UserMessage`
+        // (`harness_observation_from_event` produces only task observations),
+        // so there is no instance to identify; the slot exists to keep the
+        // arrays the same length.
+        snapshot.pending_message_ids.push(Vec::new());
         snapshot.push_watermark = snapshot.push_watermark.max(row.id);
         replayed += 1;
     }

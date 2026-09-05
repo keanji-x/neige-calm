@@ -7,13 +7,14 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    HarnessTranscriptMeasure, append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx,
-    card_update_tx, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
-    harvest_pending_user_messages_tx, session_bind_attribution_tx,
-    session_clear_queue_harvested_tx, session_delete_tx, session_fail_if_active_runtime_tx,
-    session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
-    session_restore_from_superseded_runtime_tx, session_set_handle_state_tx,
-    session_start_runtime_tx, session_supersede_active_tx, session_supersede_and_start_tx,
+    HarnessTranscriptMeasure, HarvestedMessage, append_decision_event_in_tx,
+    card_create_with_id_tx, card_delete_tx, card_update_tx, harness_items_delete_by_card_tx,
+    harness_items_measure_by_card_tx, harvest_pending_user_messages_tx,
+    session_bind_attribution_tx, session_clear_queue_harvested_tx, session_delete_tx,
+    session_fail_if_active_runtime_tx, session_prepare_deferred_planner_tx,
+    session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
+    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_active_tx,
+    session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -850,7 +851,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.push_watermark = inherited.push_watermark;
             snapshot.pending_queue = inherited.pending_queue;
             snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
-            snapshot.align_pending_envelope_ids();
+            // #1449 — the inherit CARRIES the predecessor's ids; it does not
+            // mint. These are the same instances, moved.
+            snapshot.pending_message_ids = inherited.pending_message_ids;
+            snapshot.align_pending_side_arrays();
         }
         // One clock for the whole mint: the supersede below, the harvest stamp
         // (passed IN, so the helper does not read a second clock of its own)
@@ -945,16 +949,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot
                 .pending_queue
                 .push(Observation::SystemContext { text: briefing });
+            snapshot.pending_message_ids.push(Vec::new());
             seeded = true;
         }
         // #1449 — harvested sentences go after the successor's own briefing and
         // goal (which are what the #1343 ordering rule above is about) and
         // before this mint's own `first_message`, oldest first: they were said
         // before the one that is arriving now.
-        for text in harvested.messages {
+        for message in harvested.messages {
             snapshot
                 .pending_queue
-                .push(Observation::UserMessage { text });
+                .push(Observation::UserMessage { text: message.text });
+            snapshot.pending_message_ids.push(message.ids);
             seeded = true;
         }
         if let Some(text) = payload.first_message.as_deref() {
@@ -966,6 +972,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_queue.push(Observation::UserMessage {
                 text: text.to_string(),
             });
+            // #1449 — the SECOND and last minting site for a message id (the
+            // other is `enqueue_pending_observation`). Everything downstream
+            // carries this id; nothing re-mints it.
+            snapshot.pending_message_ids.push(vec![new_id()]);
             seeded = true;
         }
         // One alignment for whatever the two pushes above added, and none at
@@ -974,7 +984,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // and aligning after zero pushes would touch a snapshot this branch
         // never changed.
         if seeded {
-            snapshot.align_pending_envelope_ids();
+            snapshot.align_pending_side_arrays();
         }
 
         let mut old_runtime_id = None;
@@ -1396,12 +1406,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             .await?;
                             harvested_runtime_ids = harvested.stamped_runtime_ids;
                             if !harvested.messages.is_empty() {
-                                for text in harvested.messages {
+                                for message in harvested.messages {
                                     runtime_snapshot
                                         .pending_queue
-                                        .push(Observation::UserMessage { text });
+                                        .push(Observation::UserMessage { text: message.text });
+                                    runtime_snapshot.pending_message_ids.push(message.ids);
                                 }
-                                runtime_snapshot.align_pending_envelope_ids();
+                                runtime_snapshot.align_pending_side_arrays();
                             }
                         }
                         let runtime_init = WorkerSessionInit {
@@ -1948,10 +1959,11 @@ async fn overwrite_queue_from_the_runtimes_own_row(
     let row = HarnessSnapshot::from_value_strict(state);
     snapshot.pending_queue = row.pending_queue;
     snapshot.pending_envelope_ids = row.pending_envelope_ids;
+    snapshot.pending_message_ids = row.pending_message_ids;
     Ok(())
 }
 
-fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> Vec<String> {
+fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> Vec<HarvestedMessage> {
     let Ok(state) = serde_json::from_str::<Value>(handle_state_json) else {
         tracing::warn!(
             runtime_id,
@@ -1970,11 +1982,16 @@ fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> Vec<Stri
         );
         return Vec::new();
     }
-    HarnessSnapshot::from_value_strict(state)
+    let snapshot = HarnessSnapshot::from_value_strict(state);
+    // `from_value_strict` has already aligned the side arrays, so the zip is
+    // total: a pre-#1449 snapshot yields an empty id set per entry rather than
+    // a short array that would pair ids with the wrong sentences.
+    snapshot
         .pending_queue
         .into_iter()
-        .filter_map(|observation| match observation {
-            Observation::UserMessage { text } => Some(text),
+        .zip(snapshot.pending_message_ids)
+        .filter_map(|(observation, ids)| match observation {
+            Observation::UserMessage { text } => Some(HarvestedMessage { text, ids }),
             _ => None,
         })
         .collect()
@@ -2141,17 +2158,16 @@ mod tests {
         snapshot.pending_queue.push(Observation::UserMessage {
             text: "second thing said".into(),
         });
-        snapshot.align_pending_envelope_ids();
+        snapshot.align_pending_side_arrays();
+        // #1449 — the ids must travel with the text: the decoder is transport,
+        // not a producer.
         let carried = super::stranded_user_messages(
             "r1",
             &serde_json::to_string(&snapshot).expect("serialize snapshot"),
         );
         assert_eq!(
-            carried,
-            vec![
-                "first thing said".to_string(),
-                "second thing said".to_string()
-            ],
+            carried.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            vec!["first thing said", "second thing said"],
             "only `UserMessage`, in queue order: `TrackGoal` and `SystemContext` are functions \\
              of the SUCCESSOR's payload and cwd, which after a re-point is a different directory"
         );
