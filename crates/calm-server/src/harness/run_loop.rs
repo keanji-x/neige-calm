@@ -2272,16 +2272,30 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 /// answers is "has someone else taken over my queue", and an absent row is not
 /// evidence that they have. Every production path keeps the row for the
 /// lifetime of the handle.
+///
+/// # Two ways to get this wrong, both of them measured
+///
+/// **Not `session_projection_by_id`.** Its SELECT is card-backed, so the moment
+/// the card points at the successor the predecessor's row answers `None` —
+/// which this function reads as "not retired". `a_failed_restart_gives_the_harvested_sentence_back`
+/// went red with `left: 2` on exactly that.
+///
+/// **Not a write transaction**
+///
+/// either. A pool read — NOT
+/// `write_in_tx_typed`, which opens with `BEGIN IMMEDIATE` and therefore takes
+/// SQLite's single writer lock. This runs on every issuance attempt, including
+/// the ones that go on to drain nothing, so putting it behind the writer lock
+/// starves every other writer in the process for no reason. It did:
+/// `token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
+/// once in a full-suite run while this was a write transaction, and its
+/// notification-driven `persist_snapshot` is exactly the kind of writer that
+/// loses such a race and only logs a warning.
 async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
-    let runtime_id = inner.runtime_id.clone();
-    let state = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            crate::db::sqlite::session_state_if_present_tx(tx, &runtime_id)
-                .await
-                .map_err(CalmError::from)
-        })
-    })
-    .await?;
+    let state = inner
+        .repo
+        .session_projection_state_by_id(inner.runtime_id.as_str())
+        .await?;
     Ok(match state {
         Some(state) => state.is_active_authority(),
         None => true,

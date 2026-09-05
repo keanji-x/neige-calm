@@ -487,23 +487,6 @@ pub async fn session_set_handle_state_of_retired_runtime_tx(
     Ok(())
 }
 
-/// #1449 — is this runtime still the card's live carrier?
-///
-/// `None` when the row is gone. Read by the run loop immediately before it
-/// turns its queue into a turn: once the row is retired, its queue belongs to
-/// whatever the mint transaction handed it to, and issuing it anyway delivers
-/// the same sentence twice.
-pub async fn session_state_if_present_tx(
-    tx: &mut WorkerSessionProjectionTx<'_>,
-    id: &str,
-) -> WorkerSessionProjectionResult<Option<WorkerSessionState>> {
-    let row: Option<String> = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    row.as_deref().map(run_status_from_db).transpose()
-}
-
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_mark_superseded_runtime_tx(
@@ -645,6 +628,18 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         kind: WorkerSessionKind,
     ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
         runtimes_active_for_kind_from_pool(&self.pool, kind).await
+    }
+
+    async fn session_projection_state_by_id(
+        &self,
+        id: &str,
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionState>> {
+        let row: Option<String> =
+            sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?;
+        row.as_deref().map(run_status_from_db).transpose()
     }
 
     async fn session_projection_by_id(

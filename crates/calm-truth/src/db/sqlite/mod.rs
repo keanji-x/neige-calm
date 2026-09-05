@@ -112,7 +112,7 @@ pub use session_projection::{
     session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
     session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
     session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
-    session_set_status_tx, session_state_if_present_tx,
+    session_set_status_tx,
 };
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use session_row::{
