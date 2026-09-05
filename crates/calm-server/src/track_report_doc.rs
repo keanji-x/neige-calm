@@ -1169,7 +1169,7 @@ changed.
                 "kind": "terminal",
                 "goal": "cargo check",
                 "ready": true,
-                "declared_by": "spec"
+                "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR
             }),
         };
         let mut payload = TrackReportPayload::new("legacy", flat_text(&legacy));

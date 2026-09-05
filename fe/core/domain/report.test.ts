@@ -82,7 +82,7 @@ describe('readTrackReport', () => {
           id: 'b-terminal', kind: 'task', rev: 7,
           payload: {
             key: 'compile', kind: 'terminal', goal: 'cargo check',
-            ready: true, declared_by: 'spec',
+            ready: true, declared_by: 's\u0070ec',
           },
         }],
       },

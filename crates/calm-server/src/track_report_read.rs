@@ -266,7 +266,8 @@ mod tests {
             rev: 5,
             payload: json!({
                 "key": "compile", "kind": "terminal", "goal": "cargo check",
-                "ready": true, "declared_by": "spec"
+                "ready": true,
+                "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR
             }),
         };
         let payload = json!({
