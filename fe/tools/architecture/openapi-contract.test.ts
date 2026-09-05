@@ -18,7 +18,7 @@ const PATH_ITEM_FIELDS = new Set([...METHODS, 'summary', 'description', 'servers
  */
 const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ErrorBody', 'GetPlannerRunResponse', 'GitDiffResponse', 'GitStatusResponse',
-  'InterruptPlannerCardResponse', 'ListdirResponse', 'PluginDetail', 'PluginListItem',
+  'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse', 'SettingsBag', 'Terminal',
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',
