@@ -374,7 +374,11 @@ export function PluginsPane({
                           plugin can be turned off without losing anything, and
                           this is the act that is not that. */}
                       {confirming === plugin.id && (
-                        <span className={styles.error} role="alert">
+                        /* The row's caution tone, not its error tone: nothing
+                           has failed, a question is being asked. `.error` is
+                           kept for the two lines that report a failure, one of
+                           which may be on this same row. */
+                        <span className={styles.notice} role="alert">
                           Remove this plugin? Its stored configuration and, for a remote server, its
                           saved key are deleted with it.
                         </span>
@@ -407,10 +411,14 @@ export function PluginsPane({
                        * cluster at two controls, which is what the row grammar
                        * costs to stay legible.
                        *
-                       * Both buttons name the plugin. A list of rows whose
-                       * buttons all announce "Remove" is one a screen reader
-                       * cannot navigate, and the confirm is precisely the
-                       * moment the reader must know *which* plugin answered.
+                       * Both buttons name the plugin **in their accessible
+                       * name only** (astryx paints `children` and exposes
+                       * `label`). A column of buttons all announced "Remove" is
+                       * one a screen reader cannot navigate — the confirm is
+                       * precisely the moment the reader must know which plugin
+                       * answered — while painting the name would say each
+                       * plugin's name twice in one row and spend the trailing
+                       * edge on a word the row above already carries.
                        */}
                       {confirming === plugin.id ? (
                         <>
@@ -422,12 +430,16 @@ export function PluginsPane({
                               setConfirming(null);
                               onUninstall(plugin.id);
                             }}
-                          />
+                          >
+                            Remove
+                          </AstryxButton>
                           <AstryxButton
                             label={`Keep ${plugin.manifest_name}`}
                             variant="ghost"
                             onClick={() => setConfirming(null)}
-                          />
+                          >
+                            Keep
+                          </AstryxButton>
                         </>
                       ) : (
                         <>
@@ -440,7 +452,9 @@ export function PluginsPane({
                             variant="ghost"
                             isDisabled={pendingIds.has(plugin.id)}
                             onClick={() => setConfirming(plugin.id)}
-                          />
+                          >
+                            Remove
+                          </AstryxButton>
                       {/* Only when the kernel says there is something to
                           configure — see `onOpenConfig`. */}
                       {plugin.has_config && (
