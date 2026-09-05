@@ -208,7 +208,8 @@ export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: st
 export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.plannerRun(cardId),
-    queryFn: () => runOperation(transport, plannerRunOperation(cardId), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      runOperation(transport, { ...plannerRunOperation(cardId), signal }, unauthorized),
   };
 }
 
@@ -260,8 +261,8 @@ export function trackConversationsQueryOptions(
 ) {
   return {
     queryKey: queryKeys.trackConversations(trackId),
-    queryFn: (): Promise<Conversation[]> =>
-      runOperation(transport, trackConversationsOperation(trackId), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<Conversation[]> =>
+      runOperation(transport, { ...trackConversationsOperation(trackId), signal }, unauthorized),
   };
 }
 
@@ -346,7 +347,8 @@ export function tracksInAreaQueryOptions(transport: ApiTransportPort, areaId: st
 export function trackDetailQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackDetail(trackId),
-    queryFn: (): Promise<TrackDetailWire> => runOperation(transport, trackDetailOperation(trackId), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<TrackDetailWire> =>
+      runOperation(transport, { ...trackDetailOperation(trackId), signal }, unauthorized),
   };
 }
 
@@ -360,7 +362,8 @@ export function trackDetailQueryOptions(transport: ApiTransportPort, trackId: st
 export function trackBacklinksQueryOptions(transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackBacklinks(trackId),
-    queryFn: (): Promise<TrackBacklinks> => runOperation(transport, trackBacklinksOperation(trackId), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<TrackBacklinks> =>
+      runOperation(transport, { ...trackBacklinksOperation(trackId), signal }, unauthorized),
   };
 }
 
@@ -390,7 +393,8 @@ export function trackTaskVerdictsQueryOptions(
 ) {
   return {
     queryKey: queryKeys.trackReport(trackId),
-    queryFn: (): Promise<TaskVerdict[]> => runOperation(transport, trackTaskVerdictsOperation(trackId), unauthorized),
+    queryFn: ({ signal }: { signal: AbortSignal }): Promise<TaskVerdict[]> =>
+      runOperation(transport, { ...trackTaskVerdictsOperation(trackId), signal }, unauthorized),
     /*
      * See `taskVerdictsRefetchInterval` for when the timer runs at all.
      *

@@ -31,7 +31,7 @@ export function partitionTrackCards(
   const visible: VisibleCardSlot[] = [];
   const unknown: UnknownCardSlot[] = [];
   cards.forEach((wire, originalIndex) => {
-    const card = registry.resolve({ id: wire.id, kind: wire.kind, payload: wire.payload });
+    const card = registry.resolve(wire);
     if (card === null) {
       if (wire.kind !== 'track-report') unknown.push(Object.freeze({ wire, originalIndex }));
       return;

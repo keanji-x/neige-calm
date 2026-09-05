@@ -1,6 +1,7 @@
 // The cooked-shell PTY card. Kernel kind `'terminal'`. Owns a surface.
 
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
+import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 import { TerminalCardView } from './terminal-card.tsx';
 
 declare module '../registry.js' {
@@ -14,7 +15,18 @@ export type TerminalCard = Readonly<{
   id: string;
   title: string | null;
   terminalId: string | null;
+  sessionState: WorkerSessionState | null;
 }>;
+
+/** Runtime identity wins even when it has no PTY; payload is legacy-only. */
+export function terminalSessionFromCard(card: KernelCardInput): Pick<TerminalCard, 'terminalId' | 'sessionState'> {
+  return {
+    terminalId: card.runtime === undefined
+      ? terminalIdFromPayload(card.payload)
+      : card.runtime.terminal_id || null,
+    sessionState: card.runtime?.status ?? null,
+  };
+}
 
 /**
  * Shared with `claude.ts` and `codex.ts`: all three kinds get `terminal_id`
@@ -46,7 +58,7 @@ export const TERMINAL_CARD_ENTRY = Object.freeze({
   addPanel: Object.freeze({ label: 'terminal' }),
   fromKernel: (card: KernelCardInput): TerminalCard | null => (
     card.kind === 'terminal'
-      ? Object.freeze({ type: 'terminal', id: card.id, title: null, terminalId: terminalIdFromPayload(card.payload) } as const)
+      ? Object.freeze({ type: 'terminal', id: card.id, title: null, ...terminalSessionFromCard(card) } as const)
       : null
   ),
 }) satisfies CardEntry<TerminalCard>;

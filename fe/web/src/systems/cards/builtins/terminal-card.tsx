@@ -7,9 +7,15 @@ import { useState } from '../../../ui/state/public.ts';
 import { TerminalSurface } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { CardHead } from '../ui/card-head.tsx';
+import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 
 export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'terminal' }: {
-  card: { readonly id: string; readonly title: string | null; readonly terminalId: string | null };
+  card: {
+    readonly id: string;
+    readonly title: string | null;
+    readonly terminalId: string | null;
+    readonly sessionState: WorkerSessionState | null;
+  };
   host: CardHostCapabilities;
   /** The board's delete, already resolved — see `CardComponentProps.onRemove`. */
   onRemove?: () => void;
@@ -25,28 +31,37 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
   useEffect(() => host.lifecycle.subscribe(() => {
     setVisible(host.lifecycle.getSnapshot().visible);
   }), [host]);
-  const live = card.terminalId !== null;
+  const attached = card.terminalId !== null;
+  const ended = card.sessionState === 'exited' || card.sessionState === 'failed' || card.sessionState === 'superseded';
+  const live = attached && !ended;
+  const message = card.sessionState === 'starting'
+    ? `Starting ${fallbackTitle}…`
+    : card.sessionState === 'exited' ? 'Session exited.'
+      : card.sessionState === 'failed' ? 'Session failed.'
+        : card.sessionState === 'superseded' ? 'Session replaced.'
+          : 'No terminal session available.';
   return (
     <div
-      className={live ? 'term live' : 'term'}
+      className={attached ? 'term live' : 'term'}
       data-nc-terminal-card=""
       data-nc-terminal-id={card.terminalId ?? ''}
     >
       <CardHead
         className="card-drag-handle"
         title={card.title || fallbackTitle}
-        status={live ? <span className="live-dot" role="img" aria-label="status Working" /> : undefined}
+        status={live ? <span className="live-dot" role="img" aria-label="status Working" />
+          : ended ? <span role="status">{message}</span> : undefined}
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
       />
       <div className="term-body">
-        {live
+        {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
               <TerminalSurface card={card} visible={visible} />
             </Suspense>
           )
-          : <div className="term-line">Starting {fallbackTitle}…</div>}
+          : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}
       </div>
     </div>
   );

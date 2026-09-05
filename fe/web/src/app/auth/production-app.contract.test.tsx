@@ -90,7 +90,7 @@ describe('production app mount', () => {
     /* The host is built with the filesystem port, not bare: a card mounted on a
        host without it renders "this board was built without filesystem access",
        which is the shape of the defect this line exists to catch. */
-    expect(cards?.host.mount({ type: 'terminal', id: 'probe', title: null, terminalId: null }).card.files)
+    expect(cards?.host.mount({ type: 'terminal', id: 'probe', title: null, terminalId: null, sessionState: null }).card.files)
       .not.toBeNull();
   });
 

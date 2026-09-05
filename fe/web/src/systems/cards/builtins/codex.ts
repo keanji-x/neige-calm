@@ -2,7 +2,7 @@ import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry
 import { isAssistantHarnessPayload } from './assistant.ts';
 import { isPlannerHarnessPayload } from './planner.ts';
 import { TerminalCardView } from './terminal-card.tsx';
-import { terminalIdFromPayload } from './terminal.ts';
+import { terminalSessionFromCard, type TerminalCard } from './terminal.ts';
 
 declare module '../registry.js' {
   interface CardDataMap {
@@ -15,6 +15,7 @@ export type CodexCard = Readonly<{
   id: string;
   title: string | null;
   terminalId: string | null;
+  sessionState: TerminalCard['sessionState'];
 }>;
 
 const CODEX_FALLBACK_TITLE = 'codex';
@@ -82,7 +83,7 @@ export const CODEX_CARD_ENTRY = Object.freeze({
         type: 'codex',
         id: card.id,
         title: null,
-        terminalId: terminalIdFromPayload(card.payload),
+        ...terminalSessionFromCard(card),
       } as const)
       : null
   ),
