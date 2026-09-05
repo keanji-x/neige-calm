@@ -36,7 +36,6 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
-  type ChatComposerInputHandle,
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
 import { Markdown } from '@astryxdesign/core/Markdown';
@@ -1899,9 +1898,6 @@ export function ChatComposer({
   newConversationRef.current = onNewConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
-  /** Astryx's handle on the editable, used to read what is in the field now
-   *  rather than what React has last rendered into it. See `onSubmit`. */
-  const fieldRef = useRef<ChatComposerInputHandle>(null);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on — the perch or the field.
@@ -2144,17 +2140,12 @@ export function ChatComposer({
            * send that is still waiting to hear whether it was refused; the
            * residual that leaves is in #1449's list.
            *
-           * The field is asked, not the state: `getValue()` serializes the
-           * contenteditable the reader is typing into, which is authoritative
-           * for what is on screen at this instant. `draft` is a copy of it that
-           * an update still in React's queue can leave one keystroke behind, and
-           * the whole point of the check is the keystroke. The `current === ''`
-           * arm below still runs, for a composer whose handle is not attached.
+           * Only into an empty field: the reader can type again the moment the
+           * field is cleared, and what they typed is theirs.
            */
           if (isThenable(outcome)) {
             void outcome.then((result) => {
               if (result !== 'refused') return;
-              if ((fieldRef.current?.getValue() ?? '').trim() !== '') return;
               setDraft((current) => current === '' ? text : current);
             });
           }
@@ -2169,7 +2160,6 @@ export function ChatComposer({
         }}
         input={(
           <ChatComposerInput
-            handleRef={fieldRef}
             label="Message"
             placeholder="Say something"
             /* No triggers where there is no command to offer: without them the

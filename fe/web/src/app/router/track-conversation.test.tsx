@@ -501,6 +501,29 @@ describe('track conversations', () => {
   });
 
   /*
+   * #1449 review round 7 — an unresolved send is not a refusal.
+   *
+   * `POST /planner/input` carries no `Idempotency-Key`, so a 503 leaves the
+   * browser unable to say whether the text was stored. Putting it back in the
+   * field is then one Enter away from a second `UserMessage`, which starts a
+   * second turn. Only a refusal the server names licenses the restore.
+   */
+  it('leaves the field empty when the send failed without saying the text was refused', async () => {
+    setup((request) => request.path.endsWith('/planner/input')
+      ? { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } }
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('the ledger again');
+
+    /* The premise: the failure really was reported, so an empty field is not
+       an unanswered request being read as a decision. */
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeNull());
+    expect(messageField().textContent).toBe('');
+  });
+
+  /*
    * #1449 review round 7 — a refusal answers for the conversation that sent it.
    *
    * The store already keeps every *other* effect of a failure inside the
