@@ -204,6 +204,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/planner/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["upload_planner_attachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cards/{id}/planner/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_planner_attachment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/planner/input": {
         parameters: {
             query?: never;
@@ -1410,6 +1442,17 @@ export interface components {
             folder_id: number;
             folder_path: string;
         };
+        /**
+         * @description `<uuid-v4>.<ext>` — an attachment's id *and* its file name.
+         *
+         *     The inner string is private and the only constructor is
+         *     [`AttachmentId::parse`], so a value of this type is always a single path
+         *     segment matching
+         *     `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.
+         *     `Deserialize` goes through the same gate, so an id off the wire is checked
+         *     before it can reach a `join`.
+         */
+        AttachmentId: string;
         BacklinkQuote: {
             after: string;
             before: string;
@@ -2297,6 +2340,20 @@ export interface components {
              *     form the user cannot safely edit.
              */
             text: string;
+        };
+        /**
+         * @description One attachment as the frontend sees it in a queue entry or a transcript
+         *     segment.
+         */
+        PlannerAttachment: {
+            /**
+             * @description Derived from `id`, never stored separately — see
+             *     [`PlannerAttachment::new`].
+             */
+            contentType: string;
+            id: components["schemas"]["AttachmentId"];
+            /** Format: int64 */
+            size: number;
         };
         /**
          * @description #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
@@ -3468,6 +3525,18 @@ export interface components {
              */
             summary: string;
         };
+        /** @description `201` body of `POST /api/cards/{id}/planner/attachments`. */
+        UploadAttachmentResponse: {
+            attachmentId: components["schemas"]["AttachmentId"];
+            contentType: string;
+            /** Format: int64 */
+            size: number;
+            /**
+             * @description Absolute REST path the browser reads the bytes back from. Server-built:
+             *     the client never composes a path of its own.
+             */
+            url: string;
+        };
         /**
          * @description Response shape for `GET /api/version`. camelCase on the wire so it lines
          *     up with the rest of the TypeScript-facing surface.
@@ -4215,6 +4284,140 @@ export interface operations {
                 };
             };
             /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upload_planner_attachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Raw image bytes. The declared Content-Type is not the judgement — the file's magic number is. */
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            /** @description Attachment stored */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadAttachmentResponse"];
+                };
+            };
+            /** @description Not one of PNG/JPEG/GIF/WebP, the track has an attached workspace, or the card's attachment budget is exhausted */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card is not a planner codex card, or the actor is not `user` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card or track not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description File exceeds the per-file size limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    read_planner_attachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+                /** @description `<uuid>.<ext>` id returned by the upload */
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw image bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description Malformed id, no such attachment on this card, or the track has an attached workspace */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card or track not found */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -159,6 +159,9 @@ use utoipa::OpenApi;
         crate::routes::plugins::plugin_tool_call,
         // ---- models (#1505 S4-2) ----
         crate::routes::models::list_models,
+        // ---- planner attachments (#1505 S6) ----
+        crate::planner_attachments::routes::upload_planner_attachment,
+        crate::planner_attachments::routes::read_planner_attachment,
         // ---- version ----
         crate::routes::version::get_version,
     ),
@@ -219,6 +222,9 @@ use utoipa::OpenApi;
         CardPatch,
         HarnessInputPresentation,
         HarnessInputSegment,
+        calm_types::planner_attachment::AttachmentId,
+        calm_types::planner_attachment::PlannerAttachment,
+        calm_types::planner_attachment::UploadAttachmentResponse,
         HarnessItem,
         HarnessItemsQuery,
         SendPlannerInputRequest,

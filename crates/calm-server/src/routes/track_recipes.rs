@@ -38,7 +38,7 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::routes::track_report_blocks::require_rest_user_actor;
+use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{AppState, RouteState};
 use crate::task_privilege::normalize_task_privilege_fields;
 use axum::{
@@ -280,22 +280,18 @@ fn validate_recipe_body(body: &str) -> Result<()> {
 /// own words.
 ///
 /// The rule is identical — REST writes are the human's channel — so the
-/// *judgement* stays in [`require_rest_user_actor`] and is never restated
-/// here; restating it is how the two drift apart. Only the sentence differs:
-/// the block endpoints' text points the refused caller at `calm.report.*`,
+/// *judgement* stays in [`require_rest_user_actor_for`] and is never restated
+/// here; restating it is how the two drift apart. Only the redirect sentence
+/// differs: the block endpoints point the refused caller at `calm.report.*`,
 /// which is the right redirect for a track report and the wrong one for a
 /// recipe (no MCP tool writes recipes at all — an agent that wants this
 /// starting point asks its human for it).
 fn require_recipe_user_actor(actor: &Actor) -> Result<()> {
-    match require_rest_user_actor(actor) {
-        Ok(()) => Ok(()),
-        Err(CalmError::Forbidden(_)) => Err(CalmError::Forbidden(format!(
-            "track recipe write: only `X-Calm-Actor: user` is allowed; got `{}`. Recipes are the \
-             human's own saved starting points and have no agent-facing write path.",
-            actor.as_str()
-        ))),
-        Err(other) => Err(other),
-    }
+    require_rest_user_actor_for(
+        actor,
+        "track recipe write",
+        "Recipes are the human's own saved starting points and have no agent-facing write path.",
+    )
 }
 
 fn validate_title(title: &str) -> Result<()> {

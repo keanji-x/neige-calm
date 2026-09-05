@@ -601,7 +601,7 @@ async fn read_file_raw_response_from(canon: PathBuf, meta: Metadata) -> Result<R
     read_file_raw_response_from_handle(file, meta.len(), &canon, content_type).await
 }
 
-async fn read_file_raw_response_from_handle(
+pub(crate) async fn read_file_raw_response_from_handle(
     file: tokio::fs::File,
     size: u64,
     path: &Path,
