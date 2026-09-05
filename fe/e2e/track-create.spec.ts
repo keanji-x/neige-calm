@@ -213,10 +213,14 @@ test('creates a track from an Area group with no title, and persists it', async 
    * — which makes this the exact window the echo covers, with the real read
    * answering the real nothing.
    *
-   * `Planner` names the drawer here (the planner card carries a title, unlike
-   * an assistant card), so the name is not the assertion; the turn is.
+   * The drawer is located by the control only it has rather than by its name:
+   * on a real kernel the planner card is minted with no title, so the name is
+   * derived from the first thing said in the conversation — which is the very
+   * thing under test. Naming it would make the locator assert the fix in order
+   * to find the element it is asserting the fix on.
    */
-  const drawer = page.getByRole('complementary', { name: 'Planner' });
+  const drawer = page.locator('[role="complementary"]')
+    .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
   await expect(drawer).toBeVisible();
   await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
