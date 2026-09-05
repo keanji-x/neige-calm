@@ -36,6 +36,9 @@ import { joinDirectoryPath } from '../../ui/directory-browser/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
 import { isImagePath } from './file-kind.ts';
+import { FileReadError } from './read-error.tsx';
+
+export { FileReadError } from './read-error.tsx';
 
 export { useReportFileResource } from './report-file-resource.ts';
 export type { ReportFileResource } from './report-file-resource.ts';
@@ -124,6 +127,10 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
   };
   const { tab, folderPath, selectedPath, diffSelected } = nav;
 
+  const [listingRetry, setListingRetry] = useState(0);
+  const [fileRetry, setFileRetry] = useState(0);
+  const [diffListRetry, setDiffListRetry] = useState(0);
+  const [diffRetry, setDiffRetry] = useState(0);
   const [listing, setListing] = useState<DirectoryListingWire | null>(null);
   const [listingLoading, setListingLoading] = useState(false);
   const [listingError, setListingError] = useState<string | null>(null);
@@ -184,7 +191,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       .finally(() => { if (!cancelled) setListingLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `setNav` is rebuilt every render by design; re-running the read on it would loop.
-  }, [files, folderPath, path]);
+  }, [files, folderPath, path, listingRetry]);
 
   /*
    * A card opened on a *folder* selects that folder, and a folder is not a file
@@ -216,7 +223,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
         setFileState({ kind: 'error', message: messageOf(error, 'Failed to read file') });
       });
     return () => { cancelled = true; };
-  }, [files, selectedCodePath, tab]);
+  }, [files, selectedCodePath, tab, fileRetry]);
 
   /*
    * The changed-file list, and the selection inside it. A selection that no
@@ -277,7 +284,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       .finally(() => { if (!cancelled) setDiffListLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- as above: `setNav` identity changes every render.
-  }, [files, folderPath, tab]);
+  }, [files, folderPath, tab, diffListRetry]);
 
   useEffect(() => {
     if (files === null || tab !== 'diff' || gitRoot === null || diffSelected === null) {
@@ -297,7 +304,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       })
       .finally(() => { if (!cancelled) setDiffLoading(false); });
     return () => { cancelled = true; };
-  }, [changedFiles, diffSelected, files, gitRoot, tab]);
+  }, [changedFiles, diffSelected, files, gitRoot, tab, diffRetry]);
 
   if (files === null) {
     return (
@@ -333,7 +340,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
           {listingLoading
             ? <p className="fv-state">Loading…</p>
             : listingError !== null
-              ? <p className="fv-error" role="alert">{listingError}</p>
+              ? <FileReadError message={listingError} resource="folder" onRetry={() => setListingRetry((value) => value + 1)} />
               : entries.length === 0
                 ? <p className="fv-state">Empty directory</p>
                 : entries.map((entry) => {
@@ -402,6 +409,8 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
               selectedPath={selectedCodePath}
               theme={theme}
               rawUrl={files.rawUrl}
+              onRetry={() => setFileRetry((value) => value + 1)}
+              onImageError={() => setFileState({ kind: 'error', message: 'Could not read this image.' })}
             />
           )
           : (
@@ -410,6 +419,9 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
               selected={diffSelected}
               listLoading={diffListLoading}
               error={diffError}
+              onRetry={() => gitRoot === null
+                ? setDiffListRetry((value) => value + 1)
+                : setDiffRetry((value) => value + 1)}
               diff={diff}
               diffLoading={diffLoading}
               theme={theme}
@@ -421,21 +433,23 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
   );
 }
 
-function CodeTab({ state, selectedPath, theme, rawUrl }: {
+function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: {
   state: FileState;
   selectedPath: string | null;
   theme: PaneTheme;
   rawUrl: (path: string) => string;
+  onRetry: () => void;
+  onImageError: () => void;
 }): ReactNode {
   if (selectedPath === null) return <p className="fv-empty">Select a file to view it.</p>;
   if (state.kind === 'idle' || state.kind === 'loading') {
     return <p className="fv-state">Loading file…</p>;
   }
-  if (state.kind === 'error') return <p className="fv-error" role="alert">{state.message}</p>;
+  if (state.kind === 'error') return <FileReadError message={state.message} onRetry={onRetry} />;
   if (state.kind === 'image') {
     return (
       <div className="fv-image-wrap">
-        <img className="fv-image" src={rawUrl(state.path)} alt={state.path} />
+        <img className="fv-image" src={rawUrl(state.path)} alt={state.path} onError={onImageError} />
       </div>
     );
   }
@@ -571,7 +585,7 @@ function SearchBar({ query, current, total, onChange, onNext, onPrev, onClose }:
   );
 }
 
-function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme, onSelect }: {
+function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme, onSelect, onRetry }: {
   files: readonly GitChangedFileWire[];
   selected: string | null;
   listLoading: boolean;
@@ -580,6 +594,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
   diffLoading: boolean;
   theme: PaneTheme;
   onSelect: (path: string) => void;
+  onRetry: () => void;
 }): ReactNode {
   return (
     <div className="fv-diff">
@@ -587,7 +602,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
         {listLoading
           ? <p className="fv-state">Loading changes…</p>
           : files.length === 0
-            ? <p className="fv-state">No working-tree changes</p>
+            ? error === null && <p className="fv-state">No working-tree changes</p>
             : files.map((file) => (
               <button
                 key={`${file.status}:${file.path}`}
@@ -608,7 +623,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
       </div>
       <div className="fv-diff-pane">
         {error !== null
-          ? <p className="fv-error" role="alert">{error}</p>
+          ? <FileReadError message={error} resource="changes" onRetry={onRetry} />
           : diffLoading || diff === null
             ? <p className="fv-state">{selected === null ? 'Select a changed file' : 'Loading diff…'}</p>
             : (

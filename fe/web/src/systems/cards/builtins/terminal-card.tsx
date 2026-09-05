@@ -1,9 +1,10 @@
 // Copied from web/src/cards/builtins/terminal.tsx chrome: `.term` + CardHead
 // + `.term-body`. The PTY renderer stays in systems/terminal.
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useCallback, useEffect } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
+import type { TerminalConnectionStatus } from '../../terminal/xterm-view.tsx';
 import { TerminalSurface } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { PathLabel } from '../../../ui/path-label/public.tsx';
@@ -34,14 +35,21 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
   useEffect(() => host.lifecycle.subscribe(() => {
     setVisible(host.lifecycle.getSnapshot().visible);
   }), [host]);
+  const [connection, setConnection] = useState<Readonly<{
+    terminalId: string | null; status: TerminalConnectionStatus;
+  }>>({ terminalId: card.terminalId, status: 'connecting' });
+  const terminalId = card.terminalId;
+  const onStatusChange = useCallback((status: TerminalConnectionStatus) => {
+    setConnection({ terminalId, status });
+  }, [terminalId]);
+  const status = connection.terminalId === terminalId ? connection.status : 'connecting';
   const attached = card.terminalId !== null;
-  const ended = card.sessionState === 'exited' || card.sessionState === 'failed' || card.sessionState === 'superseded';
-  const live = attached && !ended;
-  const message = card.sessionState === 'starting'
-    ? `Starting ${fallbackTitle}…`
-    : card.sessionState === 'exited' ? 'Session exited.'
-      : card.sessionState === 'failed' ? 'Session failed.'
-        : card.sessionState === 'superseded' ? 'Session replaced.'
+  const ended = status === 'exited' || card.sessionState === 'exited' || card.sessionState === 'failed' || card.sessionState === 'superseded';
+  const live = attached && !ended && status === 'connected';
+  const message = card.sessionState === 'failed' ? 'Session failed.'
+    : card.sessionState === 'superseded' ? 'Session replaced.'
+      : status === 'exited' || card.sessionState === 'exited' ? 'Session exited.'
+        : card.sessionState === 'starting' ? `Starting ${fallbackTitle}…`
           : 'No terminal session available.';
   return (
     <div
@@ -53,7 +61,9 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
         className="card-drag-handle"
         title={card.title || fallbackTitle}
         status={live ? <span className="live-dot" role="img" aria-label="status Working" />
-          : ended ? <span role="status">{message}</span> : undefined}
+          : ended ? <span role="status">{message}</span>
+            : attached ? <span role="status">{status === 'closed' ? 'Disconnected'
+              : status === 'protocol-error' ? 'Connection error' : 'Connecting…'}</span> : undefined}
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
       />
@@ -67,7 +77,7 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
         {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
-              <TerminalSurface card={card} visible={visible} />
+              <TerminalSurface card={card} visible={visible} onStatusChange={onStatusChange} />
             </Suspense>
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}

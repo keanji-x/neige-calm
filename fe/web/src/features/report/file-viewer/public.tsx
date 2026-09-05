@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
-import { useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
+import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
 import { ReportDocument } from '../document/public.tsx';
 import styles from './report-file-viewer.module.css';
 
@@ -63,7 +63,7 @@ export function ReportFileViewer({
       <div className={`${styles.body} ${wide ? styles.bodyWide : ''}`}>
         <div className={styles.fileName} title={path}>{basename(path)}</div>
         {resource.kind === 'loading' && <p className={styles.state} role="status">Loading file…</p>}
-        {resource.kind === 'error' && <p className={styles.error} role="alert">{resource.message}</p>}
+        {resource.kind === 'error' && <FileReadError message={resource.message} onRetry={resource.retry} />}
         {resource.kind === 'image' && (
           <figure className={styles.imageWrap}>
             <img

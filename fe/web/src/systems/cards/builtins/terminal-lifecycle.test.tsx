@@ -70,7 +70,8 @@ describe.each(['terminal', 'codex', 'claude'])('%s terminal lifecycle after refr
     mountCard(kind, { status: 'running', terminal_id: 'current-pty' }, { terminal_id: 'stale-pty' });
     expect(document.querySelector('[data-nc-terminal-id="current-pty"]')).not.toBeNull();
     expect(document.querySelector('[data-nc-terminal-id="stale-pty"]')).toBeNull();
-    expect(screen.getByRole('img', { name: 'status Working' })).toBeTruthy();
+    expect(screen.getByText('Connecting…')).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
   });
 
   it('still resolves legacy payload identity when no runtime is projected', () => {

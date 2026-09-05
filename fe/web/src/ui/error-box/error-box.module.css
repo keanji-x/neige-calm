@@ -8,3 +8,28 @@
     background: currentColor;
   }
 }
+
+@layer ui {
+  .recovery {
+    display: block;
+    padding: var(--space-6);
+    overflow-wrap: anywhere;
+    color: var(--text);
+    font-size: var(--text-base);
+  }
+  .reason { display: block; font-weight: 500; }
+  .description { margin: var(--space-3) 0; color: var(--text-2); }
+  .details { margin-block-start: var(--space-4); color: var(--text-3); font-size: var(--text-sm); }
+  .details summary { cursor: pointer; }
+  .details p { margin-block: var(--space-3) 0; }
+  .floating {
+    position: absolute;
+    inset-inline: var(--space-5);
+    inset-block-end: var(--space-5);
+    inline-size: fit-content;
+    max-inline-size: calc(100% - var(--space-5) * 2);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+  }
+}

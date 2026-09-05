@@ -14,7 +14,8 @@ type ResourceState =
   | Readonly<{ kind: 'error'; message: string }>;
 
 export type ReportFileResource =
-  | Exclude<ResourceState, { kind: 'image' }>
+  | Exclude<ResourceState, { kind: 'image' | 'error' }>
+  | Readonly<{ kind: 'error'; message: string; retry: () => void }>
   | Readonly<{
       kind: 'image'; path: string; url: string;
       onLoad: () => void;
@@ -33,6 +34,7 @@ export function useReportFileResource(
 ): ReportFileResource {
   const onOpenedRef = useRef(onOpened);
   onOpenedRef.current = onOpened;
+  const [retryKey, setRetryKey] = useState(0);
   const [state, setState] = useState<ResourceState>({ kind: 'loading' });
 
   useEffect(() => {
@@ -58,8 +60,9 @@ export function useReportFileResource(
         if (!cancelled) setState({ kind: 'error', message: messageOf(error) });
       });
     return () => { cancelled = true; };
-  }, [files, path]);
+  }, [files, path, retryKey]);
 
+  if (state.kind === 'error') return { ...state, retry: () => setRetryKey((value) => value + 1) };
   if (state.kind !== 'image') return state;
   return {
     ...state,
