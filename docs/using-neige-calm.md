@@ -50,9 +50,32 @@ bound workspace fails verification instead of silently checking another tree.
 New Claude worker operations provision Git worktrees; recovery of older frozen
 operations keeps their recorded directory.
 
-These execution fixes do not provide structured checkpoints or attempt-aware
-resume/partial acceptance. Those remain follow-ups in
-[Long task reliability](architecture/long-task-reliability.md#delivery-scope).
+## Recover a failed task
+
+Expand the task in the Report to see its current attempt and **Attempt history**.
+Each historical attempt keeps its outcome and a link to its worker conversation.
+Select **Recover task** when the current failed attempt is eligible. Recovery
+starts a new execution under the same task key and unchanged requirements;
+completed sibling tasks and downstream dependency declarations stay in place.
+
+The accepted request first waits for preparation and scheduling. A prepared or
+queued attempt has not necessarily begun business execution. If the request's
+response is lost, retry the request through the displayed recovery control; it
+keeps the original request identity so that one action cannot create two attempts.
+
+When recovery is unavailable, the task explains the prerequisite: for example,
+its requirements changed, execution permission was withdrawn, the previous process
+has not been reconciled, or its historical contract is missing. A terminal Track
+must first use the existing **Resume work** action. An ordinary Blocked Track can
+return to Working as part of an admitted recovery.
+
+Planner can recover its own automatically admitted task once. User-owned tasks,
+tasks awaiting user release, and further failed attempts need an explicit user
+recovery action. Successful and canceled attempts are not eligible for this action.
+
+This recovery starts a fresh execution. Restoring a failed workspace, exact
+artifact handoff and partial-result acceptance have separate delivery requirements
+in [Task continuity](architecture/1501-task-continuity.md#reliable-delivery).
 
 ## Open files from a Report
 

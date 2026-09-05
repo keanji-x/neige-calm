@@ -26,6 +26,11 @@ dispatch/spawn/report/gate 失败       → failed
 
 终态 `done | failed | canceled` 不再迁移。同一次报告、恢复或 sweep 重放必须通过 compare-and-set 变成无副作用的重复。
 
+这里的状态属于一次执行。业务任务以 Track + 作者 key 标识，`tasks.id` 标识具体执行。
+显式恢复会为同一业务任务登记新一代执行，保留旧失败行、Worker、Operation 和日志。
+`task_attempt_allocations` 保存追加式代次；当前执行由最高已登记代次决定。
+即使其 pending 投影因声明或额度暂时消失，重建也使用同一已登记 ID，不退回历史失败。
+
 `worker_card_id` 在 dispatch/worker 建立时绑定，此后 worker 报告必须证明自己拥有该任务。Planner verdict 与 worker report 是不同权限类别，不能共享一个宽松写入口。
 
 ## Ready 集合
@@ -33,7 +38,7 @@ dispatch/spawn/report/gate 失败       → failed
 一个任务只有同时满足以下条件才可 claim：
 
 - 状态为 `pending`；
-- 所有依赖为 `done`；
+- 所有依赖的当前执行为 `done`，依赖仍使用原作者 key；
 - 声明仍有效且没有阻断诊断；
 - track lifecycle 允许调度；
 - track/树的并发预算有容量；
@@ -45,7 +50,7 @@ Ready 集合在 track 锁与数据库事务内计算。Claim 与 `TaskDispatched
 
 ## Dispatch
 
-每次 dispatch 使用稳定 task identity 派生 operation idempotency key。重启或重复 poke 必须命中同一个 operation，而不是再创建一次 worker。
+每次 dispatch 使用具体执行 ID 派生 operation idempotency key。重启或重复 poke 必须命中同一个 operation，而不是再创建一次 worker。新的业务尝试使用新执行 ID，不复用旧 Operation 的技术重试编号。
 
 典型流程：
 
@@ -92,6 +97,13 @@ Gate 结果：
 Gated task 的 worker 自报完成不能直接提升 track lifecycle；提升只能在 gate 终态事务中发生。
 
 ## 触发与恢复
+
+`calm.plan.recover` 和用户恢复端点共用受控服务：检查原失败执行、冻结契约、声明授权、
+前代退出证据和幂等请求，再原子登记后继、投影及事件。claim 与启动前重新检查当前代、
+原契约和授权；旧未启动 Operation 不能因恢复重放而在后继之后重新启动。
+Planner 仅可为其自动执行的自有声明恢复一次；用户可逐次明确恢复，Worker 没有此权限。
+同一请求在执行已推进后仍返回原回执，不能再次创建后继。完整边界见
+[任务连续性设计](1501-task-continuity.md)。
 
 Scheduler 可以被 task/report/lifecycle/gate 事件唤醒，但正确性不能依赖 broadcast 不丢。它还必须有：
 

@@ -4592,6 +4592,132 @@
         }
       }
     },
+    "/api/tracks/{id}/tasks/{key}/attempts": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_attempts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecoveryView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{id}/tasks/{key}/recover": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "recover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskRecoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecoveryReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{track_id}/cards": {
       "get": {
         "tags": [
@@ -7570,6 +7696,54 @@
           }
         }
       },
+      "TaskAttemptView": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "generation",
+          "status",
+          "status_detail",
+          "worker_card_id",
+          "created_at_ms",
+          "finished_at_ms"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "finished_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string",
+            "description": "Includes awaiting_projection when admission capacity removed a pending row."
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_card_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "TaskPendingReason": {
         "oneOf": [
           {
@@ -7658,6 +7832,97 @@
             }
           }
         ]
+      },
+      "TaskRecoveryCapability": {
+        "type": "object",
+        "required": [
+          "allowed",
+          "code",
+          "reason"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskRecoveryReceipt": {
+        "type": "object",
+        "description": "Stable acknowledgement, including when the response to the first call was lost.",
+        "required": [
+          "key",
+          "previous_attempt_id",
+          "attempt_id",
+          "generation"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key": {
+            "type": "string"
+          },
+          "previous_attempt_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaskRecoveryRequest": {
+        "type": "object",
+        "required": [
+          "expected_attempt_id",
+          "idempotency_key",
+          "reason"
+        ],
+        "properties": {
+          "expected_attempt_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaskRecoveryView": {
+        "type": "object",
+        "required": [
+          "key",
+          "current",
+          "attempts",
+          "recovery"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskAttemptView"
+            }
+          },
+          "current": {
+            "$ref": "#/components/schemas/TaskAttemptView"
+          },
+          "key": {
+            "type": "string"
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/TaskRecoveryCapability"
+          }
+        }
       },
       "Terminal": {
         "type": "object",
