@@ -753,20 +753,72 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  worker-boundary:
+    name: worker process isolation
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
+    # Namespace tests execute only a fake provider on an ephemeral hosted runner.
+    # Never change namespace policy on the shared production runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: install namespace test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap python3
+      - name: permit namespace tests on the ephemeral hosted runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -f "$policy" ]; then
+            cat "$policy" > "$RUNNER_TEMP/worker-boundary-userns-policy"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: worker-boundary
+      - uses: taiki-e/install-action@nextest
+      - name: verify owned process boundaries
+        run: |
+          env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+            cargo nextest run --locked --profile ci -p calm-worker-runtime \
+              --features test-support --test-threads 8 --no-fail-fast
+          cargo clippy --locked -p calm-worker-runtime --all-targets \
+            --features test-support -- -D warnings
+      - name: restore hosted namespace policy
+        if: always()
+        run: |
+          policy_file="$RUNNER_TEMP/worker-boundary-userns-policy"
+          if [ -f "$policy_file" ]; then
+            original_policy=$(cat "$policy_file")
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_policy"
+          fi
+
   # Preserve the required status-check name while the worker job is a matrix.
   # This job performs no checkout and is the single branch-protection verdict.
   rust:
     name: rust (test)
-    needs: [changes, rust-shards]
+    needs: [changes, rust-shards, worker-boundary]
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: require every Rust test shard to pass
         env:
           SHARD_RESULT: ${{ needs.rust-shards.result }}
+          BOUNDARY_RESULT: ${{ needs.worker-boundary.result }}
         run: |
           if [ "$SHARD_RESULT" != "success" ]; then
             echo "::error::Rust test shards finished with: $SHARD_RESULT"
+            exit 1
+          fi
+          if [ "$BOUNDARY_RESULT" != "success" ]; then
+            echo "::error::Worker process isolation finished with: $BOUNDARY_RESULT"
             exit 1
           fi
 
