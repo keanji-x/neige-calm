@@ -94,7 +94,20 @@ pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> 
             "context-stale: frozen closure no longer matches the document".into(),
         ));
     }
-    Ok(())
+    crate::task_recovery::require_attempt_startable_tx(tx, task_id).await
+}
+
+/// Call immediately before new provider/process effects, after checking whether
+/// a previously recorded terminal exit already makes the adapter a no-op.
+pub(crate) async fn admit_task_side_effect(
+    repo: &dyn crate::db::RepoEventWrite,
+    task_id: &str,
+) -> Result<()> {
+    let task_id = task_id.to_string();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { refuse_if_context_stale(tx, Some(&task_id)).await })
+    })
+    .await
 }
 
 /// Issue #1149 — the plan `key` of the task a worker operation is bound

@@ -626,6 +626,7 @@ pub mod shared_codex_appserver;
 pub mod shared_codex_home;
 pub mod state;
 pub mod task_context;
+pub mod task_recovery;
 pub(crate) mod task_privilege;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;

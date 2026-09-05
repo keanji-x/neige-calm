@@ -188,7 +188,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    let op = claude_worker_op("op-env", Value::Null);
+    let op = claude_worker_op("op-env", claude_worker_payload(&harness.track_id, "env"));
 
     adapter
         .spawn_side_effect(&output, &op, &ctx)
@@ -485,7 +485,10 @@ async fn claude_worker_recovery_already_live_returns_noop_without_respawn_or_tok
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    let op = claude_worker_op("op-already-live", Value::Null);
+    let op = claude_worker_op(
+        "op-already-live",
+        claude_worker_payload(&harness.track_id, "already-live"),
+    );
 
     let first = adapter.spawn_side_effect(&output, &op, &ctx).await.unwrap();
 
@@ -598,7 +601,10 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
-    let op = claude_worker_op("op-fast-exit", Value::Null);
+    let op = claude_worker_op(
+        "op-fast-exit",
+        claude_worker_payload(&harness.track_id, "fast-exit"),
+    );
 
     let outcome = adapter.spawn_side_effect(&output, &op, &ctx).await.unwrap();
 

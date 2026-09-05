@@ -3313,7 +3313,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let report = TrackReportPayload {
+    let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
         summary: String::new(),
@@ -3325,6 +3325,16 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
             payload: json!({"key": key, "kind": "terminal", "command": "echo hi"}),
         }]),
     };
+    // Seed the legacy payload's authoritative body from the real report
+    // renderer, so its block cache describes the same document.
+    report.body = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report.blocks.as_deref().unwrap(),
+    )
+    .unwrap()
+    .project()
+    .unwrap()
+    .1;
     sqlx::query(
         "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
@@ -3983,7 +3993,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "hash-shapes";
-    let report = TrackReportPayload {
+    let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
@@ -4006,6 +4016,16 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
             },
         ]),
     };
+    // Seed the legacy payload's authoritative body from the real report
+    // renderer, so its block cache describes the same document.
+    report.body = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report.blocks.as_deref().unwrap(),
+    )
+    .unwrap()
+    .project()
+    .unwrap()
+    .1;
     insert_report_payload(
         &boot,
         "hash-shapes-report",

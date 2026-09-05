@@ -22,3 +22,5 @@ mod mcp_track_state;
 mod report_write_characterization;
 #[path = "cases/task_projection_acceptance.rs"]
 mod task_projection_acceptance;
+#[path = "cases/task_recovery.rs"]
+mod task_recovery;

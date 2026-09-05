@@ -821,6 +821,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
             kill_recorded_group(pid, start_time, &boot_id, pid);
         }
 
+        super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
+
         // 2. Unlink the stale exit file (strictly after the kills,
         //    strictly before the spawn — #653 §6.1 step 2).
         let exit_path = self.exit_path(&frozen.task_id, frozen.attempt);

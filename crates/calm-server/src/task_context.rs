@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
-use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
+use calm_types::report_blocks::{flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::track_report::ReportBlock;
 use dashmap::DashMap;
@@ -40,18 +40,7 @@ enum RefsMatch {
     Retryable(String),
 }
 
-pub const ROOT_HASH_TASK_FIELDS: &[&str] = &[
-    "kind",
-    "goal",
-    "command",
-    "acceptance",
-    "gate",
-    "no_gate_reason",
-    "depends_on",
-    "refs",
-    "cwd",
-    "context",
-];
+pub use calm_types::task_recovery::TASK_ROOT_HASH_FIELDS as ROOT_HASH_TASK_FIELDS;
 pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
     "key",
     "priority",
@@ -1145,28 +1134,7 @@ pub(crate) fn context_ref(track_id: &str, block: &ReportBlock, is_root: bool) ->
 }
 
 fn task_root_projection(payload: &serde_json::Value) -> String {
-    let mut projected = serde_json::Map::new();
-    if let Some(object) = payload.as_object() {
-        let terminal = object.get("kind").and_then(serde_json::Value::as_str) == Some("terminal");
-        for key in ROOT_HASH_TASK_FIELDS {
-            // #1456 compatibility: frozen hashes written before the public
-            // field rename used the JSON key `goal` for terminal commands.
-            // Hash new `command` values under that same stable key so the
-            // rename itself does not stale every in-flight terminal task.
-            if *key == "command" {
-                continue;
-            }
-            let value = if terminal && *key == "goal" {
-                object.get("command").or_else(|| object.get("goal"))
-            } else {
-                object.get(*key)
-            };
-            if let Some(value) = value.filter(|value| !value.is_null()) {
-                projected.insert((*key).into(), value.clone());
-            }
-        }
-    }
-    canonical_json(&serde_json::Value::Object(projected))
+    calm_types::task_recovery::task_root_hash_preimage(payload)
 }
 
 fn block_links(block: &ReportBlock) -> std::result::Result<Vec<(String, String)>, ResolveError> {

@@ -887,6 +887,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         provision_codex_worker_workspace(
             ctx,
             &self.card_role_cache,
@@ -944,6 +946,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
 
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         if !self.shared_codex_appserver.is_running() {
             // #953 — message-only enrichment; see prepare-side preflight.
             return Err(self.shared_codex_appserver.not_running_error());

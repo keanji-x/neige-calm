@@ -95,7 +95,7 @@ async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u
     .expect("user task update")
 }
 
-fn principal() -> Principal {
+pub(super) fn principal() -> Principal {
     Principal {
         user_id: "owner".into(),
         display_name: "owner".into(),
@@ -104,7 +104,7 @@ fn principal() -> Principal {
     }
 }
 
-async fn route_state(boot: &Boot) -> AppState {
+pub(super) async fn route_state(boot: &Boot) -> AppState {
     let events = EventBus::new();
     let state = AppState::from_parts(
         boot.repo.clone(),

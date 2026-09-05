@@ -1008,6 +1008,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let mcp_server = self.mcp_server.as_ref().ok_or_else(|| {
             CalmError::Internal("MCP server is not running; claude worker cannot report".into())
         })?;
+        let payload: ClaudeWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         workspace::provision(self, ctx, output).await?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;

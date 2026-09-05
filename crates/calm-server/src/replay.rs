@@ -362,6 +362,7 @@ pub async fn reset_from_fixture(
         // `tracks`, so deleting `tracks` will NOT cascade here — the wipe
         // must name it explicitly or task rows leak across resets.
         "DELETE FROM tasks",
+        "DELETE FROM task_attempt_allocations",
         // `tracks.root_session_id` points at `worker_sessions` without
         // ON DELETE SET NULL, so table-level resets must clear it before
         // worker sessions leave.

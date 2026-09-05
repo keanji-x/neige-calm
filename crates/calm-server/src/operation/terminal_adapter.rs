@@ -747,6 +747,8 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             });
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         let term = ctx
             .repo
