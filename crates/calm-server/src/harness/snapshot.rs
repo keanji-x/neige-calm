@@ -228,12 +228,15 @@ impl HarnessSnapshot {
     /// length.
     ///
     /// One function for both, and renamed from `align_pending_envelope_ids`
-    /// deliberately: two aligners would mean every current and future call site
-    /// has to remember both, and a site that aligned one and forgot the other
-    /// would not fail — it would pair ids with the wrong entries and hand the
-    /// give-back the wrong messages to move. Silent mis-attribution is worse
-    /// than a missing id. There is nothing to forget if there is only one call
-    /// to make.
+    /// deliberately: two aligners would mean every call site has to remember
+    /// both, and a site that aligned one and forgot the other would not fail —
+    /// it would pair ids with the wrong entries and hand the give-back the
+    /// wrong messages to move.
+    ///
+    /// One function is not the same as no call sites to get wrong.
+    /// `output_snapshot` decoded a snapshot with a bare `from_value` and skipped
+    /// this entirely, for a whole review round, which is exactly the
+    /// mis-attribution above with the aligner in place.
     ///
     /// This is also the upgrade seam: `from_value_strict` calls it on every
     /// snapshot decoded from the database, so a pre-#1449 row — which has no

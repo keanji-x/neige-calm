@@ -608,10 +608,11 @@ pub(super) async fn session_restore_from_superseded_tx(
               SET state = ?1,
                   updated_at_ms = ?2,
                   completed_at_ms = NULL,
-                  -- #1449 — a restored row is an active carrier again and owes
-                  -- its own queue once more (its snapshot was never edited in
-                  -- place). Leaving the marker on would make that queue
-                  -- unharvestable for the rest of the row's life.
+                  -- #1449 — a restored row is an active carrier again, so the
+                  -- marker goes. Whether it has a queue to owe depends on
+                  -- whether the mint that retired it gave one back: since the
+                  -- transfers became moves, a restore alone does not put
+                  -- anything on the row.
                   queue_harvested_at_ms = NULL
             WHERE id = ?3
               AND state = 'superseded'"#,

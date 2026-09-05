@@ -3934,24 +3934,22 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
          anyway is how the same sentence reaches the agent twice"
     );
-    // #1449 S4 — and it STOPS, rather than being refused once per tick for the
-    // rest of its life. Below the carrier check every tick pays a card/role
-    // lookup, a track-level transcript WRITE transaction and a diff; a refusal
-    // that only declined to issue left a retired runtime paying all of it every
-    // 50ms. The closed observation gate is the witness that the handle wound
-    // down.
+    // #1449 — the refusal declines to ISSUE; it does not wind the handle down.
+    //
+    // A stopped handle stays registered, and `ensure_live_planner_harness` does
+    // not health-check a registered handle, so a predecessor a failed mint
+    // later restores would answer `Conflict` on every send with no way back but
+    // `/planner/reset`. The handle therefore has to keep accepting work even
+    // while it declines to speak for the card.
     let handle = b
         .state
         .harness
         .get(&runtime)
-        .expect("the retired handle is still registered — nobody removed it");
-    let refused = handle
-        .observe_user_message_durable("anything at all".into())
-        .await;
-    assert!(
-        refused.is_err(),
-        "a runtime that lost the card must stop accepting work, not keep running refused"
-    );
+        .expect("the retired handle is still registered");
+    handle
+        .observe_user_message_durable("still accepted".into())
+        .await
+        .expect("a runtime that lost the card must keep accepting work, not answer Conflict");
     b.shutdown_harnesses().await;
 }
 
@@ -4190,5 +4188,64 @@ async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
         1,
         "and the sentence must reach an agent exactly once"
     );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 — a sentence accepted with a 201 must be on the row, not only in the
+/// memory of a runtime that has stopped.
+///
+/// This is the defect a `stop_retired_carrier` step introduced and this test
+/// exists to keep out. Setting `shutting_down` outside `inner.durable_observation`
+/// — the lock every other setter of that flag takes, and the only point that
+/// linearises an in-flight durable send against teardown — let this interleave:
+///
+/// 1. the HTTP task takes `durable_observation`, reads `shutting_down == false`
+///    and sends its `Durable` command;
+/// 2. the run loop stops the handle from its tick arm;
+/// 3. the next `select!` has both `observations.recv()` and `shutdown.recv()`
+///    ready and picks between them at random;
+/// 4. on the observations arm the message is enqueued and `persist_snapshot`
+///    returns `Ok` WITHOUT writing, because `shutting_down` is now set — so the
+///    send is acknowledged, the route answers 201 and writes
+///    `harness.user_message.enqueued`, and the sentence exists only in the
+///    memory of a loop that is about to exit.
+///
+/// The witness is the invariant rather than the interleaving: after a runtime
+/// has been retired underneath a durable send, a send that was ACCEPTED has to
+/// be on the row. Run repeatedly, because step 3 is a coin flip; a version of
+/// this that only asserted after the stop had completed gave false confidence
+/// for a whole round.
+#[tokio::test]
+async fn an_accepted_send_is_on_the_row_even_when_the_runtime_is_retired_underneath_it() {
+    const ACCEPTED: &str = "accepted while the carrier was being retired";
+
+    let b = boot().await;
+    let (status, body) = b.create_track(Some("idem-1449-accept"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (runtime, card_id) = b.only_runtime().await;
+
+    // Retire the row underneath the live handle, then send. The run loop's
+    // carrier check will refuse to issue from now on; the question is what
+    // happens to a send that is accepted anyway.
+    b.retire_runtime_in_the_database(&runtime).await;
+
+    for attempt in 0..20 {
+        let text = format!("{ACCEPTED} #{attempt}");
+        let (sent, sent_body) = b.send_planner_input(&card_id, &text).await;
+        if !sent.is_success() {
+            // Refusing the send is a legitimate answer: nothing was promised.
+            continue;
+        }
+        let persisted = b.persisted_queue(&runtime).await;
+        let on_the_row = persisted
+            .iter()
+            .any(|entry| entry.to_string().contains(&text));
+        assert!(
+            on_the_row,
+            "send #{attempt} was accepted ({sent}, body={sent_body}) but the sentence is not on \
+             the row — it exists only in the runtime's memory, which is the loss #1449 exists to \
+             end, reintroduced. Persisted queue: {persisted:?}"
+        );
+    }
     b.shutdown_harnesses().await;
 }

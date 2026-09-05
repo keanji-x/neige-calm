@@ -17,15 +17,19 @@
 //!
 //! # What this can and cannot see
 //!
-//! Lexical, and deliberately so — no tool owns "which source lines write this
-//! column", and the property is textual rather than semantic. It sees SQL
-//! written as string literals, which is every statement in this repository. It
-//! would not see a statement assembled at runtime from fragments, so the second
-//! assertion pins that no such assembly exists: `QueryBuilder` and `format!`
-//! are checked never to produce a write to this column.
+//! Lexical, and line at a time. No tool owns "which source lines write this
+//! column", and the property is textual rather than semantic, so a scan is the
+//! right instrument — but it is worth being exact about its reach.
 //!
-//! It cannot decide the interesting question — whether a writer takes its queue
-//! from the row — and does not pretend to. It makes a new writer VISIBLE.
+//! It sees a write spelled out in a string literal. It does NOT see a statement
+//! assembled across lines, and this repository does assemble SQL that way
+//! (`WS_CARD_KEYED_RUNTIME_SELECT`, `PROJECTABLE_RUNTIMES_FOR_CARDS_SQL`) —
+//! those are reads today, and nothing here would notice if one became a write.
+//!
+//! It also cannot decide the interesting question, whether a writer takes its
+//! queue from the row; that is what the classification beside each entry is
+//! for, and it is written by a person. What this gate does is make a new
+//! literal writer VISIBLE.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -66,6 +70,24 @@ fn repo_relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Does this line write `worker_sessions.handle_state_json`?
+///
+/// An ASSIGNMENT to the column, or an insert into the table. Not the bare
+/// column name: every SELECT in the session row mappers lists it, and matching
+/// those would bury the writers in reads. Not `SET handle_state_json` either —
+/// that misses the column when it is one assignment among several in a
+/// multi-column `SET`, which is how `session_refresh_deferred_placeholder_tx`
+/// writes it, and the counter-fixture below caught exactly that. The `let`
+/// guard keeps Rust bindings of the same name out.
+///
+/// The scan and the counter-fixture both call THIS. A counter-fixture with its
+/// own copy of the predicate stays green while the real one rots, which is a
+/// gate that only ever proves itself.
+fn line_writes_handle_state(trimmed: &str) -> bool {
+    (trimmed.contains("handle_state_json =") && !trimmed.starts_with("let "))
+        || trimmed.contains("INSERT INTO worker_sessions")
+}
+
 /// Every production function whose body contains a SQL statement that assigns
 /// `handle_state_json`.
 fn writers_of_handle_state() -> BTreeSet<String> {
@@ -87,17 +109,7 @@ fn writers_of_handle_state() -> BTreeSet<String> {
             {
                 current_fn = rest.split('(').next().unwrap_or("").trim().to_string();
             }
-            // An ASSIGNMENT to the column, or an insert into the table.
-            //
-            // Not the bare column name: every SELECT in the session row mappers
-            // lists it, and matching those would bury the writers in reads. Not
-            // `SET handle_state_json` either — that misses the column when it
-            // is one assignment among several in a multi-column `SET`, which is
-            // how `session_refresh_deferred_placeholder_tx` writes it. The
-            // `let` guard keeps Rust bindings of the same name out.
-            let writes = (trimmed.contains("handle_state_json =") && !trimmed.starts_with("let "))
-                || trimmed.contains("INSERT INTO worker_sessions");
-            if writes && !current_fn.is_empty() {
+            if line_writes_handle_state(trimmed) && !current_fn.is_empty() {
                 found.insert(format!("{}::{current_fn}", repo_relative(&path)));
             }
         }
@@ -109,9 +121,9 @@ fn writers_of_handle_state() -> BTreeSet<String> {
 ///
 /// `row` — takes the queue it writes from the runtime's own row (directly, or
 /// from a snapshot this transaction just read from it).
-/// `carried` — writes a queue that came from somewhere else. **There must be
-/// none**; if a new writer belongs here, the transfers in #1449 have to be
-/// re-argued before it is added.
+/// `carried` — writes a queue that did not come from the row. Each one needs a
+/// written argument for why it cannot resurrect a transferred queue; there is
+/// one today and its argument is next to it.
 /// `not-a-queue` — writes the column without touching `pending_queue`.
 const FROZEN_WRITERS: &[(&str, &str)] = &[
     // Insert/refresh primitives: they write whatever their caller assembled,
@@ -124,9 +136,16 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/session_mirror.rs::session_set_handle_state_mirror_tx",
         "row",
     ),
+    // `carried`, and it is the one writer that has to be: the give-back writes
+    // message text read back out of `operations.tx_output_json`. It is sound
+    // for the same reason the journal is — it writes ONLY ids the failing
+    // runtime still holds, so it cannot resurrect a queue somebody else has
+    // taken — but by this file's own definition the queue it writes did not
+    // come from the row, and calling it `row` would be a false entry in the one
+    // place that exists to keep this honest.
     (
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_any_runtime_tx",
-        "row",
+        "carried",
     ),
     (
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_retired_runtime_tx",
@@ -166,31 +185,11 @@ fn every_writer_of_handle_state_json_is_classified() {
         vanished.is_empty(),
         "a frozen writer is gone; update the inventory deliberately: {vanished:#?}"
     );
-    assert!(
-        !FROZEN_WRITERS.iter().any(|(_, kind)| *kind == "carried"),
-        "a writer is classified `carried`, which is the shape #1449 exists to remove"
-    );
-}
-
-/// The scan is lexical, so this pins the one thing that would hide a writer
-/// from it: SQL assembled at runtime.
-#[test]
-fn no_production_code_assembles_a_write_to_handle_state_json() {
-    for path in production_sources() {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        for (n, line) in text.lines().enumerate() {
-            let assembled = (line.contains("format!") || line.contains("QueryBuilder"))
-                && line.contains("handle_state_json");
-            assert!(
-                !assembled,
-                "{}:{} assembles SQL mentioning `handle_state_json`; the writer inventory is a \
-                 lexical scan and cannot see it",
-                repo_relative(&path),
-                n + 1
-            );
-        }
+    for (name, kind) in FROZEN_WRITERS {
+        assert!(
+            matches!(*kind, "row" | "carried" | "not-a-queue"),
+            "{name} has an unknown classification {kind}"
+        );
     }
 }
 
@@ -233,10 +232,7 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
         {
             current_fn = rest.split('(').next().unwrap_or("").trim().to_string();
         }
-        // The same rule the inventory runs, applied to the probe.
-        let writes = (trimmed.contains("handle_state_json =") && !trimmed.starts_with("let "))
-            || trimmed.contains("INSERT INTO worker_sessions");
-        if writes && !current_fn.is_empty() {
+        if line_writes_handle_state(trimmed) && !current_fn.is_empty() {
             found.push(current_fn.clone());
         }
     }

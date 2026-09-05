@@ -1674,25 +1674,25 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //
     // Placed HERE, above the work, rather than beside the drain: below this
     // point every tick pays a card/role lookup, a track-level transcript WRITE
-    // transaction and a diff. A runtime refused at the drain kept paying all of
-    // that, every 50ms, for as long as it lived.
+    // transaction and a diff. A runtime refused at the drain kept paying all
+    // of that, every 50ms, for as long as it lived. Above it, a refused
+    // runtime pays one indexed read by id per tick and nothing else.
     //
-    // And a refusal STOPS the handle rather than merely declining: a retired
-    // carrier has nothing left to do, and leaving it Idle with a hard-firing
-    // queue is what made the refusal a permanent cost instead of an event. The
-    // daemon is deliberately not touched — the fence owns thread teardown, and
-    // this runtime interrupting a thread on its way out would reach past what
-    // it still speaks for.
+    // The refusal declines to issue and returns; it does NOT wind the handle
+    // down. A handle that stopped would still be registered, and
+    // `ensure_live_planner_harness` does not health-check a registered handle,
+    // so a predecessor a failed mint later restored would answer `Conflict` on
+    // every send with no way back but `/planner/reset`. Stopping also raced
+    // the durable-observation path, which reads `shutting_down` under a lock
+    // this had no reason to hold.
     if !runtime_is_still_the_live_carrier(inner).await? {
-        tracing::info!(
+        tracing::debug!(
             target: "calm_server::planner_harness_issue",
             runtime_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
-            "runtime is no longer the card's live carrier; leaving the queue for its successor \
-             and stopping"
+            "runtime is no longer the card's live carrier; leaving the queue for its successor"
         );
-        stop_retired_carrier(inner);
         return Ok(());
     }
     // Two independent per-turn decisions that used to ride on one boolean
@@ -1824,21 +1824,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // #1449 — asked a SECOND time, here, and the two are not redundant.
     //
     // The check above runs before the transcript refresh and the diff so a
-    // retired runtime stops instead of paying for them; but that leaves the
+    // retired runtime does not pay for them; but that leaves the
     // whole of that work between the answer and the queue being taken, and a
     // fence landing inside that gap is exactly the case this is about. This
-    // one is immediately before the drain, costs one indexed read per turn
-    // actually being issued, and does not stop the handle — the early check
-    // owns that.
+    // one is immediately before the drain and costs one indexed read per turn
+    // actually being issued.
     if !runtime_is_still_the_live_carrier(inner).await? {
-        tracing::info!(
+        tracing::debug!(
             target: "calm_server::planner_harness_issue",
             runtime_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             "runtime was retired while this turn was being prepared; leaving the queue"
         );
-        stop_retired_carrier(inner);
         return Ok(());
     }
     tracing::debug!(
@@ -2378,23 +2376,6 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     })
 }
 
-/// #1449 — a runtime that is no longer its card's carrier stops.
-///
-/// The observation gate closes and the run loop's shutdown arm is signalled, so
-/// the loop leaves rather than paying the per-tick cost of being refused. The
-/// daemon is untouched: thread teardown belongs to whoever retired this row.
-fn stop_retired_carrier(inner: &Arc<Inner>) {
-    {
-        let mut closed = inner
-            .observations_closed
-            .lock()
-            .expect("planner harness observation gate mutex poisoned");
-        *closed = true;
-        inner.shutting_down.store(true, Ordering::SeqCst);
-    }
-    let _ = inner.shutdown.send(());
-}
-
 /// #1449 — persist what the runtime owes after an issuance resolved, on a row
 /// the ordinary writer may already refuse.
 ///
@@ -2419,6 +2400,15 @@ fn stop_retired_carrier(inner: &Arc<Inner>) {
 /// one matches zero rows.
 async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot(inner).await?;
+    // Only the runtimes that can actually need it open the second transaction.
+    // For a live runtime the ordinary write above is the one that lands and
+    // this one matches zero rows, so opening a write transaction to discover
+    // that on every turn is pure contention on the single writer lock.
+    if !inner.shutting_down.load(Ordering::SeqCst)
+        && runtime_is_still_the_live_carrier(inner).await?
+    {
+        return Ok(());
+    }
     let snapshot = snapshot_for(inner).await;
     let runtime_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;

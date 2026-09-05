@@ -4,10 +4,10 @@
 //! # Why this is a ratchet and not a one-off scan
 //!
 //! The planner harness's run loop refuses to issue a turn once its own row has
-//! left the active set (`runtime_is_still_the_live_carrier`). That check reads a
-//! single row by id, and it has to decide what `None` means. Today it treats
-//! `None` as "still mine", because the only way to get `None` is that the row
-//! was deleted, and every deleting path shuts the harness down first.
+//! left the active set (`runtime_is_still_the_live_carrier`). That check reads
+//! a single row by id and refuses when the row is missing, because the only
+//! way to get a missing row is that somebody deleted it, and every deleting
+//! path is a context where issuing a turn would be wrong.
 //!
 //! **That reasoning is a statement about the schema, and schemas drift.** Add
 //! one `ON DELETE CASCADE` pointing at `worker_sessions` — from any table, in

@@ -8,6 +8,12 @@
 -- left the undelivered set yet".
 ALTER TABLE worker_sessions ADD COLUMN queue_harvested_at_ms INTEGER;
 
+-- Every mint now asks "which rows on this card have an unharvested queue", and
+-- without an index that is a full scan of `worker_sessions` inside the write
+-- transaction that holds SQLite's single writer lock.
+CREATE INDEX IF NOT EXISTS idx_worker_sessions_card_state
+  ON worker_sessions(card_id, state);
+
 -- Backfill, deliberately, and ONLY over retired rows. A legacy `superseded`
 -- row may well carry a non-empty `pending_queue` — that stranding IS #1449 —
 -- and without this the first restart after the upgrade would replay a sentence

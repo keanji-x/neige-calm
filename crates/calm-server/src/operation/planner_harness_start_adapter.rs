@@ -1497,6 +1497,26 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             )
                             .await?;
                             taken_from = harvested.taken_from;
+                            // #1449 — the journal is written INSIDE this
+                            // transaction, onto the checkpoint. Merging it into
+                            // `output` only after the commit leaves a window in
+                            // which the sentences are taken, the source rows
+                            // are stamped, and a crash loses the record of
+                            // both. The post-commit merge keeps `output` in
+                            // step for the in-process path.
+                            let mut journal = read_harvested_from_journal(&checkpoint_output)
+                                .into_iter()
+                                .map(|entry| HarvestedFrom {
+                                    runtime_id: entry.runtime_id,
+                                    messages: entry.messages,
+                                })
+                                .collect::<Vec<_>>();
+                            journal.extend(taken_from.iter().cloned());
+                            checkpoint_output.set_output_data(
+                                "harvested_from",
+                                harvested_from_journal(&journal),
+                                "planner harness",
+                            )?;
                             if !harvested.messages.is_empty() {
                                 for message in harvested.messages {
                                     runtime_snapshot
@@ -1810,6 +1830,21 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if from_phase == PhaseTag::AppServerInteract
             && is_reusable_thread_missing_card_mcp_token_failure(reason)
         {
+            // #1449 — this arm returns before `fail_runtime`, so it never runs
+            // the give-back either. That matters only if this operation's
+            // transaction had already taken sentences off other rows, and it
+            // had not: this refusal is raised while assembling the thread-start
+            // request, before the transaction that harvests. The journal it
+            // would have replayed is empty.
+            //
+            // Asserted rather than assumed, because the next thing that moves
+            // work earlier in this function turns the claim false.
+            debug_assert!(
+                read_harvested_from_journal(output).is_empty(),
+                "this compensation arm plans no `fail_runtime`, so a non-empty harvest journal \
+                 would be dropped: {:?}",
+                output.data.get("harvested_from")
+            );
             return Ok(finish(steps));
         }
         if matches!(
@@ -2125,11 +2160,23 @@ async fn return_harvested_queues_and_fail_tx(
                 .zip(successor.pending_message_ids.drain(..))
                 .zip(successor.pending_envelope_ids.drain(..))
             {
+                // Two different things make `remaining` empty, and only one
+                // of them means "returned": the entry had ids and they all
+                // went back, or the entry never had any. An entry with no ids
+                // was enqueued before #1449 shipped, was NOT returned (the
+                // filter above requires an id the failing runtime still
+                // holds), and its source row has already been emptied —
+                // dropping it here would delete it from both sides. It stays,
+                // which is what this field's documentation already promises.
+                let had_ids = !ids.is_empty();
                 let remaining: Vec<String> = ids
                     .into_iter()
                     .filter(|id| !returned_any_ids.contains(id))
                     .collect();
-                if remaining.is_empty() && matches!(observation, Observation::UserMessage { .. }) {
+                if had_ids
+                    && remaining.is_empty()
+                    && matches!(observation, Observation::UserMessage { .. })
+                {
                     continue;
                 }
                 kept_queue.push(observation);
@@ -2304,7 +2351,14 @@ fn output_snapshot(output: &TxOutput) -> Result<HarnessSnapshot> {
         .get("snapshot")
         .cloned()
         .ok_or_else(|| CalmError::Internal("planner harness output missing snapshot".into()))?;
-    Ok(serde_json::from_value(value)?)
+    // #1449 — through the single aligner, not a bare `from_value`.
+    //
+    // A pre-#1449 `tx_output_json` has an N-entry queue and no
+    // `pending_message_ids` at all, which decodes to an EMPTY outer vec. Left
+    // unaligned, the raced-in harvest appends to the queue and only then
+    // aligns, so the harvested ids land on the FIRST entries of the queue and
+    // the harvested sentences end up with none.
+    Ok(HarnessSnapshot::from_value_strict(value))
 }
 
 fn output_bool(output: &TxOutput, key: &str) -> Result<bool> {
