@@ -99,8 +99,8 @@ const CONTRACT_WRITING_RULES: &str = include_str!("track_report_contract_rules.m
 /// (#1185 §1.5 B). Contains no `-->`.
 const CONTRACT_SECTION_RULES: &str = include_str!("track_report_section_rules.md");
 
-/// Template-only addendum: `# Plan` is a pre-set plan whose prose is taken
-/// over by the four sections once its tasks are activated. Contains no `-->`.
+/// Template-only addendum: the pre-set plan sections hand their prose over
+/// to the four report sections once tasks are activated. Contains no `-->`.
 const CONTRACT_PLAN_NOTE: &str = include_str!("track_report_plan_note.md");
 
 /// Closes the contract comment. Blank line after it so the first H1 starts
@@ -124,7 +124,7 @@ fn initial_body() -> &'static str {
 }
 
 /// Report-body prefix for the kernel's built-in templates: writing
-/// rules + section rules + the `# Plan` note, **already closed**.
+/// rules + section rules + the pre-set section notes, **already closed**.
 ///
 /// The templates build their body with [`TrackReportPayload::new`], bypassing
 /// [`TrackReportPayload::initial`], so without this they would carry no
