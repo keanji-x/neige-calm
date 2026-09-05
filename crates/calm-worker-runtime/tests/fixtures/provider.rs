@@ -2,7 +2,13 @@
 use std::io::{BufRead, Write};
 #[cfg(target_os = "linux")]
 fn main() {
-    std::fs::write("started", "yes").unwrap();
+    let mut starts = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("started")
+        .unwrap();
+    writeln!(starts, "start").unwrap();
+    drop(starts);
     if std::env::args().any(|arg| arg == "writer") {
         unsafe {
             let child = libc::fork();
@@ -28,6 +34,32 @@ fn main() {
     }
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
+        let mut requests = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("requests")
+            .unwrap();
+        writeln!(requests, "{line}").unwrap();
+        drop(requests);
+        if let Some(response) = line.strip_prefix("delayed ") {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            println!("{response}");
+            std::io::stdout().flush().unwrap();
+            continue;
+        }
+        if line == "close-stdout" {
+            println!("last stdout");
+            std::io::stdout().flush().unwrap();
+            unsafe {
+                libc::close(1);
+            }
+            std::fs::write("stdout-closed", "yes").unwrap();
+            continue;
+        }
+        if line == "still-listening" {
+            std::fs::write("stdin-open", "yes").unwrap();
+            continue;
+        }
         if line == "close-stdio" {
             std::fs::write("stdio-closed", "yes").unwrap();
             unsafe {

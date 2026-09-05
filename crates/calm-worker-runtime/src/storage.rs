@@ -7,10 +7,15 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+// Version 2 adds the submitted request fingerprint. Version 1 cannot recover
+// original path spelling from a canonical launch and must remain unsupported.
+pub(crate) const RECORD_VERSION: u32 = 2;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Record {
     pub version: u32,
     pub run_id: String,
+    pub request_fingerprint: String,
     pub launch_config: LaunchConfig,
     pub config_digest: String,
     pub helper: std::path::PathBuf,
@@ -48,7 +53,7 @@ impl Record {
         }
     }
     pub fn check_handle(&self, handle: &BoundaryHandle) -> Result<()> {
-        if self.version != 1
+        if self.version != RECORD_VERSION
             || self.handle() != Some(handle)
             || handle.run_id != self.run_id
             || handle.attempt_id != self.launch_config.attempt_id
@@ -110,7 +115,7 @@ pub(crate) fn read(directory: &Path) -> Result<Record> {
         return Err(Error::Evidence("oversized process record".into()));
     }
     let record: Record = serde_json::from_slice(&bytes)?;
-    if record.version != 1 {
+    if record.version != RECORD_VERSION {
         return Err(Error::Evidence("unknown record version".into()));
     }
     Ok(record)

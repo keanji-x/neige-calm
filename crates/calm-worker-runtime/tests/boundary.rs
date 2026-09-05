@@ -170,3 +170,6 @@ mod lifecycle;
 
 #[path = "cases/network.rs"]
 mod network;
+
+#[path = "cases/transport.rs"]
+mod transport;

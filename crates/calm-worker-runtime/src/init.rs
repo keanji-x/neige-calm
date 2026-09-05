@@ -72,6 +72,10 @@ fn read_start(gate: &mut impl Read, expected_token: &str) -> Result<StartMessage
 }
 
 fn launch(message: StartMessage) -> Result<()> {
+    // FD 5 is provider-only stdout. bwrap's monitor has no copy of this pipe.
+    if unsafe { libc::dup2(5, 1) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     // No ambient FDs from the host may be delegated to provider code.
     if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0) } < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -87,6 +91,19 @@ fn launch(message: StartMessage) -> Result<()> {
         .stderr(Stdio::inherit());
     let child = command.spawn()?;
     let provider_pid = child.id() as i32;
+    // The init reaper must not retain provider stdin/stdout pipe ends. Otherwise
+    // a live provider closing stdout could never produce observable stream EOF.
+    use std::os::fd::AsRawFd;
+    let null = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")?;
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } < 0
+        || unsafe { libc::dup2(null.as_raw_fd(), 1) } < 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    drop(null);
     // waitpid(-1) also reaps adopted background children. This process exits
     // when the provider exits; Linux then terminates all remaining descendants.
     drop(child);

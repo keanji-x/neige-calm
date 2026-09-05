@@ -1,27 +1,36 @@
 //! Bounded, raw stdio forwarding. No protocol interpretation or fabricated replay.
 use crate::{Result, linux};
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::process::{ChildStdin, ChildStdout};
+use std::process::ChildStdin;
 
 const BUFFER_LIMIT: usize = 262_144;
 
 pub(crate) struct Transport {
     listener: UnixListener,
-    client: Option<UnixStream>,
+    client: Option<Client>,
     input: ChildStdin,
-    output: ChildStdout,
+    output: File,
     to_provider: VecDeque<u8>,
     to_client: VecDeque<u8>,
     output_eof: bool,
     input_closed: bool,
 }
+
+struct Client {
+    stream: UnixStream,
+    input_eof: bool,
+    output_closed: bool,
+}
+
 impl Transport {
-    pub fn new(directory: &Path, input: ChildStdin, output: ChildStdout) -> Result<Self> {
+    pub fn new(directory: &Path, input: ChildStdin, output: File) -> Result<Self> {
         let (_fd, path) = linux::socket_path(directory)?;
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;
@@ -39,19 +48,31 @@ impl Transport {
         })
     }
     pub fn step(&mut self) -> Result<()> {
-        // Read the old connection before admitting its replacement.
+        // Drain the old client's input before admitting its replacement. Read EOF
+        // can be a write-half shutdown: the same client may still receive stdout.
         if let Some(client) = &mut self.client {
-            match read_available(client, &mut self.to_provider) {
-                Ok(true) => self.client = None,
-                Err(error) if connection_ended(&error) => self.client = None,
-                Err(error) => return Err(error.into()),
-                Ok(false) => {}
+            if !client.input_eof {
+                match read_available(&mut client.stream, &mut self.to_provider) {
+                    Ok(eof) => client.input_eof = eof,
+                    Err(error) if connection_ended(&error) => {
+                        client.input_eof = true;
+                        client.output_closed = true;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if client.input_eof && (client.output_closed || full_hangup(&client.stream)?) {
+                self.client = None;
             }
         }
         if let Ok((client, _)) = self.listener.accept() {
             client.set_nonblocking(true)?;
             if self.client.is_none() {
-                self.client = Some(client);
+                self.client = Some(Client {
+                    stream: client,
+                    input_eof: false,
+                    output_closed: false,
+                });
             }
             // An additional live client is closed; bytes are never interleaved.
         }
@@ -70,13 +91,20 @@ impl Transport {
         if !self.output_eof {
             self.output_eof = read_available(&mut self.output, &mut self.to_client)?;
         }
-        if let Some(client) = &mut self.client
-            && let Err(error) = write_available(client, &mut self.to_client)
-        {
-            if connection_ended(&error) {
-                self.client = None;
-            } else {
-                return Err(error.into());
+        if let Some(client) = &mut self.client {
+            if !client.output_closed {
+                match write_available(&mut client.stream, &mut self.to_client) {
+                    Ok(()) => {}
+                    Err(error) if connection_ended(&error) => client.output_closed = true,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if !client.output_closed && self.output_eof && self.to_client.is_empty() {
+                match client.stream.shutdown(Shutdown::Write) {
+                    Ok(()) => client.output_closed = true,
+                    Err(error) if connection_ended(&error) => client.output_closed = true,
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
         Ok(())
@@ -120,6 +148,25 @@ impl Transport {
         tail.sync_all()?;
         Ok(())
     }
+}
+
+/// Linux AF_UNIX reports POLLRDHUP for peer shutdown(Write), but POLLHUP for
+/// full peer closure. A HUP can coexist with unread input, so callers first drain
+/// to read EOF. Do not write probe bytes or discard buffered provider output.
+fn full_hangup(stream: &UnixStream) -> std::io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLRDHUP,
+        revents: 0,
+    };
+    if unsafe { libc::poll(&mut descriptor, 1, 0) } < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    Ok(descriptor.revents & libc::POLLHUP != 0)
 }
 
 fn connection_ended(error: &std::io::Error) -> bool {
@@ -173,5 +220,27 @@ fn write_available(writer: &mut impl Write, queue: &mut VecDeque<u8>) -> std::io
             Ok(())
         }
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boundary_socket_hangup_distinguishes_full_close_from_write_half_close() {
+        let (peer, mut relay) = UnixStream::pair().unwrap();
+        assert!(!full_hangup(&relay).unwrap());
+        peer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(relay.read(&mut [0]).unwrap(), 0);
+        assert!(
+            !full_hangup(&relay).unwrap(),
+            "half-close must retain output ownership"
+        );
+        drop(peer);
+        assert!(
+            full_hangup(&relay).unwrap(),
+            "full close must permit a replacement client"
+        );
     }
 }

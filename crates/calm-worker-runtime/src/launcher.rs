@@ -66,6 +66,7 @@ pub(crate) fn run(directory: &Path) -> Result<()> {
 
         let (gate_read, gate_write) = linux::pipe()?;
         let (info_read, info_write) = linux::pipe()?;
+        let (stdout_read, stdout_write) = linux::pipe()?;
         let mut command =
             linux::base_command(&record.bwrap, &record.helper, record.launch_config.network);
         command
@@ -94,7 +95,9 @@ pub(crate) fn run(directory: &Path) -> Result<()> {
             ])
             .arg(&record.token)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            // Provider stdout is FD 5, so the outer bwrap monitor never retains
+            // a write copy that would hide provider EOF while init remains live.
+            .stdout(Stdio::null())
             .stderr(
                 OpenOptions::new()
                     .write(true)
@@ -102,12 +105,13 @@ pub(crate) fn run(directory: &Path) -> Result<()> {
                     .mode(0o600)
                     .open(directory.join("provider.stderr"))?,
             );
-        install_fds(&mut command, &gate_read, &info_write)?;
+        install_fds(&mut command, &gate_read, &info_write, &stdout_write)?;
         let bwrap = command.spawn()?;
         // Drop the pre_exec closure's duplicated write end before waiting for EOF.
         drop(command);
         drop(gate_read);
         drop(info_write);
+        drop(stdout_write);
         children = Children {
             bwrap,
             init: None,
@@ -137,11 +141,7 @@ pub(crate) fn run(directory: &Path) -> Result<()> {
                 .stdin
                 .take()
                 .ok_or_else(|| Error::Evidence("missing stdin".into()))?,
-            children
-                .bwrap
-                .stdout
-                .take()
-                .ok_or_else(|| Error::Evidence("missing stdout".into()))?,
+            File::from(stdout_read),
         )?;
         record.phase = Phase::Prepared {
             handle,
@@ -200,7 +200,12 @@ pub(crate) fn run(directory: &Path) -> Result<()> {
     transport.finish(&directory)
 }
 
-fn install_fds(command: &mut std::process::Command, gate: &OwnedFd, info: &OwnedFd) -> Result<()> {
+fn install_fds(
+    command: &mut std::process::Command,
+    gate: &OwnedFd,
+    info: &OwnedFd,
+    output: &OwnedFd,
+) -> Result<()> {
     // Duplicate high first: source FDs may themselves be 3 or 4.
     let high = |fd| -> Result<OwnedFd> {
         use std::os::fd::FromRawFd;
@@ -212,13 +217,15 @@ fn install_fds(command: &mut std::process::Command, gate: &OwnedFd, info: &Owned
     };
     let gate = high(gate.as_raw_fd())?;
     let info = high(info.as_raw_fd())?;
+    let output = high(output.as_raw_fd())?;
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(gate.as_raw_fd(), 3) < 0
                 || libc::dup2(info.as_raw_fd(), 4) < 0
+                || libc::dup2(output.as_raw_fd(), 5) < 0
                 || libc::syscall(
                     libc::SYS_close_range,
-                    5u32,
+                    6u32,
                     u32::MAX,
                     libc::CLOSE_RANGE_CLOEXEC,
                 ) < 0

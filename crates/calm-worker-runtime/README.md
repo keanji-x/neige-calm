@@ -9,6 +9,12 @@ Persist its `BoundaryHandle` in the caller's Operation before `Runtime::start`.
 The supplied program starts in `/workspace` with only the explicit environment
 and mounts. Runtime metadata is kept in a separate private directory. Existing
 run IDs are never relaunched, including when evidence is incomplete or lost.
+Prepare compares the original submitted-request fingerprint before checking paths
+needed only by a new launch. An identical replay returns its receipt even after
+the old workspace or mount sources have been removed. Changed arguments, mounts
+or network policy still conflict under the same run ID. Private record version 2
+stores that fingerprint; earlier development version 1 records lack this evidence
+and are refused, never reinterpreted or silently relaunched.
 Keep run directories for at least as long as any attempt/history references them;
 deleting all evidence also deletes this crate's replay fence.
 
@@ -56,6 +62,22 @@ the provider; callers must reconcile their protocol rather than blindly resend
 non-idempotent requests. After init death, final output is drained to the attached
 client; an undelivered tail is retained in `undelivered.stdout` in the run directory.
 Stderr is retained separately and is untrusted provider output.
+
+Client `shutdown(Write)` ends only that client's request direction; it keeps
+ownership of the response direction, including delayed provider output. **Provider
+stdin intentionally stays open across client write-half closure and full disconnect**
+so a replacement client can continue the same process. This reconnectable endpoint
+is not a transparent forwarding of client EOF to provider stdin. Send the provider's
+own termination request or call `stop` when execution should end. A fully disconnected
+client releases the attachment after its already-received input is drained; a second
+live client is rejected. Buffered stdout not yet sent is retained for the active or
+next client. Bytes already sent to a client's kernel socket are not durable replay.
+
+When every provider stdout writer closes, the relay drains its output and shuts
+down only its write direction to the client. The client observes EOF even if the
+provider remains alive and accepts stdin. Neither stream EOF changes process state
+nor provides a quiescence proof. The trusted init and bwrap monitor do not retain
+provider stdout write ends.
 
 For Codex, the existing WebSocket-over-UDS client can instead connect to a private
 provider-control socket exposed through an explicit writable mount. That avoids a

@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn boundary_closed_prepare_replay_survives_removed_launch_sources() {
+    let mut f = Fixture::new();
+    let provider = f._root.path().join("old-provider");
+    std::fs::copy(&f.config.mounts[0].source, &provider).unwrap();
+    f.config.mounts[0].source = provider.clone();
+    let handle = f.prepare();
+    f.runtime.start(&handle).unwrap();
+    wait_file(&f.config.workspace.join("started"));
+    let closed = f.runtime.stop(&handle, Duration::from_secs(3)).unwrap();
+    assert!(matches!(closed, BoundaryState::Quiesced(_)));
+    std::fs::remove_dir_all(&f.config.workspace).unwrap();
+    std::fs::remove_file(provider).unwrap();
+    let before = std::fs::read(f._root.path().join("state/run-b/record.json")).unwrap();
+
+    assert_eq!(f.runtime.prepare("run-b", &f.config).unwrap(), handle);
+    assert_eq!(f.runtime.probe(&handle).unwrap(), closed);
+    assert!(f.runtime.start(&handle).is_err());
+    let mut changed_args = f.config.clone();
+    changed_args.args.push("changed".into());
+    let mut changed_mount = f.config.clone();
+    changed_mount.mounts[0].destination = "/other-provider".into();
+    let mut changed_network = f.config.clone();
+    changed_network.network = NetworkPolicy::Isolated;
+    for different in [changed_args, changed_mount, changed_network] {
+        assert!(matches!(
+            f.runtime.prepare("run-b", &different),
+            Err(calm_worker_runtime::Error::Conflict(_))
+        ));
+    }
+    assert_eq!(
+        std::fs::read(f._root.path().join("state/run-b/record.json")).unwrap(),
+        before
+    );
+    assert!(!f.config.workspace.exists());
+    assert!(!Path::new(&format!("/proc/{}", handle.init.pid)).exists());
+}
+
+#[test]
 fn boundary_stale_capture_pid_cannot_adopt_sibling_namespace() {
     use std::os::unix::fs::PermissionsExt;
     let mut sibling = Fixture::new();

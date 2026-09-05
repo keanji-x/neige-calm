@@ -87,28 +87,35 @@ impl Runtime {
     /// Persist the returned handle in the caller's transaction before start.
     pub fn prepare(&self, run_id: &str, launch_config: &LaunchConfig) -> Result<BoundaryHandle> {
         validate_run_id(run_id)?;
-        let launch_config = self.validate_launch_config(launch_config)?;
-        let config_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&launch_config)?));
+        // Submitted identity is independent of filesystem availability and of
+        // the canonical paths chosen once for the first launch.
+        let request_fingerprint =
+            format!("{:x}", Sha256::digest(serde_json::to_vec(launch_config)?));
         let directory = self.directory(run_id)?;
         {
             let _lock = Lock::acquire(&self.config.state_root)?;
             if directory.try_exists()? {
                 let record = storage::read(&directory)?;
-                if record.config_digest != config_digest || record.run_id != run_id {
+                if record.request_fingerprint != request_fingerprint || record.run_id != run_id {
                     return Err(Error::Conflict(
                         "run ID already names a different launch".into(),
                     ));
                 }
                 if let Some(handle) = record.handle() {
+                    record.check_handle(handle)?;
                     return Ok(handle.clone());
                 }
             } else {
+                let launch_config = self.validate_launch_config(launch_config)?;
+                let config_digest =
+                    format!("{:x}", Sha256::digest(serde_json::to_vec(&launch_config)?));
                 self.preflight(launch_config.network)?;
                 std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
                 File::open(&self.config.state_root)?.sync_all()?;
                 let record = Record {
-                    version: 1,
+                    version: storage::RECORD_VERSION,
                     run_id: run_id.into(),
+                    request_fingerprint: request_fingerprint.clone(),
                     launch_config,
                     config_digest,
                     helper: self.config.helper.clone(),
@@ -139,7 +146,14 @@ impl Runtime {
         }
         let until = Instant::now() + self.config.timeout;
         loop {
-            if let Some(handle) = storage::read(&directory)?.handle() {
+            let record = storage::read(&directory)?;
+            if record.request_fingerprint != request_fingerprint || record.run_id != run_id {
+                return Err(Error::Conflict(
+                    "run ID already names a different launch".into(),
+                ));
+            }
+            if let Some(handle) = record.handle() {
+                record.check_handle(handle)?;
                 return Ok(handle.clone());
             }
             if Instant::now() >= until {
