@@ -43,6 +43,23 @@ const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>
   'directory-picker-create-element': {},
   'directory-picker-spec-name': {},
   'directory-picker-stale-registration': { 'web/src/features/area/gone/public.tsx': 'owns-its-modal' },
+  'directory-picker-default-export': {},
+  'directory-picker-module-moved': {},
+};
+/*
+ * Which module paths each case holds up the no-default-export premise for. The
+ * real roster (`PICKER_MODULES`) does not exist inside a fixture tree, so every
+ * case but the one that owns that premise passes an empty list; naming it here
+ * rather than defaulting keeps a fixture from silently exercising the wrong
+ * half of the checker.
+ */
+const directoryPickerModules: Record<string, readonly string[]> = {
+  'directory-picker-alias': [],
+  'directory-picker-create-element': [],
+  'directory-picker-spec-name': [],
+  'directory-picker-stale-registration': [],
+  'directory-picker-default-export': ['web/src/ui/f/public.tsx'],
+  'directory-picker-module-moved': ['web/src/ui/f/public.tsx'],
 };
 const publicSymbolShapes = new Map<string, boolean>([
   ['export-variable', true], ['export-destructuring', true], ['export-function', true],
@@ -99,6 +116,7 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const error = checkDirectoryPickerHosts(
       resolve(fixtures, caseName, kind, 'web/src'),
       directoryPickerRegistries[caseName],
+      directoryPickerModules[caseName],
     );
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
@@ -258,6 +276,8 @@ describe('architecture fixtures', () => {
     ['directory-picker-create-element', 'web/src/features/area/create-element/public.ts renders a directory picker'],
     ['directory-picker-spec-name', 'web/src/features/area/spec-name/public.spec.tsx renders a directory picker'],
     ['directory-picker-stale-registration', 'drop the stale registration'],
+    ['directory-picker-default-export', 'web/src/ui/f/public.tsx has a default export'],
+    ['directory-picker-module-moved', 'and no file is there'],
   ]);
 
   // Timeout rationale (measured, not guessed): every case that routes through `cruise` into an

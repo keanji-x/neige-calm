@@ -56,9 +56,28 @@
 // user can reach.
 //
 // The rest is delegated rather than re-derived: `typescript` parses the file
-// and answers which local names an import bound to the two components, and
-// which of those names reach a render position (a JSX tag, or the first
-// argument of a `createElement`-shaped call).
+// and answers which local names an import bound, and which of those names
+// reach a render position (a JSX tag, or the first argument of a
+// `createElement`-shaped call).
+//
+// The binding is on the *imported* name and ignores the module specifier, so
+// `import { DirectoryField } from './something-else'` is flagged too. That is
+// deliberate and it is the fail-closed direction: resolving the specifier would
+// be this file re-deriving module resolution, and a second component under
+// these names is a thing a reviewer should have to look at, not a thing this
+// sweep should quietly wave through.
+//
+// ## The one import form this file does not read, and who does
+//
+// A *default* import — `import Folder from '.../DirectoryField/public.tsx'` —
+// carries no imported name to match, and matching the specifier instead would
+// be the module resolution just refused. It is not a hole, because neither
+// component module has a default export, so `tsc -b` rejects the import
+// outright (TS1192, measured). That delegation holds only while the premise
+// does, so the premise is not left to a comment: `checkPickerModuleShape`
+// below re-reads both modules on every run and fails if either grows a default
+// export or moves. Adding one therefore turns this gate red with the reason,
+// rather than turning the sweep blind.
 //
 // ## KNOWN GAPS
 //
@@ -69,6 +88,7 @@
 //   * **Re-export chains.** `export { DirectoryField as Folder }` from an
 //     intermediate module, imported from there. The importing file binds
 //     `Folder` from a specifier this sweep does not follow, so nothing matches.
+//     Unlike the default-import form above, nothing else catches this one.
 //   * **Values that stop being names.** A component pushed into an array, a
 //     record, or a prop and rendered through that indirection
 //     (`<map[key] />`). Only a direct local `const` alias of a bound name is
@@ -87,7 +107,7 @@
 // case through `architecture.test.ts`, including one for each of the three
 // holes above, so "it would really go red" is executed rather than asserted.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
 import ts from 'typescript';
 
@@ -112,6 +132,16 @@ export const DIRECTORY_PICKER_HOSTS = Object.freeze({
 
 /** The two components whose rendering makes a file a picker host. */
 const COMPONENTS = new Set(['DirectoryField', 'DirectoryBrowser']);
+
+/**
+ * The modules that define them. Read only to hold up the premise the header's
+ * "who does" section delegates the default-import form to; nothing else here
+ * resolves a specifier.
+ */
+export const PICKER_MODULES = Object.freeze([
+  'web/src/ui/schema-form/fields/DirectoryField/public.tsx',
+  'web/src/ui/directory-browser/public.tsx',
+]);
 
 /**
  * Call shapes that render their first argument. `jsx`/`jsxs`/`jsxDEV` are the
@@ -257,13 +287,60 @@ function rendersPicker(path, contents) {
 }
 
 /**
+ * Whether `source` exports a default.
+ *
+ * @param {ts.SourceFile} source
+ * @returns {boolean}
+ */
+function hasDefaultExport(source) {
+  let found = false;
+  walk(source, (node) => {
+    if (found) return;
+    // `export default expr` and `export = expr` are both ExportAssignment.
+    if (ts.isExportAssignment(node)) { found = true; return; }
+    if (ts.isExportSpecifier(node) && node.name.text === 'default') { found = true; return; }
+    if (ts.canHaveModifiers(node)
+      && ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) found = true;
+  });
+  return found;
+}
+
+/**
+ * Holds up the premise that lets this sweep ignore default imports: each
+ * component module must still be where it is said to be, and must still have
+ * no default export, so that `tsc -b` keeps rejecting the form this file
+ * cannot see.
+ *
+ * @param {string} root absolute path of the scanned tree
+ * @param {readonly string[]} modules
+ * @returns {string[]}
+ */
+function checkPickerModuleShape(root, modules) {
+  return modules.flatMap((path) => {
+    const file = resolve(root, path.replace(/^web\/src\//, ''));
+    if (!existsSync(file)) {
+      return [`${path} is where this sweep expects a picker component to be defined, `
+        + 'and no file is there — a moved module takes the no-default-export premise with it '
+        + '(tools/architecture/directory-picker-hosts.mjs, PICKER_MODULES)'];
+    }
+    const contents = readFileSync(file, 'utf8');
+    const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, scriptKind(path));
+    if (!hasDefaultExport(source)) return [];
+    return [`${path} has a default export, which makes `
+      + '`import Anything from` it a form this sweep cannot see and `tsc` no longer rejects — '
+      + 'either drop the default export, or teach the sweep to bind default imports by specifier'];
+  });
+}
+
+/**
  * @param {string} [webSrc]
  * @param {Readonly<Record<string, string>>} [registry]
+ * @param {readonly string[]} [modules]
  * @returns {string}
  */
-export function checkDirectoryPickerHosts(webSrc = 'web/src', registry = DIRECTORY_PICKER_HOSTS) {
+export function checkDirectoryPickerHosts(webSrc = 'web/src', registry = DIRECTORY_PICKER_HOSTS, modules = PICKER_MODULES) {
   const root = resolve(webSrc);
-  const problems = [];
+  const problems = checkPickerModuleShape(root, modules);
   const seen = new Set();
   for (const entry of sourceFiles(root)) {
     const path = `web/src/${entry}`;
