@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  cardIdFromLocation, cardIdFromSearchString, fromFromLocation, fromFromSearchString,
-  hasPanelPushedMarker, hasPlannerOpenMarker, panelFromLocation, panelFromSearchString, pathFor,
+  cardIdFromLocation, cardIdFromSearchString, filePathFromLocation, filePathFromSearchString,
+  fromFromLocation, fromFromSearchString,
+  hasFilePushedMarker, hasPanelPushedMarker, hasPlannerOpenMarker,
+  panelFromLocation, panelFromSearchString, pathFor,
   renderedMobilePanel, sameTrackSearch, validateTrackSearch,
 } from './navigation.ts';
 
@@ -24,6 +26,16 @@ describe('cardIdFromLocation', () => {
   it('prefers the raw search string so duplicates are visible', () => {
     expect(cardIdFromLocation({ searchStr: '?card=a&card=b', search: { card: 'a' } })).toBeNull();
     expect(cardIdFromLocation({ searchStr: '?card=term-1' })).toBe('term-1');
+  });
+});
+
+describe('filePathFromSearchString', () => {
+  it('reads exactly one non-empty file query and rejects duplicates', () => {
+    expect(filePathFromSearchString('?file=src%2Fmain.rs')).toBe('src/main.rs');
+    expect(filePathFromSearchString('?file=docs%2F100%2520done.md')).toBe('docs/100%20done.md');
+    expect(filePathFromSearchString('?file=')).toBeNull();
+    expect(filePathFromSearchString('?file=a&file=b')).toBeNull();
+    expect(filePathFromLocation({ searchStr: '?file=README.md' })).toBe('README.md');
   });
 });
 
@@ -66,9 +78,9 @@ describe('panel and from parsers', () => {
 });
 
 describe('validateTrackSearch', () => {
-  it('keeps the three whitelisted fields and drops everything else', () => {
-    expect(validateTrackSearch({ panel: 'tasks', from: 'area', other: 'x' }))
-      .toEqual({ panel: 'tasks', from: 'area' });
+  it('keeps the four whitelisted fields and drops everything else', () => {
+    expect(validateTrackSearch({ file: 'src/main.rs', from: 'area', other: 'x' }))
+      .toEqual({ file: 'src/main.rs', from: 'area' });
   });
 
   it('drops illegal values, empty strings, and repeated keys parsed as arrays', () => {
@@ -80,6 +92,13 @@ describe('validateTrackSearch', () => {
   it('[#1191 §0.1] drops the panel when a card is present', () => {
     expect(validateTrackSearch({ card: 'c1', panel: 'cards', from: 'pages' }))
       .toEqual({ card: 'c1', from: 'pages' });
+  });
+
+  it('keeps only one primary report surface, with card then file precedence', () => {
+    expect(validateTrackSearch({ file: 'README.md', panel: 'tasks', from: 'pages' }))
+      .toEqual({ file: 'README.md', from: 'pages' });
+    expect(validateTrackSearch({ card: 'c1', file: 'README.md', panel: 'cards' }))
+      .toEqual({ card: 'c1' });
   });
 });
 
@@ -95,6 +114,14 @@ describe('sameTrackSearch', () => {
   it('keeps the fields the patch does not mention', () => {
     expect(sameTrackSearch(onW1, 'w1', {})).toEqual({ card: 'c1', from: 'area' });
     expect(sameTrackSearch(onW1, 'w1', { card: undefined })).toEqual({ from: 'area' });
+  });
+
+  it('opens a file without carrying a card or panel and clears only that file on close', () => {
+    const panel = { pathname: '/track/w1', searchStr: '?panel=tasks&from=area' };
+    expect(sameTrackSearch(panel, 'w1', { file: 'src/main.rs' }))
+      .toEqual({ file: 'src/main.rs', from: 'area' });
+    const file = { pathname: '/track/w1', searchStr: '?file=src%2Fmain.rs&from=area' };
+    expect(sameTrackSearch(file, 'w1', { file: undefined })).toEqual({ from: 'area' });
   });
 
   it('distinguishes an absent key from an explicit undefined', () => {
@@ -148,6 +175,16 @@ describe('hasPanelPushedMarker', () => {
   });
 });
 
+describe('hasFilePushedMarker', () => {
+  it('accepts only the exact marker', () => {
+    expect(hasFilePushedMarker({ ncFilePushed: true })).toBe(true);
+    expect(hasFilePushedMarker({ ncFilePushed: false })).toBe(false);
+    expect(hasFilePushedMarker({ ncFilePushed: 'true' })).toBe(false);
+    expect(hasFilePushedMarker({})).toBe(false);
+    expect(hasFilePushedMarker(null)).toBe(false);
+  });
+});
+
 /*
  * The same six cells as its neighbour, for the same reason: history state is
  * whatever a previous version of this app, or a hand-edited session entry, left
@@ -176,12 +213,12 @@ describe('renderedMobilePanel', () => {
    * asserted where it is decidable.
    */
   it('[#1191] refuses to open a panel above the compact breakpoint', () => {
-    expect(renderedMobilePanel('cards', { compact: false, cardOpen: false })).toBeNull();
-    expect(renderedMobilePanel('cards', { compact: true, cardOpen: false })).toBe('cards');
+    expect(renderedMobilePanel('cards', { compact: false, overlayOpen: false })).toBeNull();
+    expect(renderedMobilePanel('cards', { compact: true, overlayOpen: false })).toBe('cards');
   });
 
   it('[#1191 §0.1] yields the surface to a live card overlay', () => {
-    expect(renderedMobilePanel('tasks', { compact: true, cardOpen: true })).toBeNull();
-    expect(renderedMobilePanel(null, { compact: true, cardOpen: false })).toBeNull();
+    expect(renderedMobilePanel('tasks', { compact: true, overlayOpen: true })).toBeNull();
+    expect(renderedMobilePanel(null, { compact: true, overlayOpen: false })).toBeNull();
   });
 });

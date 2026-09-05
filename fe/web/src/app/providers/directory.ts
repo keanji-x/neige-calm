@@ -10,7 +10,8 @@
 
 import {
   gitDiffOperation, gitStatusOperation, listDirectoryOperation, rawFileUrl, readFileOperation,
-  toDirectoryListing, type CardFilesPort,
+  readTrackWorkspaceFileOperation, toDirectoryListing, trackWorkspaceRawFileUrl,
+  type CardFilesPort, type WorkspaceFilePort,
 } from '../../../../core/domain/fs.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -60,5 +61,26 @@ export function createCardFilesPort(
     gitStatus: (path) => runOperation(transport, gitStatusOperation(path), unauthorized),
     gitDiff: (path, oldPath) => runOperation(transport, gitDiffOperation(path, oldPath), unauthorized),
     rawUrl: rawFileUrl,
+  });
+}
+
+/**
+ * Reads for agent-authored Report links. Unlike a user-created file Card, this
+ * port never accepts an absolute root from the browser: the Track id reaches a
+ * kernel endpoint that loads the persisted workspace and applies containment
+ * after canonicalization.
+ */
+export function createTrackWorkspaceFilesPort(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+  trackId: string,
+): WorkspaceFilePort {
+  return Object.freeze({
+    readFile: (path) => runOperation(
+      transport,
+      readTrackWorkspaceFileOperation(trackId, path),
+      unauthorized,
+    ),
+    rawUrl: (path) => trackWorkspaceRawFileUrl(trackId, path),
   });
 }

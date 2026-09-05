@@ -35,13 +35,13 @@ import type { CardFilesPort, DirectoryListingWire, GitChangedFileWire, GitDiffWi
 import { joinDirectoryPath } from '../../ui/directory-browser/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
+import { isImagePath } from './file-kind.ts';
+
+export { useReportFileResource } from './report-file-resource.ts';
+export type { ReportFileResource } from './report-file-resource.ts';
 
 const LazyCodePane = lazy(() => import('./code-pane.tsx').then((module) => ({ default: module.CodePane })));
 const LazyDiffPane = lazy(() => import('./code-pane.tsx').then((module) => ({ default: module.DiffPane })));
-
-const IMAGE_EXTENSIONS = Object.freeze([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
-] as const);
 
 type Tab = 'code' | 'diff';
 
@@ -63,11 +63,6 @@ const NAV_SLOT = 'fs-viewer-nav';
 
 function seedNav(path: string): Nav {
   return { tab: 'code', folderPath: path, selectedPath: path, diffSelected: null };
-}
-
-function isImagePath(path: string): boolean {
-  const lower = path.toLowerCase();
-  return IMAGE_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 /** `null` at the filesystem root, where there is no parent to climb to. */

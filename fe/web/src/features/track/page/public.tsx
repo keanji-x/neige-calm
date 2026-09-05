@@ -103,6 +103,8 @@ export type TrackPageProps = Readonly<{
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
+  /** Browser-local file history, composed by the report feature through app. */
+  recentFiles?: ReactNode;
   onOpenCard?: (cardId: string) => void;
   /**
    * Supplying this reveals a delete on every row the kernel says is deletable —
@@ -116,9 +118,9 @@ export type TrackPageProps = Readonly<{
   onOpenTask?: (blockId: string) => void;
   onOpenOutline?: (blockId: string) => void;
   /**
-   * The card grid, composed by `app/router`. Positioned over the document
-   * column so the page title stays the only title bar — a second overlay
-   * header was overflowing the measure.
+   * The card grid or transient file viewer, composed by `app/router` and
+   * positioned over the document column. The page title stays the only title
+   * bar, with its Back control closing whichever surface is active.
    */
   board?: ReactNode;
   onCloseBoard?: () => void;
@@ -199,7 +201,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, inputNotifications = [], onOpenInputNotification,
-  cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
@@ -308,6 +310,7 @@ export function TrackPage({
     onDeleteCard,
     cardsAction,
     taskSummary: taskInventorySummary(tasks),
+    afterCards: recentFiles,
   });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
@@ -548,14 +551,18 @@ export function TrackPage({
           title={trackDisplayTitle(track.title)}
           meta={<TrackLifecycleBadge lifecycle={track.lifecycle} />}
           level={1}
-          backLabel={mobileBackLabel}
-          onBack={onMobileBack}
+          backLabel={boardOpen ? 'Report' : mobileBackLabel}
+          onBack={boardOpen ? onCloseBoard : onMobileBack}
           actions={mobileActions}
         />
       </div>
 
       <div className={styles.workspace}>
-      <div className={styles.content}>
+      <div
+        className={styles.content}
+        aria-hidden={boardOpen ? true : undefined}
+        inert={boardOpen}
+      >
         {/*
           The track report, composed by `app/router` from this track's
           `track-report` card. No frame around it: a document is the column, and

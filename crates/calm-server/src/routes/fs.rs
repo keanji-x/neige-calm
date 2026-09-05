@@ -28,7 +28,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::header,
     response::{IntoResponse, Response},
     routing::get,
@@ -50,6 +50,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/fs/listdir", get(listdir))
         .route("/api/fs/readfile", get(readfile))
         .route("/api/fs/readfile-raw", get(readfile_raw))
+        .route(
+            "/api/tracks/{track_id}/workspace/readfile",
+            get(read_track_workspace_file),
+        )
+        .route(
+            "/api/tracks/{track_id}/workspace/readfile-raw",
+            get(read_track_workspace_file_raw),
+        )
         .route("/api/fs/gitstatus", get(gitstatus))
         .route("/api/fs/gitdiff", get(gitdiff))
 }
@@ -64,6 +72,12 @@ pub struct ListdirQuery {
 #[derive(Debug, Deserialize)]
 pub struct PathQuery {
     /// Absolute path to inspect.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkspacePathQuery {
+    /// Path relative to the Track's persisted workspace root.
     pub path: String,
 }
 
@@ -278,6 +292,66 @@ pub(crate) async fn readfile_raw(
 
 #[utoipa::path(
     get,
+    path = "/api/tracks/{track_id}/workspace/readfile",
+    tag = "fs",
+    params(
+        ("track_id" = String, Path, description = "Track whose persisted workspace is the read boundary"),
+        ("path" = String, Query, description = "Workspace-relative text file path")
+    ),
+    responses(
+        (status = 200, description = "Workspace text file contents", body = ReadFileResponse),
+        (status = 400, description = "Path is invalid, outside the Track workspace, missing, a directory, or binary/non-UTF-8", body = ErrorBody),
+        (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn read_track_workspace_file(
+    State(s): State<RouteState>,
+    AxumPath(track_id): AxumPath<String>,
+    Query(q): Query<WorkspacePathQuery>,
+) -> Result<Json<ReadFileResponse>> {
+    let track = s
+        .repo
+        .track_get(&track_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    let opened = open_workspace_regular_file(Path::new(&track.workspace.path), &q.path).await?;
+    Ok(Json(read_workspace_file_response(opened).await?))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/tracks/{track_id}/workspace/readfile-raw",
+    tag = "fs",
+    params(
+        ("track_id" = String, Path, description = "Track whose persisted workspace is the read boundary"),
+        ("path" = String, Query, description = "Workspace-relative image file path")
+    ),
+    responses(
+        (status = 200, description = "Workspace image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 400, description = "Path is invalid, outside the Track workspace, missing, not a file, unsupported, or too large", body = ErrorBody),
+        (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn read_track_workspace_file_raw(
+    State(s): State<RouteState>,
+    AxumPath(track_id): AxumPath<String>,
+    Query(q): Query<WorkspacePathQuery>,
+) -> Result<Response> {
+    let track = s
+        .repo
+        .track_get(&track_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    let opened = open_workspace_regular_file(Path::new(&track.workspace.path), &q.path).await?;
+    read_workspace_file_raw_response(opened).await
+}
+
+#[utoipa::path(
+    get,
     path = "/api/fs/gitstatus",
     tag = "fs",
     params(("path" = String, Query, description = "Absolute path to a directory inside a git repository")),
@@ -338,8 +412,173 @@ async fn canonicalize_regular_file(raw: &Path) -> Result<(PathBuf, Metadata)> {
     Ok((canon, meta))
 }
 
+fn workspace_relative_path(raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(CalmError::BadRequest(
+            "workspace file path must be non-empty and relative".into(),
+        ));
+    }
+    let mut normalized = PathBuf::new();
+    for component in Path::new(raw).components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(CalmError::BadRequest(format!(
+                    "workspace file path {raw} must stay relative to the track workspace"
+                )));
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(CalmError::BadRequest(
+            "workspace file path must name a file".into(),
+        ));
+    }
+    Ok(normalized)
+}
+
+#[derive(Debug)]
+struct OpenWorkspaceFile {
+    file: tokio::fs::File,
+    display_path: PathBuf,
+    size: u64,
+}
+
+/// Open one workspace file with the root directory descriptor as the
+/// authority. `openat2` resolves and opens atomically, so a concurrent worker
+/// cannot swap a checked parent for an escaping symlink before the read.
+#[cfg(target_os = "linux")]
+async fn open_workspace_regular_file(
+    workspace_root: &Path,
+    relative_path: &str,
+) -> Result<OpenWorkspaceFile> {
+    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use nix::sys::stat::Mode;
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let relative = workspace_relative_path(relative_path)?;
+    let root = tokio::fs::File::open(workspace_root)
+        .await
+        .map_err(|error| map_io_err(workspace_root, error))?;
+    let root_meta = root
+        .metadata()
+        .await
+        .map_err(|error| map_io_err(workspace_root, error))?;
+    if !root_meta.is_dir() {
+        return Err(CalmError::BadRequest(format!(
+            "track workspace {} is not a directory",
+            workspace_root.display()
+        )));
+    }
+    let requested = workspace_root.join(&relative);
+    let workspace_root = workspace_root.to_path_buf();
+    let root = root.into_std().await;
+    tokio::task::spawn_blocking(move || {
+        let raw_fd = openat2(
+            root.as_raw_fd(),
+            &relative,
+            OpenHow::new()
+                .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
+                .mode(Mode::empty())
+                .resolve(ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS),
+        )
+        .map_err(|error| map_workspace_open_err(&requested, &workspace_root, error))?;
+        // SAFETY: `openat2` returned a new owned descriptor and this is its
+        // only conversion into an owning Rust value.
+        let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+        let meta = file
+            .metadata()
+            .map_err(|error| map_io_err(&requested, error))?;
+        if !meta.is_file() {
+            return Err(CalmError::BadRequest(format!(
+                "path {} is not a regular file",
+                requested.display()
+            )));
+        }
+        Ok(OpenWorkspaceFile {
+            file: tokio::fs::File::from_std(file),
+            display_path: requested,
+            size: meta.len(),
+        })
+    })
+    .await
+    .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
+}
+
+#[cfg(target_os = "linux")]
+fn map_workspace_open_err(
+    requested: &Path,
+    workspace_root: &Path,
+    error: nix::errno::Errno,
+) -> CalmError {
+    use nix::errno::Errno;
+
+    match error {
+        Errno::EXDEV | Errno::ELOOP => CalmError::BadRequest(format!(
+            "path {} resolves outside track workspace {}",
+            requested.display(),
+            workspace_root.display()
+        )),
+        Errno::ENOENT | Errno::ENOTDIR | Errno::EINVAL => {
+            CalmError::BadRequest(format!("path {} not found", requested.display()))
+        }
+        Errno::ENXIO | Errno::ENODEV => CalmError::BadRequest(format!(
+            "path {} is not a regular file",
+            requested.display()
+        )),
+        Errno::EACCES | Errno::EPERM => {
+            CalmError::Forbidden(format!("permission denied reading {}", requested.display()))
+        }
+        Errno::ENOSYS => {
+            CalmError::Internal("secure workspace reads require Linux openat2 support".into())
+        }
+        _ => map_io_err(requested, std::io::Error::from_raw_os_error(error as i32)),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn open_workspace_regular_file(
+    _workspace_root: &Path,
+    relative_path: &str,
+) -> Result<OpenWorkspaceFile> {
+    workspace_relative_path(relative_path)?;
+    Err(CalmError::Internal(
+        "secure workspace reads require Linux openat2 support".into(),
+    ))
+}
+
+async fn read_workspace_file_response(opened: OpenWorkspaceFile) -> Result<ReadFileResponse> {
+    let (text, truncated) = read_text_file_capped(
+        opened.file,
+        opened.size,
+        "binary or non-UTF-8 file",
+        &opened.display_path,
+    )
+    .await?;
+    Ok(ReadFileResponse {
+        path: opened.display_path.to_string_lossy().to_string(),
+        size: opened.size,
+        text,
+        truncated,
+    })
+}
+
+async fn read_workspace_file_raw_response(opened: OpenWorkspaceFile) -> Result<Response> {
+    let content_type = image_content_type(&opened.display_path)?;
+    read_file_raw_response_from_handle(opened.file, opened.size, &opened.display_path, content_type)
+        .await
+}
+
 async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
     let (canon, meta) = canonicalize_regular_file(raw).await?;
+    read_file_response_from(canon, meta).await
+}
+
+async fn read_file_response_from(canon: PathBuf, meta: Metadata) -> Result<ReadFileResponse> {
     let (text, truncated) = read_text_capped(&canon, "binary or non-UTF-8 file").await?;
     Ok(ReadFileResponse {
         path: canon.to_string_lossy().to_string(),
@@ -351,14 +590,35 @@ async fn read_file_response(raw: &Path) -> Result<ReadFileResponse> {
 
 async fn read_file_raw_response(raw: &Path) -> Result<Response> {
     let (canon, meta) = canonicalize_regular_file(raw).await?;
+    read_file_raw_response_from(canon, meta).await
+}
+
+async fn read_file_raw_response_from(canon: PathBuf, meta: Metadata) -> Result<Response> {
     let content_type = image_content_type(&canon)?;
-    if meta.len() > MAX_READFILE_RAW_BYTES {
+    let file = tokio::fs::File::open(&canon)
+        .await
+        .map_err(|error| map_io_err(&canon, error))?;
+    read_file_raw_response_from_handle(file, meta.len(), &canon, content_type).await
+}
+
+async fn read_file_raw_response_from_handle(
+    file: tokio::fs::File,
+    size: u64,
+    path: &Path,
+    content_type: &'static str,
+) -> Result<Response> {
+    if size > MAX_READFILE_RAW_BYTES {
         return Err(CalmError::BadRequest("image exceeds 100 MiB cap".into()));
     }
-
-    let bytes = tokio::fs::read(&canon)
+    let mut bytes = Vec::with_capacity(size as usize);
+    use tokio::io::AsyncReadExt;
+    file.take(MAX_READFILE_RAW_BYTES + 1)
+        .read_to_end(&mut bytes)
         .await
-        .map_err(|e| map_io_err(&canon, e))?;
+        .map_err(|error| map_io_err(path, error))?;
+    if bytes.len() as u64 > MAX_READFILE_RAW_BYTES {
+        return Err(CalmError::BadRequest("image exceeds 100 MiB cap".into()));
+    }
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
@@ -532,20 +792,33 @@ async fn canonicalize_file_or_parent(raw: &Path) -> Result<PathBuf> {
 }
 
 async fn read_text_capped(path: &Path, binary_message: &str) -> Result<(String, bool)> {
-    let meta = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| map_io_err(path, e))?;
-    let truncated = meta.len() > MAX_READFILE_BYTES;
-    let limit = std::cmp::min(meta.len(), MAX_READFILE_BYTES) as usize;
     let file = tokio::fs::File::open(path)
         .await
         .map_err(|e| map_io_err(path, e))?;
-    let mut buf = Vec::with_capacity(limit);
+    let size = file
+        .metadata()
+        .await
+        .map_err(|error| map_io_err(path, error))?
+        .len();
+    read_text_file_capped(file, size, binary_message, path).await
+}
+
+async fn read_text_file_capped(
+    file: tokio::fs::File,
+    size: u64,
+    binary_message: &str,
+    path: &Path,
+) -> Result<(String, bool)> {
+    let mut buf = Vec::with_capacity(std::cmp::min(size, MAX_READFILE_BYTES) as usize);
     use tokio::io::AsyncReadExt;
-    file.take(MAX_READFILE_BYTES)
+    file.take(MAX_READFILE_BYTES + 1)
         .read_to_end(&mut buf)
         .await
         .map_err(|e| map_io_err(path, e))?;
+    let truncated = buf.len() as u64 > MAX_READFILE_BYTES;
+    if truncated {
+        buf.truncate(MAX_READFILE_BYTES as usize);
+    }
     decode_capped_utf8(&buf, truncated, binary_message, path.display()).map(|s| (s, truncated))
 }
 
@@ -722,9 +995,83 @@ fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::model::{NewArea, NewTrack};
+    use crate::plugin_host::{PluginHost, PluginRegistry};
+    use crate::routes::theme::RequestTheme;
+    use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
+    use crate::track_area_cache::TrackAreaCache;
+    use axum::extract::FromRef;
     use axum::http::StatusCode;
     use http_body_util::BodyExt;
     use std::process::Command as StdCommand;
+    use std::sync::Arc;
+
+    async fn route_state_with_workspace_tracks(
+        workspace_a: &Path,
+        workspace_b: &Path,
+    ) -> (RouteState, String, String) {
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "workspace reads".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let create_track = |title: &str, workspace: &Path| NewTrack {
+            area_id: area.id.clone(),
+            title: title.into(),
+            sort: None,
+            cwd: workspace.to_string_lossy().to_string(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        };
+        let track_a = repo
+            .track_create(create_track("workspace A", workspace_a))
+            .await
+            .unwrap();
+        let track_b = repo
+            .track_create(create_track("workspace B", workspace_b))
+            .await
+            .unwrap();
+        let repo_dyn: Arc<dyn Repo> = repo;
+        let events = EventBus::new();
+        let roles = CardRoleCache::new();
+        let tracks = TrackAreaCache::new();
+        let state = AppState::from_parts(
+            repo_dyn.clone(),
+            events.clone(),
+            Arc::new(DaemonClient {
+                data_dir: workspace_a.to_path_buf(),
+                proc_supervisor_sock: None,
+            }),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo_dyn,
+                PathBuf::new(),
+                workspace_a.join("plugin-data"),
+                Vec::new(),
+                events,
+                WriteContext::new(roles.clone(), tracks.clone()),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            Some(roles),
+            Some(tracks),
+        );
+        (
+            RouteState::from_ref(&state),
+            track_a.id.to_string(),
+            track_b.id.to_string(),
+        )
+    }
 
     const PNG_1X1: &[u8] = &[
         0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
@@ -840,6 +1187,197 @@ mod tests {
         let err = read_file_response(&file).await.unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
         assert!(err.to_string().contains("binary or non-UTF-8 file"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_rejects_a_symlink_that_leaves_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "outside\n").unwrap();
+        symlink(&secret, workspace.path().join("leak.txt")).unwrap();
+
+        let err = open_workspace_regular_file(workspace.path(), "leak.txt")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(err.to_string().contains("outside track workspace"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_allows_a_symlink_that_stays_inside_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let real = workspace.path().join("real.txt");
+        std::fs::write(&real, "inside\n").unwrap();
+        // Relative symlinks remain constrained by the root directory fd.
+        // Absolute symlinks are rejected by RESOLVE_BENEATH even when their
+        // current spelling happens to point back into this directory.
+        symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
+
+        let opened = open_workspace_regular_file(workspace.path(), "alias.txt")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_workspace_file_response(opened).await.unwrap().text,
+            "inside\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_stays_bound_when_parent_is_swapped_after_open() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let live = workspace.path().join("swap");
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(live.join("value.txt"), "inside\n").unwrap();
+        std::fs::write(live.join("image.png"), b"inside image").unwrap();
+        std::fs::write(outside.path().join("value.txt"), "outside\n").unwrap();
+        std::fs::write(outside.path().join("image.png"), b"outside image").unwrap();
+
+        let opened_text = open_workspace_regular_file(workspace.path(), "swap/value.txt")
+            .await
+            .unwrap();
+        let opened_image = open_workspace_regular_file(workspace.path(), "swap/image.png")
+            .await
+            .unwrap();
+        std::fs::rename(&live, workspace.path().join("original")).unwrap();
+        symlink(outside.path(), &live).unwrap();
+
+        let text = read_workspace_file_response(opened_text).await.unwrap();
+        assert_eq!(text.text, "inside\n");
+        let image = read_workspace_file_raw_response(opened_image)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(image.as_ref(), b"inside image");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_fifo_is_rejected_without_blocking_a_runtime_worker() {
+        use nix::sys::stat::Mode;
+        use nix::unistd::mkfifo;
+        use std::time::Duration;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let fifo = workspace.path().join("pipe.txt");
+        mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        let root = workspace.path().to_path_buf();
+        let mut opening =
+            tokio::spawn(async move { open_workspace_regular_file(&root, "pipe.txt").await });
+
+        match tokio::time::timeout(Duration::from_millis(250), &mut opening).await {
+            Ok(result) => {
+                let error = result.unwrap().unwrap_err();
+                assert!(matches!(error, CalmError::BadRequest(_)));
+            }
+            Err(_) => {
+                // Clean up the deliberately blocked pre-fix open so the test
+                // runtime can shut down before reporting the timeout.
+                let writer = std::thread::spawn(move || {
+                    std::fs::OpenOptions::new().write(true).open(fifo).unwrap()
+                });
+                let _ = opening.await.unwrap();
+                drop(writer.join().unwrap());
+                panic!("opening a workspace FIFO blocked the async runtime");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_special_file_open_errors_are_bad_requests() {
+        for errno in [nix::errno::Errno::ENXIO, nix::errno::Errno::ENODEV] {
+            let error = map_workspace_open_err(
+                Path::new("/workspace/socket.png"),
+                Path::new("/workspace"),
+                errno,
+            );
+            assert!(matches!(error, CalmError::BadRequest(_)));
+            assert!(error.to_string().contains("not a regular file"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_handlers_use_the_requested_tracks_persisted_root() {
+        let workspace_a = tempfile::tempdir().unwrap();
+        let workspace_b = tempfile::tempdir().unwrap();
+        std::fs::write(workspace_a.path().join("same.txt"), "from A\n").unwrap();
+        std::fs::write(workspace_b.path().join("same.txt"), "from B\n").unwrap();
+        std::fs::write(workspace_a.path().join("same.png"), b"A image").unwrap();
+        std::fs::write(workspace_b.path().join("same.png"), b"B image").unwrap();
+        let (state, track_a, track_b) =
+            route_state_with_workspace_tracks(workspace_a.path(), workspace_b.path()).await;
+
+        let Json(text) = read_track_workspace_file(
+            State(state.clone()),
+            AxumPath(track_a.clone()),
+            Query(WorkspacePathQuery {
+                path: "same.txt".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text.text, "from A\n");
+
+        let raw = read_track_workspace_file_raw(
+            State(state.clone()),
+            AxumPath(track_b),
+            Query(WorkspacePathQuery {
+                path: "same.png".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let bytes = raw.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), b"B image");
+
+        let unknown = read_track_workspace_file(
+            State(state.clone()),
+            AxumPath("missing-track".into()),
+            Query(WorkspacePathQuery {
+                path: "same.txt".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(unknown, CalmError::NotFound(_)));
+
+        let escaping = read_track_workspace_file(
+            State(state),
+            AxumPath(track_a),
+            Query(WorkspacePathQuery {
+                path: "../same.txt".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(escaping, CalmError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_rejects_absolute_and_parent_paths_before_io() {
+        let workspace = tempfile::tempdir().unwrap();
+        for path in ["/etc/passwd", "../outside.txt", "a/../../outside.txt", ""] {
+            let err = open_workspace_regular_file(workspace.path(), path)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CalmError::BadRequest(_)), "{path}: {err}");
+        }
     }
 
     #[tokio::test]

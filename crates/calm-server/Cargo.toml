@@ -247,7 +247,7 @@ blake3 = "1.8"
 # only does SIGKILL on unix, so we need this to honor the grace period
 # described in design doc §2.4.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal"] }
+nix = { version = "0.29", features = ["fs", "signal"] }
 # Required by the `osc-probe-child` and `cooked-shell-child` test fixture
 # bins (tests/fixtures/*/main.rs) for raw termios + poll(2) syscalls.
 # These fixtures are `[[bin]]`s of this crate so their deps must live

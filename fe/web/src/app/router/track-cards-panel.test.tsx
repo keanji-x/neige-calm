@@ -42,6 +42,16 @@ function card(overrides: Partial<CardWire> & Pick<CardWire, 'id' | 'kind'>): Car
 const PLANNER_CARD = card({ id: 'card-planner', kind: 'codex', title: 'Planner chat', payload: { planner_harness: true }, sort: 1 });
 const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Terminal one', sort: 2 });
 const REPORT_CARD = card({ id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, payload: { body: '' } });
+const FILE_LINK_REPORT_CARD = card({
+  id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, deletable: false,
+  payload: {
+    schemaVersion: 3, docRev: 1, summary: 'files', body: 'files',
+    blocks: [{
+      id: 'b-files', kind: 'prose', rev: 1,
+      payload: { markdown: 'Inspect [router source](./fe/web/src/app/router/public.tsx).' },
+    }],
+  },
+});
 const VISIBLE_CARD = card({ id: 'card-surface', kind: 'panel-surface', title: 'Surface', sort: 4 });
 const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex chat', sort: 5, payload: {} });
 /*
@@ -131,6 +141,7 @@ function setup(
   } = {},
 ) {
   let reportReads = 0;
+  const requests: string[] = [];
   const themeValues = new Map<string, string>();
   const themeStorage: Pick<Storage, 'getItem' | 'setItem'> = {
     getItem: (key) => themeValues.get(key) ?? null,
@@ -139,6 +150,7 @@ function setup(
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = {
     send(request) {
+      requests.push(`${request.method} ${request.path}`);
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/overlays?entity_kind=track') return Promise.resolve(ok([]));
@@ -149,6 +161,11 @@ function setup(
         reportReads += 1;
         return Promise.resolve(ok({
           taskDiagnostics: typeof taskDiagnostics === 'function' ? taskDiagnostics() : taskDiagnostics,
+        }));
+      }
+      if (request.path === '/api/tracks/w1/workspace/readfile?path=fe%2Fweb%2Fsrc%2Fapp%2Frouter%2Fpublic.tsx') {
+        return Promise.resolve(ok({
+          path: 'fe/web/src/app/router/public.tsx', size: 1, text: 'x', truncated: false,
         }));
       }
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
@@ -162,7 +179,7 @@ function setup(
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { runtime, reportReads: () => reportReads };
+  return { runtime, reportReads: () => reportReads, requests };
 }
 
 async function inventoryLabels(): Promise<string[]> {
@@ -270,6 +287,70 @@ describe('track route CARDS panel', () => {
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     await userEvent.keyboard('{Escape}');
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('opens a report file link as a transient viewer and remembers it without creating a card', async () => {
+    const { requests } = setup([FILE_LINK_REPORT_CARD]);
+
+    const opener = await screen.findByRole('button', { name: 'router source' });
+    await userEvent.click(opener);
+    await waitFor(() => {
+      expect(window.location.search).toBe('?file=fe%2Fweb%2Fsrc%2Fapp%2Frouter%2Fpublic.tsx');
+    });
+    const fileView = screen.getByRole('region', {
+      name: 'File fe/web/src/app/router/public.tsx',
+    });
+    expect(fileView.getAttribute('data-nc-report-file-wide')).toBe('');
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-report-file-source]')).not.toBeNull();
+    });
+    expect(document.querySelector('[data-nc-fs-viewer]')).toBeNull();
+    expect(opener.closest('[inert]')).not.toBeNull();
+    expect(requests).not.toContain('POST /api/tracks/w1/cards');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
+    expect(window.location.search).toBe('');
+    await waitFor(() => { expect(document.activeElement).toBe(opener); });
+    expect(await screen.findByRole('heading', { name: 'Recent files' })).toBeTruthy();
+    expect([...document.querySelectorAll('[data-nc-desktop-panel] h2')]
+      .map((heading) => heading.textContent).slice(0, 3))
+      .toEqual(['Cards', 'Recent files', 'Tasks']);
+    await userEvent.click(screen.getByRole('button', { name: 'Open fe/web/src/app/router/public.tsx' }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-report-file-viewer]')).toBeTruthy();
+    });
+  });
+
+  it('gives a known card precedence over a simultaneous raw file query', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `${APP_BASEPATH}/track/w1?card=card-term&file=fe%2Fweb%2Fsrc%2Fapp%2Frouter%2Fpublic.tsx`,
+    );
+    setup([FILE_LINK_REPORT_CARD, UNKNOWN_TERMINAL]);
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
+    });
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
+    expect(document.querySelector('[data-nc-report-file-viewer]')).toBeNull();
+  });
+
+  it('returns focus to the Report on closing a cold-start file deep link', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `${APP_BASEPATH}/track/w1?file=fe%2Fweb%2Fsrc%2Fapp%2Frouter%2Fpublic.tsx`,
+    );
+    setup([FILE_LINK_REPORT_CARD]);
+    await screen.findByRole('region', {
+      name: 'File fe/web/src/app/router/public.tsx',
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(document.querySelector('[data-nc-report]'));
+    });
   });
 
   it('[INV-CARD-226] keeps a card with a surface, so the filter is headless-only and not adapter-only', async () => {

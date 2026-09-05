@@ -2,6 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import type { ReportBlock, TrackReport } from '../../../../../core/domain/report.ts';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
@@ -97,6 +98,65 @@ describe('ReportDocument', () => {
       expect(container.querySelectorAll('a').length).toBe(0);
       screen.getByRole('button', { name: 'the model' }).click();
       expect(onOpenLink).toHaveBeenCalledWith({ trackId: 'w-2', blockId: 'b-3' });
+    });
+
+    it('routes a workspace-relative file through a button and a typed callback', () => {
+      const onOpenFileLink = vi.fn<(target: ReportFileLinkTarget) => void>();
+      const { container } = render(
+        <ReportDocument
+          report={flat('Inspect [the transport](./fe/web/src/app/providers/transport.ts).')}
+          empty={EMPTY}
+          onOpenFileLink={onOpenFileLink}
+          fileRoot="/repo"
+        />,
+      );
+      expect(container.querySelectorAll('a').length).toBe(0);
+      screen.getByRole('button', { name: 'the transport' }).click();
+      expect(onOpenFileLink).toHaveBeenCalledWith({ path: 'fe/web/src/app/providers/transport.ts' });
+    });
+
+    it('does not turn an escaping relative path into a file control', () => {
+      const onOpenFileLink = vi.fn();
+      const { container } = render(
+        <ReportDocument
+          report={flat('Do not open [outside](../secret.txt).')}
+          empty={EMPTY}
+          onOpenFileLink={onOpenFileLink}
+          fileRoot="/repo"
+        />,
+      );
+      expect(container.querySelectorAll('button').length).toBe(0);
+      expect(container.textContent).toContain('outside');
+      expect(onOpenFileLink).not.toHaveBeenCalled();
+    });
+
+    it('accepts an absolute file link only when it is inside the injected workspace root', () => {
+      const onOpenFileLink = vi.fn();
+      render(<ReportDocument
+        report={flat('[inside](/repo/src/main.rs:12) and [outside](/etc/passwd).')}
+        empty={EMPTY}
+        onOpenFileLink={onOpenFileLink}
+        fileRoot="/repo"
+      />);
+      screen.getByRole('button', { name: 'inside' }).click();
+      expect(onOpenFileLink).toHaveBeenCalledWith({ path: 'src/main.rs' });
+      expect(screen.queryByRole('button', { name: 'outside' })).toBeNull();
+    });
+
+    it('resolves links relative to the Markdown file being rendered', () => {
+      const onOpenFileLink = vi.fn<(target: ReportFileLinkTarget) => void>();
+      render(<ReportDocument
+        report={flat('[sibling](./spec.md) and [parent](../README.md).')}
+        empty={EMPTY}
+        onOpenFileLink={onOpenFileLink}
+        fileRoot="/repo"
+        fileBasePath="docs"
+      />);
+      screen.getByRole('button', { name: 'sibling' }).click();
+      screen.getByRole('button', { name: 'parent' }).click();
+      expect(onOpenFileLink.mock.calls.map(([target]) => target)).toEqual([
+        { path: 'docs/spec.md' }, { path: 'README.md' },
+      ]);
     });
 
     // Without a handler there is nowhere for the citation to go, and a button

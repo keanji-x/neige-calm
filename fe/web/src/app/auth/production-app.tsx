@@ -15,6 +15,7 @@ import { logoutOperation, runOperation, serverVersionOperation } from '../provid
 import { createFetchTransport } from '../providers/transport.ts';
 import { createCardFilesPort } from '../providers/directory.ts';
 import { createAppRouter } from '../router/public.tsx';
+import { createRecentFileHistory } from '../providers/recent-files.ts';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';
 
@@ -57,12 +58,19 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     reload: browser.reload, deleteDatabase: browser.deleteDatabase,
     idbDatabaseName: IDB_DB_NAME, storage: browser.storage,
   };
-  const router = createAppRouter({ transport, unauthorized, client, cards: { registry, host }, onSignOut: () => {
-    void runOperation(transport, logoutOperation(), unauthorized).finally(() => {
-      clearSessionArtifacts(client, events.store, runtime);
-      browser.reload();
-    });
-  } });
+  const router = createAppRouter({
+    transport,
+    unauthorized,
+    client,
+    cards: { registry, host },
+    recentFiles: createRecentFileHistory(browser.storage),
+    onSignOut: () => {
+      void runOperation(transport, logoutOperation(), unauthorized).finally(() => {
+        clearSessionArtifacts(client, events.store, runtime);
+        browser.reload();
+      });
+    },
+  });
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={events.store} router={router}
     renderLogin={() => <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />}

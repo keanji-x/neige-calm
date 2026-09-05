@@ -3,6 +3,8 @@
 import { useNavigate, useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
 import { useCallback, useMemo } from 'react';
 
+import { parseWorkspaceRelativeFilePath } from '../../../../core/domain/report-file.ts';
+
 /**
  * The mobile report's secondary panel, and the surface the reader reached the
  * report from. Both ride in the URL (#1191 §1) because they are navigation
@@ -26,12 +28,15 @@ export type TrackSource = 'pages' | 'area';
 declare module '@tanstack/history' {
   interface HistoryState {
     ncPanelPushed?: boolean;
+    /** See {@link useTrackFileNavigation}. */
+    ncFilePushed?: boolean;
     /** See {@link usePlannerOpenIntent}. */
     ncOpenPlanner?: boolean;
   }
 }
 
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
+export const FILE_PUSHED_STATE_KEY = 'ncFilePushed';
 export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
 
 export type NavTarget =
@@ -58,6 +63,7 @@ export type NavTarget =
   /**
    * `blockId` lands the reader on one block of the track's report (§8.3).
    * `cardId` opens the card-grid overlay on that card (`?card=`).
+   * `filePath` opens a transient file viewer in the same overlay (`?file=`).
    * `panel` opens the mobile report's secondary panel (`?panel=`), `from`
    * records the surface to return to (`?from=`).
    * `openPlanner` asks the track being navigated *to* to open its planner
@@ -68,6 +74,7 @@ export type NavTarget =
     trackId: string;
     blockId?: string;
     cardId?: string;
+    filePath?: string;
     panel?: MobilePanel;
     from?: TrackSource;
     openPlanner?: boolean;
@@ -115,7 +122,12 @@ export type NavTarget =
 export type GoOptions = Readonly<{ replace?: boolean }>;
 
 /** The whitelisted track query string, as the router validates and rebuilds it. */
-export type TrackSearch = Readonly<{ card?: string; panel?: MobilePanel; from?: TrackSource }>;
+export type TrackSearch = Readonly<{
+  card?: string;
+  file?: string;
+  panel?: MobilePanel;
+  from?: TrackSource;
+}>;
 
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
@@ -151,12 +163,12 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     const hash = target.name === 'track' ? target.blockId : undefined;
     // Track search is always explicit so a card query cannot leak onto today
     // or a different track, and so clearing `cardId` actually drops `?card=`.
-    // All three fields are constructed here, never spread from the previous
+    // All four fields are constructed here, never spread from the previous
     // location: "not passed" means "cleared", for `panel` and `from` exactly as
     // it already meant for `card`. Callers that want a field kept must say so
     // (`useGoSameTrack`, or by passing the value they read off the route).
     const search: TrackSearch = target.name === 'track'
-      ? buildTrackSearch({ card: target.cardId, panel: target.panel, from: target.from })
+      ? buildTrackSearch({ card: target.cardId, file: target.filePath, panel: target.panel, from: target.from })
       : {};
     // The planner-open intent rides on the history entry this navigation creates,
     // and nowhere else (#1211 S2) — see `usePlannerOpenIntent`. Written only when
@@ -269,18 +281,18 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
 }
 
 /**
- * `card` and `panel` are mutually exclusive.
+ * `card`, `file` and `panel` are mutually exclusive.
  *
- * #1191 §0.1 proved the pair is self-contradictory rather than merely unusual:
- * a live `?card=` makes the card overlay open, and an open overlay force-closes
- * the mobile panel — so `?panel=cards&card=y` describes two states of one
- * surface. The card wins because it is the older, deep-linkable one.
+ * #1191 §0.1 proved the original pair self-contradictory: a live overlay
+ * force-closes the mobile panel. `?file=` is another overlay, so the same rule
+ * applies. A persisted card wins first, then a transient file, then a panel.
  */
 function buildTrackSearch(fields: Readonly<{
-  card?: string; panel?: MobilePanel; from?: TrackSource;
+  card?: string; file?: string; panel?: MobilePanel; from?: TrackSource;
 }>): TrackSearch {
-  const search: { card?: string; panel?: MobilePanel; from?: TrackSource } = {};
+  const search: { card?: string; file?: string; panel?: MobilePanel; from?: TrackSource } = {};
   if (fields.card !== undefined) search.card = fields.card;
+  else if (fields.file !== undefined) search.file = fields.file;
   else if (fields.panel !== undefined) search.panel = fields.panel;
   if (fields.from !== undefined) search.from = fields.from;
   return search;
@@ -297,6 +309,11 @@ export function useRouteCardId(): string | null {
   return useRouterState({ select: (state) => cardIdFromLocation(state.location) });
 }
 
+/** The normalized workspace-relative file named by the current URL. */
+export function useRouteFilePath(): string | null {
+  return useRouterState({ select: (state) => filePathFromLocation(state.location) });
+}
+
 /** The shape every parser here reads; `ParsedLocation` satisfies it. */
 export type SearchCarrier = Readonly<{
   searchStr?: string;
@@ -310,6 +327,16 @@ export function cardIdFromLocation(location: SearchCarrier): string | null {
 
 export function cardIdFromSearchString(searchStr: string): string | null {
   return rawParamFromSearchString(searchStr, 'card');
+}
+
+export function filePathFromSearchString(searchStr: string): string | null {
+  const value = rawParamFromSearchString(searchStr, 'file');
+  return value === null ? null : parseWorkspaceRelativeFilePath(value)?.path ?? null;
+}
+
+export function filePathFromLocation(location: SearchCarrier): string | null {
+  const value = rawParamFromLocation(location, 'file');
+  return value === null ? null : parseWorkspaceRelativeFilePath(value)?.path ?? null;
 }
 
 /**
@@ -401,10 +428,12 @@ export function useRouteFrom(): TrackSource | null {
  */
 export function validateTrackSearch(search: Record<string, unknown>): TrackSearch {
   const card = search.card;
+  const file = search.file;
   const panel = search.panel;
   const from = search.from;
   return buildTrackSearch({
     card: typeof card === 'string' && card !== '' ? card : undefined,
+    file: typeof file === 'string' ? parseWorkspaceRelativeFilePath(file)?.path : undefined,
     panel: asMobilePanel(typeof panel === 'string' ? panel : null) ?? undefined,
     from: asTrackSource(typeof from === 'string' ? from : null) ?? undefined,
   });
@@ -424,14 +453,14 @@ export function validateTrackSearch(search: Record<string, unknown>): TrackSearc
  * can ever observe the frame this guard exists for. Here the decision is
  * directly assertable, and a mutant that drops the viewport term is red.
  *
- * `cardOpen` folds in the older exclusion (§0.1): a live `?card=` owns the
- * surface, so the panel is closed whatever the URL says.
+ * `overlayOpen` folds in the older card exclusion (§0.1) and the transient file
+ * viewer: either overlay owns the surface, so the panel stays closed.
  */
 export function renderedMobilePanel(
   panel: MobilePanel | null,
-  visit: Readonly<{ compact: boolean; cardOpen: boolean }>,
+  visit: Readonly<{ compact: boolean; overlayOpen: boolean }>,
 ): MobilePanel | null {
-  if (!visit.compact || visit.cardOpen) return null;
+  if (!visit.compact || visit.overlayOpen) return null;
   return panel;
 }
 
@@ -471,7 +500,7 @@ export function routeParamFromPath(path: string, prefix: '/area/' | '/track/'): 
 }
 
 /**
- * The whitelisted three fields **exactly as they stand in `location`** — each
+ * The whitelisted four fields **exactly as they stand in `location`** — each
  * one parsed and validated on its own, and deliberately *not* run through
  * `buildTrackSearch`.
  *
@@ -484,11 +513,13 @@ export function routeParamFromPath(path: string, prefix: '/area/' | '/track/'): 
  * `buildTrackSearch`, so the pair can never *leave* here together.
  */
 export function trackSearchFromLocation(location: SearchCarrier): TrackSearch {
-  const search: { card?: string; panel?: MobilePanel; from?: TrackSource } = {};
+  const search: { card?: string; file?: string; panel?: MobilePanel; from?: TrackSource } = {};
   const card = cardIdFromLocation(location);
+  const file = filePathFromLocation(location);
   const panel = panelFromLocation(location);
   const from = fromFromLocation(location);
   if (card !== null) search.card = card;
+  if (file !== null) search.file = file;
   if (panel !== null) search.panel = panel;
   if (from !== null) search.from = from;
   return search;
@@ -501,6 +532,7 @@ export function trackSearchFromLocation(location: SearchCarrier): TrackSearch {
  */
 export type TrackSearchPatch = Readonly<{
   card?: string | undefined;
+  file?: string | undefined;
   panel?: MobilePanel | undefined;
   from?: TrackSource | undefined;
 }>;
@@ -524,6 +556,7 @@ export function sameTrackSearch(
   const current = trackSearchFromLocation(location);
   return buildTrackSearch({
     card: Object.hasOwn(patch, 'card') ? patch.card : current.card,
+    file: Object.hasOwn(patch, 'file') ? patch.file : current.file,
     panel: Object.hasOwn(patch, 'panel') ? patch.panel : current.panel,
     from: Object.hasOwn(patch, 'from') ? patch.from : current.from,
   });
@@ -553,7 +586,10 @@ export function useGoSameTrack(): GoSameTrack {
     const search = sameTrackSearch(location, expectedTrackId, patch);
     if (search === null) {
       go(
-        { name: 'track', trackId: expectedTrackId, cardId: patch.card, panel: patch.panel, from: patch.from },
+        {
+          name: 'track', trackId: expectedTrackId, cardId: patch.card,
+          filePath: patch.file, panel: patch.panel, from: patch.from,
+        },
         options,
       );
       return;
@@ -573,6 +609,66 @@ export function useGoSameTrack(): GoSameTrack {
 export function hasPanelPushedMarker(state: unknown): boolean {
   if (typeof state !== 'object' || state === null) return false;
   return (state as Record<string, unknown>)[PANEL_PUSHED_STATE_KEY] === true;
+}
+
+export function hasFilePushedMarker(state: unknown): boolean {
+  if (typeof state !== 'object' || state === null) return false;
+  return (state as Record<string, unknown>)[FILE_PUSHED_STATE_KEY] === true;
+}
+
+export type TrackFileNavigation = Readonly<{
+  openFile: (expectedTrackId: string, path: string) => void;
+  closeFile: (expectedTrackId: string) => void;
+}>;
+
+/**
+ * One history entry owns a visit to the Report's file layer. The first file
+ * pushes and marks it, file-to-file navigation replaces it, and close pops the
+ * marked entry. A cold deep link has no marker, so close replaces in place.
+ */
+export function useTrackFileNavigation(): TrackFileNavigation {
+  const history = useRouter().history as RouterHistory;
+  const navigate = useNavigate();
+  const go = useGo();
+  const location = useRouterState({ select: (state) => state.location });
+
+  const openFile = useCallback((expectedTrackId: string, path: string) => {
+    const search = sameTrackSearch(location, expectedTrackId, {
+      file: path, card: undefined, panel: undefined,
+    });
+    if (search === null) {
+      go({ name: 'track', trackId: expectedTrackId, filePath: path });
+      return;
+    }
+    const switching = filePathFromLocation(location) !== null;
+    void navigate({
+      to: pathFor({ name: 'track', trackId: expectedTrackId }),
+      search,
+      hash: true,
+      replace: switching,
+      state: switching ? true : { ncFilePushed: true },
+    });
+  }, [go, location, navigate]);
+
+  const closeFile = useCallback((expectedTrackId: string) => {
+    if (hasFilePushedMarker(location.state) && history.canGoBack()) {
+      history.back();
+      return;
+    }
+    const search = sameTrackSearch(location, expectedTrackId, { file: undefined });
+    if (search === null) {
+      go({ name: 'track', trackId: expectedTrackId }, { replace: true });
+      return;
+    }
+    void navigate({
+      to: pathFor({ name: 'track', trackId: expectedTrackId }),
+      search,
+      hash: true,
+      replace: true,
+    });
+  }, [go, history, location, navigate]);
+
+  return { openFile, closeFile };
 }
 
 export type TrackPanelNavigation = Readonly<{
@@ -602,7 +698,9 @@ export function useTrackPanelNavigation(): TrackPanelNavigation {
   const location = useRouterState({ select: (state) => state.location });
 
   const openPanel = useCallback((expectedTrackId: string, panel: MobilePanel) => {
-    const search = sameTrackSearch(location, expectedTrackId, { panel, card: undefined });
+    const search = sameTrackSearch(location, expectedTrackId, {
+      panel, card: undefined, file: undefined,
+    });
     if (search === null) {
       go({ name: 'track', trackId: expectedTrackId, panel });
       return;

@@ -175,6 +175,13 @@ describe('TrackPage header', () => {
     expect(screen.getByRole('status', { name: 'Input notifications' }).textContent)
       .toBe('2 notifications need your attention.');
   });
+
+  it('makes the compact header return an open overlay to the Report', async () => {
+    const onCloseBoard = vi.fn();
+    renderPage({ board: <div>file</div>, onCloseBoard });
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
+    expect(onCloseBoard).toHaveBeenCalledOnce();
+  });
 });
 
 describe('TrackPage task inventory', () => {

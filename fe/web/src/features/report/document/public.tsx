@@ -33,6 +33,9 @@ import {
   isTaskBlock, parseReportLink,
   type ReportBlock, type ReportLinkTarget, type TrackReport,
 } from '../../../../../core/domain/report.ts';
+import {
+  parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget,
+} from '../../../../../core/domain/report-file.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
@@ -54,19 +57,26 @@ export type ReportDocumentProps = Readonly<{
   backlinkCounts?: ReadonlyMap<string, number>;
   /** A `neige://wave/…` link was activated. Absent ⇒ links render as plain text. */
   onOpenLink?: (target: ReportLinkTarget) => void;
+  /** A file link admitted beneath `fileRoot` was activated. */
+  onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  /** Absolute root used to admit relative or already-absolute workspace links. */
+  fileRoot?: string;
+  /** Workspace-relative directory containing the Markdown currently rendered. */
+  fileBasePath?: string;
   /** The anchor the reader arrived at, from a deep link or a backlink. */
   arrivalAnchorId?: string | null;
 }>;
 
 /**
  * INV-A11Y-061 — a report is prose, not navigation. It emits no `<a href>`:
- * a `neige://` link becomes a `<button>` plus a callback, and every other link
- * keeps its label and drops its destination. That keeps this surface
- * consistent with every other one in the app rather than making the document
- * the single place a native link exists.
+ * a typed Track citation or workspace file becomes a `<button>` plus a
+ * callback, and every other link keeps its label and drops its destination.
+ * That keeps this surface consistent with every other one in the app rather
+ * than making the document the single place a native link exists.
  */
 export function ReportDocument({
-  report, empty, rail, byline, backlinkCounts, onOpenLink, arrivalAnchorId,
+  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+  arrivalAnchorId,
 }: ReportDocumentProps) {
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
@@ -81,7 +91,7 @@ export function ReportDocument({
        what is specific to a *report*: the numbered sections, the outline
        gutter and the sidenote. Two prose definitions is how the question
        "what does prose look like" stops having one answer. */
-    <article className={`calm-prose ${styles.doc}`} data-nc-report="">
+    <article className={`calm-prose ${styles.doc}`} data-nc-report="" tabIndex={-1}>
       {rail}
       {byline !== undefined && <div className={styles.byline}>{byline}</div>}
       {report.blocks === null
@@ -90,7 +100,14 @@ export function ReportDocument({
           // column, same measure, just nothing to anchor to.
           <div className={styles.row}>
             <div className={styles.block}>
-              <ProseBlock markdown={report.body || report.summary} blockId={null} onOpenLink={onOpenLink} />
+              <ProseBlock
+                markdown={report.body || report.summary}
+                blockId={null}
+                onOpenLink={onOpenLink}
+                onOpenFileLink={onOpenFileLink}
+                fileRoot={fileRoot}
+                fileBasePath={fileBasePath}
+              />
             </div>
           </div>
         )
@@ -127,6 +144,9 @@ export function ReportDocument({
                   block={block}
                   backlinks={backlinkCounts?.get(block.id) ?? 0}
                   onOpenLink={onOpenLink}
+                  onOpenFileLink={onOpenFileLink}
+                  fileRoot={fileRoot}
+                  fileBasePath={fileBasePath}
                 />
               ))}
               {/* §6.1 — a section with zero rows is not rendered. A report that
@@ -245,16 +265,26 @@ function ReportReference({ blocks, backlinkCounts }: {
  * kind lands on the same left edge and every kind can be cited by id without
  * each renderer having to remember to carry one.
  */
-function BlockSlot({ block, backlinks, onOpenLink }: {
+function BlockSlot({ block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath }: {
   block: ReportBlock;
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
+  onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  fileRoot?: string;
+  fileBasePath?: string;
 }) {
   return (
     <div className={styles.row}>
       <div className={styles.block} id={block.id}>
         {block.kind === 'prose'
-          ? <ProseBlock markdown={block.payload.markdown} blockId={block.id} onOpenLink={onOpenLink} />
+          ? <ProseBlock
+              markdown={block.payload.markdown}
+              blockId={block.id}
+              onOpenLink={onOpenLink}
+              onOpenFileLink={onOpenFileLink}
+              fileRoot={fileRoot}
+              fileBasePath={fileBasePath}
+            />
           : <BlockBody block={block} />}
       </div>
       {backlinks > 0 && (
@@ -306,10 +336,15 @@ function BlockBody({ block }: { block: ReportBlock }): ReactNode {
  * so the text they wrote is the most useful thing to show them when it will
  * not parse.
  */
-export function ProseBlock({ markdown, blockId, onOpenLink }: {
+export function ProseBlock({
+  markdown, blockId, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+}: {
   markdown: string;
   blockId: string | null;
   onOpenLink?: (target: ReportLinkTarget) => void;
+  onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  fileRoot?: string;
+  fileBasePath?: string;
 }) {
   const parsed = parse(markdown);
   // A report that will not parse is still a report; showing the source beats
@@ -363,17 +398,28 @@ export function ProseBlock({ markdown, blockId, onOpenLink }: {
    */
   if (ast.children.length === 0) return null;
   return <>{ast.children.map((block, index) => (
-    <Block key={index} block={block} headingIds={headingIds} onOpenLink={onOpenLink} />
+    <Block
+      key={index}
+      block={block}
+      headingIds={headingIds}
+      onOpenLink={onOpenLink}
+      onOpenFileLink={onOpenFileLink}
+      fileRoot={fileRoot}
+      fileBasePath={fileBasePath}
+    />
   ))}</>;
 }
 
 type BlockContext = Readonly<{
   headingIds: ReadonlyMap<number, string>;
   onOpenLink?: (target: ReportLinkTarget) => void;
+  onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  fileRoot?: string;
+  fileBasePath?: string;
 }>;
 
-function Block({ block, headingIds, onOpenLink }: { block: SafeBlock } & BlockContext): ReactNode {
-  const context: BlockContext = { headingIds, onOpenLink };
+function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockContext): ReactNode {
+  const context: BlockContext = { headingIds, ...rest };
   switch (block.type) {
     case 'heading': {
       // The kernel derives sections by splitting at H1, so H1 is a *section*
@@ -476,8 +522,8 @@ function Inlines({ nodes, ...context }: { nodes: readonly SafeInline[] } & Block
   return <>{nodes.map((node, index) => <Inline key={index} node={node} {...context} />)}</>;
 }
 
-function Inline({ node, headingIds, onOpenLink }: { node: SafeInline } & BlockContext): ReactNode {
-  const context: BlockContext = { headingIds, onOpenLink };
+function Inline({ node, ...context }: { node: SafeInline } & BlockContext): ReactNode {
+  const { onOpenLink, onOpenFileLink, fileRoot, fileBasePath } = context;
   switch (node.type) {
     case 'text':
       return node.value;
@@ -492,22 +538,38 @@ function Inline({ node, headingIds, onOpenLink }: { node: SafeInline } & BlockCo
     case 'break':
       return <br />;
     case 'link': {
-      // A `neige://wave/…` link is the app's own citation and is the one link
-      // that leads anywhere: it becomes a button, because INV-A11Y-061 puts
-      // every navigation in the app through a button and a callback. Every
-      // other destination is dropped and the label kept — a report is written
-      // by an agent from sources this app cannot vouch for, and a bare
-      // `<a href>` here would be the one place an untrusted URL reaches the
-      // user's browser.
+      // The two typed in-app destinations become buttons: a Track citation,
+      // and a local file proven to sit beneath the current workspace root.
+      // Everything else loses its destination. A report is agent-authored, so
+      // a bare `<a href>` here would let untrusted text steer the browser.
       const target = parseReportLink(node.destination);
-      if (target === null || onOpenLink === undefined) {
-        return <Inlines nodes={node.children} {...context} />;
+      if (target !== null && onOpenLink !== undefined) {
+        return (
+          <button type="button" className={styles.link} onClick={() => onOpenLink(target)}>
+            <Inlines nodes={node.children} {...context} />
+          </button>
+        );
       }
-      return (
-        <button type="button" className={styles.link} onClick={() => onOpenLink(target)}>
-          <Inlines nodes={node.children} {...context} />
-        </button>
-      );
+      const fileTarget = parseReportFileLink(node.destination);
+      const resolvedFilePath = fileTarget !== null && fileRoot !== undefined
+        ? reportFilePathRelativeToRoot(fileRoot, fileTarget, fileBasePath)
+        : null;
+      if (
+        resolvedFilePath !== null
+        && onOpenFileLink !== undefined
+      ) {
+        return (
+          <button
+            type="button"
+            className={styles.link}
+            title={resolvedFilePath}
+            onClick={() => onOpenFileLink({ path: resolvedFilePath })}
+          >
+            <Inlines nodes={node.children} {...context} />
+          </button>
+        );
+      }
+      return <Inlines nodes={node.children} {...context} />;
     }
     case 'image':
       // Same reason, and one more: an image loads its destination without a
