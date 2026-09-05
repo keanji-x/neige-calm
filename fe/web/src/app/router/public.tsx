@@ -728,7 +728,7 @@ export function useConversationStore(
    * This used to be `echoes.length > 0 || …some(isOptimisticConversationTurn)`,
    * i.e. "any echo at all", and against a queued message that is a lock with no
    * key. A message posted during a turn goes onto the harness pending queue and
-   * writes **no `harness_items` row**: `should_persist_item_method`
+   * writes **no persisted transcript row**: `should_persist_item_method`
    * (`harness/run_loop.rs`) persists `item/started` and `item/completed` only,
    * and those are Codex's, emitted after the turn is issued. So the reconciling
    * row a queued echo is waiting for cannot exist until the running turn ends

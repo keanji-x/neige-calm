@@ -4921,7 +4921,7 @@
     Two client-side beliefs about that fact can each kill the conversation. Refusing to send while
     a turn runs discarded the message in silence (#1505's original symptom: the composer's guard
     returned before `onSend` and before the draft was cleared). Sending it but recording it as
-    issued is worse, because a queued message writes no `harness_items` row until the queue drains
+    issued is worse, because a queued message writes no persisted transcript row until the queue drains
     (`should_persist_item_method` persists `item/started` / `item/completed` only), so the echo
     waits for a row that cannot arrive and the composer is dead for the rest of the turn.
     The criterion therefore has to be the kernel's own two-name whitelist and not a front-end

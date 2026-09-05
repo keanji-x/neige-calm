@@ -193,7 +193,7 @@ export type OptimisticConversationTurn = ConversationTurn & Readonly<{
    * flag falls.** Absent, it is `undefined`, which is falsy, which reads as
    * *not* queued — and that is the dangerous side: an echo the kernel really
    * queued but the client believes it issued is an echo waiting for a
-   * `harness_items` row that cannot arrive until the queue drains, i.e. a
+   * persisted transcript row that cannot arrive until the queue drains, i.e. a
    * composer that goes dead (#1505). Typing it required puts that on the
    * compiler rather than on whoever adds the next mint site. `isQueuedConversationTurn`
    * is the read side of the same rule: it answers false for anything that is
@@ -268,7 +268,7 @@ const harnessPhaseSchema = z.enum([
  *
  * **`null` is not a phase and is deliberately read as queueing.** It means the
  * client does not know: the run query has not answered yet, or it answered
- * `{runtime_id: null, phase: null}` because no live harness is registered
+ * `{worker_session_id: null, phase: null}` because no live harness is registered
  * (`get_planner_run`'s `dormant`). What the POST then does is decided by
  * `ensure_live_planner_harness` (`routes/cards.rs`), not by this value — it
  * either 409s as dormant (the send fails, the echo is dropped, and this flag

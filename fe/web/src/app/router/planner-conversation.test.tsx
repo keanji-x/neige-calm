@@ -576,7 +576,7 @@ describe('planner conversation regressions', () => {
      * schema rejects and the test would stay green — the send would take the
      * failure path instead of the success path it was written for, silently.
      * `worker_session_id` is exactly that hazard: #1423 renamed the wire field,
-     * and this literal said `runtime_id` until the rebase.
+     * and this literal still carried the pre-#1423 field name until the rebase.
      *
      * So the release is followed through: no error strip, and — the fact only
      * the success path can produce — the queued send has freed the composer for
@@ -596,7 +596,7 @@ describe('planner conversation regressions', () => {
    * ── The composer survives its own queued message ─────────────────────────
    *
    * `hasUnreconciledSend` used to count *every* standing echo, and a queued one
-   * can never be counted down: the pending queue writes no `harness_items` row
+   * can never be counted down: the pending queue writes no transcript row
    * (`should_persist_item_method` persists `item/started` / `item/completed`
    * only, and both are Codex's, after the turn is issued), so the row that
    * would clear it cannot exist until the turn ends. One message and the
