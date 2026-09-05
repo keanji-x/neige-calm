@@ -79,7 +79,7 @@ const ALLOWED_TOOL_2: &str = "get_report_detail";
 const DENIED_TOOL: &str = "admin_purge";
 
 /// How many characters of the API key sit past the truncation boundary in the
-/// `EchoQueryIn4xx` fixture — i.e. exactly how long a prefix the clamp-first
+/// `EchoAuthIn4xx` fixture — i.e. exactly how long a prefix the clamp-first
 /// order would leak. Kept well above "a couple of characters" so the assertion
 /// is about a usable credential fragment, not a coincidence.
 const KEY_STRADDLE_TAIL: usize = 16;
@@ -107,20 +107,26 @@ enum StubMode {
     /// bring-up bound equals ONE request's timeout.
     HangInitialize,
     /// Answer every request with a 4xx whose body **echoes the request's own
-    /// query string**, padded so the API key inside it straddles the kernel's
-    /// `MAX_UPSTREAM_DETAIL_CHARS` truncation boundary. This is the upstream
-    /// behaviour the scrub-before-truncate rule exists for, and the only way
-    /// to reach the production expression pair end-to-end.
-    EchoQueryIn4xx,
+    /// `Authorization` header**, padded so the API key inside it straddles the
+    /// kernel's `MAX_UPSTREAM_DETAIL_CHARS` truncation boundary. This is the
+    /// upstream behaviour the scrub-before-truncate rule exists for, and the
+    /// only way to reach the production expression pair end-to-end.
+    ///
+    /// It echoes the HEADER since #1194: the credential no longer rides in the
+    /// query string, so a query-echoing fixture would put nothing to redact on
+    /// the wire and the test would pass vacuously. `{"error":"Invalid API key:
+    /// sk-…"}` is a common real upstream shape and this is its 4xx analogue.
+    EchoAuthIn4xx,
     /// Healthy bring-up, then a `tools/call` that takes
     /// [`SLOW_TOOLS_CALL`] to answer — far longer than any bring-up budget a
     /// manifest is allowed to ask for. This is the report-generating tool the
     /// call timeout exists for; it must succeed.
     SlowToolsCall,
-    /// Healthy, but echoes the request's own query string (API key and all)
-    /// into every `tools/list` description and every `tools/call` result. The
-    /// success-path leak the scrub layer exists for.
-    EchoQueryInResults,
+    /// Healthy, but echoes the request's own `Authorization` header (API key
+    /// and all) into every `tools/list` description and every `tools/call`
+    /// result. The success-path leak the scrub layer exists for — and the one
+    /// header auth does NOT close, which is why `scrub_value` survives #1194.
+    EchoAuthInResults,
 }
 
 /// How long [`StubMode::SlowToolsCall`] takes to answer a `tools/call`.
@@ -128,8 +134,21 @@ const SLOW_TOOLS_CALL: Duration = Duration::from_millis(1_500);
 
 struct StubServer {
     addr: std::net::SocketAddr,
-    /// Query strings seen, so a test can prove the API key rode along.
+    /// Query strings seen. Since #1194 the kernel appends nothing to the URL,
+    /// so this is what proves the key is NOT there.
     seen_queries: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `Authorization` header values seen, in order — the slot the credential
+    /// rides in since #1194. Empty string when the header was absent.
+    seen_auth: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `(JSON-RPC method, Authorization value)` for each request, recorded as
+    /// ONE push from the connection task that knows both.
+    ///
+    /// `seen_methods` and `seen_auth` are two vectors filled from concurrent
+    /// per-connection tasks, so zipping them is not sound — and the pairing is
+    /// exactly what an auth assertion needs, because the client spends two
+    /// different `Phase`s and a defect can live in only one of them. See
+    /// `Self::auth_by_method`.
+    seen_auth_by_method: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     /// Whole request targets (path AND query), so #1284 S3b can prove a
     /// configured PATH reached the wire — `seen_queries` drops the path, which
     /// is exactly the half the url slots fill.
@@ -211,12 +230,16 @@ impl StubServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
         let addr = listener.local_addr().expect("local addr");
         let seen_queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_auth = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_auth_by_method = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_targets = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let tools_list_received = Arc::new(AtomicBool::new(false));
 
         let targets = Arc::clone(&seen_targets);
         let queries = Arc::clone(&seen_queries);
+        let auths = Arc::clone(&seen_auth);
+        let auth_by_method = Arc::clone(&seen_auth_by_method);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
         // Wrapped so each per-connection task can take it. Connections are
@@ -231,15 +254,19 @@ impl StubServer {
                     return;
                 };
                 let queries = Arc::clone(&queries);
+                let auths = Arc::clone(&auths);
+                let auth_by_method = Arc::clone(&auth_by_method);
                 let targets = Arc::clone(&targets);
                 let methods = Arc::clone(&methods);
                 let received = Arc::clone(&received);
                 let gate = Arc::clone(&gate);
                 tokio::spawn(async move {
-                    let (target, body) = match read_request(&mut sock).await {
+                    let (target, head, body) = match read_request(&mut sock).await {
                         Some(v) => v,
                         None => return,
                     };
+                    let auth = header_value(&head, "authorization").unwrap_or_default();
+                    auths.lock().unwrap().push(auth.clone());
                     targets.lock().unwrap().push(target.clone());
                     if let Some(q) = target.split_once('?').map(|(_, q)| q.to_string()) {
                         queries.lock().unwrap().push(q);
@@ -253,6 +280,10 @@ impl StubServer {
                         .unwrap_or_default()
                         .to_string();
                     methods.lock().unwrap().push(method.clone());
+                    auth_by_method
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), auth.clone()));
                     let id = req.get("id").cloned().unwrap_or(json!(1));
 
                     if method == "tools/list" {
@@ -263,15 +294,15 @@ impl StubServer {
                         }
                     }
 
-                    if mode == StubMode::EchoQueryIn4xx {
-                        let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+                    if mode == StubMode::EchoAuthIn4xx {
                         // Place the key so it STARTS `KEY_STRADDLE_TAIL` chars
                         // before the cap and runs past it: clamp-first leaves
                         // exactly that many characters of a live credential in
                         // the message, scrub-first leaves none.
-                        let key_at = query.find(SECRET_VALUE).unwrap_or(0);
+                        let echoed = format!("Authorization: {auth}");
+                        let key_at = echoed.find(SECRET_VALUE).unwrap_or(0);
                         let pad = MAX_UPSTREAM_DETAIL_CHARS - KEY_STRADDLE_TAIL - key_at;
-                        let body = format!("{}{query} rejected", "x".repeat(pad));
+                        let body = format!("{}{echoed} rejected", "x".repeat(pad));
                         let head = format!(
                             "HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\
                              content-length: {}\r\nconnection: close\r\n\r\n",
@@ -297,11 +328,8 @@ impl StubServer {
 
                     // What an upstream that quotes our own request back looks
                     // like on the SUCCESS path. Includes the API key verbatim.
-                    let echo = if mode == StubMode::EchoQueryInResults {
-                        format!(
-                            " [upstream saw ?{}]",
-                            target.split_once('?').map(|(_, q)| q).unwrap_or("")
-                        )
+                    let echo = if mode == StubMode::EchoAuthInResults {
+                        format!(" [upstream saw Authorization: {auth}]")
                     } else {
                         String::new()
                     };
@@ -356,6 +384,8 @@ impl StubServer {
         Self {
             addr,
             seen_queries,
+            seen_auth,
+            seen_auth_by_method,
             seen_targets,
             seen_methods,
             tools_list_received,
@@ -375,6 +405,17 @@ impl StubServer {
         self.seen_queries.lock().unwrap().clone()
     }
 
+    /// `Authorization` header values seen, in order.
+    fn auth_headers(&self) -> Vec<String> {
+        self.seen_auth.lock().unwrap().clone()
+    }
+
+    /// `(method, Authorization)` per request — the pairing an auth assertion
+    /// needs in order to say anything about one named `Phase`.
+    fn auth_by_method(&self) -> Vec<(String, String)> {
+        self.seen_auth_by_method.lock().unwrap().clone()
+    }
+
     fn targets(&self) -> Vec<String> {
         self.seen_targets.lock().unwrap().clone()
     }
@@ -388,8 +429,13 @@ impl StubServer {
     }
 }
 
-/// Read one HTTP/1.1 request, returning `(request-target, body)`.
-async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, String)> {
+/// Read one HTTP/1.1 request, returning `(request-target, head, body)`.
+///
+/// The head is returned raw so a test can assert on the credential HEADER —
+/// since #1194 that is the slot the API key rides in, and a fixture that only
+/// sees the target could not tell "sent as `Authorization: Bearer …`" from
+/// "sent nowhere".
+async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, String, String)> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
     let head_end = loop {
@@ -427,8 +473,19 @@ async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, Strin
     }
     Some((
         target,
+        head,
         String::from_utf8_lossy(&buf[head_end..head_end + len]).to_string(),
     ))
+}
+
+/// Case-insensitive lookup of one header value in a raw HTTP/1.1 head.
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().to_string())
+    })
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -480,7 +537,7 @@ fn connector_manifest_base(url: &str, timeout_ms: u64) -> Value {
         "mcp_http": {
             "url": url,
             "api_key_secret": SECRET_NAME,
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
             "tools_allow": [ALLOWED_TOOL, ALLOWED_TOOL_2],
             "request_timeout_ms": timeout_ms,
         }
@@ -824,13 +881,52 @@ async fn connector_tools_call_returns_upstream_data_and_sends_the_api_key() {
         Some(&json!(3))
     );
 
-    // The API key rode in the query string, as `api_key_in: "query:api_key"`
-    // declared — and the SSE envelope was stripped, or nothing above parsed.
+    // #1194 — the API key rode in `Authorization: Bearer <key>`, as
+    // `api_key_in: "bearer"` declares, and the SSE envelope was stripped or
+    // nothing above parsed.
+    //
+    // The assertion is on the header VALUE, not on the header's presence: the
+    // bug `bearer` exists to fix is that `header:<name>` sets the value to the
+    // RAW credential, and a presence-only check passes on exactly that bug.
+    //
+    // **It is `all`, paired with the method, and that is not pedantry.** An
+    // `any` over the recorded values was the first cut, and a review channel
+    // produced the mutation that walks through it: strip the `Bearer ` prefix
+    // in `HttpMcpClient::request` only when `phase == Phase::Call`, leaving
+    // bring-up correct. That mutation was RUN — it survived all 157 tests in
+    // this suite and all 33 `http_mcp` unit tests, because bring-up's two
+    // requests satisfied the `any` on their own and no assertion anywhere
+    // looked at the `tools/call` request's credential. The client spends two
+    // `Phase`s; an assertion that does not name them cannot see a defect in
+    // one of them.
+    //
+    // **Mutation witnesses** — (a) the `ApiKeyIn::Bearer` arm in
+    // `HttpMcpClient::new` sends the bare key: every row goes wrong.
+    // (b) the phase split above: only the `tools/call` row does.
+    let by_method = stub.auth_by_method();
+    let expected = format!("Bearer {SECRET_VALUE}");
+    for (method, auth) in &by_method {
+        assert_eq!(
+            auth, &expected,
+            "every request must carry `Bearer <key>`; `{method}` did not: {by_method:?}"
+        );
+    }
+    // …and the `tools/call` request really is among them, so the loop above is
+    // not quantifying over bring-up alone.
     assert!(
-        stub.queries()
-            .iter()
-            .any(|q| q.contains(&format!("api_key={SECRET_VALUE}"))),
-        "api key was not sent in the query: {:?}",
+        by_method.iter().any(|(m, _)| m == "tools/call"),
+        "the `tools/call` phase must be covered by the assertion above: {by_method:?}"
+    );
+    // …and nowhere near the URL. #1194's whole point: the credential is not in
+    // the one string `ureq::Error`'s `Display` prints.
+    assert!(
+        stub.targets().iter().all(|t| !t.contains(SECRET_VALUE)),
+        "the credential must not reach the request target: {:?}",
+        stub.targets()
+    );
+    assert!(
+        stub.queries().iter().all(|q| q.is_empty()),
+        "nothing may be appended to the operator's url: {:?}",
         stub.queries()
     );
 
@@ -981,8 +1077,14 @@ async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
 /// `Event::PluginState.last_error`), the `POST /enable` 503 body, and the
 /// `tools_call` error that becomes track transcript text.
 ///
-/// The leak this pins: `ureq::Error`'s `Display` prints the FULL URL first, and
-/// `HttpMcpClient::new` folds the API key into that URL's query string.
+/// The leak this pins: `ureq::Error`'s `Display` prints the FULL URL first.
+/// Before #1194 `HttpMcpClient::new` folded the API key into that URL's query
+/// string, which made this the sharpest path from a transport error to an
+/// operator-visible credential. The credential now rides in a header, so the
+/// URL is no longer a carrier the kernel fills — but the rule this test guards
+/// is "format a `ureq::Error` only via `kind()`", and that rule is unchanged:
+/// `mcp_http.url` is an operator-written literal that may carry a secret of its
+/// own. Keeping the test on the header credential still exercises every sink.
 #[tokio::test]
 async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
     // ---- case A: connection refused (bind, note the port, then drop) ----
@@ -2469,14 +2571,19 @@ async fn a_long_running_tools_call_outlives_the_bringup_budget() {
 // Round-4 finding B — the success path is scrubbed after parsing
 // ===========================================================================
 
-/// An upstream that quotes our own query string back inside `tools/list`
+/// An upstream that quotes our own credential back inside `tools/list`
 /// descriptions and `tools/call` results is the success-path leak: those
 /// strings become `ExposedTool` entries agents read and track-transcript
 /// payloads. Nothing here is an error path, so `MAX_UPSTREAM_DETAIL_CHARS` and
 /// the 4xx arm are not involved — this is the JSON-tree scrub.
+///
+/// **This is why `scrub_value` survives #1194.** Moving the credential into a
+/// header changes whether OUR OWN transport errors carry it; it changes nothing
+/// about whether the upstream echoes it back. The fixture echoes the
+/// `Authorization` header precisely to make that concrete.
 #[tokio::test]
-async fn a_success_path_that_echoes_the_query_never_leaks_the_key() {
-    let stub = StubServer::start(StubMode::EchoQueryInResults).await;
+async fn a_success_path_that_echoes_the_credential_never_leaks_the_key() {
+    let stub = StubServer::start(StubMode::EchoAuthInResults).await;
     let b = boot().await;
     write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
     let host = b.host();
@@ -2485,9 +2592,9 @@ async fn a_success_path_that_echoes_the_query_never_leaks_the_key() {
 
     // The fixture really did put the key on the wire AND echo it back.
     assert!(
-        stub.queries().iter().any(|q| q.contains(SECRET_VALUE)),
+        stub.auth_headers().iter().any(|a| a.contains(SECRET_VALUE)),
         "the fixture must actually send the key: {:?}",
-        stub.queries()
+        stub.auth_headers()
     );
 
     // 1. The materialized tool catalog — what agents and operators read.
@@ -2604,13 +2711,19 @@ async fn plugin_state_events(b: &Boot) -> Vec<String> {
 /// Round-3 F3: the scrub-before-truncate rule had only a unit test over the
 /// two free functions, so swapping the production lines in `request`'s
 /// blocking closure left the suite green. This drives the real `spawn` against
-/// an upstream that answers 4xx with a body echoing its own query string,
-/// padded so the API key straddles `MAX_UPSTREAM_DETAIL_CHARS`. Clamp-then-
-/// scrub leaves `KEY_STRADDLE_TAIL` characters of a live credential in
-/// `last_error`; scrub-then-clamp leaves none.
+/// an upstream that answers 4xx with a body echoing the credential HEADER it
+/// was sent, padded so the API key straddles `MAX_UPSTREAM_DETAIL_CHARS`.
+/// Clamp-then-scrub leaves `KEY_STRADDLE_TAIL` characters of a live credential
+/// in `last_error`; scrub-then-clamp leaves none.
+///
+/// The fixture echoes the header rather than the query string since #1194: the
+/// kernel appends nothing to the URL any more, so a query-echoing upstream
+/// would put nothing redactable on the wire and this test would pass vacuously.
+/// The "the fixture must actually put the key on the wire" assertion below is
+/// what keeps that honest.
 #[tokio::test]
-async fn a_4xx_body_echoing_the_query_never_leaks_a_partial_key() {
-    let stub = StubServer::start(StubMode::EchoQueryIn4xx).await;
+async fn a_4xx_body_echoing_the_credential_never_leaks_a_partial_key() {
+    let stub = StubServer::start(StubMode::EchoAuthIn4xx).await;
     let b = boot().await;
     write_connector(&b.plugins_dir, &stub.url(), 2_000, 0o600);
     let host = b.host();
@@ -2623,9 +2736,9 @@ async fn a_4xx_body_echoing_the_query_never_leaks_a_partial_key() {
 
     // The upstream really did echo the key back — otherwise this proves nothing.
     assert!(
-        stub.queries().iter().any(|q| q.contains(SECRET_VALUE)),
+        stub.auth_headers().iter().any(|a| a.contains(SECRET_VALUE)),
         "the fixture must actually put the key on the wire: {:?}",
-        stub.queries()
+        stub.auth_headers()
     );
     // The truncation really happened at the boundary the key straddles.
     assert!(
@@ -3969,7 +4082,7 @@ fn write_configured_http_connector(
     });
     if keyed {
         block["api_key_secret"] = json!(SECRET_NAME);
-        block["api_key_in"] = json!("query:api_key");
+        block["api_key_in"] = json!("bearer");
     }
     std::fs::write(
         dir.join("manifest.json"),
@@ -4068,12 +4181,25 @@ async fn mcp_http_configuration_fills_the_path_and_query_of_a_keyed_connector() 
     let targets = stub.targets();
     assert!(!targets.is_empty(), "the stub was never contacted");
     for target in &targets {
-        assert!(
-            target.starts_with("/v2/mcp?rev=7&api_key="),
+        // #1194 — the request target is now EXACTLY the rendered url, with
+        // nothing appended. Before it, this asserted the `?api_key=` the client
+        // folded on after the configured query; a `starts_with` would still
+        // pass on a client that appended something else, so the equality is the
+        // stronger statement and the one the retirement earns.
+        assert_eq!(
+            target, "/v2/mcp?rev=7",
             "the configured path and query must be what reached the upstream, \
-             with the credential appended after them: {target}"
+             and nothing may be appended to them"
         );
     }
+    // The credential still went — in the header, where #1194 put it. Without
+    // this the test above would pass just as well on a connector that sent no
+    // credential at all.
+    let auths = stub.auth_headers();
+    assert!(
+        auths.iter().all(|a| a == &format!("Bearer {SECRET_VALUE}")),
+        "every request must carry the credential as `Bearer <key>`: {auths:?}"
+    );
 }
 
 /// §4.6 negative half + the v5 tiering, as ONE test so the two halves cannot

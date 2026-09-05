@@ -56,21 +56,35 @@
 //!   covering the emissions too, a slow event store would cost N × a repo
 //!   write on top.
 //!
-//! **The API key must never reach a string a human or an agent can read.** It
-//! rides in the URL's query string, and `ureq::Error`'s `Display` prints that
-//! URL first — so a `{e}` anywhere in this module puts the credential into the
-//! `tracing` line, the persisted+broadcast `Event::PluginState.last_error`, the
-//! `POST /enable` 503 body, and the track transcript. Three rules, all enforced
-//! by tests: format a `ureq::Error` only via `kind()`; run every outgoing
-//! string — error OR success — through [`HttpMcpClient::scrub`]; and
-//! **scrub before you truncate**, never after.
+//! **The API key must never reach a string a human or an agent can read.**
+//! Since #1194 the credential THIS MODULE places rides in a request HEADER —
+//! `Authorization: Bearer <key>` for `api_key_in: bearer`, `<name>: <key>`
+//! verbatim for `header:<name>` — and this module appends nothing to the URL.
+//!
+//! That is a statement about the auth branch in [`HttpMcpClient::new`] and
+//! nothing else. It is **not** "no credential is ever in the URL": `mcp_http.url`
+//! is an operator-written literal, and `manifest::resolve_mcp_http_url` renders
+//! `{{config.*}}` slots into it, so `https://h.example/mcp?api_key=sk-a%2Fb`
+//! validates and is sent exactly as written — percent-encoding and all.
+//!
+//! So the retirement closes the sharpest path into an operator-visible string,
+//! not the class: `ureq::Error`'s `Display` still prints the request URL, and an
+//! upstream is still free to quote our credential back at us in a 4xx body or a
+//! tool result. All three rules stand, all enforced by tests: format a
+//! `ureq::Error` only via `kind()`; run every outgoing string — error OR success
+//! — through [`HttpMcpClient::scrub`]; and **scrub before you truncate**, never
+//! after.
 //!
 //! The middle rule is enforced at ONE choke point, in
 //! [`HttpMcpClient::request`]. Scrubbing only the two identity strings
 //! `initialize` logs would leave the success path open: `tools/list`
 //! descriptions become `ExposedTool` entries that agents and operators read,
 //! and a `tools/call` result reaches the track transcript — both are
-//! upstream-authored and both could echo our query string back.
+//! upstream-authored and both could echo our credential back. Header auth does
+//! not change that: `{"error":"Invalid API key: sk-…"}` is a common upstream
+//! shape and it reaches the track transcript — the conversation record the
+//! operator and the agent read — through `tools_call`, regardless of which slot
+//! we put the credential in.
 //!
 //! **That choke point sits AFTER the parse, not before it** ([`parse_scrubbed`]
 //! → [`scrub_value`]). Literal-replacing a credential in the raw response text
@@ -124,9 +138,29 @@
 //! exhaustive and is not). [`HttpMcpClient::new`] registers **at most two
 //! literals**, both matched byte-exactly by [`str::replace`]: the raw
 //! credential, and the uppercase-hex percent-encoding [`percent_encode`]
-//! produces — which is the spelling this client itself puts on the wire. A
-//! credential with no reserved characters encodes to itself, so the dedupe
-//! leaves a single literal.
+//! produces. Exactly one when the credential has no reserved character, because
+//! then the encoding is the identity and the dedupe collapses the pair; and
+//! **none at all** when the connector holds no key, in which case
+//! [`HttpMcpClient::scrub`] is the identity function.
+//!
+//! **What #1194 changed here, and what it did not.** It removed the
+//! *emission*: this client no longer appends a percent-encoded credential to
+//! its own query string, so the original reason for registering the encoded
+//! literal ("an upstream echoing our own query string quotes exactly this
+//! back") is gone. The literal is still registered, on a weaker but real
+//! reason: an upstream only has to embed the credential in a URL inside an
+//! error message to produce a percent-encoded spelling, and uppercase hex is
+//! what most encoders emit.
+//!
+//! An earlier revision of this header claimed the retirement made the
+//! case-mixed percent-encoding class *structurally disappear*. **That was
+//! wrong and is recorded here because it was believed for a whole round.**
+//! Retiring `query:<name>` removed one *source* of encoded spellings — ours.
+//! It removed no *sink*: the upstream chooses the encoding of whatever it
+//! echoes, and nothing about where we put the credential constrains that
+//! choice. Percent-encoding is exactly as partially covered as it was before
+//! #1194: the uppercase spelling is a registered literal, every other hex case
+//! is not.
 //!
 //! **This is a net over observed shapes, not containment.** The shapes below
 //! walk straight through it, and the list of them is not exhaustive either:
@@ -166,31 +200,42 @@
 //! withdrawn on defects it produced. The reasoning is on the rekey branch in
 //! [`scrub_value`], which is where a reader who hits the behaviour will land.
 //!
-//! **Why the gaps are not closed by adding literals or a smarter matcher.**
-//! Enumeration does not converge (2ⁿ hex spellings, an unbounded set of
-//! alphabets). A matcher does converge for the hex case specifically — and one
-//! was written and then REVERTED, on measurement: comparing every `%XX` triplet
-//! case-insensitively means a hand-rolled scan instead of `str::replace`'s
-//! two-way search, and its cost is paid on the CLEAN path, per `tools/call`,
-//! whether or not the body contains anything resembling the credential. Measured
-//! on this box with a 257-byte credential and a 4 MiB response body:
-//! `client.scrub` took **991 ms** with the per-triplet matcher against **9.8 ms**
-//! with `str::replace` — a scan that grows with (body × credential length)
-//! against one that is linear in the body. Buying one of 2ⁿ spellings for two
-//! orders of magnitude on every healthy call is not a trade this module makes.
+//! **Why the remaining gaps are not closed by adding literals or a smarter
+//! matcher.** Enumeration does not converge (an unbounded set of alphabets, and
+//! within percent-encoding alone 2ⁿ hex spellings). A matcher does converge for
+//! the hex case in particular — and one was written and then REVERTED, on
+//! measurement: comparing every `%XX` triplet case-insensitively means a
+//! hand-rolled scan instead of `str::replace`'s two-way search, and its cost is
+//! paid on the CLEAN path, per `tools/call`, whether or not the body contains
+//! anything resembling the credential. Measured on this box with a 257-byte
+//! credential and a 4 MiB response body: `client.scrub` took **991 ms** with the
+//! per-triplet matcher against **9.8 ms** with `str::replace` — a scan that
+//! grows with (body × credential length) against one that is linear in the
+//! body. That measurement predates #1194 and is unaffected by it, in both
+//! directions: the matcher's cost is a property of the SCAN, so it is not an
+//! argument against carrying a second literal either — one more `str::replace`
+//! is the cost class this module already had, and it is what pays for the
+//! uppercase spelling above.
 //!
-//! What actually closes the class is not on this axis at all: it is not putting
-//! the credential where an upstream can echo it (`api_key_in: header`, the main
-//! proposal on #1194). With the key in a header there is no percent-encoded
-//! form to miss, and most of this machinery deletes itself.
+//! **[`scrub_value`] is not deleted by header auth, and any comment saying so is
+//! wrong.** Moving the credential out of the URL changes whether *our own*
+//! transport errors carry it. It changes nothing about whether the *upstream*
+//! echoes it back, which is what the recursive tree scrub exists for.
 //!
 //! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
 //! body is an arbitrary error page with nothing to parse. There the
-//! scrub-before-truncate rule applies and is not pedantry — an upstream that
-//! echoes the request URL back inside a long error body gets truncated to 512
-//! chars, and if that boundary falls inside the key the surviving prefix is no
-//! longer a literal member of `secret_forms`, so a later `replace` misses it
-//! entirely and a partial credential ships.
+//! scrub-before-truncate rule applies and is not pedantry — an error body
+//! containing the credential anywhere in it gets truncated to 512 chars, and if
+//! that boundary falls inside the key the surviving prefix is no longer a
+//! literal member of `secret_forms`, so a later `replace` misses it entirely
+//! and a partial credential ships.
+//!
+//! The example used to be "an upstream that echoes the request URL back", and
+//! after #1194 that is a narrower case than it reads: the request URL carries a
+//! credential only when the operator hand-wrote one into `mcp_http.url` (see
+//! the qualifier above). The rule is unchanged and is load-bearing for ANY echo
+//! of the credential — `{"error":"Invalid API key: sk-…"}` reaches this same
+//! arm — so the example is stated at that width instead.
 
 use std::io::Read as _;
 use std::sync::Arc;
@@ -505,28 +550,35 @@ impl std::fmt::Debug for HttpCredential {
 /// [`super::ConnectorClient`] so the process-table lock can clone it out
 /// without being held across an await.
 ///
-/// **No `#[derive(Debug)]`.** A derived `Debug` prints `url` (which carries the
-/// API key when `api_key_in` is `query:<name>`) and `header_auth` (name AND
+/// **No `#[derive(Debug)]`.** A derived `Debug` prints `header_auth` (name AND
 /// value), which would defeat the hand-written redacting `Debug` on
 /// [`super::ConnectorClient`] the moment anything formatted the inner client.
+/// It prints `url` too, and while #1194 took the credential out of the URL,
+/// `mcp_http.url` is an operator-written literal that may still carry a query
+/// string of the operator's own.
 pub struct HttpMcpClient {
     plugin_id: String,
-    /// Endpoint with the API key already appended when `api_key_in` is
-    /// `query:<name>`. Never logged — see [`Self::log_target`].
+    /// The resolved endpoint, verbatim. Since #1194 nothing is appended to it:
+    /// the credential rides in a header. Still not logged — see
+    /// [`Self::log_target`].
     url: String,
-    /// `(name, value)` when `api_key_in` is `header:<name>`.
+    /// `(name, value)` for the credential header: `("Authorization",
+    /// "Bearer <credential>")` for `api_key_in: bearer`, `(name, credential)`
+    /// verbatim for `api_key_in: header:<name>`.
     header_auth: Option<(String, String)>,
     /// Host only, for the per-call audit line required by risk R2.
     log_target: String,
-    /// The literals the secret is known to take on the wire: the raw
-    /// credential, and the uppercase-hex percent-encoding this client puts in
-    /// its own query string. **Not an exhaustive list of the shapes an upstream
-    /// can echo** — see the module header for the ones that walk through.
-    /// [`Self::scrub`] strips these from any string that could reach a log
-    /// line, an `Event::PluginState.last_error`, an HTTP body, or a track
-    /// transcript. This is the belt to the "never format a `ureq::Error`"
-    /// braces: an *upstream* 4xx body may quote the query string back at us,
-    /// and that path is not ours to control.
+    /// The literals the secret is known to take in a string an upstream may
+    /// hand back: **at most two** — the raw credential and its uppercase-hex
+    /// percent-encoding — exactly one when [`percent_encode`] is the identity
+    /// on this credential, and **none** when the connector holds no key.
+    /// **Not an exhaustive list of the shapes an upstream can echo** — see the
+    /// module header for the ones that walk through. [`Self::scrub`] strips
+    /// them from any string that could reach a log line, an
+    /// `Event::PluginState.last_error`, an HTTP body, or a track transcript.
+    /// This is the belt to the "never format a `ureq::Error`" braces: an
+    /// *upstream* 4xx body may quote our credential back at us, and that path
+    /// is not ours to control.
     secret_forms: Vec<String>,
     /// Built once (§ review finding 9): a fresh `ureq::Agent` re-parses the
     /// ~150-certificate webpki root store and gives up all connection/TLS
@@ -560,7 +612,11 @@ impl std::fmt::Debug for HttpMcpClient {
                 "auth",
                 &match (&self.header_auth, self.secret_forms.is_empty()) {
                     (Some((name, _)), _) => format!("header:{name}=<redacted>"),
-                    (None, false) => "query:<redacted>".to_string(),
+                    // A credential with nowhere to go: `Manifest::validate`
+                    // makes this unreachable, and `new` sends nothing rather
+                    // than guessing a slot. Named so the state is legible if a
+                    // regression ever produces it.
+                    (None, false) => "unrouted:<redacted>".to_string(),
                     (None, true) => "none".to_string(),
                 },
             )
@@ -572,8 +628,8 @@ impl HttpMcpClient {
     /// Build a client from a validated `mcp_http` block plus the connector's
     /// resolved secret value (`None` when the block declares no key).
     ///
-    /// The key is folded into the URL / header here, once, so no call site can
-    /// forget it and no code path logs the assembled URL.
+    /// The key is folded into the credential header here, once, so no call site
+    /// can forget it. Since #1194 it is never folded into the URL.
     ///
     /// The parameter is an [`HttpCredential`], not a `&str`, and that is the
     /// whole point: every constraint the redaction layer depends on is
@@ -595,37 +651,57 @@ impl HttpMcpClient {
         block: &McpHttpBlock,
         api_key: Option<&HttpCredential>,
     ) -> Self {
-        let base = url.as_str().to_string();
-        let mut url = base.clone();
+        let url = url.as_str().to_string();
         let mut header_auth = None;
         let mut secret_forms = Vec::new();
 
         if let Some(key) = api_key.map(HttpCredential::as_str) {
             match block.api_key_in_parsed() {
-                Some(ApiKeyIn::Query(name)) => {
-                    let sep = if base.contains('?') { '&' } else { '?' };
-                    url = format!(
-                        "{base}{sep}{}={}",
-                        percent_encode(&name),
-                        percent_encode(key)
-                    );
+                // The value SHAPE is the point, not just the location: the
+                // probed upstream rejects `Authorization: <key>` without the
+                // `Bearer ` prefix, so spelling this as `header:Authorization`
+                // would have failed at request time. See `ApiKeyIn`.
+                Some(ApiKeyIn::Bearer) => {
+                    header_auth = Some(("Authorization".to_string(), format!("Bearer {key}")));
                 }
+                // Verbatim, no prefix — this is the `X-API-Key`-style escape
+                // hatch and its whole value is that the operator controls the
+                // exact bytes.
                 Some(ApiKeyIn::Header(name)) => {
                     header_auth = Some((name, key.to_string()));
                 }
-                // `Manifest::validate` rejects this combination; treat a
-                // future regression as "send nothing" rather than leaking the
-                // key into an unexpected slot.
+                // `Manifest::validate` rejects every string that lands here
+                // (unknown scheme, and the retired `query:<name>`); treat a
+                // future regression as "send nothing" rather than guessing a
+                // slot and leaking the key into it. The credential is still
+                // registered for scrubbing below — an unrouted key is not a
+                // reason to stop redacting it, and `read_secrets` may already
+                // have put it somewhere this client did not.
                 None => {}
             }
-            // AT MOST TWO literals — the raw credential and the spelling this
-            // client itself puts in the query string — and exactly one when the
-            // credential has no reserved character, because then
-            // `percent_encode` is the identity and the dedupe below collapses
-            // them. **This list is NOT exhaustive**, deliberately and with the
-            // gaps named: see the module header, including why the
+            // AT MOST TWO literals — the raw credential and its uppercase-hex
+            // percent-encoding — exactly one when the credential has no
+            // reserved character (then `percent_encode` is the identity and the
+            // dedupe below collapses them), and NONE when the connector holds
+            // no key at all, because this whole block is inside `if let
+            // Some(key)`. **This list is NOT exhaustive**, deliberately and with
+            // the gaps named: see the module header, including why the
             // case-insensitive percent matcher that briefly lived here was
             // reverted on measurement (991 ms vs 9.8 ms on a clean 4 MiB body).
+            //
+            // **Why the encoded form is still registered after #1194 retired
+            // `query:<name>`.** It is no longer the spelling THIS client puts on
+            // the wire — nothing is appended to the URL any more — so the
+            // original justification ("an upstream echoing our own query string
+            // quotes this back") is gone. It is kept on a different and weaker
+            // one: an upstream only has to embed the credential in a URL inside
+            // an error message to produce a percent-encoded spelling, and
+            // uppercase hex is the spelling most encoders emit. Registering it
+            // costs one more `str::replace` per response — the same cost class
+            // this module carried before #1194, and NOT the reverted matcher's
+            // cost, which was a per-triplet case-insensitive scan. Deleting the
+            // emission is right and stays done; deleting the redaction form
+            // bought nothing and gave up real coverage.
             //
             // Longest first, so scrubbing the encoded form is not pre-empted by
             // a shorter raw substring match. The encoded form is never shorter
@@ -666,7 +742,7 @@ impl HttpMcpClient {
         let call_timeout = Duration::from_millis(block.timeout_ms());
         Self {
             plugin_id: plugin_id.to_string(),
-            log_target: log_target(&base),
+            log_target: log_target(&url),
             url,
             header_auth,
             secret_forms,
@@ -697,8 +773,16 @@ impl HttpMcpClient {
         }
     }
 
-    /// Host (and port) of the endpoint — the only part of the URL that is
-    /// safe to log, since the API key may ride in the query string.
+    /// Host (and port) of the endpoint — the only part of the URL that is safe
+    /// to log.
+    ///
+    /// **This survives #1194 and must not be deleted.** The kernel's credential
+    /// no longer rides in the query string, but `mcp_http.url` is an
+    /// operator-written literal: an operator is free to write
+    /// `https://h.example/mcp?api_key=…` (or any other secret) directly into
+    /// it, and `resolve_mcp_http_url` renders `{{config.*}}` slots into it on
+    /// top of that. "The credential is not in the URL" is a statement about
+    /// what THIS module appends, not about what the URL contains.
     pub fn log_target(&self) -> &str {
         &self.log_target
     }
@@ -781,7 +865,9 @@ impl HttpMcpClient {
         arguments: Value,
     ) -> Result<super::mcp::CallToolResult, RpcError> {
         // Risk R2 — every outbound tool call records its target host. The URL
-        // itself is never logged because the API key may be in the query.
+        // itself is never logged: the kernel's credential is in a header since
+        // #1194, but `mcp_http.url` is an operator-written literal that may
+        // carry a secret of the operator's own in its query string.
         tracing::info!(
             plugin_id = %self.plugin_id,
             target = %self.log_target,
@@ -865,9 +951,10 @@ impl HttpMcpClient {
                 req = req.set(name, value);
             }
             // NOTE: a `ureq::Error` must NEVER be formatted with `{e}`. Its
-            // `Display` prints the full URL first, and this client folds the
-            // API key into that URL's query string. Only `kind()` — a closed
-            // set of English descriptions — is safe.
+            // `Display` prints the full URL first. This client no longer folds
+            // the API key into that URL (#1194), but the URL is an
+            // operator-written literal that may carry one anyway. Only `kind()`
+            // — a closed set of English descriptions — is safe.
             match req.send_string(&body) {
                 Ok(resp) => read_capped(resp),
                 Err(ureq::Error::Status(code, resp)) => {
@@ -1010,13 +1097,16 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 // redaction was supposed to hide. What is lost is one entry of
                 // an upstream document.
                 //
-                // **What it takes to trigger.** The upstream must echo the SAME
-                // credential back in two different spellings AS SIBLING KEYS of
-                // one object — e.g. the raw form and the percent-encoded form
-                // this client puts on the wire, the only two literals
-                // `HttpMcpClient::new` registers. A server that answers a
-                // `tools/list` by reflecting our query string into its own
-                // schema keys, twice, in two encodings, is already pathological;
+                // **What it takes to trigger.** Two sibling keys of one object
+                // must render to the same marker. Since #1194 the form list is
+                // a single literal — the raw credential — so the two spellings
+                // that used to do it (raw + the percent-encoding this client
+                // emitted) no longer both exist. What remains is an upstream
+                // that returns the credential as one key AND the literal string
+                // `<redacted>` as a sibling key of the same object: the first is
+                // rewritten to the marker, the second already is it. A server
+                // that reflects our credential into its own schema keys next to
+                // a hard-coded `<redacted>` sibling is already pathological;
                 // #1194 says so in as many words and offers "a comment or a
                 // dedupe suffix" as alternative acceptance criteria. This is the
                 // comment.
@@ -1115,19 +1205,21 @@ const REDACTED: &str = "<redacted>";
 /// > `scrub_with` pass contains no registered form.** Hence
 /// > `scrub_with(f, scrub_with(f, x)) == scrub_with(f, x)`.
 ///
-/// Two forms can be registered, and only ONE of them is a value
-/// [`HttpCredential::parse`] ever inspected: the raw credential. The other is
-/// the percent-encoding, which is derived after the check. So establish it
-/// first, before the induction leans on it. Either the encoding equals the raw
-/// credential (no reserved characters — and then the dedupe in `new` collapses
-/// the two), or it contains a `%` triplet, and in every case [`percent_encode`]
-/// emits `<` and `>` as `%3C`/`%3E`. A form with no `<` and no `>` cannot begin
-/// with a suffix of `<redacted>` (all of which end in `>`), cannot end with a
-/// prefix of it (all of which begin with `<`), and cannot contain it; the one
-/// marker-family substring free of both characters is `redacted`-shaped text,
-/// which the encoding of a credential can only be if the credential already is
-/// that text — refused. **Both** registered forms therefore satisfy all four
-/// refusals, which is what the induction below quantifies over.
+/// At most two forms can be registered (and none for a keyless connector, for
+/// which this function is never reached with a non-empty list), and only ONE of
+/// them is a value [`HttpCredential::parse`] ever inspected: the raw
+/// credential. The other is the percent-encoding, which is derived after the
+/// check. So establish it first, before the induction leans on it. Either the
+/// encoding equals the raw credential (no reserved characters — and then the
+/// dedupe in `new` collapses the two), or it contains a `%` triplet, and in
+/// every case [`percent_encode`] emits `<` and `>` as `%3C`/`%3E`. A form with
+/// no `<` and no `>` cannot begin with a suffix of `<redacted>` (all of which
+/// end in `>`), cannot end with a prefix of it (all of which begin with `<`),
+/// and cannot contain it; the one marker-family substring free of both
+/// characters is `redacted`-shaped text, which the encoding of a credential can
+/// only be if the credential already is that text — refused. **Both**
+/// registered forms therefore satisfy all four refusals, which is what the
+/// induction below quantifies over.
 ///
 /// Proof, by induction over the forms in order. After the pass for form `Fₖ`,
 /// the string is carried-over text with the marker `M` spliced in. No
@@ -1199,8 +1291,12 @@ pub fn strip_sse_envelope(body: &str) -> Option<&str> {
     None
 }
 
-/// `scheme://host[:port]`, dropping path/query so a query-string API key can
-/// never reach a log line.
+/// `scheme://host[:port]`, dropping path and query.
+///
+/// Retained after #1194 took the kernel's credential out of the query string:
+/// `mcp_http.url` is an operator-written literal (with `{{config.*}}` slots
+/// rendered into it), so a secret in its query string is the operator's to put
+/// there and this module's to not log. See [`HttpMcpClient::log_target`].
 fn log_target(url: &str) -> String {
     let (scheme, rest) = match url.split_once("://") {
         Some((s, r)) => (s, r),
@@ -1214,20 +1310,24 @@ fn log_target(url: &str) -> String {
     format!("{scheme}://{authority}")
 }
 
-/// Minimal percent-encoding for query-string values, uppercase hex — the form
-/// that goes on the wire. We only need the characters that would break a query
-/// parameter; `url` is not a dependency of this crate and pulling one for eight
-/// bytes of logic is not worth it.
+/// Minimal percent-encoding, uppercase hex. `url` is not a dependency of this
+/// crate and pulling one for eight bytes of logic is not worth it.
 ///
-/// **Uppercase hex is a wire fact, not a matching rule.** This is the spelling
-/// the client sends, so it is the one an upstream echoing our query string
-/// verbatim will quote back — and it is the only encoded spelling registered as
-/// a scrub literal. Other hex cases (`%2f`, and mixed per-triplet spellings a
-/// re-encoding hop may produce) are NOT covered; two attempts to cover them —
-/// a second lowercase literal, then a per-triplet case-insensitive matcher —
-/// were both reverted, the first as non-convergent enumeration and the second
-/// on measured clean-path cost. The module header carries the numbers and the
-/// full gap list.
+/// **What this is for, restated after #1194.** Until #1194 this produced the
+/// spelling the client itself put in its own query string, so an upstream
+/// echoing that query string back quoted exactly this. The client appends
+/// nothing to the URL any more, so that is no longer why it exists. It exists
+/// now because an upstream that embeds the credential in a URL inside an error
+/// message (or in any other percent-encoded context) emits a percent-encoded
+/// spelling of its own, and uppercase hex is what most encoders emit — so this
+/// is the single encoded spelling worth carrying as a scrub literal.
+///
+/// **Uppercase hex is one spelling, not a matching rule.** Other hex cases
+/// (`%2f`, and mixed per-triplet spellings a re-encoding hop may produce) are
+/// NOT covered; two attempts to cover them — a second lowercase literal, then a
+/// per-triplet case-insensitive matcher — were both reverted, the first as
+/// non-convergent enumeration and the second on measured clean-path cost. The
+/// module header carries the numbers and the full gap list.
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
@@ -1466,38 +1566,59 @@ mod tests {
         );
     }
 
+    /// #1194 — `bearer` must send `Authorization: Bearer <credential>`.
+    ///
+    /// The assertion is on the header VALUE, not on the header's presence, and
+    /// that is the whole point: the bug this form fixes is that today's
+    /// `header:<name>` sets the value to the RAW credential, so a manifest
+    /// spelled `header:Authorization` sends `Authorization: sk-…` and the probed
+    /// upstream answers `No API key provided`. A test asserting only "an
+    /// `Authorization` header exists" passes on exactly that bug.
+    ///
+    /// **Mutation witness** — change the `Bearer` arm in `HttpMcpClient::new`
+    /// to `header_auth = Some(("Authorization".into(), key.to_string()))` (the
+    /// raw-value bug). This test goes red on
+    /// `left: Some(("Authorization", "sk-a-b-c-8213"))` /
+    /// `right: Some(("Authorization", "Bearer sk-a-b-c-8213"))`.
     #[test]
-    fn query_key_is_appended_and_encoded_and_never_in_log_target() {
+    fn bearer_sends_the_authorization_header_with_the_bearer_prefix() {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("sk/a+b=c")));
+        let key = "sk-a-b-c-8213";
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
         assert_eq!(
-            client.url,
-            "https://mcp.example.com/mcp?api_key=sk%2Fa%2Bb%3Dc"
+            client.header_auth,
+            Some(("Authorization".to_string(), format!("Bearer {key}"))),
+            "the header VALUE must carry the `Bearer ` prefix, not the bare key"
         );
-        assert!(!client.log_target().contains("sk"));
-        assert!(client.header_auth.is_none());
+        // …and nothing was appended to the URL.
+        assert_eq!(client.url, "https://mcp.example.com/mcp");
     }
 
+    /// The URL is the resolved base, verbatim — including an operator-written
+    /// query string. #1194 deleted the folding branch; this pins that nothing
+    /// re-grows it, and that `log_target` still drops the operator's query.
     #[test]
-    fn existing_query_string_gets_ampersand() {
+    fn the_url_is_the_resolved_base_verbatim_and_the_query_never_reaches_a_log() {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp?v=1",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("abcdefgh")));
-        assert_eq!(
-            client.url,
-            "https://mcp.example.com/mcp?v=1&api_key=abcdefgh"
-        );
+        assert_eq!(client.url, "https://mcp.example.com/mcp?v=1");
+        assert_eq!(client.log_target(), "https://mcp.example.com");
     }
 
+    /// `header:<name>` keeps sending the credential VERBATIM. That is the whole
+    /// value of the form — an `X-API-Key`-style server wants the bare bytes —
+    /// and it is why `bearer` is a separate variant rather than a spelling of
+    /// `header:Authorization`.
     #[test]
     fn header_key_does_not_touch_the_url() {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
@@ -1526,12 +1647,11 @@ mod tests {
         HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(LEAKY)))
     }
 
-    /// A derived `Debug` would print `url` (key in the query) and
-    /// `header_auth` (name AND value), defeating `ConnectorClient`'s own
-    /// redacting `Debug`.
+    /// A derived `Debug` would print `header_auth` (name AND value), defeating
+    /// `ConnectorClient`'s own redacting `Debug`.
     #[test]
     fn debug_never_prints_the_key_in_either_placement() {
-        for spec in ["query:api_key", "header:x-api-key"] {
+        for spec in ["bearer", "header:x-api-key"] {
             let rendered = format!("{:?}", client_with(spec));
             assert!(
                 !rendered.contains(LEAKY),
@@ -1542,15 +1662,24 @@ mod tests {
         }
     }
 
-    /// The scrubber must catch the percent-encoded form too — that is the
-    /// literal an upstream echoing our query string back would use.
+    /// The scrubber must catch the percent-encoded form too.
+    ///
+    /// **Why this test survived #1194.** Its original justification — "that is
+    /// the literal an upstream echoing our query string back would use" — died
+    /// with the query string. One round of this branch deleted the encoded
+    /// assertion on that basis and replaced this test with one that PINNED the
+    /// resulting leak. Both review channels measured the same counter-example
+    /// (`sk-a/b+c` in a body reading `boom: sk-a%2Fb%2Bc` came back unredacted)
+    /// and the deletion was overruled: an upstream only has to put the
+    /// credential in a URL inside an error message to produce this spelling,
+    /// and one more `str::replace` is what it costs to keep catching it.
     #[test]
     fn scrub_removes_raw_and_percent_encoded_forms() {
         let key = "sk-a/b+c";
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
@@ -1559,9 +1688,46 @@ mod tests {
 
         let raw_msg = client.scrub(format!("boom: {key}"));
         assert!(!raw_msg.contains(key), "{raw_msg}");
-        let enc_msg = client.scrub(format!("https://h/mcp?api_key={encoded} failed"));
+
+        // The exact counter-example the review channels ran. It is written as
+        // an upstream error body quoting a URL, because that — not our own
+        // query string — is the shape that produces this spelling now.
+        let enc_msg = client.scrub(format!("boom: fetching https://h/x?k={encoded} failed"));
         assert!(!enc_msg.contains(&encoded), "{enc_msg}");
         assert!(enc_msg.contains("<redacted>"), "{enc_msg}");
+    }
+
+    /// The credential inside the header value we send is one literal
+    /// occurrence, so an upstream quoting the whole header back is covered —
+    /// and the still-uncovered neighbour is pinned rather than papered over.
+    #[test]
+    fn an_echoed_authorization_header_is_scrubbed_and_a_lowercase_triplet_is_not() {
+        let key = "sk-a/b+c";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "bearer",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
+
+        let echoed = client.scrub(format!("rejected: Authorization: Bearer {key}"));
+        assert_eq!(echoed, "rejected: Authorization: Bearer <redacted>");
+
+        // The gap the module header names, pinned so the header's claim and the
+        // code stay in step: the LOWERCASE hex spelling of the same bytes is
+        // not a registered literal and is not matched.
+        let lower = "sk-a%2fb%2bc";
+        assert_ne!(
+            lower,
+            percent_encode(key),
+            "fixture must differ in hex case"
+        );
+        assert_eq!(
+            client.scrub(format!("boom: {lower}")),
+            format!("boom: {lower}"),
+            "if this ever starts matching, the module header's gap list is stale"
+        );
     }
 
     /// THE round-2 finding: the upstream body used to be clamped to 512 chars
@@ -1575,13 +1741,13 @@ mod tests {
     /// proves the reversed order demonstrably leaks, so the first half is not
     /// vacuous. It does NOT reach `request`, so on its own it cannot fail when
     /// the production lines are swapped. The call-site witness is the
-    /// integration test `a_4xx_body_echoing_the_query_never_leaks_a_partial_key`
+    /// integration test `a_4xx_body_echoing_the_credential_never_leaks_a_partial_key`
     /// in `tests/cases/connector_host.rs`, which drives a real `spawn` against
-    /// a stub that echoes the query string inside an over-long 4xx body and
-    /// asserts the surviving `last_error` carries no key prefix.
+    /// a stub that echoes the `Authorization` header inside an over-long 4xx
+    /// body and asserts the surviving `last_error` carries no key prefix.
     #[test]
     fn key_straddling_the_truncation_boundary_is_still_redacted() {
-        let client = client_with("query:api_key");
+        let client = client_with("bearer");
         // Pad so the key STARTS well before the cap and ENDS well after it.
         let head = "x".repeat(MAX_UPSTREAM_DETAIL_CHARS - LEAKY.len() / 2);
         let body = format!("{head}{LEAKY} trailing");
@@ -1792,7 +1958,7 @@ mod tests {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
@@ -1897,11 +2063,12 @@ mod tests {
     /// IS registered, so the module header's honesty about what is not can be
     /// read against something.
     ///
-    /// Exactly two literals — the raw credential and the uppercase-hex
-    /// percent-encoding this client sends — longest first. There is deliberately
-    /// no assertion here about `%2f` or mixed-case triplets: they are NOT
-    /// covered, that gap is documented in the module header rather than
-    /// enshrined in a test that asserts a leak exists.
+    /// At most two literals — the raw credential and the uppercase-hex
+    /// percent-encoding — longest first. There is deliberately no assertion
+    /// here about `%2f` or mixed-case triplets: they are NOT covered, and that
+    /// gap is documented in the module header (and pinned by
+    /// `an_echoed_authorization_header_is_scrubbed_and_a_lowercase_triplet_is_not`)
+    /// rather than enshrined here.
     #[test]
     fn registration_is_the_raw_form_and_the_uppercase_encoding_longest_first() {
         // Reserved characters in three classes — `/`, `+`, `=` — so the encoded
@@ -1910,7 +2077,7 @@ mod tests {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
@@ -1925,7 +2092,7 @@ mod tests {
 
         // Both spellings really are scrubbed…
         for spelling in [key, upper.as_str()] {
-            let msg = client.scrub(format!("upstream echoed ?api_key={spelling} back"));
+            let msg = client.scrub(format!("upstream echoed {spelling} back"));
             assert!(!msg.contains(spelling), "{spelling}: {msg}");
             assert!(msg.contains("<redacted>"), "{spelling}: {msg}");
         }
@@ -1954,7 +2121,7 @@ mod tests {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
@@ -1977,20 +2144,22 @@ mod tests {
         assert_ne!(encoded, key, "…but still distinct from the raw form");
         assert_eq!(client.secret_forms.len(), 2, "{:?}", client.secret_forms);
 
-        let msg = client.scrub(format!("?api_key={encoded}"));
+        let msg = client.scrub(format!("boom {encoded}"));
         assert!(!msg.contains(&encoded), "{msg}");
         assert!(msg.contains("<redacted>"), "{msg}");
     }
 
     /// A credential with no reserved characters encodes to itself: the dedupe
     /// must leave exactly ONE pattern, not two copies whose second pass would
-    /// re-scan the already-substituted text.
+    /// re-scan the already-substituted text. The `header:<name>` placement
+    /// registers the same literals as `bearer` does — the `Bearer ` prefix is a
+    /// wire detail, not a scrub form.
     #[test]
     fn an_unreserved_credential_registers_exactly_one_form() {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "header:x-api-key",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred("abcdefgh")));
@@ -2206,7 +2375,7 @@ mod tests {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
-            "api_key_in": "query:api_key",
+            "api_key_in": "bearer",
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(good)));
@@ -2229,7 +2398,7 @@ mod tests {
         let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(two_form)));
         assert_eq!(client.secret_forms.len(), 2);
         for spelling in [two_form.to_string(), percent_encode(two_form)] {
-            let out = client.scrub(format!("upstream echoed ?api_key={spelling}!"));
+            let out = client.scrub(format!("upstream echoed {spelling}!"));
             for form in &client.secret_forms {
                 assert!(
                     !out.contains(form.as_str()),
@@ -2237,6 +2406,48 @@ mod tests {
                 );
             }
             assert_eq!(client.scrub(out.clone()), out, "{spelling}: not idempotent");
+        }
+    }
+
+    /// The `None`/unparseable arm of `HttpMcpClient::new`: a credential with no
+    /// legal placement is sent NOWHERE, and is still registered for scrubbing.
+    ///
+    /// `Manifest::validate` makes this unreachable through the manifest route —
+    /// including for the retired `query:api_key`, which is the exact string
+    /// used here. This drives the constructor directly, which is the only way
+    /// to reach the arm, and pins the fail-closed choice: no header is
+    /// invented, the URL is untouched, nothing is guessed.
+    ///
+    /// **Mutation witness** — make the `None` arm fall back to
+    /// `header_auth = Some(("Authorization".into(), format!("Bearer {key}")))`.
+    /// The first assertion goes red with
+    /// `left: Some(("Authorization", "Bearer sk-unrouted-8213"))` /
+    /// `right: None`.
+    #[test]
+    fn an_unroutable_api_key_in_sends_the_credential_nowhere() {
+        let key = "sk-unrouted-8213";
+        for placement in ["query:api_key", "cookie:k", "body:token", "api_key"] {
+            let block = McpHttpBlock {
+                url: "https://mcp.example.com/mcp".to_string(),
+                api_key_secret: Some("K".to_string()),
+                api_key_in: Some(placement.to_string()),
+                tools_allow: Vec::new(),
+                request_timeout_ms: None,
+                bringup_timeout_ms: None,
+            };
+            let client = HttpMcpClient::new("c", &resolved(&block), &block, Some(&cred(key)));
+            assert_eq!(client.header_auth, None, "`{placement}` invented a header");
+            assert_eq!(
+                client.url, "https://mcp.example.com/mcp",
+                "`{placement}` touched the url"
+            );
+            // Unrouted is not a reason to stop redacting: the secret was read
+            // off disk and may already be in a string somewhere.
+            assert_eq!(client.secret_forms, vec![key.to_string()], "`{placement}`");
+            assert!(
+                format!("{client:?}").contains("unrouted:<redacted>"),
+                "`{placement}`: {client:?}"
+            );
         }
     }
 

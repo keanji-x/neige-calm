@@ -10,7 +10,7 @@
 
 让 agent 在 track 里调到两个**真实**的外部能力：
 
-1. `https://mcp.wisburg.com/mcp?api_key=…` —— 远程 streamable-HTTP MCP server
+1. `https://mcp.wisburg.com/mcp` —— 远程 streamable-HTTP MCP server（鉴权走 `Authorization: Bearer <key>`，见下表）
 2. `/usr/local/bin/longbridge` —— 本地只读查询型 CLI
 
 **配置形态：** 在 `plugins_dir` **内部**建 connector 目录（`manifest.json` + 可选 `secrets.json`），然后走现成的安装流程：
@@ -36,7 +36,7 @@ POST /api/plugins/{id}/enable
 | 会话 | **无状态**——不返回 `Mcp-Session-Id`；不 `initialize` 直接发 `tools/list` 也能工作 |
 | 响应 | `content-type: text/event-stream`，但只有**单条** `event: message` + 一行 `data:` 即结束，非长连接流 |
 | 工具 | 13 个，全为 `list-*` / `get-*` 只读查询 |
-| 鉴权 | query param `api_key`；不带 key 可 `tools/list`，带 key `tools/call` 返回真实数据 |
+| 鉴权 | server 接受两种形态：`Authorization: Bearer <key>` 与 query param `?api_key=<key>`（2026-09 实测；`Authorization: <key>` 无 `Bearer ` 前缀、`X-API-Key:`、`api_key:` 三种均被拒）。鉴权只在 `tools/call` 生效——未鉴权的 `initialize` 同样返回 200，只用 `initialize` 判定无效。**内核只用 header 形态**：`api_key_in` 的闭集在 #1194 收成 `bearer` \| `header:<name>`，`query:<name>` 已退役 |
 
 ⇒ 传输层 = 「POST 一个 JSON，剥掉 `data: ` 前缀再 parse」。不需要会话管理、服务端→客户端 GET 流、断线续传。
 
@@ -108,7 +108,7 @@ pub enum ConnectorKind {
   "mcp_http": {
     "url": "https://mcp.wisburg.com/mcp",
     "api_key_secret": "WISBURG_API_KEY",     // 值取自 secrets.json，§2.4
-    "api_key_in": "query:api_key",           // 闭集：query:<name> | header:<name>
+    "api_key_in": "bearer",                  // 闭集：bearer | header:<name>（#1194 退役了 query:<name>）
     "tools_allow": ["list-institutional-reports", "get-report-detail", "list-market-daily"],
     "request_timeout_ms": 10000
   } }

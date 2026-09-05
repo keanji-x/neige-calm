@@ -2316,7 +2316,7 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
             "mcp_http": {
                 "url": "http://127.0.0.1:1/never-contacted",
                 "api_key_secret": "NEVER",
-                "api_key_in": "query:api_key",
+                "api_key_in": "bearer",
                 "tools_allow": ["noop"],
                 "request_timeout_ms": 1_000,
             }
