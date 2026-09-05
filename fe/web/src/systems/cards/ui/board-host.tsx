@@ -30,6 +30,19 @@ type ScheduledLayoutUpdate =
   | Readonly<{ kind: 'animation-frame'; handle: number }>
   | Readonly<{ kind: 'timeout'; handle: ReturnType<typeof setTimeout> }>;
 
+function revealWithinBoard(container: HTMLElement, active: HTMLElement): void {
+  const containerBox = container.getBoundingClientRect();
+  const activeBox = active.getBoundingClientRect();
+  if (activeBox.top < containerBox.top) {
+    container.scrollTop += activeBox.top - containerBox.top;
+    return;
+  }
+  if (activeBox.bottom <= containerBox.bottom) return;
+  container.scrollTop += activeBox.height > containerBox.height
+    ? activeBox.top - containerBox.top
+    : activeBox.bottom - containerBox.bottom;
+}
+
 export type BoardHostItem = Readonly<{
   card: RegisteredCard;
   title: string;
@@ -137,16 +150,18 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
    * A selected card is a navigation destination, not only a lifecycle bit.
    * RGL applies its transformed placement after the parent commit and then
    * persists one layout frame later, so an immediate scroll is overwritten.
-   * Waiting two frames lands after both passes; the no-rAF branch remains
-   * synchronous for jsdom and non-browser hosts.
+   * Waiting two frames lands after both passes. Only the board's own scrollport
+   * moves: `scrollIntoView` would also walk the report and page ancestors.
+   * The no-rAF branch remains synchronous for jsdom and non-browser hosts.
    */
   useLayoutEffect(() => {
     if (!visible || !mounted || activeCardId === null) return;
     const reveal = () => {
+      const container = containerRef.current;
       const active = Array.from(
-        containerRef.current?.querySelectorAll<HTMLElement>('[data-nc-card-id]') ?? [],
+        container?.querySelectorAll<HTMLElement>('[data-nc-card-id]') ?? [],
       ).find((element) => element.dataset.ncCardId === activeCardId);
-      active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      if (container !== null && active !== undefined) revealWithinBoard(container, active);
     };
     if (
       typeof requestAnimationFrame !== 'function'

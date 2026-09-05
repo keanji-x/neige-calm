@@ -176,26 +176,28 @@ describe('BoardHost lifecycle', () => {
       title: id,
       originalIndex,
     }));
-    const scrollIntoView = vi.fn();
-    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
+    const rect = (top: number, bottom: number): DOMRect => ({
+      x: 0, y: top, top, bottom, left: 0, right: 100,
+      width: 100, height: bottom - top,
+      toJSON: () => ({}),
+    });
+    const geometry = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
+      if ((this as HTMLElement).dataset.ncCardBoard !== undefined) return rect(0, 300);
+      if ((this as HTMLElement).dataset.ncCardId === 'card-b') return rect(500, 700);
+      return rect(0, 200);
     });
     try {
       const board = render(
         <BoardHost host={host} items={items} activeCardId="card-a" visible />,
       );
-      scrollIntoView.mockClear();
+      const scrollport = document.querySelector<HTMLElement>('[data-nc-card-board]')!;
+      scrollport.scrollTop = 0;
       board.rerender(
         <BoardHost host={host} items={items} activeCardId="card-b" visible />,
       );
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
-      expect(scrollIntoView.mock.instances[0])
-        .toBe(document.querySelector('[data-nc-card-id="card-b"]'));
+      expect(scrollport.scrollTop).toBe(400);
     } finally {
-      if (original === undefined) Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-      else Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+      geometry.mockRestore();
     }
   });
 
