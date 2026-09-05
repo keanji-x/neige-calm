@@ -1830,7 +1830,9 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
         })
         .await
         .unwrap();
-    let socket_path = boot._tmp.path().join(format!("terminal-{}.sock", new_id()));
+    // The temp directory already isolates this test. Keep the leaf short so a
+    // long self-hosted RUNNER_TEMP prefix still fits in sockaddr_un::sun_path.
+    let socket_path = boot._tmp.path().join("terminal.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
     drop(listener);
     let mut process = tokio::process::Command::new("sh")
