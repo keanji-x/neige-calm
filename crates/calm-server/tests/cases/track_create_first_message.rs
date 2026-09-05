@@ -3680,6 +3680,15 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
         "the mechanism, not just the outcome: the row the queue was taken from must be stamped, \
          which is what stops the next restart from taking it again"
     );
+    // #1449 S2 — and the transfer is a MOVE: the row it came off does not keep
+    // a copy. Asserted here rather than only in `runtime_repo`, because that
+    // test drives the harvest helper with a fixture decoder of its own and so
+    // says nothing about the decoder production actually runs.
+    assert_eq!(
+        b.persisted_queue(&stranded_runtime).await.len(),
+        0,
+        "the predecessor's persisted queue must be empty after the harvest took it"
+    );
     b.shutdown_harnesses().await;
 }
 
