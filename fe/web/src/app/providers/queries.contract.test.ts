@@ -402,9 +402,8 @@ describe('delete mutation wiring', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const invalidate = vi.spyOn(client, 'invalidateQueries')
       .mockRejectedValue(new Error('history refresh failed'));
-    const wireRuntimeKey = ['runtime', 'id'].join('_');
     const transport: ApiTransportPort = {
-      send: () => Promise.resolve(ok({ card_id: 'card-1', [wireRuntimeKey]: 'runtime-1' })),
+      send: () => Promise.resolve(ok({ card_id: 'card-1', runtime_id: 'runtime-1' })),
     };
     const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', unauthorized), {
       wrapper: mutationWrapper(client),

@@ -216,11 +216,10 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
   it('keeps the summary bootstrap instruction out of the conversation name', async () => {
     const bootstrap = "You are this workspace's daily-progress writer. Stand by and do nothing yet.";
-    const wireRuntimeKey = ['runtime', 'id'].join('_');
     renderApp({
       launchpadRows: () => [conversationRow({ id: SUMMARY_CONVERSATION, title: null })],
       historyRows: [{
-        id: 1, [wireRuntimeKey]: 'r', card_id: SUMMARY_CONVERSATION, track_id: 'lp', thread_id: 't',
+        id: 1, runtime_id: 'r', card_id: SUMMARY_CONVERSATION, track_id: 'lp', thread_id: 't',
         turn_id: null, item_uuid: null, item_type: 'userMessage', method: 'item/completed',
         params: JSON.stringify({ item: { content: [{ text: bootstrap }] }, completedAtMs: 1 }),
         created_at_ms: 1,
@@ -229,6 +228,10 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Conversation Today’s progress' }));
     expect(await screen.findByRole('complementary', { name: 'Today’s progress' })).toBeTruthy();
+    /* The row has to have LOADED for the name assertion below to mean anything.
+       A history row the wire schema rejects is dropped silently, and then
+       "the bootstrap is not in the name" is true because nothing is. */
+    expect(await screen.findByText(bootstrap)).toBeTruthy();
     expect(screen.queryByRole('complementary', { name: /daily-progress writer/ })).toBeNull();
   });
 
