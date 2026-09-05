@@ -376,7 +376,7 @@ pub async fn harvest_pending_user_messages_tx<F>(
     extract: F,
 ) -> WorkerSessionProjectionResult<HarvestedQueues>
 where
-    F: Fn(&str, &str) -> Vec<HarvestedMessage>,
+    F: Fn(&str, &str) -> HarvestOutcome,
 {
     let rows = sqlx::query(
         r#"SELECT id, handle_state_json
@@ -397,12 +397,91 @@ where
         let id: String = row.try_get("id")?;
         let state: Option<String> = row.try_get("handle_state_json")?;
         if let Some(state) = state.as_deref() {
-            harvested.messages.extend(extract(id.as_str(), state));
+            let outcome = extract(id.as_str(), state);
+            // #1449 S2 — a MOVE, not a copy. The source row keeps whatever the
+            // caller did not take and loses what it did, in this transaction.
+            // Leaving the taken sentences behind is what let a second harvest,
+            // or a re-driven operation carrying an older snapshot, deliver them
+            // again.
+            if let Some(remaining) = outcome.remaining_snapshot {
+                session_set_handle_state_of_any_runtime_tx(tx, &id, Some(remaining), now).await?;
+            }
+            if !outcome.taken.is_empty() {
+                harvested.taken_from.push(HarvestedFrom {
+                    runtime_id: id.clone(),
+                    messages: outcome.taken.clone(),
+                });
+            }
+            harvested.messages.extend(outcome.taken);
         }
         session_mark_queue_harvested_tx(tx, &id, now).await?;
         harvested.stamped_runtime_ids.push(id);
     }
     Ok(harvested)
+}
+
+/// What the caller's decoder made of one retired row.
+#[derive(Debug, Default, Clone)]
+pub struct HarvestOutcome {
+    /// The human sentences taken off this row.
+    pub taken: Vec<HarvestedMessage>,
+    /// The row's snapshot with those sentences removed, to be written back.
+    /// `None` when the decoder could not read the snapshot and therefore took
+    /// nothing — the row is left byte-for-byte as it was.
+    pub remaining_snapshot: Option<serde_json::Value>,
+}
+
+/// One source row and what this harvest took off it, so a failed mint can put
+/// it back where it came from rather than somewhere plausible.
+#[derive(Debug, Default, Clone)]
+pub struct HarvestedFrom {
+    pub runtime_id: String,
+    pub messages: Vec<HarvestedMessage>,
+}
+
+/// #1449 S3 — a runtime's persisted snapshot, inside a transaction, by id.
+pub async fn session_handle_state_by_id_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<Option<serde_json::Value>> {
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row
+        .flatten()
+        .map(|text| serde_json::from_str(&text))
+        .transpose()?)
+}
+
+/// #1449 S2 — write a runtime's `handle_state_json` whatever state its row is
+/// in.
+///
+/// The ordinary writer refuses non-active rows and the retired-runtime writer
+/// refuses active ones; the harvest needs neither restriction, because it is
+/// the transaction that is taking the queue and it holds the row for the
+/// duration. Kept separate from both so that neither of their predicates has to
+/// be widened for this one caller.
+pub async fn session_set_handle_state_of_any_runtime_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    state: Option<serde_json::Value>,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(&state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// What one [`harvest_pending_user_messages_tx`] call took, and from where.
@@ -417,6 +496,10 @@ where
 pub struct HarvestedQueues {
     pub messages: Vec<HarvestedMessage>,
     pub stamped_runtime_ids: Vec<String>,
+    /// Per source row, what was taken off it. The undo journal: a mint that
+    /// fails after this transaction commits has to put each sentence back on
+    /// the row it came from.
+    pub taken_from: Vec<HarvestedFrom>,
 }
 
 /// One queue entry taken off a retired row, with the identity of the instances

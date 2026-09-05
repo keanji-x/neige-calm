@@ -730,10 +730,9 @@ impl Boot {
     /// delivery, not a pending debt. A substring match over the whole snapshot
     /// would count it.
     ///
-    /// The harvest and the inherit both leave the predecessor's snapshot
-    /// untouched (`session_restore_from_superseded_tx` exists, so editing it in
-    /// place would make a restore lossy), so a retired row holds its sentence
-    /// for good. A live successor holds it only until it drains and re-persists.
+    /// Since S2 the transfer is a move, so this counts owners rather than
+    /// copies: a retired row stops holding what was taken off it, and a live
+    /// successor holds it until it drains and re-persists.
     async fn rows_holding(&self, needle: &str) -> usize {
         let rows: Vec<Option<String>> =
             sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions")
@@ -3727,10 +3726,14 @@ async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
     // inherits what the successor really has left rather than a queue it has
     // already delivered. One row still holds the sentence: the parked
     // predecessor's, frozen for good.
+    // #1449 S2 — the transfer is a MOVE, so at any moment at most one row owes
+    // the sentence: the predecessor stopped owing it when the successor took
+    // it, and the successor stops owing it when it delivers it. Waiting for
+    // zero is waiting for that delivery to be written down.
     assert_eq!(
-        b.wait_until_rows_holding(STRANDED, 1).await,
-        1,
-        "premise: only the retired predecessor's snapshot may still carry the sentence"
+        b.wait_until_rows_holding(STRANDED, 0).await,
+        0,
+        "premise: no row still owes the sentence once the successor has delivered it"
     );
 
     let (reset_again, reset_again_body) = b.reset_planner(&card_id).await;

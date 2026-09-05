@@ -1,15 +1,16 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    HarvestedMessage, SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx,
-    card_with_terminal_create_tx, harvest_pending_user_messages_tx, session_bind_attribution_tx,
-    session_clear_queue_harvested_tx, session_commit_exit_tx, session_complete_for_card_tx,
-    session_complete_tx, session_fail_if_active_runtime_tx, session_insert_tx,
-    session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
-    session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
-    session_projection_by_id_tx, session_restore_from_superseded_runtime_tx,
-    session_set_active_turn_tx, session_set_handle_state_tx,
-    session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
-    session_set_status_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+    HarvestOutcome, HarvestedMessage, SqlxRepo, card_with_claude_create_tx,
+    card_with_codex_create_tx, card_with_terminal_create_tx, harvest_pending_user_messages_tx,
+    session_bind_attribution_tx, session_clear_queue_harvested_tx, session_commit_exit_tx,
+    session_complete_for_card_tx, session_complete_tx, session_fail_if_active_runtime_tx,
+    session_insert_tx, session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
+    session_mcp_token_set_tx, session_prepare_deferred_planner_tx,
+    session_projection_active_for_card_tx, session_projection_by_id_tx,
+    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
+    session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
+    session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
+    session_supersede_and_start_tx,
 };
 use calm_server::ids::CardId;
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
@@ -2824,8 +2825,10 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     )
     .await;
 
-    let extract = |_id: &str, state: &str| -> Vec<HarvestedMessage> {
-        serde_json::from_str::<serde_json::Value>(state)
+    // The production decoder's contract in miniature: take the user messages,
+    // hand back the row's snapshot with them removed.
+    let extract = |_id: &str, state: &str| -> HarvestOutcome {
+        let taken: Vec<HarvestedMessage> = serde_json::from_str::<serde_json::Value>(state)
             .ok()
             .and_then(|state| state.get("pending_queue").cloned())
             .and_then(|queue| serde_json::from_value::<Vec<serde_json::Value>>(queue).ok())
@@ -2836,10 +2839,21 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
                     .and_then(|t| t.as_str())
                     .map(|text| HarvestedMessage {
                         text: text.to_owned(),
-                        ids: Vec::new(),
+                        ids: vec![format!("id-of-{text}")],
                     })
             })
-            .collect()
+            .collect();
+        let mut remaining: serde_json::Value =
+            serde_json::from_str(state).unwrap_or_else(|_| json!({}));
+        if let Some(map) = remaining.as_object_mut() {
+            map.insert("pending_queue".into(), json!([]));
+            map.insert("pending_envelope_ids".into(), json!([]));
+            map.insert("pending_message_ids".into(), json!([]));
+        }
+        HarvestOutcome {
+            taken,
+            remaining_snapshot: Some(remaining),
+        }
     };
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -2916,7 +2930,24 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         "a second restart must read nothing: {again:?}"
     );
 
-    // And the undo puts the row back where it was.
+    // #1449 S2 — the harvest MOVED the sentence: the source row does not keep a
+    // copy.
+    let source_state: Option<String> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(retired_with_a_sentence.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !source_state.unwrap_or_default().contains("carry me"),
+        "the source row must not still hold what was taken off it — a copy left behind is what a \
+         second harvest, or an operation re-driven with an older snapshot, delivers again"
+    );
+
+    // Which is why clearing the marker is not by itself an undo: it makes the
+    // row eligible to be read again, it does not put anything back. The undo
+    // that matters is `return_harvested_queues_and_fail_tx`, which returns the
+    // payload and clears the marker in one transaction.
     let mut tx = repo.pool().begin().await.unwrap();
     session_clear_queue_harvested_tx(&mut tx, retired_with_a_sentence.as_str())
         .await
@@ -2931,15 +2962,10 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(
-        after_undo
-            .messages
-            .iter()
-            .map(|m| m.text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["carry me"],
-        "clearing the marker is what a failed mint's compensation does, and it has to make the \
-         queue harvestable again"
+    assert!(
+        after_undo.messages.is_empty(),
+        "an un-stamped row whose queue has moved has nothing left to give: {:?}",
+        after_undo.messages
     );
 }
 
