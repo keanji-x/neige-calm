@@ -1072,7 +1072,9 @@ pub(super) fn claim_crash_point(path: &Path) {
     let sink = CRASH_OBSERVER.with(|slot| slot.borrow().clone());
     let Some(sink) = sink else { return };
     if let Err(violation) = workspace_dir_is_empty_or_ours(path) {
-        sink.lock().unwrap_or_else(|e| e.into_inner()).push(violation);
+        sink.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(violation);
     }
 }
 
