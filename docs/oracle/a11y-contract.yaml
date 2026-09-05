@@ -59,7 +59,7 @@
     应用内导航使用 button 与回调，不混入原生 href 导航
   why: >
     单一导航入口保持焦点、路由状态和激活语义一致
-  source: fe/web/src/app/router/navigation.ts:152-164; fe/web/src/app/shell/sidebar.tsx:460-525
+  source: fe/web/src/app/router/navigation.ts:164-176; fe/web/src/app/shell/sidebar.tsx:460-525
   authoritative_test: fe/web/src/app/shell/sidebar.contract.test.tsx:175-192
   owner_slice: app/router/navigation
   intentional_omission: true

@@ -799,7 +799,7 @@ describe('track conversations', () => {
    * (`crates/calm-server/src/harness/run_loop.rs`). Between Enter and that echo
    * — seconds, or forever if the agent is down — the drawer mounted on a card
    * with zero turns, so the reader's own sentence was nowhere and the empty
-   * state painted "Nothing said yet." beside the live `Working` dot.
+   * state painted beside the live `Working` dot.
    *
    * The fixture is that window, stated exactly: the item read answers `[]`, as
    * the real kernel does.
@@ -989,8 +989,8 @@ describe('track conversations', () => {
 
   /*
    * The other half of the same paint: an unknown transcript is not an empty
-   * one. `Loading conversation…` and "Nothing said yet." used to render
-   * together, because the thread was mounted unconditionally beside the notice.
+   * one. `Loading conversation…` and the empty state used to render together,
+   * because the thread was mounted unconditionally beside the notice.
    */
   it('does not paint the empty state while the first page is still loading', async () => {
     setup((request) => request.path.includes(HISTORY_PATH)

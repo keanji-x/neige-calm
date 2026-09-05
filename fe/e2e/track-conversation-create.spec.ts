@@ -214,8 +214,8 @@ test('starts a conversation from a track page and sends the first message to tha
    * it is what the kernel answers in the window this feature exists for.
    *
    * Both halves are asserted, because either alone is satisfiable by the bug:
-   * the words are on screen, and the empty state — "Nothing said yet.", which
-   * used to paint here beside the live `Working` dot — is not.
+   * the words are on screen, and the empty state — which used to paint here
+   * beside the live `Working` dot — is not.
    */
   await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);

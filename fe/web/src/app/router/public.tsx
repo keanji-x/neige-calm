@@ -752,8 +752,8 @@ const CREATE_ECHO_ID = 'create-echo';
  * the message is therefore not the message being *readable*: between the 201
  * and codex's echo — seconds, or unbounded when the agent is down — the new
  * card's item read answers `[]`. Without this the reader's own first sentence
- * was on no surface at all, and the thread painted "Nothing said yet." beside
- * a live `Working` dot.
+ * was on no surface at all, and the thread painted its empty state beside a
+ * live `Working` dot.
  *
  * Why it is a plain line and not an `OptimisticConversationTurn`: see
  * `CreateEchoSlot` in `app/conversations`. It carries no provenance because it
@@ -1586,10 +1586,9 @@ function useConversationPanel(
               * Not while the first page is unknown and there is nothing to
               * show (#1449).
               *
-              * `ChatThread` renders "Nothing said yet. / Write below and it
-              * starts here." for an empty turn list, and it draws the live
-              * `Working` dot in that very state. Mounted unconditionally, it
-              * therefore painted that sentence *under* `Loading conversation…`
+              * `ChatThread` renders its empty state for an empty turn list,
+              * and it draws the live `Working` dot in that state. Mounted
+              * unconditionally, it painted that state *under* `Loading conversation…`
               * above — the surface saying "I have not read this thread" and
               * "this thread is empty" in the same frame, one of which is not a
               * claim it is entitled to make.
