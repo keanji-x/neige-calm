@@ -170,11 +170,29 @@ test('starts a conversation from a track page and sends the first message to tha
   // — a conversation the user can see twice, or one the kernel never made.
   // (The drawer replaces the list while it is open, so the list is counted
   // after closing it — the count is the assertion, not the drawer.)
-  // Named after the sentence, not by the bare kind label: an assistant card is
-  // minted `title: null`, and since #1449 the create path mints the same
-  // optimistic echo the send path always did, so the conversation has a first
-  // message the moment it is adopted.
-  await expect(page.getByRole('complementary', { name: message })).toBeVisible();
+  /*
+   * The drawer is located by the control only it has — never by a name derived
+   * from the echo. A locator that says `{ name: message }` resolves only when
+   * the echo already exists, so the thread assertions under it could not fail:
+   * the drawer would simply never be found and the wait would time out
+   * *before* reaching them. Same rule as the sibling spec.
+   */
+  const drawer = page.locator('[role="complementary"]')
+    .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
+  await expect(drawer).toBeVisible();
+
+  /*
+   * The adoption itself, which is a fact independent of the echo: the drawer
+   * moved off the draft (`Untitled`) onto the row the derived id names. This
+   * used to be `{ name: 'Assistant' }` and stopped being an independent check
+   * the moment the name became a function of the echo, so it is asked of the
+   * identity instead.
+   */
+  await expect(page.getByRole('complementary', { name: 'Untitled' })).toHaveCount(0);
+  await expect(drawer.getByRole('button', { name: 'Close conversation' })).toBeVisible();
+  const openedRow = await request.get(`/api/tracks/${track.id}/conversations`);
+  expect((await openedRow.json() as { id: string }[]).map((row) => row.id))
+    .toContain(conversation.id);
 
   /*
    * ── #1449 — and the sentence is *in* the thread, against a real kernel ─────
@@ -191,7 +209,6 @@ test('starts a conversation from a track page and sends the first message to tha
    * the words are on screen, and the empty state — "Nothing said yet.", which
    * used to paint here beside the live `Working` dot — is not.
    */
-  const drawer = page.getByRole('complementary', { name: message });
   await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
   const items = await request.get(`/api/cards/${conversation.id}/harness/items`);

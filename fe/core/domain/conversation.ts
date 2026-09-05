@@ -184,26 +184,26 @@ export type ConversationTurn = Readonly<{
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
   /**
-   * The request that carried this message has already been answered; the only
-   * thing still outstanding is the agent writing the turn back.
+   * Minted by a *create* — `POST /api/tracks` or
+   * `POST /api/tracks/{id}/conversations`, the two requests that mint the card
+   * and deliver the message at once (#1449).
    *
-   * Only the two *create* paths mint one (#1449). `POST /api/tracks` and
-   * `POST /api/tracks/{id}/conversations` both mint the card **and** deliver
-   * the message, so their 201 is the whole of "this arrived" — while the
-   * transcript stays empty until codex echoes the turn, which may be a long
-   * time or never. A send-path echo carries no flag and needs none: the store
-   * tracks its own request through `unconfirmedEchoId` and the provider's send
-   * lease, both of which end when the response does.
+   * Its one reader is `sendBlocked` (`app/router/public.tsx`), which closes
+   * the composer while an echo stands. An echo is retired by the agent
+   * echoing the turn back into `harness_items`, so it can stand for a long
+   * time or forever — and closing the composer for that whole span on a
+   * conversation the reader was just *landed* in undoes the landing
+   * #1211/#1299 builds. So a create's echo is excluded there.
    *
-   * It is read by `sendBlocked` (`app/router/public.tsx`), which closes the
-   * composer while a send is unreconciled. Without the distinction the reader
-   * would land in the conversation their sentence just created and be unable
-   * to type in it until the agent replied — which is the opposite of the
-   * landing #1211/#1299 builds.
+   * The asymmetry with a send is real and is not claimed to be principled: a
+   * send's 200 is just as durable (`observe_user_message_durable` persists
+   * before answering), and a send does hold the composer for the whole agent
+   * round trip, permanently if the agent is down. That behaviour predates
+   * #1449 and is untouched by it. This flag is scoped to not *introducing*
+   * that harm on a path that had no echo at all.
    *
-   * Deliberately not a reconciliation input: retiring an echo is still one
-   * server row matching one echo above its own high-water mark, and this flag
-   * changes nothing about that.
+   * Not a reconciliation input: retiring an echo is one server row matching
+   * one echo above its high-water mark, and this flag changes nothing there.
    */
   deliveredByCreate?: true;
 }>;
@@ -1003,14 +1003,53 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
   });
 }
 
-/** Append optimistic user echoes without leaving a completed thought at the tail. */
+/**
+ * Place optimistic user echoes in the server's transcript at their own time.
+ *
+ * Appending them all was right for the only echo that used to exist — one you
+ * just said, so newer than everything confirmed — and wrong for the one #1449
+ * added. A create's first sentence can be stranded (its runtime superseded
+ * before the turn was drained), and the reader goes on talking: appended, the
+ * thread read `B → R → A`, with the sentence that *started* it shown after the
+ * reply to the sentence that followed it, and treated as the newest exchange
+ * by the rail, the follow-the-tail scroll and the live marker.
+ *
+ * The server's own entries are never re-sorted, and that is not caution: it is
+ * `buildTranscript`'s positional pairing, where a completed action keeps the
+ * *started* row's place even though it ended later. So each echo is inserted
+ * after the last entry that does not postdate it, which leaves the entries
+ * exactly as they came and still puts an echo of something just said at the
+ * tail, where every server entry is older than it.
+ *
+ * The tail thought is dropped only when an echo actually lands at the tail —
+ * the rule was always about what the reader sees last.
+ */
 export function mergeTranscript(
   serverEntries: readonly TranscriptEntry[],
   echoes: readonly ConversationTurn[],
 ): readonly TranscriptEntry[] {
-  const confirmed = echoes.length === 0 ? serverEntries : serverEntries.filter((entry, index) =>
-    index !== serverEntries.length - 1 || entry.author !== 'activity' || entry.verb !== 'Thought');
-  return [...confirmed, ...echoes];
+  if (echoes.length === 0) return serverEntries;
+  /* Oldest first, so two echoes sharing a slot keep their own order. */
+  const ordered = [...echoes].sort((left, right) => left.atMs - right.atMs);
+  const last = serverEntries.at(-1);
+  /* The original rule, plus the condition it always implied and never had to
+     state: an echo has to actually end up after the thought to displace it. */
+  const echoAtTail = last === undefined || ordered.some((echo) => last.atMs <= echo.atMs);
+  const confirmed = echoAtTail && last !== undefined
+    && last.author === 'activity' && last.verb === 'Thought'
+    ? serverEntries.slice(0, -1)
+    : serverEntries;
+  const placed = [...confirmed];
+  for (const echo of ordered) {
+    let at = placed.length;
+    while (at > 0) {
+      const before = placed[at - 1];
+      if (before !== undefined && before.atMs <= echo.atMs) break;
+      at -= 1;
+    }
+    placed.splice(at, 0, echo);
+  }
+  return placed;
 }
 
 const ECHO_RECONCILIATION_LOOKBACK = 50;
@@ -1051,26 +1090,68 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
   return items.reduce((highest, item) => Math.max(highest, item.id), 0);
 }
 
+/** The persisted item id a server user turn was built from. */
+function serverTurnSequence(turn: ConversationTurn): number {
+  return Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
+}
+
 /**
  * Reconcile each optimistic echo only against server rows that did not exist
  * before that send. Echoes may come from older route instances, so matching is
  * one-to-one across the whole remembered set rather than local to one caller.
+ *
+ * ── Why the survivors come back changed ──────────────────────────────────────
+ *
+ * "One row confirms one echo" has to hold **across calls**, and this is called
+ * repeatedly on the set the previous call returned: `useConversationStore`'s
+ * merge effect writes the result to state and re-runs whenever the registry
+ * changes, and a remount starts from the survivors the registry kept. With the
+ * consumed row still in `serverTurns` and the retired echo gone from the input,
+ * a second pass paired that same row with the next echo — two identical
+ * messages, one persisted row, and the second one silently left the screen.
+ * Measured before the fix: consecutive calls returned `["echo-send"]` then
+ * `[]`.
+ *
+ * The pairing is recorded where it survives the call: in the survivors' own
+ * `serverHighWaterBefore`, raised to the newest row consumed by an echo before
+ * them. There is deliberately no side table of consumed row ids — that is the
+ * same read-modify-write hazard moved somewhere else, and a set held outside
+ * the values it describes cannot cross a remount at all.
+ *
+ * Raising is safe because a survivor is, by definition, an echo no *current*
+ * row matches, and `harness_items` ids only grow: any row that can still
+ * confirm it has yet to be written and will outrank the raised bar.
+ *
+ * KNOWN GAP: that argument assumes echoes and their rows pair in the same
+ * order — which they do, because the kernel appends user rows in delivery order
+ * and echoes are minted in that same order. If they ever paired out of order,
+ * an earlier echo taking a later row would raise the bar past a lower row that
+ * only a later echo matches, and that echo would stand forever. Left as
+ * written rather than defended against: the failure it would replace is losing
+ * the reader's sentence, and the guard would have to guess which pairing was
+ * intended.
  */
 export function reconcileOptimisticConversationTurns(
   serverTurns: readonly ConversationMessage[],
   echoes: readonly OptimisticConversationTurn[],
 ): readonly OptimisticConversationTurn[] {
   const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
-  return echoes.filter((echo) => {
-    const match = available.findIndex((turn) => {
-      const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
-      return sequence > echo.serverHighWaterBefore
-        && reconcileUserEchoes([turn], [echo]).length === 0;
-    });
-    if (match < 0) return true;
-    available.splice(match, 1);
-    return false;
-  });
+  const surviving: OptimisticConversationTurn[] = [];
+  let consumed = Number.NEGATIVE_INFINITY;
+  for (const echo of echoes) {
+    const floor = Math.max(echo.serverHighWaterBefore, consumed);
+    const match = available.findIndex((turn) => serverTurnSequence(turn) > floor
+      && reconcileUserEchoes([turn], [echo]).length === 0);
+    if (match < 0) {
+      surviving.push(floor === echo.serverHighWaterBefore
+        ? echo
+        : { ...echo, serverHighWaterBefore: floor });
+      continue;
+    }
+    const [taken] = available.splice(match, 1);
+    if (taken !== undefined) consumed = Math.max(consumed, serverTurnSequence(taken));
+  }
+  return surviving;
 }
 
 /**

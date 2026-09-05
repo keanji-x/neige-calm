@@ -45,6 +45,24 @@ declare module '@tanstack/history' {
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
 export const FILE_PUSHED_STATE_KEY = 'ncFilePushed';
 export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
+/**
+ * KNOWN GAP (#1449) — this carrier is browser session history, and #1449's
+ * scope fence did not name it.
+ *
+ * The fence listed "no kernel projection, no longer client cache, no
+ * localStorage". `history.state` is none of those and is still a store: the
+ * reader's own sentence is written into the session-history entry, browsers
+ * persist that for session restore, and it survives a hard reload of the same
+ * URL. A successful landing strikes it off (`usePlannerOpenIntent`'s
+ * `disarm`), but the documented failed-landing path — the track detail read
+ * errors, so the body that would redeem the intent never mounts — leaves it
+ * there indefinitely.
+ *
+ * It does not reach the URL, the title or the query string: `state` and
+ * `search` are separate arguments to `navigate` and only `search` is
+ * serialized into the location. Registered rather than fixed: making the
+ * sentence readable without a client-side carrier at all is #1475.
+ */
 export const PLANNER_OPEN_MESSAGE_STATE_KEY = 'ncOpenPlannerMessage';
 
 export type NavTarget =
@@ -320,10 +338,11 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
       state: (previous) => {
         const next = { ...previous };
         delete next[PLANNER_OPEN_STATE_KEY];
-        /* Both, together. The message is half of the same one-shot intent, and
-           an entry left holding it would hand the sentence to a later reading
-           of this entry with nothing to say whether it had already been
-           echoed. */
+        /* The marker alone already makes the message unreachable — `message`
+           above is read only under `armed`. Deleting it too is depth, not the
+           mechanism, and it is what stops the sentence from staying in this
+           entry's browser history state after the landing (see the KNOWN GAP
+           on `PLANNER_OPEN_MESSAGE_STATE_KEY`). */
         delete next[PLANNER_OPEN_MESSAGE_STATE_KEY];
         return next;
       },

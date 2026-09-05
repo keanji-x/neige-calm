@@ -559,11 +559,22 @@ export function useConversationStore(
         const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
           turn.author !== 'activity' && !isOptimisticConversationTurn(turn));
         const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
-        const unresolvedIds = new Set(unresolved.map((turn) => turn.id));
-        const recorded = !unresolvedIds.has(echo.id);
-        const nextTurns = knownTurns.filter((turn) =>
-          !isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id));
-        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) nextTurns.push(echo);
+        /* Written back **as reconciliation returned them**, not as they went
+           in. A survivor comes back with its high-water raised to the row an
+           earlier echo consumed, and that raise is the whole record of the
+           pairing: dropped here, the next mount reconciles this echo against
+           a row that is already spoken for and retires it
+           (`reconcileOptimisticConversationTurns`). */
+        const survivors = new Map(unresolved.map((turn) => [turn.id, turn]));
+        const recorded = !survivors.has(echo.id);
+        const nextTurns = knownTurns.flatMap((turn) => {
+          if (!isOptimisticConversationTurn(turn)) return [turn];
+          const survivor = survivors.get(turn.id);
+          return survivor === undefined ? [] : [survivor];
+        });
+        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) {
+          nextTurns.push(survivors.get(echo.id) ?? echo);
+        }
         return {
           conversation: {
             ...known,
@@ -714,21 +725,51 @@ type ConversationPanelSource = Readonly<{
  * one, and it is retired by the same one-to-one reconciliation
  * (`reconcileOptimisticConversationTurns`) the moment codex's row arrives.
  *
- * `serverHighWaterBefore: 0` is exact rather than conservative here: the card
- * was minted by the very request that carried this message, so no persisted
- * item can precede it, and the first user row the server sends back is the
- * only one this echo can match.
+ * `serverHighWaterBefore: 0` is the lowest possible bar, and that is the safe
+ * direction rather than an exact statement. On the direct path it happens to
+ * be exact — the card was minted by the request that carried this message, so
+ * no persisted item precedes it. On the two recovery paths it is not:
+ * `adoptIfItLanded` adopts a card whose create answer was lost, and a landing
+ * that failed and was retried redeems an intent that is still armed, and both
+ * can reach a card the agent has already written rows to. Too low only means
+ * this echo can be retired by a row that is not the one it is waiting for —
+ * which carries the same text — and never that it is stranded. Which row
+ * retires it is decided by text and by the one-to-one pairing in
+ * `reconcileOptimisticConversationTurns`, not by being the first.
  *
  * The registry, not local state, because the store that will render this echo
  * is not mounted yet — the drawer opens on the row a commit later, and on the
  * track-create path a whole route later. The registry is what both of those
  * read their optimistic turns from.
  *
+ * Merged into the entry rather than written over it, and idempotent on the
+ * text. Both halves have a reachable case. A tab that had already read this
+ * conversation holds its transcript in the registry, and a wholesale
+ * `remember` replaced it with `[echo]` — the next mount whose history read is
+ * still unknown falls back to those turns (`serverEntries`) and would show the
+ * echo alone instead of the thread it already had. And the redemption effect
+ * can run twice for one landing: `disarm()` navigates asynchronously, so a
+ * re-run triggered by the cards query refetching still sees `armed`, and a
+ * merging write with no identity check would append the sentence twice.
+ *
  * **The hole this leaves, stated rather than papered over** (#1475): the echo
  * lives in this tab's memory. Reload before codex echoes and the thread is
  * empty again; a second device never sees it. Making the sentence readable
  * from `GET /api/cards/{id}/harness/items` is a persistence-boundary change
  * with its own review surface and is deliberately not this change.
+ *
+ * **KNOWN GAP — a door this change opens, whose cause is in the kernel.**
+ * While a create's first sentence is still queued, a second message sent on
+ * the same card is coalesced by the kernel into one turn joined with `\n\n`
+ * (`crates/calm-server/src/harness/run_loop.rs`). The single row that comes
+ * back retires the *first* echo through `userTextMatchesEcho`'s
+ * `startsWith(echo + "\n")` arm, and the second echo has nothing left to
+ * match: the text stands twice and the composer never reopens. On
+ * `origin/main` the window is unreachable — there was no create echo to
+ * strand — so this change is what makes it reachable, but the cause is the
+ * kernel's coalescing meeting a prefix match. Not fixed here: the honest fix
+ * is either a message identity on the wire or a kernel that does not join
+ * two user turns, and both are their own change.
  */
 function rememberCreateEcho(
   registry: ConversationRegistry, row: Conversation, text: string,
@@ -743,18 +784,31 @@ function rememberCreateEcho(
        moment the reader lands, and this echo may stand until codex replies. */
     deliveredByCreate: true,
   };
-  registry.remember(
-    {
-      ...row,
-      /* Only the absent direction, as everywhere else a title is projected: an
-         assistant card is minted `title: null` and the name a reader sees is
-         derived from the first thing said in it. */
-      title: row.title ?? conversationNameFrom(text),
-      updatedAt: Math.max(row.updatedAt, echo.atMs),
-      turns: 1,
-    },
-    [echo],
-  );
+  registry.rememberMerging(row.id, (entry) => {
+    const knownTurns = entry?.turns ?? [];
+    const known = entry?.conversation;
+    /* This create's sentence is already standing on this card. Identity is the
+       text and not the echo id, because a second run of the redemption mints a
+       fresh id for the same landing. A create delivers exactly one message, so
+       "same text, still unretired, also from a create" is that message. */
+    const already = knownTurns.some((turn) => isOptimisticConversationTurn(turn)
+      && turn.deliveredByCreate === true && turn.text === text);
+    const turns = already ? knownTurns : [...knownTurns, echo];
+    return {
+      conversation: {
+        ...row,
+        /* Only the absent direction, as everywhere else a title is projected: an
+           assistant card is minted `title: null` and the name a reader sees is
+           derived from the first thing said in it. */
+        title: (known?.title ?? row.title) ?? conversationNameFrom(text),
+        /* Never backwards, and unmoved on the no-op path so the write settles
+           instead of re-firing on every render. */
+        updatedAt: Math.max(known?.updatedAt ?? 0, row.updatedAt, already ? 0 : echo.atMs),
+        turns: turns.filter((turn) => turn.author !== 'activity').length,
+      },
+      turns,
+    };
+  });
 }
 
 /** Which row is open, or the draft that has not become a row yet. */

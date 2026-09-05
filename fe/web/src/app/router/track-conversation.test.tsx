@@ -833,6 +833,59 @@ describe('track conversations', () => {
   });
 
   /*
+   * ── #1449 review round 1, finding 1, through the real store ───────────────
+   *
+   * The reported shape, driven end to end: the thread is started with `same`,
+   * the reader says `same` again, and only the first one has been persisted.
+   * Two echoes with the same text and the same `serverHighWaterBefore` of 0,
+   * one server row. It must retire exactly one of them, and it must still
+   * retire exactly one after the merge effect has run again over the set the
+   * previous pass returned — which is what put the second `same` back off the
+   * screen and unlocked the composer early.
+   *
+   * On screen at the end: the persisted `same` and the echo of the one that is
+   * still on its way — two, not one and not three.
+   */
+  it('does not let the first persisted row retire a second identical message', async () => {
+    const minted: Row[] = [];
+    let persisted: ReturnType<typeof harnessMessage>[] = [];
+    const { requests } = setup((request) => {
+      if (request.method === 'POST' && request.path === CONVERSATIONS) {
+        const row = derivedRow('w1', request);
+        minted.push(row);
+        return created(row);
+      }
+      if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
+      if (request.path.includes(HISTORY_PATH)) return ok([...persisted]);
+      if (request.path.endsWith('/planner/input')) return inputAccepted();
+      if (request.path.endsWith('/planner/run')) return runIdle();
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('same');
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
+    const drawer = drawerElement();
+    await waitFor(() => expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1));
+
+    /* The kernel echoes the first sentence back, and the reader says it again.
+       The composer is open because a create echo is already delivered. */
+    persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'same' }] })];
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('same');
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
+
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['same', 'same']));
+    /* And it stays two: the merge effect runs again on every registry change,
+       and each of those passes reconciles the set the last one returned. */
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect([...drawer.querySelectorAll('[data-nc-turn="you"]')]).toHaveLength(2);
+  });
+
+  /*
    * The other half of the same paint: an unknown transcript is not an empty
    * one. `Loading conversation…` and "Nothing said yet." used to render
    * together, because the thread was mounted unconditionally beside the notice.
@@ -1251,5 +1304,72 @@ describe('registry write-through', () => {
     expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['ping', 'ping']);
     /* The assertion: two messages, two identities across the remount. */
     expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
+  });
+});
+
+/*
+ * ── The registry's two writes, and why the create echo needs the second ──────
+ *
+ * #1449 review round 1, NIT 5. `remember` replaces an entry's turns wholesale;
+ * `rememberMerging` runs the merge inside the state updater against whatever
+ * the entry holds at the write. `rememberCreateEcho` uses the second, and the
+ * difference is not stylistic: the tab can already hold this conversation's
+ * transcript — it opened it from the rail before Back landed it on an entry
+ * whose planner-open intent was still armed — and a wholesale write leaves the
+ * entry holding the echo alone. The next mount whose history read is still
+ * unknown falls back to those very turns (`serverEntries`), so what the reader
+ * would get is one sentence in place of the thread they had.
+ */
+describe('registry merge semantics', () => {
+  const ROW: Conversation = {
+    id: 'card-x', trackId: 'w1', title: null, kind: 'track-assistant',
+    state: 'idle', updatedAt: 5,
+  };
+  const READ: TranscriptEntry = { id: '1', author: 'you', text: 'already read', atMs: 1 };
+  const ECHO: TranscriptEntry = {
+    id: 'echo-1', author: 'you', text: 'just created', atMs: 9, serverHighWaterBefore: 0,
+  } as TranscriptEntry;
+
+  function mount() {
+    let registry!: ReturnType<typeof useConversationRegistry>;
+    function Probe() {
+      registry = useConversationRegistry();
+      return null;
+    }
+    render(<ConversationProvider><Probe /></ConversationProvider>);
+    return {
+      act: async (run: () => void) => { await act(async () => { run(); await Promise.resolve(); }); },
+      turns: () => registry.turnsOf(ROW.id),
+      registry: () => registry,
+    };
+  }
+
+  it('replaces on remember and appends on rememberMerging', async () => {
+    const view = mount();
+    await view.act(() => { view.registry().remember(ROW, [READ]); });
+    expect(view.turns().map((turn) => turn.id)).toEqual(['1']);
+
+    /* What `rememberCreateEcho` used to do. */
+    await view.act(() => { view.registry().remember(ROW, [ECHO]); });
+    expect(view.turns().map((turn) => turn.id)).toEqual(['echo-1']);
+
+    /* And what it does now, from the transcript this tab had read. */
+    await view.act(() => { view.registry().remember(ROW, [READ]); });
+    await view.act(() => {
+      view.registry().rememberMerging(ROW.id, (entry) => ({
+        conversation: ROW, turns: [...(entry?.turns ?? []), ECHO],
+      }));
+    });
+    expect(view.turns().map((turn) => turn.id)).toEqual(['1', 'echo-1']);
+  });
+
+  it('creates the entry when rememberMerging finds nothing', async () => {
+    const view = mount();
+    await view.act(() => {
+      view.registry().rememberMerging(ROW.id, (entry) => ({
+        conversation: ROW, turns: [...(entry?.turns ?? []), ECHO],
+      }));
+    });
+    expect(view.turns().map((turn) => turn.id)).toEqual(['echo-1']);
   });
 });
