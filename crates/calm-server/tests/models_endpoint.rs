@@ -731,15 +731,14 @@ async fn config_read_shares_the_one_request_budget() {
     let app = boot.app.clone();
     let query = format!("?card_id={}", boot.card_id);
 
+    // No timing assertion at all, deliberately. A virtual-clock race against
+    // this request was measured to be insensitive to the budget constant
+    // (shortening `CODEX_READ_TIMEOUT` to 3s left it green), because the
+    // paused clock advances on parked socket IO rather than on our deadlines.
+    // An assertion that cannot fail is worse than no assertion: the evidence
+    // below is on the wire.
     tokio::time::pause();
-    let mut request = Box::pin(get_models(&app, &query));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(5), &mut request)
-            .await
-            .is_err(),
-        "still in flight at 5s, as the catalog read's own bound requires"
-    );
-    let (status, body) = request.await;
+    let (status, body) = get_models(&app, &query).await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["source"], "unavailable");
