@@ -32,7 +32,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1' }}
+        card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running' }}
         host={fakeHost()}
       />,
     );
@@ -58,7 +58,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1' }}
+        card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running' }}
         host={fakeHost()}
       />,
     );
@@ -72,7 +72,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: null }}
+        card={{ type: 'codex', id: 'x1', title: null, terminalId: null, sessionState: 'starting' }}
         host={fakeHost()}
       />,
     );

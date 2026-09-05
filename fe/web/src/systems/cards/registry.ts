@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import type { CardRuntimeView } from '../../../../core/api/schemas.js';
 import type { CardHostCapabilities } from './contracts.js';
 
 export interface CardDataMap {
@@ -11,6 +12,7 @@ export interface KernelCardInput {
   readonly id: string;
   readonly kind: string;
   readonly payload: unknown;
+  readonly runtime?: CardRuntimeView;
 }
 
 export interface CardSize {

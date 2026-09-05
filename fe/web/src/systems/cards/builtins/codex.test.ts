@@ -18,12 +18,12 @@ describe('CODEX_CARD_ENTRY', () => {
   it('resolves kernel codex cards, including before terminal_id is projected', () => {
     expect(CODEX_CARD_ENTRY.fromKernel?.({
       id: 'x1', kind: 'codex', payload: { terminal_id: 't1' },
-    })).toEqual({ type: 'codex', id: 'x1', title: null, terminalId: 't1' });
+    })).toEqual({ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: null });
     // The kernel projects `terminal_id` on read; a card observed between mint
     // and projection resolves with a null terminal rather than not at all.
     expect(CODEX_CARD_ENTRY.fromKernel?.({
       id: 'x2', kind: 'codex', payload: { goal: 'do the thing' },
-    })).toEqual({ type: 'codex', id: 'x2', title: null, terminalId: null });
+    })).toEqual({ type: 'codex', id: 'x2', title: null, terminalId: null, sessionState: null });
     expect(CODEX_CARD_ENTRY.fromKernel?.({
       id: 'x3', kind: 'terminal', payload: { terminal_id: 't1' },
     })).toBeNull();

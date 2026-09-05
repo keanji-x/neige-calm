@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 
+import { cardRuntimeViewSchema } from '../api/schemas.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import { visibleAreas, type Area } from './area.js';
 
@@ -128,6 +129,7 @@ export const cardWireSchema = z.object({
   sort: z.number(),
   payload: z.unknown(),
   deletable: z.boolean().default(true),
+  runtime: cardRuntimeViewSchema.optional(),
   created_at: z.number(),
   updated_at: z.number(),
 });

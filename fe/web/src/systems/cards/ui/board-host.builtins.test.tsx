@@ -14,7 +14,7 @@
 // The two subjects are the two kinds whose heads own a delete: the PTY head
 // shared by terminal / codex / claude (`terminal-card.tsx`) and the file card's
 // own (`builtins/file-viewer.tsx`). Both are mounted without their backing
-// runtime — a `terminal_id`-less row is "Starting…", and a host with no
+// runtime — a `terminal_id`-less row has no session, and a host with no
 // filesystem port says so — which is exactly what keeps the assertion about the
 // head rather than about xterm or CodeMirror.
 
@@ -69,8 +69,8 @@ it('draws the delete on a real terminal card and calls back with that card id', 
   const onRemoveCard = vi.fn();
   boardOfBuiltins(onRemoveCard);
   // The head is the production one: the card is `terminal_id`-less, so the body
-  // is the "Starting…" line and the × is the only control on it.
-  expect(screen.getByText('Starting terminal…')).toBeTruthy();
+  // is the unavailable-session line and the × is the only control on it.
+  expect(screen.getByText('No terminal session available.')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Delete card Build log' }));
   expect(onRemoveCard).toHaveBeenCalledWith('card-term');
 });

@@ -15,7 +15,7 @@
 
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import { TerminalCardView } from './terminal-card.tsx';
-import { terminalIdFromPayload } from './terminal.ts';
+import { terminalSessionFromCard, type TerminalCard } from './terminal.ts';
 
 declare module '../registry.js' {
   interface CardDataMap {
@@ -28,6 +28,7 @@ export type ClaudeCard = Readonly<{
   id: string;
   title: string | null;
   terminalId: string | null;
+  sessionState: TerminalCard['sessionState'];
 }>;
 
 /**
@@ -58,7 +59,7 @@ export const CLAUDE_CARD_ENTRY = Object.freeze({
         type: 'claude',
         id: card.id,
         title: null,
-        terminalId: terminalIdFromPayload(card.payload),
+        ...terminalSessionFromCard(card),
       } as const)
       : null
   ),
