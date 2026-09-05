@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { ReportTaskRow, TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import { boundedStatusDetail, type ReportTaskRow, type TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -52,10 +52,10 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   }
 
   const live: LiveTask = payload;
-  const status = task?.status ?? null;
+  const status = task?.execution?.status ?? task?.status ?? null;
   const explanation = [
-    status === null ? null : taskStatusPhrase(status, task?.statusDetail ?? null),
-    task?.pendingReason?.message,
+    status === null ? null : taskStatusPhrase(task?.execution?.label ?? status, task?.execution === undefined ? task?.statusDetail ?? null : boundedStatusDetail(task.execution.statusDetail)),
+    task?.execution === undefined ? task?.pendingReason?.message : null,
   ].filter(Boolean).join(' — ');
   return (
     <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
@@ -68,7 +68,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
           {live.kind}{live.spawn === 'sub-wave' ? ' · sub-track' : ''}
         </span>
         <span className={styles.state} title={explanation || undefined}>
-          {status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
+          {task?.execution?.label ?? status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
         </span>
       </summary>
 

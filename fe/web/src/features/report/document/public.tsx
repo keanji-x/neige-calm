@@ -67,6 +67,8 @@ export type ReportDocumentProps = Readonly<{
   arrivalAnchorId?: string | null;
   /** The same execution diagnostics used by the task inventory. */
   taskVerdicts?: readonly TaskVerdict[];
+  /** App-composed rows shared with the task inventory when execution evidence is loaded. */
+  taskRows?: readonly ReportTaskRow[];
   /** App-owned current/history query and recovery action, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
 }>;
@@ -80,7 +82,7 @@ export type ReportDocumentProps = Readonly<{
  */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
-  arrivalAnchorId, taskVerdicts, renderTaskExecution,
+  arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
@@ -158,7 +160,7 @@ export function ReportDocument({
                   permanent empty appendix would make that look like a gap. */}
               {processBlocks.length > 0 && (
                 <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
-                  tasks={deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution} />
+                  tasks={taskRows ?? deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution} />
               )}
             </>
           );

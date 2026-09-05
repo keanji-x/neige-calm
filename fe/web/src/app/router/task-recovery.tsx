@@ -1,17 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ApiFailure, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { recoverTaskOperation, taskAttemptsOperation, type TaskRecoveryReceipt,
-  type TaskRecoveryRequest } from '../../../../core/domain/task-recovery.ts';
+import { recoverTaskOperation, taskAttemptsOperation, type TaskRecoveryRequest } from '../../../../core/domain/task-recovery.ts';
 import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
+import { currentTaskExecution, type TaskRecoveryIntent as Intent } from '../../../../core/domain/task-execution.ts';
+import { taskHistoryKey, taskRecoveryIntentKey } from './task-execution.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
-
-type Intent =
-  | Readonly<{ phase: 'idle' }>
-  | Readonly<{ phase: 'sending' | 'uncertain'; request: TaskRecoveryRequest }>
-  | Readonly<{ phase: 'accepted'; receipt: TaskRecoveryReceipt }>
-  | Readonly<{ phase: 'rejected'; message: string }>;
 
 function uncertainFailure(failure: ApiFailure): boolean {
   return failure.kind === 'transport' || failure.kind === 'decode'
@@ -26,8 +21,8 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
 }) {
   const client = useQueryClient();
   // Prefix follows existing task/report events without introducing a second event listener.
-  const historyKey = [...queryKeys.trackReport(trackId), 'attempts', taskKey];
-  const intentKey = ['task-recovery-intent', trackId, taskKey];
+  const historyKey = taskHistoryKey(trackId, taskKey);
+  const intentKey = taskRecoveryIntentKey(trackId, taskKey);
   const intentQuery = useQuery<Intent>({ queryKey: intentKey, queryFn: () => ({ phase: 'idle' }),
     initialData: { phase: 'idle' }, enabled: false, staleTime: Infinity, gcTime: Infinity });
   const intent = intentQuery.data;
@@ -53,7 +48,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     else {
       if (history.isError || history.isFetching || view === undefined || !view.recovery.allowed
         || view.current.status !== 'failed'
-        || (active?.phase === 'accepted' && view.current.attempt_id === active.receipt.previous_attempt_id)) return;
+        || currentTaskExecution(view, active)?.status !== 'failed') return;
       request = { expected_attempt_id: view.current.attempt_id, idempotency_key: mintIdempotencyKey(),
         reason: 'User requested a new attempt under the unchanged task requirements.' };
     }
@@ -74,17 +69,18 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
       await refresh();
     }
   };
+  const execution = currentTaskExecution(history.data, intent);
   const busy = intent.phase === 'sending';
   const canRecover = intent.phase === 'uncertain' || busy
     || (!history.isError && !history.isFetching && history.data?.recovery.allowed === true
       && history.data.current.status === 'failed'
-      && !(intent.phase === 'accepted' && history.data.current.attempt_id === intent.receipt.previous_attempt_id));
+      && execution?.status === 'failed');
   const current = history.data?.current;
   const accepted = intent.phase === 'accepted' && (current === undefined
     || current.attempt_id === intent.receipt.previous_attempt_id
     || (current.attempt_id === intent.receipt.attempt_id
       && ['pending', 'dispatched', 'awaiting_projection'].includes(current.status)));
-  return <TaskRecoveryDetails view={history.data} loading={history.isFetching} busy={busy}
+  return <TaskRecoveryDetails current={execution} view={history.data} loading={history.isFetching} busy={busy}
     loadError={history.error instanceof ApiError ? history.error.message : history.isError ? 'History is unavailable.' : null}
     error={intent.phase === 'rejected' ? intent.message : intent.phase === 'uncertain'
       ? 'The recovery response could not be confirmed. Retry the same request to check its outcome.' : null}

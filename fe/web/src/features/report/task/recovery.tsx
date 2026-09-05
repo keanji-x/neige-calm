@@ -1,9 +1,11 @@
+import type { CurrentTaskExecution } from '../../../../../core/domain/task-execution.ts';
 import type { ReactNode } from 'react';
 import { attemptStatusLabel, type TaskAttempt, type TaskRecoveryView } from '../../../../../core/domain/task-recovery.ts';
 import styles from './task.module.css';
 
 export type TaskRecoveryProps = Readonly<{
   view: TaskRecoveryView | undefined;
+  current: CurrentTaskExecution | undefined;
   loading: boolean;
   loadError: string | null;
   busy: boolean;
@@ -17,15 +19,16 @@ export type TaskRecoveryProps = Readonly<{
 }>;
 
 /** Rendering only: capability and request ownership belong to app/core. */
-export function TaskRecoveryDetails({ view, loading, loadError, busy, error, accepted, retryUncertain,
+export function TaskRecoveryDetails({ view, current, loading, loadError, busy, error, accepted, retryUncertain,
   onRefresh, onRecover, openWorker, openableWorkerIds }: TaskRecoveryProps) {
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
     {loadError !== null && <p role="alert">Could not refresh execution history: {loadError}</p>}
-    {view !== undefined && <>
-      <p className={styles.current}>Current attempt {view.current.generation} · {attemptStatusLabel(view.current.status)}</p>
-      {view.current.status_detail !== null && <p className={styles.detail}>{view.current.status_detail}</p>}
-      {view.current.status === 'failed' && <p className={styles.detail}>{view.recovery.reason}</p>}
+    {current !== undefined && <>
+      <p className={styles.current}>{current.generation === null ? current.label
+        : `Current attempt ${current.generation} · ${current.label}`}</p>
+      {current.statusDetail !== null && <p className={styles.detail}>{current.statusDetail}</p>}
+      {current.status === 'failed' && view !== undefined && <p className={styles.detail}>{view.recovery.reason}</p>}
     </>}
     {busy && <p role="status">Requesting recovery…</p>}
     {accepted && <p role="status">Recovery requested. A new attempt is queued for preparation.</p>}
@@ -41,7 +44,7 @@ export function TaskRecoveryDetails({ view, loading, loadError, busy, error, acc
         {view.attempts.map((attempt) => <li key={attempt.attempt_id}>
           <details>
             <summary>Attempt {attempt.generation} · {attemptStatusLabel(attempt.status)}
-              {attempt.attempt_id === view.current.attempt_id ? ' · Current' : ''}</summary>
+              {attempt.attempt_id === current?.attemptId ? ' · Current' : ''}</summary>
             <AttemptEvidence attempt={attempt}>
               {attempt.worker_card_id !== null && openWorker !== undefined
                 && openableWorkerIds.has(attempt.worker_card_id)

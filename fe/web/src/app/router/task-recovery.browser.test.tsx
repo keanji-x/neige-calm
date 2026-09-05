@@ -5,6 +5,8 @@ import { afterEach, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
+import { deriveReportTasks, type TrackReport } from '../../../../core/domain/report.ts';
+import { useCurrentTaskRows } from './task-execution.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import '../../styles/entry.css';
 import { TaskRecovery } from './task-recovery.tsx';
@@ -37,19 +39,25 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   await page.viewport(1080, 800);
-  render(<QueryClientProvider client={client}><div style={{ padding: 24 }}><ReportDocument
-    report={{ summary: '', body: '', blocks: [{ id: 'b-B', kind: 'task', payload: {
-      key: 'B', declared_by: 'spec', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
-    } }] }} empty={null}
-    taskVerdicts={[{ blockId: 'b-B', key: 'B', schedulable: true, status: 'failed' }]}
-    renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
-      transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set(['worker-old'])}
-      openWorker={(cardId) => { conversation = cardId; }} />}
-  /></div></QueryClientProvider>);
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'b-B', kind: 'task', payload: {
+    key: 'B', declared_by: 'spec', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
+  } }] };
+  function Document() {
+    const rows = useCurrentTaskRows('w1', deriveReportTasks(report.blocks, [
+      { blockId: 'b-B', key: 'B', schedulable: true, status: 'failed', workerCardId: 'worker-old' },
+    ]));
+    return <ReportDocument report={report} taskRows={rows} empty={null}
+      renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
+        transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set(['worker-old'])}
+        openWorker={(cardId) => { conversation = cardId; }} />} />;
+  }
+  render(<QueryClientProvider client={client}><div style={{ padding: 24 }}><Document /></div></QueryClientProvider>);
   await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
   await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
   await page.getByRole('button', { name: 'Recover task', exact: true }).click();
   await expect.element(page.getByText('Current attempt 2 · Preparing')).toBeVisible();
+  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Preparing');
+  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).not.toContain('failed');
   await page.getByText('Attempt history (2)').click();
   await page.getByText('Attempt 1 · Failed', { exact: true }).click();
   await expect.element(page.getByText('The implementation did not pass validation.')).toBeVisible();
