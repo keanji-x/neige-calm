@@ -2239,6 +2239,36 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         "the harvested sentence must be delivered by the runtime the re-drive actually started, \
          exactly once"
     );
+    // #1449 B2 — and the undo journal names the racer.
+    //
+    // This is a structural assertion, deliberately: the end-to-end witness
+    // would need this operation to fail AFTER its app-server transaction
+    // committed, and the reachable failure injections all land before it. What
+    // the journal records is exactly what was missing — `taken_from` was built
+    // inside the transaction closure and dropped there, so
+    // `output.data["harvested_from"]`, the only thing compensation reads, never
+    // learned about the racer's sentence and a later failure stranded it on a
+    // `failed` row.
+    let tx_output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let tx_output: serde_json::Value = serde_json::from_str(&tx_output).unwrap();
+    let journal = tx_output["data"]["harvested_from"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        journal
+            .iter()
+            .any(|entry| entry["runtime_id"] == serde_json::json!(racer_id)
+                && entry["messages"].to_string().contains(STRANDED)),
+        "the app-server transaction's harvest must reach the undo journal, or a later failure \
+         strands the racer's sentence on a `failed` runtime: {journal:#?}"
+    );
+
     let racer_stamp: Option<i64> =
         sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
             .bind(&racer_id)
