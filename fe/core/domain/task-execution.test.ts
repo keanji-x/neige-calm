@@ -5,11 +5,11 @@ import type { TaskRecoveryView } from './task-recovery.js';
 function view(id: string, generation: number): TaskRecoveryView {
   const current = { attempt_id: id, generation, status: 'failed', status_detail: 'validation failed',
     worker_card_id: `${id}-worker`, created_at_ms: 1000, finished_at_ms: 2000 };
-  return { key: 'B', current, attempts: [current], recovery: { allowed: true, code: 'available', reason: 'Recover.' } };
+  return { key: 'b', current, attempts: [current], recovery: { allowed: true, code: 'available', reason: 'Recover.' } };
 }
 
 it('fences every older or same-generation mismatched snapshot behind an accepted receipt', () => {
-  const intent = { phase: 'accepted', receipt: { key: 'B', previous_attempt_id: 'old', attempt_id: 'new', generation: 2 } } as const;
+  const intent = { phase: 'accepted', receipt: { key: 'b', previous_attempt_id: 'old', attempt_id: 'new', generation: 2 } } as const;
   for (const snapshot of [undefined, view('old', 1), view('other', 2)]) {
     expect(currentTaskExecution(snapshot, intent)).toEqual({ attemptId: 'new', generation: 2,
       status: 'awaiting_refresh', label: 'Awaiting execution refresh', statusDetail: null, workerCardId: null });

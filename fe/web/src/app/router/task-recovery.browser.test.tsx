@@ -26,10 +26,10 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
     requests.push(request);
     if (request.method === 'POST') {
       current = second;
-      return { status: 200, statusText: 'OK', body: { key: 'B', previous_attempt_id: first.attempt_id,
+      return { status: 200, statusText: 'OK', body: { key: 'b', previous_attempt_id: first.attempt_id,
         attempt_id: second.attempt_id, generation: 2 } };
     }
-    const body: TaskRecoveryView = { key: 'B', current, attempts: current === first ? [first] : [first, second],
+    const body: TaskRecoveryView = { key: 'b', current, attempts: current === first ? [first] : [first, second],
       recovery: { allowed: current === first, code: current === first ? 'available' : 'not_failed',
         reason: 'Start a new attempt under the unchanged task requirements.' } };
     return { status: 200, statusText: 'OK', body };
@@ -38,12 +38,12 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   await page.viewport(1080, 800);
-  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'b-B', kind: 'task', payload: {
-    key: 'B', declared_by: 'user', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'b-b', kind: 'task', payload: {
+    key: 'b', declared_by: 'user', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
   } }] };
   function Document() {
     const rows = useCurrentTaskRows('w1', deriveReportTasks(report.blocks, [
-      { blockId: 'b-B', key: 'B', schedulable: true, status: 'failed', workerCardId: 'worker-old' },
+      { blockId: 'b-b', key: 'b', schedulable: true, status: 'failed', workerCardId: 'worker-old' },
     ]));
     return <ReportDocument report={report} taskRows={rows} empty={null}
       renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
