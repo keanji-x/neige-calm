@@ -5,6 +5,8 @@ It does not publish a GitHub release, create a tag, or upgrade an existing insta
 Use a clean candidate revision containing the fixes selected for the release.
 The package release ID (for example `0.1.0-alpha.1`) is distinct from individual
 crate versions; `/api/version.buildSha` identifies the compiled source.
+An optional release codename (for example **yansong**) belongs in the display
+title and release notes; keep the package release ID in the `N.N.N-alpha.N` format.
 
 ## 1. Build the distribution (maintainer)
 
@@ -36,7 +38,7 @@ Inside the archive:
 neige-calm-0.1.0-alpha.1-linux-x86_64/
 ├── BUILD.json
 ├── INSTALL.md
-├── docs/                             # installation and recovery runbooks
+├── docs/                             # installation, usage, and recovery guides
 └── release/
     ├── manifest.json
     ├── bin/{neige-app,calm-server,calm-proc-supervisor,
