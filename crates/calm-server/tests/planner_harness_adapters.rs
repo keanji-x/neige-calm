@@ -6,8 +6,8 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, session_mcp_token_set_tx,
-    session_projection_by_id_tx, session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_update_tx,
+    session_mcp_token_set_tx, session_projection_by_id_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::harness::{
@@ -15,7 +15,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::{CardId, TrackId};
 use calm_server::mcp_server::auth;
-use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, Track, new_id, now_ms};
+use calm_server::model::{CardPatch, CardRole, NewArea, NewCard, NewTrack, Track, new_id, now_ms};
 use calm_server::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
 use calm_server::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
 use calm_server::operation::planner_harness_start_adapter::{
@@ -1418,6 +1418,190 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
             .is_none(),
         "recovery must not mint a second planner thread"
     );
+}
+
+async fn card_payload(repo: &SqlxRepo, card_id: &str) -> Value {
+    let raw: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+/// #1505 S4-1 — the app-server-interact writeback must not clobber payload keys
+/// that landed after the phase-1 snapshot was taken.
+///
+/// The adapter reads a card snapshot out of `TxOutput::result`, which the
+/// PREVIOUS transactional phase produced. Between that snapshot and the
+/// writeback sit a cross-process `thread/start` call and — because an
+/// operation is a durable resumable entity — a possible process restart, so
+/// the snapshot can be arbitrarily old. This test reproduces exactly that
+/// window: run the operation to completion, capture the card as the snapshot
+/// saw it, let another writer put keys into the payload, then rewind the
+/// operation to `app_server_interact` with the STALE `tx_output` and replay.
+///
+/// The old code copied the stale snapshot's payload and handed the whole thing
+/// to `card_update_tx`, which replaces `cards.payload_json` wholesale, so the
+/// probe keys vanished.
+#[tokio::test]
+async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let track = seed_track(&repo).await;
+    let card_id = new_id();
+    seed_planner_card(&repo, &role_cache, &track, &card_id).await;
+    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        track_id: track.id.to_string(),
+        planner_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: track.workspace.path.clone(),
+        goal: Some("adapter goal".into()),
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        opening_briefing: None,
+        first_message: None,
+        create_request_sha256: None,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("planner-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let thread_id = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("runtime row")
+        .thread_id
+        .expect("thread id");
+
+    // The card exactly as the (now stale) `TxOutput::result` snapshot saw it.
+    let stale_output_json: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut stale_output: Value = serde_json::from_str(&stale_output_json).unwrap();
+    let stale_card = stale_output["result"].clone();
+    assert!(
+        stale_card["payload"].get("model").is_none(),
+        "the snapshot must predate the concurrent write"
+    );
+
+    // A concurrent writer (in production: `PUT /api/cards/:id`, or the #1505
+    // model/effort selector) lands after the snapshot and before the replay.
+    // It also plants the four runtime keys the adapter is supposed to clear.
+    let mut concurrent_payload = card_payload(&repo, &card_id).await;
+    {
+        let map = concurrent_payload.as_object_mut().unwrap();
+        map.insert("model".into(), json!("gpt-5-codex"));
+        map.insert("reasoning_effort".into(), json!("high"));
+        map.insert("appserver_pgid".into(), json!(4242));
+        map.insert("appserver_start_time".into(), json!(1234));
+        map.insert("appserver_boot_id".into(), json!("stale-boot"));
+        map.insert("appserver_needs_initial_prompt".into(), json!(true));
+    }
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_update_tx(
+        &mut tx,
+        &card_id,
+        CardPatch {
+            title: None,
+            kind: None,
+            sort: None,
+            payload: Some(concurrent_payload),
+            deletable: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Rewind to the app-server-interact phase carrying the STALE tx_output:
+    // `codex_thread_id` is absent from `data` (phase 1 had not reached the
+    // mint yet), and `result` is the pre-concurrent-write card.
+    stale_output["result"] = stale_card;
+    stale_output["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("codex_thread_id");
+    sqlx::query(
+        r#"UPDATE operations
+              SET phase = 'app_server_interact',
+                  tx_output_json = ?1,
+                  phase_detail_json = ?2,
+                  lease_owner = NULL,
+                  lease_until_ms = NULL,
+                  completed_at_ms = NULL
+            WHERE id = ?3"#,
+    )
+    .bind(serde_json::to_string(&stale_output).unwrap())
+    .bind(
+        serde_json::to_string(&json!({
+            "kind": "mint_and_await",
+            "thread_id": thread_id,
+        }))
+        .unwrap(),
+    )
+    .bind(&op_id)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    state.operation_runtime.drive().await.unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+
+    let final_payload = card_payload(&repo, &card_id).await;
+    // Keys this adapter does not own survive the writeback.
+    assert_eq!(
+        final_payload.get("model"),
+        Some(&json!("gpt-5-codex")),
+        "concurrent payload key was clobbered by the stale snapshot: {final_payload}"
+    );
+    assert_eq!(
+        final_payload.get("reasoning_effort"),
+        Some(&json!("high")),
+        "concurrent payload key was clobbered by the stale snapshot: {final_payload}"
+    );
+    // ... and the six keys it does own are still applied.
+    assert_eq!(
+        final_payload.get("codex_thread_id"),
+        Some(&json!(thread_id)),
+        "{final_payload}"
+    );
+    assert!(
+        final_payload
+            .get("appserver_sock")
+            .and_then(Value::as_str)
+            .is_some_and(|sock| !sock.is_empty()),
+        "{final_payload}"
+    );
+    for cleared in [
+        "appserver_pgid",
+        "appserver_start_time",
+        "appserver_boot_id",
+        "appserver_needs_initial_prompt",
+    ] {
+        assert!(
+            final_payload.get(cleared).is_none(),
+            "{cleared} must be cleared by the writeback: {final_payload}"
+        );
+    }
+    // Untouched seed keys are still there too.
+    assert_eq!(final_payload.get("planner_harness"), Some(&json!(true)));
 }
 
 #[tokio::test]
