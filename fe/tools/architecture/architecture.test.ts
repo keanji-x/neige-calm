@@ -10,6 +10,7 @@ import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
 import { breakpointMismatches } from './check-breakpoint-literals.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
 import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
+import { checkDirectoryPickerHosts } from './directory-picker-hosts.mjs';
 import { duplicationManifest } from './duplication-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
@@ -28,6 +29,38 @@ function sourceFilesUnder(root: string): string[] {
 }
 
 // Independent contract tables: never derive these shapes from checker implementation.
+/*
+ * Each `directory-picker-*` case runs the sweep against its own registry, so the
+ * pair isolates one variable: within a case the registry is fixed and only the
+ * fixture source differs. The three evasion cases carry an empty registry —
+ * their positive side renders no picker at all, so the negative's single
+ * problem is "renders a picker but is not registered", which is exactly the
+ * fail-open each one used to walk through. The stale case inverts it: the
+ * registry names a host, and the negative stops rendering.
+ */
+const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>> = {
+  'directory-picker-alias': {},
+  'directory-picker-create-element': {},
+  'directory-picker-nontest-name': {},
+  'directory-picker-stale-registration': { 'web/src/features/area/gone/public.tsx': 'owns-its-modal' },
+  'directory-picker-default-export': {},
+  'directory-picker-module-moved': {},
+};
+/*
+ * Which module paths each case holds up the no-default-export premise for. The
+ * real roster (`PICKER_MODULES`) does not exist inside a fixture tree, so every
+ * case but the one that owns that premise passes an empty list; naming it here
+ * rather than defaulting keeps a fixture from silently exercising the wrong
+ * half of the checker.
+ */
+const directoryPickerModules: Record<string, readonly string[]> = {
+  'directory-picker-alias': [],
+  'directory-picker-create-element': [],
+  'directory-picker-nontest-name': [],
+  'directory-picker-stale-registration': [],
+  'directory-picker-default-export': ['web/src/ui/f/public.tsx'],
+  'directory-picker-module-moved': ['web/src/ui/f/public.tsx'],
+};
 const publicSymbolShapes = new Map<string, boolean>([
   ['export-variable', true], ['export-destructuring', true], ['export-function', true],
   ['export-class', true], ['export-interface', true], ['export-type', true],
@@ -78,6 +111,14 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
       stdout: missingRules.length ? missingRules.join('\n') : messages.map((message) => `web/src/${message.fixtureName}: ${message.ruleId}`).join('\n'),
       stderr: '',
     };
+  }
+  if (caseName.startsWith('directory-picker-')) {
+    const error = checkDirectoryPickerHosts(
+      resolve(fixtures, caseName, kind, 'web/src'),
+      directoryPickerRegistries[caseName],
+      directoryPickerModules[caseName],
+    );
+    return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
   if (caseName.startsWith('source-layout') || caseName === 'top-level-only-main') {
     const cwd = resolve(fixtures, caseName, kind);
@@ -231,6 +272,12 @@ describe('architecture fixtures', () => {
     ['source-layout-dir', 'web/src/features/inbox/shared'],
     ['top-level-only-main', 'web/src/loose.js'],
     ['test-module-runtime-state-exemption', 'architecture/'],
+    ['directory-picker-alias', 'web/src/features/area/aliased/public.tsx renders a directory picker'],
+    ['directory-picker-create-element', 'web/src/features/area/create-element/public.ts renders a directory picker'],
+    ['directory-picker-nontest-name', 'web/src/features/area/suffixed/public.spec.tsx renders a directory picker'],
+    ['directory-picker-stale-registration', 'drop the stale registration'],
+    ['directory-picker-default-export', 'web/src/ui/f/public.tsx has a default export'],
+    ['directory-picker-module-moved', 'and no file is there'],
   ]);
 
   // Timeout rationale (measured, not guessed): every case that routes through `cruise` into an
