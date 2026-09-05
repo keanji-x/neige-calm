@@ -156,18 +156,25 @@ describe('the track lifecycle status in the page header', () => {
        desktop PageHeader is intentionally replaced by MobileHeader. */
     await browserPage.viewport(1000, 600);
     renderPage({
-      track: track({ title: 'A deliberately long track title '.repeat(12), lifecycle: 'working' }),
+      track: track({
+        title: 'A deliberately long track title '.repeat(12),
+        lifecycle: 'working',
+        anyCardNeedsInput: true,
+      }),
+      onReviewNeedsInput: vi.fn(),
     });
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
     const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
+    const review = document.querySelector<HTMLElement>('[aria-label="Review input request"]')!;
     const titleBox = title.getBoundingClientRect();
     const statusBox = status.getBoundingClientRect();
 
     expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
     expect(statusBox.left - titleBox.right).toBeGreaterThanOrEqual(4);
     expect(statusBox.left - titleBox.right).toBeLessThanOrEqual(12);
+    expect(review.getBoundingClientRect().right).toBeLessThan(actions.getBoundingClientRect().left);
     expect(statusBox.right).toBeLessThan(actions.getBoundingClientRect().left);
   });
 

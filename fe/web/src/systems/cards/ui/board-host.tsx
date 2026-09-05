@@ -133,6 +133,13 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
     }
   }, []);
 
+  /*
+   * A selected card is a navigation destination, not only a lifecycle bit.
+   * RGL applies its transformed placement after the parent commit and then
+   * persists one layout frame later, so an immediate scroll is overwritten.
+   * Waiting two frames lands after both passes; the no-rAF branch remains
+   * synchronous for jsdom and non-browser hosts.
+   */
   useLayoutEffect(() => {
     if (!visible || !mounted || activeCardId === null) return;
     const reveal = () => {

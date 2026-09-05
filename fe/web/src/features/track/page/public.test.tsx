@@ -220,7 +220,7 @@ describe('TrackPage task inventory', () => {
    * and whose label is missing is exactly the failure this row must not have,
    * and it would pass a class assertion.
    */
-  it('names the status on the row instead of spelling it out', () => {
+  it('keeps the status in the row accessible name through the named status graphic', () => {
     renderPage({
       tasks: [
         running('alpha', 'running', 'card-9', 'terminal'),

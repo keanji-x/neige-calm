@@ -662,7 +662,12 @@
     text-overflow: ellipsis;
   }
 
+  /* A compact roll-up belongs in the Tasks head, where a long-running Track
+     can be scanned without opening each worker card. It is intentionally
+     quiet and single-line; every row below still carries the full status and
+     server-provided reason. */
   .taskSummary {
+    max-inline-size: 75%;
     min-inline-size: 0;
     overflow: hidden;
     color: var(--text-3);
@@ -671,6 +676,7 @@
     line-height: var(--leading-none);
     white-space: nowrap;
     text-overflow: ellipsis;
+    text-align: end;
   }
 
   .taskWithdrawn {
