@@ -36,6 +36,16 @@ use std::path::{Path, PathBuf};
 
 /// Every production source file under `crates/`, tests excluded.
 fn production_sources() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates"),
+        &mut out,
+    );
+    out.sort();
+    out
+}
+
+fn collect_sources(root: &Path, out: &mut Vec<PathBuf>) {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -53,13 +63,7 @@ fn production_sources() -> Vec<PathBuf> {
             }
         }
     }
-    let mut out = Vec::new();
-    walk(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates"),
-        &mut out,
-    );
-    out.sort();
-    out
+    walk(root, out);
 }
 
 fn repo_relative(path: &Path) -> String {
@@ -91,8 +95,21 @@ fn line_writes_handle_state(trimmed: &str) -> bool {
 /// Every production function whose body contains a SQL statement that assigns
 /// `handle_state_json`.
 fn writers_of_handle_state() -> BTreeSet<String> {
+    writers_in_files(production_sources())
+}
+
+/// The same scan, pointed at an arbitrary tree. The counter-fixture uses this
+/// so that it exercises the real walk — prefixes and all — rather than a copy.
+fn writers_in_tree(root: &Path) -> BTreeSet<String> {
+    let mut files = Vec::new();
+    collect_sources(root, &mut files);
+    files.sort();
+    writers_in_files(files)
+}
+
+fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
-    for path in production_sources() {
+    for path in files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -126,8 +143,13 @@ fn writers_of_handle_state() -> BTreeSet<String> {
 /// one today and its argument is next to it.
 /// `not-a-queue` — writes the column without touching `pending_queue`.
 const FROZEN_WRITERS: &[(&str, &str)] = &[
-    // Insert/refresh primitives: they write whatever their caller assembled,
-    // and every caller below is itself classified.
+    // Insert/refresh primitives. They write whatever their caller assembled,
+    // and their callers are NOT in this list: the scan only sees functions that
+    // contain a SQL literal, so the Rust-level writers — `persist_snapshot_inner`,
+    // `spawn_side_effect`, the deferred arm's clearing write — are invisible to
+    // it. That is the gate's main blind spot and the reason the classification
+    // beside each entry has to be read as being about this statement, not about
+    // everything that reaches it.
     (
         "crates/calm-truth/src/db/sqlite/session_mirror.rs::session_refresh_deferred_placeholder_tx",
         "row",
@@ -147,9 +169,16 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_any_runtime_tx",
         "carried",
     ),
+    // `carried`: its only caller, `persist_issuance_outcome`, serialises
+    // `snapshot_for(inner)` — the run loop's in-process queue. That is sound
+    // because it writes what this runtime still owes after its own drain, but
+    // it is not the row, and the consequence is real: on the `turn/start` error
+    // arm it writes a re-buffered batch back onto a row the harvest has already
+    // taken from, which is why the give-back has to be idempotent against the
+    // source row.
     (
         "crates/calm-truth/src/db/sqlite/session_projection.rs::session_set_handle_state_of_retired_runtime_tx",
-        "row",
+        "carried",
     ),
     (
         "crates/calm-truth/src/db/sqlite/session_row.rs::session_insert_tx",
@@ -194,16 +223,23 @@ fn every_writer_of_handle_state_json_is_classified() {
 }
 
 /// The counter-fixture. A gate only ever observed green proves nothing, so the
-/// scan is run against a tree containing a writer that is not in the inventory
-/// and must report it.
+/// real scanner is pointed at a tree containing a writer it has never been told
+/// about and must report it.
+///
+/// It calls `writers_of_handle_state` itself rather than re-running the
+/// predicate: an earlier version of this test copied the outer walk, so
+/// deleting a prefix from the real scanner's list — `pub(super) async fn`, the
+/// one `session_refresh_deferred_placeholder_tx` and
+/// `session_set_handle_state_mirror_tx` need — left it green.
 #[test]
 fn the_inventory_sees_a_writer_that_is_not_in_it() {
-    // Two shapes, because the first rule this test had only saw the first:
-    // a dedicated `SET handle_state_json`, and the column as one assignment
-    // among several — which is how the deferred-placeholder refresh writes it,
-    // and which the earlier rule silently missed.
-    let probe = r#"
-pub async fn a_brand_new_writer(tx: &mut Tx) -> Result<()> {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let crates = dir.path().join("crates").join("probe").join("src");
+    std::fs::create_dir_all(&crates).expect("probe tree");
+    std::fs::write(
+        crates.join("lib.rs"),
+        r#"
+pub(super) async fn a_writer_hiding_behind_a_visibility_prefix(tx: &mut Tx) -> Result<()> {
     sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
         .execute(tx)
         .await?;
@@ -221,27 +257,22 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
     .await?;
     Ok(())
 }
-"#;
-    let mut current_fn = String::new();
-    let mut found = Vec::new();
-    for line in probe.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed
-            .strip_prefix("pub async fn ")
-            .or_else(|| trimmed.strip_prefix("async fn "))
-        {
-            current_fn = rest.split('(').next().unwrap_or("").trim().to_string();
-        }
-        if line_writes_handle_state(trimmed) && !current_fn.is_empty() {
-            found.push(current_fn.clone());
-        }
-    }
-    assert_eq!(
-        found,
-        vec![
-            "a_brand_new_writer".to_string(),
-            "a_writer_hiding_in_a_multi_column_set".to_string()
-        ],
-        "the classifier must see a writer it has never been told about, in both shapes"
+"#,
+    )
+    .expect("write probe");
+
+    let found = writers_in_tree(&crates.parent().unwrap().parent().unwrap().to_path_buf());
+    let names: BTreeSet<String> = found
+        .iter()
+        .map(|entry| entry.rsplit("::").next().unwrap_or(entry).to_owned())
+        .collect();
+    assert!(
+        names.contains("a_writer_hiding_behind_a_visibility_prefix"),
+        "the scanner must see a writer behind a visibility prefix — dropping one prefix from \
+         its list is exactly how the two mirror writers would vanish: {names:#?}"
+    );
+    assert!(
+        names.contains("a_writer_hiding_in_a_multi_column_set"),
+        "and one that assigns the column inside a multi-column SET: {names:#?}"
     );
 }
