@@ -134,6 +134,20 @@ impl OperationRuntime {
         payload: Value,
     ) -> Result<OperationId> {
         let adapter = self.adapter(kind)?;
+        // #1428 REVERSE ANCHOR — read before adding any `operations` retention
+        // pass. This short-circuit is the reason a keyed `operations` row is
+        // PERMANENT, not merely long-lived: it is the only thing that stops a
+        // byte-identical retry from re-running an operation that already
+        // succeeded. For `planner-harness-start` that re-run seeds
+        // `Observation::UserMessage` again, so a reaped row means the user's
+        // first message is delivered twice — traced end to end in
+        // `docs/design-1428-idempotency-retention.md` §3.1.
+        //
+        // The lookup is generic over `kind` and matches on the
+        // `idempotency_key` column, which is what makes the fence's criterion
+        // exact rather than a guess about which kinds matter: every non-NULL
+        // key is a live wall here, and a NULL one can never be found by this
+        // call. Migration 0093 enforces it in the database.
         if let Some(existing) = self.repo.find_by_idempotency_key(kind, &key).await? {
             if existing.payload_hash == key.payload_hash {
                 let op_id = existing.id;

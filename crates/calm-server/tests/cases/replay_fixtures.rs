@@ -760,6 +760,66 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     }
 }
 
+/// #1428 — `/dev/reset` still works with migration 0093's fence installed, and
+/// this is executed rather than argued.
+///
+/// The fence aborts any `DELETE` that reaches an `operations` row carrying an
+/// `idempotency_key`, including a bare `DELETE FROM operations` (a row trigger
+/// disables SQLite's truncate optimization). `reset_from_fixture` is the
+/// widest table-wipe in the tree and the engine behind the replay binary's
+/// `POST /dev/reset`, which every Playwright `beforeEach` calls — so if the
+/// fence were going to break something, this is what it would break.
+///
+/// Reading its statement list and observing that `operations` is absent from it
+/// is not the same as running it: the list is a literal array today, but the
+/// claim being tested is about the *reset*, not about the array. So a keyed row
+/// is planted first, which is the only state that can trip the fence, and the
+/// reset is executed over it.
+///
+/// The row surviving is the correct outcome, not a leak: `reset_from_fixture`
+/// never claimed to wipe `operations`, and a keyed operation row is permanent
+/// by construction (`docs/design-1428-idempotency-retention.md` §3).
+///
+/// Mutation that must redden it: add `"DELETE FROM operations"` to
+/// `reset_from_fixture`'s statement list — the reset then aborts on the planted
+/// row, which is exactly the alarm the fence exists to raise.
+#[tokio::test]
+async fn dev_reset_survives_the_keyed_operations_fence() {
+    let fixture = load_fixture("track-grid-layout-trace.events.json");
+    let (repo, bus, _state) = replay::boot_in_memory()
+        .await
+        .expect("boot in-memory replay state");
+    replay::seed_events(&repo, &bus, &fixture)
+        .await
+        .expect("initial seed");
+
+    // The only state that can trip the fence.
+    sqlx::query(
+        r#"INSERT INTO operations (
+             id, operation_key, kind, idempotency_key, payload_hash,
+             target_type, target_json, payload_json, phase,
+             created_at_ms, updated_at_ms
+           ) VALUES ('op-keyed', 'op-keyed', 'planner-harness-start', 'a-key', 'hash',
+                     'track', '{}', '{}', 'succeeded', 0, 0)"#,
+    )
+    .execute(repo.pool())
+    .await
+    .expect("plant a keyed operations row");
+
+    replay::reset_from_fixture(&repo, &bus, &fixture)
+        .await
+        .expect("/dev/reset must not abort on the keyed operations fence");
+
+    let surviving: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations")
+        .fetch_one(repo.pool())
+        .await
+        .expect("count operations after reset");
+    assert_eq!(
+        surviving, 1,
+        "the keyed row is permanent and the reset never claimed to wipe it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue #199 — schemaVersion forward-compat: both read paths drop future.
 // ---------------------------------------------------------------------------

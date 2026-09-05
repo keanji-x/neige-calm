@@ -871,9 +871,38 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
     // a *different* track. The binding row deliberately has no `ON DELETE
     // CASCADE`, so a deleted track poisons its key rather than silently
     // recycling it.
+    //
+    // #1428 — 409 `idempotency_key_exhausted`, not the 500 this used to be. The
+    // fence does not move: this still mints nothing, and the poisoning is still
+    // permanent for this key. What changes is that the answer says so.
+    //
+    // It is the same refusal the workspace arm below already makes, for a
+    // strictly cleaner reason — a deleted track cannot come back, whereas an
+    // unmarked directory theoretically could — so the two poisoned-key
+    // outcomes of this function now answer with one code instead of two.
+    //
+    // The escape needs no new machinery and no operator: a new
+    // `Idempotency-Key` misses the binding, takes `Mint`, and derives a managed
+    // path from a fresh id. A binding-row deleter would buy nothing on top of
+    // that, at the cost of the tree's first `DELETE FROM
+    // track_create_idempotency` keyed on a client-supplied string.
+    //
+    // The code is what makes the escape reachable, which is why this is worth
+    // twenty lines: `trackCreateKeyAction` (`fe/core/domain/track.ts`) returns
+    // `'preserve'` for every 5xx — deliberately, since a 5xx may have committed
+    // and rotating its key could mint a second track — and `'replace'` only for
+    // `idempotency_key_exhausted`. The new-track route mints one key per draft
+    // and replaces it in place on exactly that code (#1435). So under the old
+    // 500 a reader whose track was deleted was pinned to a dead key until they
+    // reloaded the page; under this one their next submit carries a fresh key.
+    // Zero frontend lines. Pinned by
+    // `a_replay_onto_a_deleted_track_is_key_exhausted` and
+    // `a_new_idempotency_key_recovers_from_a_deleted_track`.
     let track = s.repo.track_get(track_id).await?.ok_or_else(|| {
-        CalmError::Internal(format!(
-            "track {} recorded by an earlier attempt under this Idempotency-Key no longer exists",
+        CalmError::IdempotencyKeyExhausted(format!(
+            "this Idempotency-Key names track {}, which has been deleted, so no retry under this \
+             key can produce a working track; retry under a new Idempotency-Key, which mints a \
+             fresh track",
             track_id
         ))
     })?;
@@ -993,11 +1022,11 @@ pub(super) async fn resume_prior_attempt(
 /// agent, it carries no user text, and its failure is a `warn!` and a 201 on
 /// the minting path and stays one here.
 ///
-/// So this arm's total answer set is: 201 with the key's own track; 500 when
-/// the track was deleted out from under the binding; 409
-/// `idempotency_key_exhausted` when its workspace can no longer be
-/// materialized. It has no `#N` chain and cannot exhaust retry slots, because
-/// it consumes none.
+/// So this arm's total answer set is: 201 with the key's own track; and 409
+/// `idempotency_key_exhausted` for either way this key can be poisoned — the
+/// track was deleted out from under the binding (#1428), or its workspace can
+/// no longer be materialized. It has no `#N` chain and cannot exhaust retry
+/// slots, because it consumes none.
 pub(super) async fn resume_message_less(
     s: RouteState,
     actor: Actor,

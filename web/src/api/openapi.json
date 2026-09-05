@@ -3314,7 +3314,7 @@
             }
           },
           "409": {
-            "description": "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots or its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
+            "description": "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
             "content": {
               "application/json": {
                 "schema": {

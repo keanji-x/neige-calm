@@ -562,6 +562,9 @@ mod track_plugin_scope_migration_tests;
 mod track_workspace_migration_tests;
 
 #[cfg(test)]
+mod operations_keyed_rows_permanent_tests;
+
+#[cfg(test)]
 mod track_create_idempotency_tests;
 
 #[cfg(test)]
