@@ -121,6 +121,10 @@ struct SystemServeArgs {
     #[arg(long, env = "NEIGE_APP_CALM_WEB_DIST")]
     calm_web_dist: Option<PathBuf>,
 
+    /// Next frontend directory passed to calm-server as CALM_FE_DIST.
+    #[arg(long)]
+    calm_fe_dist: Option<PathBuf>,
+
     /// Optional SQLite URL passed through as CALM_DB_URL.
     #[arg(long, env = "NEIGE_APP_CALM_DB_URL")]
     calm_db_url: Option<String>,
@@ -258,6 +262,10 @@ struct SystemPackageArgs {
     #[arg(long)]
     web_dist: PathBuf,
 
+    /// Next frontend copied to web/dist/next in the same Web release unit.
+    #[arg(long)]
+    fe_dist: Option<PathBuf>,
+
     /// Binary to copy into bin/, as NAME=PATH. Repeat for each bundle binary.
     #[arg(long = "bin", value_parser = package::parse_named_path)]
     bins: Vec<NamedPath>,
@@ -327,6 +335,9 @@ fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     ];
     if let Some(web_dist) = &cfg.child.web_dist {
         child_envs.push(("CALM_WEB_DIST".into(), web_dist.display().to_string()));
+    }
+    if let Some(fe_dist) = &cfg.child.fe_dist {
+        child_envs.push(("CALM_FE_DIST".into(), fe_dist.display().to_string()));
     }
     if let Some(db_url) = &cfg.child.db_url {
         child_envs.push(("CALM_DB_URL".into(), db_url.clone()));
@@ -1022,6 +1033,7 @@ fn run_package_cli(args: SystemPackageArgs) -> anyhow::Result<()> {
         release_id: args.release_id,
         app_bin: Some(args.app_bin),
         web_dist: Some(args.web_dist),
+        fe_dist: args.fe_dist,
         bins: args.bins,
     })?;
     println!(
@@ -1053,6 +1065,7 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         proc_supervisor_bin: args.proc_supervisor_bin,
         calm_listen: args.calm_listen,
         calm_web_dist: args.calm_web_dist,
+        calm_fe_dist: args.calm_fe_dist,
         calm_db_url: args.calm_db_url,
         calm_data_dir: args.calm_data_dir,
         calm_mcp_stdio_shim_bin: args.calm_mcp_stdio_shim_bin,

@@ -43,6 +43,7 @@ backups = "~/.local/share/neige-app/backups"
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
+fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
@@ -60,7 +61,7 @@ restart_delay_ms = 1000
 [systemd]
 unit_path = "~/.config/systemd/user/neige-app.service"
 unit_name = "neige-app"
-bin = "/usr/local/bin/neige-app"
+bin = "~/.local/bin/neige-app"
 
 [upgrade]
 current_version_file = ""
@@ -71,7 +72,7 @@ branch = "main"
 # Optional: web-only, server-only, or bundle. Omit to infer from manifest.
 mode = ""
 checkout_dir = "~/.cache/neige-app/source"
-build_args = ["make", "build"]
+build_args = ["make", "build", "fe-build"]
 # v2 package compatibility is probed from the freshly built calm-server.
 # DB migration policy defaults to forwardOnly; set NEIGE_DB_MIGRATION_POLICY
 # in the service build environment to override it.
@@ -82,6 +83,17 @@ The default child paths are split by component:
 
 - server binaries use `release.current_server`
 - web assets use `release.current_web`
+
+`child.fe_dist` (or `system serve --calm-fe-dist`) explicitly selects the new
+frontend directory. With `system package --fe-dist`, that directory is packaged
+as `web/dist/next` within the same hashed Web unit. Omit `fe_dist` for a legacy-only
+package. Existing configs that omit it remain legacy-only; new starter configs
+include it for Alpha packages. When configured, the browser root redirects to
+`/next/`, and `web_dist` continues to serve `/calm/`.
+
+For a first install, use the [Alpha runbook](alpha-release.md) before running
+`system install`: the package and executable symlinks must exist, and owner
+credentials must be set in the private config file.
 
 The legacy `release.current` and `release.previous` keys are still accepted.
 They are retained as legacy fields only; when split keys are omitted,

@@ -42,6 +42,7 @@ pub(crate) struct ChildConfig {
     pub bin: PathBuf,
     pub proc_supervisor_bin: PathBuf,
     pub web_dist: Option<PathBuf>,
+    pub fe_dist: Option<PathBuf>,
     pub calm_listen: String,
     pub db_url: Option<String>,
     pub data_dir: Option<PathBuf>,
@@ -104,6 +105,7 @@ pub(crate) struct ServeOverrides {
     pub proc_supervisor_bin: Option<PathBuf>,
     pub calm_listen: Option<String>,
     pub calm_web_dist: Option<PathBuf>,
+    pub calm_fe_dist: Option<PathBuf>,
     pub calm_db_url: Option<String>,
     pub calm_data_dir: Option<PathBuf>,
     pub calm_mcp_stdio_shim_bin: Option<PathBuf>,
@@ -128,6 +130,7 @@ struct ConfigBuilder {
     child_bin: Option<String>,
     child_proc_supervisor_bin: Option<String>,
     child_web_dist: Option<String>,
+    child_fe_dist: Option<String>,
     child_calm_listen: Option<String>,
     child_db_url: Option<String>,
     child_data_dir: Option<String>,
@@ -202,6 +205,7 @@ impl AppConfig {
                 bin: current_server.join("bin").join("calm-server"),
                 proc_supervisor_bin: current_server.join("bin").join("calm-proc-supervisor"),
                 web_dist: Some(current_web.join("web").join("dist")),
+                fe_dist: None,
                 calm_listen: "127.0.0.1:4040".into(),
                 db_url: None,
                 data_dir: Some(expand_tilde("~/.local/share/neige-calm")),
@@ -232,7 +236,7 @@ impl AppConfig {
                 branch: "main".into(),
                 mode: None,
                 checkout_dir: expand_tilde("~/.cache/neige-app/source"),
-                build_args: vec!["make".into(), "build".into()],
+                build_args: vec!["make".into(), "build".into(), "fe-build".into()],
                 api_version: None,
                 sync_event_version: None,
                 mcp_protocol_version: None,
@@ -318,6 +322,7 @@ impl AppConfig {
         if let Some(value) = builder.child_auth_dev_autologin {
             cfg.child.auth_dev_autologin = value;
         }
+        cfg.child.fe_dist = builder.child_fe_dist.map(|v| expand_tilde(&v));
         cfg.child.cwd = builder.child_cwd.map(|v| expand_tilde(&v));
         if let Some(value) = builder.child_extra_args {
             cfg.child.extra_args = value;
@@ -407,6 +412,9 @@ impl AppConfig {
         }
         if let Some(value) = overrides.calm_web_dist {
             self.child.web_dist = Some(value);
+        }
+        if let Some(value) = overrides.calm_fe_dist {
+            self.child.fe_dist = Some(value);
         }
         if let Some(value) = overrides.calm_db_url {
             self.child.db_url = Some(value);
@@ -500,6 +508,8 @@ backups = "~/.local/share/neige-app/backups"
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 proc_supervisor_bin = "~/.local/share/neige-app/releases/current-server/bin/calm-proc-supervisor"
 web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
+# Omit for legacy-only releases; Alpha packages include this subtree.
+fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
@@ -517,7 +527,7 @@ restart_delay_ms = 1000
 [systemd]
 scope = "user"
 unit_name = "neige-app"
-bin = "/usr/local/bin/neige-app"
+bin = "~/.local/bin/neige-app"
 user = ""
 home = ""
 
@@ -530,7 +540,7 @@ branch = "main"
 # Optional: web-only, server-only, or bundle. Omit to infer from manifest.
 mode = ""
 checkout_dir = "~/.cache/neige-app/source"
-build_args = ["make", "build"]
+build_args = ["make", "build", "fe-build"]
 # v2 package compatibility is probed from the freshly built calm-server.
 # DB migration policy defaults to forwardOnly; set NEIGE_DB_MIGRATION_POLICY
 # in the service build environment to override it.
@@ -600,6 +610,7 @@ fn set_value(
             builder.child_proc_supervisor_bin = Some(parse_string(value)?)
         }
         ("child", "web_dist") => builder.child_web_dist = parse_optional_string(value)?,
+        ("child", "fe_dist") => builder.child_fe_dist = parse_optional_string(value)?,
         ("child", "calm_listen") => builder.child_calm_listen = Some(parse_string(value)?),
         ("child", "db_url") => builder.child_db_url = parse_optional_string(value)?,
         ("child", "data_dir") => builder.child_data_dir = parse_optional_string(value)?,

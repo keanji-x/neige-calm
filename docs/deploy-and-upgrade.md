@@ -3,6 +3,10 @@
 Operator-facing recipe for installing `neige-app` and driving upgrades
 through the `/upgrade/apply` admin endpoint.
 
+For the Alpha archive build and first-user installation, start with the
+[Linux Alpha runbook](alpha-release.md). This guide covers the underlying
+package commands and upgrade/recovery operations.
+
 Before installing local plugins, read [Plugin host security](plugin-security.md).
 Their native code executes as the service OS identity. Protect both the plugin
 root and every symlink target/source tree from unintended writers; production
@@ -20,7 +24,7 @@ plugin sources should not be linked to shared or lower-trust agent worktrees.
 │   ├── rel-XXXX/                              (release package)
 │   │   ├── bin/{calm-server, calm-proc-supervisor, neige-codex-bridge,
 │   │   │        neige-mcp-stdio-shim, neige, neige-app}
-│   │   ├── web/dist/
+│   │   ├── web/dist/                         (legacy; next/ contains the new FE)
 │   │   └── manifest.json                      (schemaVersion=2 v2 manifest)
 │   └── rel-YYYY/
 
@@ -44,7 +48,8 @@ plugin sources should not be linked to shared or lower-trust agent worktrees.
 `neige-app` listens on the **admin port** (`[admin] listen`, default
 `127.0.0.1:4050`); `calm-server` (the kernel) listens on the **calm port**
 (`[child] calm_listen`, default `127.0.0.1:4040`). Web UI lives on the
-calm port under `/calm/`. The admin port is loopback-only for state
+calm port under `/next/` when `child.fe_dist` is configured; `/` redirects there.
+Legacy `/calm/` remains available when `child.web_dist` is configured. The admin port is loopback-only for state
 changes; never expose it to LAN.
 
 ## 2. First install
@@ -53,10 +58,12 @@ changes; never expose it to LAN.
 
 ```bash
 cd /path/to/neige-calm
-cargo build --release \
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  NEIGE_BUILD_SHA="$(git rev-parse HEAD)" cargo build --locked --release \
   -p neige-app -p calm-server -p calm-proc-supervisor \
   -p calm-codex-bridge -p neige-mcp-stdio-shim -p neige-cli
-(cd web && npm ci && npm run build)
+(cd web && npm ci --legacy-peer-deps && npm run build)
+(cd fe && npm ci && npm run build)
 ```
 
 ### 2.2 Build the first v2 release package
@@ -67,6 +74,7 @@ cargo build --release \
   --release-id rel-1 \
   --app-bin       target/release/neige-app \
   --web-dist      web/dist \
+  --fe-dist       fe/web/dist \
   --bin calm-server=target/release/calm-server \
   --bin calm-proc-supervisor=target/release/calm-proc-supervisor \
   --bin neige-codex-bridge=target/release/neige-codex-bridge \
@@ -120,8 +128,12 @@ backups         = "~/.local/share/neige-calm/backups"
 bin                  = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 proc_supervisor_bin  = "~/.local/share/neige-app/releases/current-server/bin/calm-proc-supervisor"
 web_dist             = "~/.local/share/neige-app/releases/current-web/web/dist"
+fe_dist              = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen          = "127.0.0.1:4040"
 data_dir             = "~/.local/share/neige-calm"
+auth_username        = "owner"
+auth_password        = "REPLACE_WITH_YOUR_PASSWORD"
+auth_dev_autologin    = false
 mcp_stdio_shim_bin   = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
 # db_url omitted on purpose:
 #   neige-app auto-defaults to sqlite://<data_dir>/calm.db?mode=rwc
@@ -135,6 +147,9 @@ branch = "main"
 bin = "~/.local/bin/neige-app"
 TOML
 ```
+
+Set the owner password in the config before starting, and run
+`chmod 600 ~/.config/neige-app/config.toml`. Do not use the example password.
 
 ### 2.5 Install + start the systemd user unit
 
@@ -409,7 +424,7 @@ API.** Both halves matter:
    ```bash
    curl -s http://127.0.0.1:4050/upgrade/history \
      -H "Authorization: Bearer $TOKEN" | tail -1
-   curl -s http://127.0.0.1:8080/api/version
+   curl -s http://127.0.0.1:4040/api/version
    ```
 
 3. Take your own backup. **Do not `cp` the three files while the service is
@@ -450,14 +465,14 @@ rm -f ~/.local/share/neige-calm/calm.db-wal ~/.local/share/neige-calm/calm.db-sh
 #    ~/.local/share/neige-calm/
 
 # 3. point the symlinks back at the previous release
-cd ~/.local/share/neige-calm/releases   # or wherever releases/ lives
-ln -sfn "$PWD/rel-N/bin"      ../current-server
-ln -sfn "$PWD/rel-N/web/dist" ../current-web
-ln -sfn "$PWD/rel-N"          ../current-app
+cd ~/.local/share/neige-app/releases   # use the configured release.root
+# Each current-* target is the RELEASE ROOT, not its bin/ or web/dist/ child.
+ln -sfn rel-N current-server
+ln -sfn rel-N current-web
 
 # 4. start the unit and confirm the old release answers
 systemctl --user start neige-app
-curl -s http://127.0.0.1:8080/api/version
+curl -s http://127.0.0.1:4040/api/version
 ```
 
 ### 8.2 Plugin compatibility (#1209, #1268)

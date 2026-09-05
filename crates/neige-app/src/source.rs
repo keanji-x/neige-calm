@@ -41,6 +41,7 @@ pub(crate) fn build_source_package_from_source(
         release_id,
         app_bin: Some(source_dir.join("target").join("release").join("neige-app")),
         web_dist: Some(source_dir.join("web").join("dist")),
+        fe_dist: Some(source_dir.join("fe/web/dist")),
         bins: required_bins(&source_dir),
     })
 }
@@ -160,7 +161,7 @@ fn write_source_marker(checkout: &Path, url: &str, branch: &str) -> anyhow::Resu
 
 fn run_build(source_dir: &Path, build_args: &[String]) -> anyhow::Result<()> {
     let args: Vec<String> = if build_args.is_empty() {
-        vec!["make".into(), "build".into()]
+        vec!["make".into(), "build".into(), "fe-build".into()]
     } else {
         build_args.to_vec()
     };
@@ -264,6 +265,10 @@ mod tests {
         )
         .expect("parse manifest");
 
+        assert_eq!(
+            std::fs::read_to_string(package.join("web/dist/next/index.html")).unwrap(),
+            "next frontend"
+        );
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.units.len(), 7);
         assert!(
@@ -296,6 +301,8 @@ mod tests {
     }
 
     fn fake_build_output(source: &Path) {
+        std::fs::create_dir_all(source.join("fe/web/dist")).unwrap();
+        std::fs::write(source.join("fe/web/dist/index.html"), "next frontend").unwrap();
         let release = source.join("target").join("release");
         std::fs::create_dir_all(&release).expect("create release dir");
         std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
