@@ -211,6 +211,7 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       onRetryLoad={() => { void plugins.refetch(); }}
       pendingIds={mutations.pendingIds}
       errors={mutations.errors}
+      effectBoundaryIds={mutations.effectBoundaryIds}
       onSetEnabled={mutations.setEnabled}
       onOpenConfig={setOpenId}
     />

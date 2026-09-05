@@ -1101,6 +1101,14 @@ export type PluginMutations = Readonly<{
   pendingIds: ReadonlySet<string>;
   /** The last failure per plugin, so one plugin's error cannot label another. */
   errors: ReadonlyMap<string, string>;
+  /**
+   * The plugins whose **last** enable/disable write succeeded, so the row can
+   * state what that write did and did not reach — see #1242 and the note on
+   * `usePluginMutations`. Per plugin and last-write-wins, exactly like
+   * `errors`, and disjoint from it by construction: a new write clears both
+   * before it goes out, and only one of the two arms can set one afterwards.
+   */
+  effectBoundaryIds: ReadonlySet<string>;
   setEnabled: (id: string, enabled: boolean) => void;
 }>;
 
@@ -1119,6 +1127,34 @@ export type PluginMutations = Readonly<{
  * soon as the row flips, while the supervisor is still bringing the process up,
  * so its `state` is a snapshot that is already stale by the time it lands. An
  * invalidation asks the kernel what is actually true.
+ *
+ * ## What a successful write did *not* reach (#1242)
+ *
+ * A write that succeeds changes the kernel's plugin table; it does not change
+ * **what a conversation that is already running can see**, which is the claim
+ * the line on the row makes and the only one meant here. Measured against a
+ * real codex 0.144.1 client, there is no mechanism today that would: the kernel
+ * broadcasting `notifications/tools/list_changed` produced no re-fetch of
+ * `tools/list` in 17 s, `config/mcpServer/reload` returned `{}` and produced
+ * none either, and `thread/start`'s `dynamicTools` binds at thread start, which
+ * is the wrong moment by construction. So that boundary is real and permanent
+ * until codex grows a mechanism, and the only honest thing to do is say so.
+ *
+ * It is **not** a claim that nothing anywhere observes the write. The kernel
+ * gates `POST /api/plugins/{id}/tool-call` on the plugin being *running*, so a
+ * surface that calls it — a `plugin-iframe` card open in the legacy `web/`
+ * app — changes behaviour the moment this write lands, without being told.
+ * That is a different app and it does not falsify the sentence on the row (an
+ * already-running conversation still sees the tool list it started with), but
+ * the unqualified reading of this paragraph would have covered it, and it is
+ * registered as a known gap on #1242 rather than left implied here.
+ *
+ * `effectBoundaryIds` is what says it. It is set on **success only** — a write
+ * that failed changed nothing, and telling the operator about the reach of a
+ * change that did not happen would be the second false statement on that row,
+ * under the first one. It is set for **both directions**: a disable leaves an
+ * in-flight conversation holding the old tool list exactly as an enable leaves
+ * it holding a list without the new one.
  */
 export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
   const client = useQueryClient();
@@ -1128,6 +1164,12 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
      idle mid-flight. */
   const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
+  /* Membership, not a count: the flag answers "has this plugin's last write
+     settled successfully", which is a yes/no. It carries no claim about
+     overlapping writes on one plugin — the switch refuses input while its own
+     write is in flight (`isLoading={pendingIds.has(...)}`, and astryx's Switch
+     drops the change), so no route through this pane produces two. */
+  const [boundary, setBoundary] = useState<ReadonlySet<string>>(() => new Set());
   const write = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
@@ -1139,6 +1181,19 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
         next.delete(id);
         return next;
       });
+      /* Withdrawn while the next write is out: the sentence is about a
+         *settled* change, and leaving it up through a write that has not
+         answered yet would attach it to the wrong one — or to none, if that
+         write then fails. */
+      setBoundary((current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    },
+    onSuccess: (_data, { id }) => {
+      setBoundary((current) => (current.has(id) ? current : new Set(current).add(id)));
     },
     onError: (error, { id }) => {
       setErrors((current) => new Map(current)
@@ -1157,6 +1212,7 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
   return {
     pendingIds: new Set(pending.keys()),
     errors,
+    effectBoundaryIds: boundary,
     setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
   };
 }

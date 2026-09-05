@@ -45,6 +45,7 @@ function props(overrides: Partial<PluginsPaneProps> = {}): PluginsPaneProps {
     onRetryLoad: vi.fn(),
     pendingIds: new Set<string>(),
     errors: new Map<string, string>(),
+    effectBoundaryIds: new Set<string>(),
     onSetEnabled: vi.fn(),
     onOpenConfig: vi.fn(),
     ...overrides,
@@ -252,6 +253,99 @@ describe('Plugins pane', () => {
     })} />);
     await userEvent.click(screen.getByRole('switch', { name: 'Enable Todo' }));
     expect(onSetEnabled.mock.calls).toEqual([['todo', true]]);
+  });
+
+  /*
+   * #1242 — the line is per row, like every other per-row fact here. Asserted
+   * against a *second* row in the same render that is not flagged: a
+   * single-plugin assertion would still pass if the line were rendered
+   * unconditionally, which is the shape that would put a claim about one
+   * plugin's write under every other plugin's name.
+   */
+  it('puts the effect-boundary line only on the row whose write is flagged', () => {
+    render(<PluginsPane {...props({
+      plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
+      effectBoundaryIds: new Set(['git-forge']),
+    })} />);
+    /*
+     * Both rows carry the live region — it is mounted before it has anything to
+     * say, see the case below — so the assertion is on which one holds *text*.
+     * Read in DOM order, which is the order the fixture lists them.
+     */
+    const [todoLine, forgeLine] = screen.getAllByRole('status');
+    /*
+     * `already in progress` and not the whole sentence: it is the clause the
+     * claim lives in, and it is what a copy edit that changed the *meaning*
+     * would have to disturb. `takes effect` would not do — it is the half that
+     * survives a rewrite into a sentence about tools.
+     */
+    expect(forgeLine?.textContent).toContain('already in progress');
+    expect(todoLine?.textContent).toBe('');
+    // And each region is on its own plugin's row.
+    expect(screen.getByText('git-forge').parentElement?.contains(forgeLine ?? null)).toBe(true);
+    expect(screen.getByText('todo').parentElement?.contains(todoLine ?? null)).toBe(true);
+    /*
+     * And it does not claim the plugin has tools. "New tools will appear in a
+     * new conversation" would be false on a plugin that contributes none, and
+     * the row has no field that separates the two — `pluginListItemSchema`
+     * carries no `exposes_tools`. (The *write's* response does carry the
+     * manifest; `plugins.tsx` says why per-row copy is still not derived from
+     * it.) A statement about the *change* needs none of that.
+     *
+     * Matched as **the substring `tool`, case-insensitively** — deliberately
+     * wider than any one phrasing. "New tools", "its tools", "the tools it
+     * adds" and "Tools appear…" are all the same drift, and a guard pinned to
+     * one spelling would let three of them through. The width is what this
+     * line's own copy can afford: it says nothing about tools at all, so any
+     * occurrence of the word is a change of subject, and a change of subject
+     * here is the defect this guards.
+     */
+    expect(forgeLine?.textContent?.toLowerCase()).not.toContain('tool');
+  });
+
+  /*
+   * A live region that arrives in the same DOM mutation as its text is commonly
+   * not announced at all. `NetworkPane` learned this one file over and pins it
+   * the same way; this is the plugins row's copy of that case.
+   */
+  it('mounts the live region before it has anything to say', () => {
+    render(<PluginsPane {...props({
+      plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
+    })} />);
+    expect(screen.getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
+  });
+
+  /*
+   * ── The row that crashed says nothing about where the change reaches ──────
+   *
+   * `last_error` is server state and no write path clears it, so it is not
+   * disjoint from the flag the way the *write* error is (which `onMutate`
+   * clears before `onSuccess` could set anything). On the ordinary path it
+   * arrives after the flag: enable answers 200 while the supervisor is still
+   * bringing the process up, the plugin then crashes, and the list poll brings
+   * the reason back. A plugin that crashed will not take effect in a new
+   * conversation either, so the sentence would be a false promise sitting
+   * directly under the evidence against it — and a screen reader would
+   * announce the assertive alert and then the polite status saying otherwise.
+   *
+   * Asserted with the flag *set*, which is the only configuration that can
+   * fail: a case that left the flag unset would pass against a component that
+   * never suppresses anything.
+   */
+  it('withholds the boundary line from a flagged row that is reporting a failure', () => {
+    render(<PluginsPane {...props({
+      plugins: [
+        plugin({ state: 'crashed', last_error: 'Plugin crashed: exit code 1' }),
+        plugin({ id: 'git-forge', manifest_name: 'Git forge' }),
+      ],
+      effectBoundaryIds: new Set(['todo', 'git-forge']),
+    })} />);
+    const [todoLine, forgeLine] = screen.getAllByRole('status');
+    expect(screen.getByRole('alert').textContent).toBe('Plugin crashed: exit code 1');
+    expect(todoLine?.textContent).toBe('');
+    // The healthy row beside it still gets the line, so this is suppression and
+    // not the feature having been switched off.
+    expect(forgeLine?.textContent).toContain('already in progress');
   });
 
   it('offers Retry on a failed read', async () => {

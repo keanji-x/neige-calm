@@ -202,6 +202,44 @@
     color: var(--text-3);
   }
 
+  /* Where a successful enable/disable stopped (#1242). Not `.error` and not
+     `.notice`: both of those are boxes that say something wants attention, and
+     this is a fact about a write that worked. So it is a plain meta line in the
+     row's own voice, one step above the id's tone because it is read and not
+     looked up. */
+  .pluginEffectBoundary {
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  /*
+   * The same element on every row, empty until that row has something to say —
+   * a live region inserted together with its text is commonly not announced,
+   * so it has to be mounted before there is any text to put in it.
+   *
+   * Which leaves the empty one to keep out of the way, and `display: none` is
+   * exactly what it must not be: that takes the region back out of the
+   * accessibility tree, so the text would once again arrive with the region and
+   * nothing would be announced. `position: absolute` keeps the element
+   * rendered and in the tree while making it not a flex item at all
+   * (CSS Flexbox §4), so `.pluginMeta`'s `gap` does not open a space under
+   * every row in the list. It has no content and no size, so there is nothing
+   * to paint over anything.
+   *
+   * Measured in chromium rather than argued from the standard, because the cost of
+   * being wrong is one `gap` under every row of the pane at once —
+   * `plugins-live-region.browser.test.tsx`, at a 1180 × 720 viewport, with
+   * `row-gap` computing to 4px: the meta column is 38.296875px as shipped and
+   * 38.296875px with the region deleted outright (delta 0), and 42.296875px
+   * with this rule's `position` overridden back to `static` (delta exactly one
+   * gap). The third number is what proves the first two are a measurement and
+   * not a broken tape measure.
+   */
+  .pluginEffectBoundary:empty {
+    position: absolute;
+  }
+
   /* A plugin row's trailing edge holds the drill-in, the runtime-state chip
      and the switch the chip annotates, so they need a gap between them and the
      row's own edge stays where every other pane's is. */
