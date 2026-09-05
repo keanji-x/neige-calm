@@ -769,6 +769,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap python3
+      - name: permit namespace tests on the ephemeral hosted runner
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -f "$policy" ]; then
+            cat "$policy" > "$RUNNER_TEMP/worker-boundary-userns-policy"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: install pinned Rust toolchain
         run: rustup toolchain install --no-self-update
       - uses: rui314/setup-mold@v1
@@ -783,6 +791,14 @@ jobs:
               --features test-support --test-threads 8 --no-fail-fast
           cargo clippy --locked -p calm-worker-runtime --all-targets \
             --features test-support -- -D warnings
+      - name: restore hosted namespace policy
+        if: always()
+        run: |
+          policy_file="$RUNNER_TEMP/worker-boundary-userns-policy"
+          if [ -f "$policy_file" ]; then
+            original_policy=$(cat "$policy_file")
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_policy"
+          fi
 
   # Preserve the required status-check name while the worker job is a matrix.
   # This job performs no checkout and is the single branch-protection verdict.

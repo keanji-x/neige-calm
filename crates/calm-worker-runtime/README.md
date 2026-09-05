@@ -106,6 +106,12 @@ GitHub-hosted Linux runner. The required `rust (test)` aggregate depends on both
 the ordinary Rust shards and this job, so a failed or skipped isolation check
 cannot produce a successful Rust verdict for an affected change.
 
+The Ubuntu hosted image restricts unprivileged user namespaces. The job temporarily
+permits them on its disposable runner and restores the original value in an always
+step, following [Ubuntu's documented namespace setting](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890).
+This setup is guarded by `RUNNER_ENVIRONMENT=github-hosted`; neither the library
+nor shared production-host tests change host namespace policy.
+
 Use a Linux runner with bubblewrap and Python 3 installed, a kernel supporting
 user/PID/network namespaces and pidfd/close-range operations, and a runner policy
 permitting unprivileged bubblewrap namespaces and private proc mounts. Python is
