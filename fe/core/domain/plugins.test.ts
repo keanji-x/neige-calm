@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  configDraftFrom, configFieldsOf, configPatchFrom, configWriteError, patchPluginConfigOperation,
-  pluginDetailSchema, pluginListItemSchema, reloadOutcome, reloadPluginOperation, storedConfigOf,
+  EMPTY_CONNECTOR_DRAFT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
+  connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
+  patchPluginConfigOperation, pluginDetailSchema, pluginListItemSchema, reloadOutcome,
+  reloadPluginOperation, storedConfigOf, uninstallPluginOperation,
+  type ConnectorInstallDraft,
 } from './plugins.js';
 
 /**
@@ -449,5 +452,104 @@ describe('reloadOutcome (#1284 §2.4)', () => {
     expect(reloadOutcome({ failure: null, state: 'unavailable', lastError: 'upstream said no' }).tone)
       .toBe('warning');
     expect(reloadOutcome({ failure: null, state: 'unavailable' }).tone).toBe('warning');
+  });
+});
+
+// ===========================================================================
+// #1480 — the install and uninstall operations
+// ===========================================================================
+
+describe('connector install', () => {
+  const draft: ConnectorInstallDraft = {
+    ...EMPTY_CONNECTOR_DRAFT,
+    id: 'com.example.zhibao',
+    display_name: 'Zhibao',
+    url: 'https://mcp.wisburg.com/mcp',
+    api_key: 'sk-credential',
+    tools: 'list-articles, get-article-detail',
+  };
+
+  it('sends a bearer credential as the kernel spells it', () => {
+    const operation = installConnectorOperation(draft);
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/plugins/install');
+    expect(operation.body).toEqual({
+      source: {
+        kind: 'mcp_http',
+        id: 'com.example.zhibao',
+        display_name: 'Zhibao',
+        url: 'https://mcp.wisburg.com/mcp',
+        tools_allow: ['list-articles', 'get-article-detail'],
+        api_key: 'sk-credential',
+        api_key_in: 'bearer',
+      },
+    });
+  });
+
+  it('names the header for a server that wants the bare key', () => {
+    const body = installConnectorOperation({
+      ...draft, placement: 'header', header_name: 'X-API-Key',
+    }).body as { source: Record<string, unknown> };
+    expect(body.source.api_key_in).toBe('header:X-API-Key');
+  });
+
+  /*
+   * A blank credential must leave the key **out**, not send `""`: the kernel
+   * reads an absent key as "unauthenticated connector" and refuses an empty
+   * one, so the two spellings are a working plugin and a 400.
+   */
+  it('omits the credential and its placement when none was given', () => {
+    const body = installConnectorOperation({ ...draft, api_key: '   ' })
+      .body as { source: Record<string, unknown> };
+    expect('api_key' in body.source).toBe(false);
+    expect('api_key_in' in body.source).toBe(false);
+  });
+
+  it('trims what was typed, so a stray space is not part of the id or the URL', () => {
+    const body = installConnectorOperation({
+      ...draft, id: ' com.example.zhibao ', url: ' https://mcp.wisburg.com/mcp ',
+    }).body as { source: Record<string, string> };
+    expect(body.source.id).toBe('com.example.zhibao');
+    expect(body.source.url).toBe('https://mcp.wisburg.com/mcp');
+  });
+
+  /*
+   * The form's own refusals, which are only the ones it can make without
+   * knowing anything about plugins. Everything else — a malformed id, an
+   * unreachable URL — is the kernel's judgement to make and its sentence to
+   * write.
+   */
+  /*
+   * The refusal that exists because the failure it prevents looks like success:
+   * `tools_allow` is a strict allowlist, so a connector installed with no names
+   * comes up running and exposes nothing at all.
+   */
+  it('refuses a connector that would expose no tools, and splits the list the operator typed', () => {
+    expect(connectorDraftError({ ...draft, tools: '   ' })).toMatch(/at least one tool/i);
+    expect(toolsAllowOf({ ...draft, tools: 'a, b\nc  d,,a' })).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('refuses an empty required field and a placement it cannot spell', () => {
+    expect(connectorDraftError({ ...draft, id: '' })).toMatch(/id/i);
+    expect(connectorDraftError({ ...draft, display_name: '' })).toMatch(/name/i);
+    expect(connectorDraftError({ ...draft, url: '' })).toMatch(/URL/i);
+    expect(connectorDraftError({ ...draft, placement: 'header', header_name: '' }))
+      .toMatch(/header name/i);
+    expect(connectorDraftError(draft)).toBeNull();
+    // No credential means no placement to spell, so the header name stops
+    // mattering — this is the keyless connector, not a half-filled form.
+    expect(connectorDraftError({ ...draft, api_key: '', placement: 'header', header_name: '' }))
+      .toBeNull();
+  });
+
+  it('addresses uninstall at the plugin, with its id escaped', () => {
+    const operation = uninstallPluginOperation('com.example/zhibao');
+    expect(operation.method).toBe('DELETE');
+    expect(operation.path).toBe('/api/plugins/com.example%2Fzhibao');
+  });
+
+  it('sends a local path as the source the kernel resolves on its own machine', () => {
+    expect(installLocalPathOperation(' /srv/neige/plugins/todo ').body)
+      .toEqual({ source: { kind: 'local_path', path: '/srv/neige/plugins/todo' } });
   });
 });

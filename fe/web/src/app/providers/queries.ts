@@ -25,10 +25,12 @@ import {
   type ReportBlock, type TaskVerdict, type TrackBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
-  patchPluginConfigOperation, pluginDetailOperation, pluginsOperation, reloadPluginOperation,
-  setPluginEnabledOperation,
-  type PluginApiFailure, type PluginConfigApplyResult, type PluginConfigSaveResult,
-  type PluginConfigValue, type PluginDetail, type PluginListItem, type PluginRestartFacts,
+  installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
+  pluginDetailOperation, pluginsOperation, reloadPluginOperation, setPluginEnabledOperation,
+  uninstallPluginOperation,
+  type ConnectorInstallDraft, type PluginApiFailure, type PluginConfigApplyResult,
+  type PluginConfigSaveResult, type PluginConfigValue, type PluginDetail, type PluginListItem,
+  type PluginRestartFacts,
 } from '../../../../core/domain/plugins.ts';
 import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
@@ -1114,6 +1116,8 @@ export type PluginMutations = Readonly<{
    */
   effectBoundaryIds: ReadonlySet<string>;
   setEnabled: (id: string, enabled: boolean) => void;
+  /** #1480 — remove the plugin. The confirmation is the pane's. */
+  uninstall: (id: string) => void;
 }>;
 
 /**
@@ -1213,11 +1217,91 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
       void client.invalidateQueries({ queryKey: queryKeys.plugins() });
     },
   });
+  /*
+   * #1480 — uninstall shares this hook's per-id `pending` and `errors` maps
+   * rather than getting its own pair. Both are keyed by plugin id and both
+   * label the same row: a second pair would let a row show an enable failure
+   * under one name and a remove failure under another, and the row has one
+   * place to put a sentence. The write itself is a different mutation because
+   * it is a different endpoint with a different success state — the row is
+   * gone — and because a removal must not set the effect-boundary line, which
+   * is about a plugin that is still there.
+   */
+  const remove = useMutation({
+    mutationFn: (id: string) => runOperation(transport, uninstallPluginOperation(id), unauthorized),
+    onMutate: (id) => {
+      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
+      setErrors((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    },
+    onError: (error, id) => {
+      setErrors((current) => new Map(current)
+        .set(id, error instanceof Error ? error.message : 'Could not remove this plugin.'));
+    },
+    onSettled: (_data, _error, id) => {
+      setPending((current) => {
+        const next = new Map(current);
+        const left = (current.get(id) ?? 1) - 1;
+        if (left <= 0) next.delete(id); else next.set(id, left);
+        return next;
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.plugins() });
+    },
+  });
   return {
     pendingIds: new Set(pending.keys()),
     errors,
     effectBoundaryIds: boundary,
     setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
+    uninstall: (id) => { remove.mutate(id); },
+  };
+}
+
+/**
+ * Settings › Plugins › Add — the two install sources, as one write (#1480).
+ *
+ * It **resolves** rather than rejecting, with the kernel's message or `null`.
+ * The form has to stay on screen and keep the operator's typing when an install
+ * is refused — a rejected promise would land as an unhandled rejection in the
+ * host and leave the pane guessing whether the fields it holds are still worth
+ * anything. Every refusal here is the operator's to correct in place: a taken
+ * id, a URL the kernel will not accept, a directory that is not there.
+ *
+ * The credential never enters this layer's state. It arrives inside the draft,
+ * goes into the request body, and the only thing kept afterwards is a message.
+ */
+export type PluginInstallMutation = Readonly<{
+  pending: boolean;
+  installConnector: (draft: ConnectorInstallDraft) => Promise<string | null>;
+  installLocalPath: (path: string) => Promise<string | null>;
+}>;
+
+export function usePluginInstall(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+): PluginInstallMutation {
+  const client = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const run = async <T,>(operation: ApiOperation<T>): Promise<string | null> => {
+    setPending(true);
+    try {
+      await runOperation(transport, operation, unauthorized);
+      return null;
+    } catch (error) {
+      return pluginFailureOf(error).message;
+    } finally {
+      setPending(false);
+      void client.invalidateQueries({ queryKey: queryKeys.plugins() });
+    }
+  };
+  return {
+    pending,
+    installConnector: (draft) => run(installConnectorOperation(draft)),
+    installLocalPath: (path) => run(installLocalPathOperation(path)),
   };
 }
 

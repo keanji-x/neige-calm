@@ -25,7 +25,13 @@
 // region from the busy Switch; the two never speak at once, because this one is
 // cleared in `onMutate` and can only be refilled after the write settles, by
 // which point the Switch's region has unmounted. Every assertion below runs
-// after `settle()`, so `getByRole('status')` sees exactly one region per row.
+// after `settle()`.
+//
+// The region is located by `data-nc-effect-boundary`, not by role: #1480 gave
+// every row a Remove button, and astryx renders a visually-hidden
+// `role="status"` region inside every button, so "the status region in this
+// row" stopped being a unique description. The *role* is still what has to
+// hold, and `boundaryIn` asserts it on the element it found.
 //
 // ## Why the assertion is a role plus a fragment
 //
@@ -108,6 +114,8 @@ function Host({ transport }: { transport: ApiTransportPort }) {
       errors={mutations.errors}
       effectBoundaryIds={mutations.effectBoundaryIds}
       onSetEnabled={mutations.setEnabled}
+      onAdd={() => {}}
+      onUninstall={mutations.uninstall}
       onOpenConfig={() => {}}
     />
   );
@@ -118,6 +126,20 @@ function Host({ transport }: { transport: ApiTransportPort }) {
  * this pane guarantees is unique and is not a presentation class, which the
  * DOM-query rule forbids reaching for.
  */
+/**
+ * This row's effect-boundary region, with its role checked on the way out.
+ *
+ * The role assertion is not decoration: what the contract requires is a polite
+ * live region, and locating the element by a data attribute would otherwise let
+ * a change from `status` to `alert` — or to no role at all — pass unnoticed.
+ */
+function boundaryIn(scope: HTMLElement): HTMLElement {
+  const line = scope.querySelector<HTMLElement>('[data-nc-effect-boundary]');
+  if (line === null) throw new Error('row has no effect-boundary region');
+  expect(line.getAttribute('role')).toBe('status');
+  return line;
+}
+
 function row(id: string): HTMLElement {
   const meta = screen.getByText(id).parentElement;
   if (meta === null) throw new Error(`no row for ${id}`);
@@ -150,17 +172,17 @@ it('states the effect boundary on a row whose enable succeeded, and on one whose
   await userEvent.click(await screen.findByRole('switch', { name: 'Enable Todo' }));
   await settle();
   expect(enabled.get('todo')).toBe(true);
-  expect(within(row('todo')).getByRole('status').textContent).toContain('already in progress');
+  expect(boundaryIn(row('todo')).textContent).toContain('already in progress');
   // And only on the row that was written: the flag is per plugin, so the other
   // row's region is mounted and empty.
-  expect(within(row('git-forge')).getByRole('status').textContent).toBe('');
+  expect(boundaryIn(row('git-forge')).textContent).toBe('');
 
   await userEvent.click(await screen.findByRole('switch', { name: 'Enable Git forge' }));
   await settle();
   expect(enabled.get('git-forge')).toBe(false);
   // A disable is the same boundary — an in-flight conversation still holds the
   // tool list it started with — so the line is not conditioned on `enabled`.
-  expect(within(row('git-forge')).getByRole('status').textContent).toContain('already in progress');
+  expect(boundaryIn(row('git-forge')).textContent).toContain('already in progress');
 });
 
 it('says nothing about the boundary when the write failed', async () => {
@@ -179,6 +201,6 @@ it('says nothing about the boundary when the write failed', async () => {
      still mounted — it is on every row from first paint, so that a message can
      be announced when there is one — and what has to hold is that it is
      empty. */
-  expect(within(row('todo')).getByRole('status').textContent).toBe('');
+  expect(boundaryIn(row('todo')).textContent).toBe('');
   expect(screen.queryAllByText(/already in progress/).length).toBe(0);
 });

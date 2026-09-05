@@ -2,6 +2,7 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Plugin;
+use crate::plugin_host::managed::{self, ConnectorInstall};
 use crate::plugin_host::template_input::{
     TEMPLATE_INPUT_MAX_BYTES, declares_key, reject_undeclared_keys, validate_instance,
 };
@@ -231,8 +232,17 @@ pub enum InstallSource {
     LocalPath {
         path: String,
     },
+    /// #1480 — an `mcp-http` connector described by the request itself. The
+    /// kernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`
+    /// when a credential is given) and owns it thereafter; see
+    /// `plugin_host::managed`.
+    ///
+    /// This is the only install source that does not require a directory to
+    /// exist on the server beforehand, which is what makes "add a connector"
+    /// expressible from the UI at all.
+    McpHttp(ConnectorInstall),
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
-    /// of a serde deserialize error. Slice D scope is `local_path` only.
+    /// of a serde deserialize error.
     #[serde(other)]
     Other,
 }
@@ -399,9 +409,17 @@ pub(crate) async fn install_plugin(
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
         InstallSource::LocalPath { path } => path,
+        InstallSource::McpHttp(connector) => {
+            // The whole operation — manifest synthesis, validation, writing the
+            // tree, the row — belongs to the host, which is where the per-id
+            // lifecycle guard lives. See `install_managed_connector` for why
+            // the tree may not be written out here.
+            let plug = cs.plugin.install_managed_connector(&connector).await?;
+            return Ok((StatusCode::CREATED, Json(build_detail(&cs, plug).await)));
+        }
         InstallSource::Other => {
             return Err(CalmError::PluginInstall(
-                "unsupported source kind — M3 only accepts `local_path`".into(),
+                "unsupported source kind — accepted: `local_path`, `mcp_http`".into(),
             ));
         }
     };
@@ -416,6 +434,18 @@ pub(crate) async fn install_plugin(
         return Err(CalmError::PluginInstall(format!(
             "source path is not a directory: {}",
             src_path.display()
+        )));
+    }
+    // #1480 — a `local_path` install may not adopt a tree the kernel wrote.
+    // Uninstall deletes kernel-written trees and decides that by the marker
+    // this refusal keeps exclusive: without it, pointing `local_path` at a
+    // directory carrying a copied marker would arm uninstall to delete the
+    // operator's own directory.
+    if managed::is_managed_tree(&src_path) {
+        return Err(CalmError::PluginInstall(format!(
+            "{}: {}",
+            src_path.display(),
+            managed::REJECT_MARKED_SOURCE_HINT
         )));
     }
     let manifest_path = src_path.join("manifest.json");

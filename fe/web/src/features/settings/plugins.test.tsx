@@ -38,6 +38,19 @@ function plugin(overrides: Partial<PluginListItem> = {}): PluginListItem {
   };
 }
 
+/**
+ * The rows' effect-boundary regions, in DOM order.
+ *
+ * Located by `data-nc-effect-boundary` rather than by `role="status"`: astryx
+ * puts a visually-hidden `role="status"` region inside every `Button`, so once
+ * the row grew a Remove button (#1480) the role no longer picks out one element
+ * per row. The claims below are unchanged — which row holds text, and that it
+ * is mounted while empty — only the way the element is named is.
+ */
+function boundaryLines(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('[data-nc-effect-boundary]')];
+}
+
 function props(overrides: Partial<PluginsPaneProps> = {}): PluginsPaneProps {
   return {
     plugins: [plugin()],
@@ -48,6 +61,8 @@ function props(overrides: Partial<PluginsPaneProps> = {}): PluginsPaneProps {
     effectBoundaryIds: new Set<string>(),
     onSetEnabled: vi.fn(),
     onOpenConfig: vi.fn(),
+    onAdd: vi.fn(),
+    onUninstall: vi.fn(),
     ...overrides,
   };
 }
@@ -272,7 +287,7 @@ describe('Plugins pane', () => {
      * say, see the case below — so the assertion is on which one holds *text*.
      * Read in DOM order, which is the order the fixture lists them.
      */
-    const [todoLine, forgeLine] = screen.getAllByRole('status');
+    const [todoLine, forgeLine] = boundaryLines();
     /*
      * `already in progress` and not the whole sentence: it is the clause the
      * claim lives in, and it is what a copy edit that changed the *meaning*
@@ -312,7 +327,7 @@ describe('Plugins pane', () => {
     render(<PluginsPane {...props({
       plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
     })} />);
-    expect(screen.getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
+    expect(boundaryLines().map((node) => node.textContent)).toEqual(['', '']);
   });
 
   /*
@@ -340,7 +355,7 @@ describe('Plugins pane', () => {
       ],
       effectBoundaryIds: new Set(['todo', 'git-forge']),
     })} />);
-    const [todoLine, forgeLine] = screen.getAllByRole('status');
+    const [todoLine, forgeLine] = boundaryLines();
     expect(screen.getByRole('alert').textContent).toBe('Plugin crashed: exit code 1');
     expect(todoLine?.textContent).toBe('');
     // The healthy row beside it still gets the line, so this is suppression and
@@ -355,5 +370,78 @@ describe('Plugins pane', () => {
     })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// #1480 — adding and removing
+// ===========================================================================
+
+describe('Plugins pane — add and remove', () => {
+  it('offers the install form as a row you walk into, after the list', async () => {
+    const onAdd = vi.fn();
+    render(<PluginsPane {...props({ onAdd })} />);
+    await userEvent.click(screen.getByText('Add a plugin'));
+    /* Call count, not arguments: the row hands its click event through, and
+       what this pins is that the row is the way in. */
+    expect(onAdd.mock.calls.length).toBe(1);
+  });
+
+  /*
+   * The empty list is the state where the row matters most: a screen that only
+   * says "none" is one whose single next step the reader has to find elsewhere.
+   */
+  it('keeps the way in when nothing is installed', async () => {
+    const onAdd = vi.fn();
+    render(<PluginsPane {...props({ plugins: [], onAdd })} />);
+    expect(screen.getByText('No plugins installed.')).toBeTruthy();
+    await userEvent.click(screen.getByText('Add a plugin'));
+    /* Call count, not arguments: the row hands its click event through, and
+       what this pins is that the row is the way in. */
+    expect(onAdd.mock.calls.length).toBe(1);
+  });
+
+  /*
+   * The whole point of the control: a removal is irreversible and it sits one
+   * pixel from a switch that is safe to press. Pressing Remove must ask, and
+   * asking must not have removed anything yet.
+   */
+  it('asks before it removes, and removes nothing until the question is answered', async () => {
+    const onUninstall = vi.fn();
+    render(<PluginsPane {...props({ onUninstall })} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    expect(onUninstall.mock.calls).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toContain('Remove this plugin?');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    expect(onUninstall.mock.calls).toEqual([['todo']]);
+  });
+
+  it('takes back the question, and the switch with it, when the answer is no', async () => {
+    const onUninstall = vi.fn();
+    render(<PluginsPane {...props({ onUninstall })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    // While the row is asking, its ordinary controls are gone: a destructive
+    // answer and an ordinary one must not share a pointer.
+    expect(screen.queryByRole('switch', { name: 'Enable Todo' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Keep Todo' }));
+    expect(onUninstall.mock.calls).toEqual([]);
+    expect(screen.getByRole('switch', { name: 'Enable Todo' })).toBeTruthy();
+  });
+
+  /*
+   * Two rows must not confirm as one. The question names its plugin because
+   * that is the moment the reader has to know which row answered.
+   */
+  it('asks on one row at a time', async () => {
+    render(<PluginsPane {...props({
+      plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
+    })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    expect(screen.getByRole('switch', { name: 'Enable Git forge' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Keep Git forge' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Keep Todo' })).toBeTruthy();
   });
 });

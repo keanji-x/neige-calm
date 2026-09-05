@@ -54,6 +54,7 @@
 // says.
 
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
+import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { IconButton as AstryxIconButton } from '@astryxdesign/core/IconButton';
 import { Switch as AstryxSwitch } from '@astryxdesign/core/Switch';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
@@ -62,6 +63,7 @@ import type { ReactNode } from 'react';
 import type { PluginListItem, PluginState } from '../../../../core/domain/plugins.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
+import { useState } from '../../ui/state/public.ts';
 import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
 import styles from './settings.module.css';
 
@@ -94,6 +96,25 @@ export type PluginsPaneProps = Readonly<{
    * fetch — the list carries no manifest, and it never will.
    */
   onOpenConfig: (id: string) => void;
+  /**
+   * Walk into the install form (#1480).
+   *
+   * Its own row at the end of the list rather than a button beside the pane
+   * title: "add a plugin" is somewhere you go, the row grammar already has a
+   * mark for that, and a title-level button would be the only action on this
+   * screen that is not attached to what it acts on.
+   */
+  onAdd: () => void;
+  /**
+   * Remove a plugin — row, token, kv, overlays, and, for a connector the
+   * kernel wrote, its stored credential.
+   *
+   * **The confirmation is this pane's, not the caller's**: nothing else on the
+   * screen can put the question next to the name it is about, and a removal
+   * that took one click would sit one pixel from a switch that is safe to
+   * press. The caller is handed an id only once the operator has confirmed it.
+   */
+  onUninstall: (id: string) => void;
 }>;
 
 /**
@@ -203,10 +224,16 @@ function stateBadge(state: PluginState): ReactNode {
 const EFFECT_BOUNDARY
   = 'This change doesn’t affect conversations already in progress; it takes effect in a new conversation.';
 
+const ADD_DESCRIPTION = 'A remote MCP server, or a plugin directory on this workspace’s own machine.';
+
 export function PluginsPane({
   plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled, onOpenConfig,
-  effectBoundaryIds,
+  effectBoundaryIds, onAdd, onUninstall,
 }: PluginsPaneProps) {
+  /* Which row is asking its question, if any. One id, not a set: the question
+     occupies the row's whole trailing edge, and two rows asking at once would
+     be two half-finished removals a reader has to keep apart. */
+  const [confirming, setConfirming] = useState<string | null>(null);
   return (
     <SettingsPane
       title="Plugins"
@@ -216,7 +243,17 @@ export function PluginsPane({
       {plugins === undefined
         ? loadError === null && <AstryxText as="p" color="secondary">Loading plugins…</AstryxText>
         : plugins.length === 0
-          ? <AstryxText as="p" color="secondary">No plugins installed.</AstryxText>
+          ? (
+            /* The empty list keeps its sentence **and** the way out of it. A
+               screen that only says "none" is one whose single next step the
+               reader has to go looking for somewhere else. */
+            <>
+              <AstryxText as="p" color="secondary">No plugins installed.</AstryxText>
+              <SettingsList>
+                <SettingRow title="Add a plugin" description={ADD_DESCRIPTION} onOpen={onAdd} />
+              </SettingsList>
+            </>
+          )
           : (
             <SettingsList>
               {plugins.map((plugin) => (
@@ -307,6 +344,17 @@ export function PluginsPane({
                       <span
                         className={styles.pluginEffectBoundary}
                         role="status"
+                        /* The locator every test of this line uses. `role`
+                           alone stopped being a way to name it once the row
+                           grew a button: astryx renders a visually-hidden
+                           `role="status"` region inside every `Button` for its
+                           loading announcement, so "the status region in this
+                           row" is no longer a unique description. A `data-nc-`
+                           attribute is this codebase's answer to that (see
+                           `data-nc-plugin-controls` on the cluster above) —
+                           a class would say the same thing but is free to
+                           move. */
+                        data-nc-effect-boundary=""
                       >
                         {effectBoundaryIds.has(plugin.id) && plugin.last_error === undefined
                           ? EFFECT_BOUNDARY
@@ -320,6 +368,21 @@ export function PluginsPane({
                           display name has drifted from its id is unfindable
                           without it. */}
                       <span className={styles.pluginId}>{plugin.id}</span>
+                      {/* The question, under the name it is about. It says what
+                          removal *costs*, because that is the part the reader
+                          cannot see: the switch beside it already says the
+                          plugin can be turned off without losing anything, and
+                          this is the act that is not that. */}
+                      {confirming === plugin.id && (
+                        /* The row's caution tone, not its error tone: nothing
+                           has failed, a question is being asked. `.error` is
+                           kept for the two lines that report a failure, one of
+                           which may be on this same row. */
+                        <span className={styles.notice} role="alert">
+                          Remove this plugin? Its stored configuration and, for a remote server, its
+                          saved key are deleted with it.
+                        </span>
+                      )}
                     </span>
                   )}
                   control={(
@@ -336,6 +399,62 @@ export function PluginsPane({
                      * take the switch away.
                      */
                     <span className={styles.pluginControls} data-nc-plugin-controls="">
+                      {/*
+                       * #1480 — the removal, and the question it asks first.
+                       *
+                       * While a row is confirming, the question **replaces**
+                       * the row's other controls rather than joining them. A
+                       * confirm sitting beside a live switch would put a
+                       * destructive answer and an ordinary one under the same
+                       * pointer, and the reader's eye has to leave the
+                       * sentence to find out which is which. It also keeps the
+                       * cluster at two controls, which is what the row grammar
+                       * costs to stay legible.
+                       *
+                       * Both buttons name the plugin **in their accessible
+                       * name only** (astryx paints `children` and exposes
+                       * `label`). A column of buttons all announced "Remove" is
+                       * one a screen reader cannot navigate — the confirm is
+                       * precisely the moment the reader must know which plugin
+                       * answered — while painting the name would say each
+                       * plugin's name twice in one row and spend the trailing
+                       * edge on a word the row above already carries.
+                       */}
+                      {confirming === plugin.id ? (
+                        <>
+                          <AstryxButton
+                            label={`Remove ${plugin.manifest_name}`}
+                            variant="destructive"
+                            isLoading={pendingIds.has(plugin.id)}
+                            onClick={() => {
+                              setConfirming(null);
+                              onUninstall(plugin.id);
+                            }}
+                          >
+                            Remove
+                          </AstryxButton>
+                          <AstryxButton
+                            label={`Keep ${plugin.manifest_name}`}
+                            variant="ghost"
+                            onClick={() => setConfirming(null)}
+                          >
+                            Keep
+                          </AstryxButton>
+                        </>
+                      ) : (
+                        <>
+                          <AstryxButton
+                            /* A word, not a glyph: `ui/icon`'s registry has no
+                               mark for deletion, and inventing one for the one
+                               irreversible act on this screen would be the
+                               least legible place to introduce a new glyph. */
+                            label={`Remove ${plugin.manifest_name}`}
+                            variant="ghost"
+                            isDisabled={pendingIds.has(plugin.id)}
+                            onClick={() => setConfirming(plugin.id)}
+                          >
+                            Remove
+                          </AstryxButton>
                       {/* Only when the kernel says there is something to
                           configure — see `onOpenConfig`. */}
                       {plugin.has_config && (
@@ -376,19 +495,26 @@ export function PluginsPane({
                       {/* The switch's annotation, set immediately before it —
                           see the header note. `disabled` renders nothing. */}
                       {stateBadge(plugin.state)}
-                      <AstryxSwitch
-                        // Named after the plugin: a list of switches all called
-                        // "Enabled" is one a screen reader cannot navigate.
-                        label={`Enable ${plugin.manifest_name}`}
-                        isLabelHidden
-                        value={plugin.enabled}
-                        isLoading={pendingIds.has(plugin.id)}
-                        onChange={(next) => onSetEnabled(plugin.id, next)}
-                      />
+                          <AstryxSwitch
+                            // Named after the plugin: a list of switches all
+                            // called "Enabled" is one a screen reader cannot
+                            // navigate.
+                            label={`Enable ${plugin.manifest_name}`}
+                            isLabelHidden
+                            value={plugin.enabled}
+                            isLoading={pendingIds.has(plugin.id)}
+                            onChange={(next) => onSetEnabled(plugin.id, next)}
+                          />
+                        </>
+                      )}
                     </span>
                   )}
                 />
               ))}
+              {/* Last, and a drill-in: the list is what the reader came for,
+                  and the way to extend it belongs after it rather than above
+                  it. */}
+              <SettingRow title="Add a plugin" description={ADD_DESCRIPTION} onOpen={onAdd} />
             </SettingsList>
           )}
     </SettingsPane>
