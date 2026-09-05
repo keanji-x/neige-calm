@@ -154,8 +154,8 @@ it('shows the server blocker without offering recovery or exposing a technical f
 
 it('retains the current allocation when there is no projected execution row', async () => {
   await setup('awaiting').open();
-  expect(await screen.findByText('Current attempt 2 · Waiting for admission')).toBeTruthy();
-  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Waiting for admission');
+  expect(await screen.findByText('Current attempt 2 · Waiting to start')).toBeTruthy();
+  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Waiting to start');
   expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
   expect(screen.queryByRole('button', { name: /b.*failed/i })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
@@ -259,7 +259,7 @@ it.each([
   ['capacity', 'All execution slots are occupied. Waiting for capacity.'],
 ] as const)('explains current admission blocker %s without requiring a projected row', async (mode, cause) => {
   await setup(mode).open();
-  await screen.findByText(mode === 'capacity' ? 'Current attempt 2 · Queued' : 'Current attempt 2 · Waiting for admission');
+  await screen.findByText(mode === 'capacity' ? 'Current attempt 2 · Queued' : 'Current attempt 2 · Waiting to start');
   expect(screen.getByText(cause)).toBeTruthy();
   expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(cause);
   expect(screen.getByTitle(cause)).toBeTruthy();

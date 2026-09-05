@@ -7,7 +7,7 @@ import { attemptStatusLabel, recoverTaskOperation, taskAttemptsOperation, taskRe
 function view() {
   const current = { attempt_id: 'server-id', generation: 2, status: 'awaiting_projection', blocking_reason: null, status_detail: null,
     worker_card_id: null, created_at_ms: 1000, finished_at_ms: null };
-  return { key: 'b', current, attempts: [current], recovery: { allowed: false, code: 'not_failed', reason: 'Waiting for admission.' } };
+  return { key: 'b', current, attempts: [current], recovery: { allowed: false, code: 'not_failed', reason: 'Waiting to start.' } };
 }
 
 it('requires nullable execution evidence keys and keeps an allocation without a projection', () => {

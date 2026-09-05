@@ -51,7 +51,7 @@ export function recoverTaskOperation(trackId: string, key: string, request: Task
 /** Dispatch is preparation; only running means business execution has begun. */
 export function attemptStatusLabel(status: string): string {
   switch (status) {
-    case 'awaiting_projection': return 'Waiting for admission';
+    case 'awaiting_projection': return 'Waiting to start';
     case 'pending': return 'Queued';
     case 'dispatched': return 'Preparing';
     case 'running': return 'Running';
