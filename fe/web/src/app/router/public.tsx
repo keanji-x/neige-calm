@@ -53,6 +53,7 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
+  kernelQueuesInput,
   mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
@@ -556,6 +557,35 @@ export function useConversationStore(
     const echo: OptimisticConversationTurn = {
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
       serverHighWaterBefore: serverItemHighWater(items),
+      /*
+       * Read at the moment of the press, which is the only moment it is true of
+       * this message, and read against the **kernel's** whitelist.
+       *
+       * `POST /planner/input` does not look at the phase — `send_planner_input`
+       * accepts unconditionally and `observe_user_message_durable` folds the
+       * text into the harness pending queue — so what decides whether the
+       * message waits is `can_issue_turn()`, and `kernelQueuesInput` is that
+       * predicate mirrored, `null` included (see its note in `core/domain`).
+       *
+       * **Not `working`.** That was the first version of this line and it was a
+       * regression of the very bug the slice fixes. `working` is `issuing_turn
+       * || turn_running`; `stopShown`, which decides whether the composer will
+       * send at all, is `working || stopping`, and `stopping` includes
+       * `issuing_interrupt`. So there was a phase in which the composer sent, the
+       * kernel queued, and the echo was minted `queued: false` — no marker, no
+       * caption, and counted by `hasUnreconciledSend` against a row that cannot
+       * arrive until the queue drains. The dead composer, reached through the
+       * door this slice had just opened. Three more phases sat in the same gap
+       * (`pending_thread_start`, `resumed`, `wedged`) for the same reason: a
+       * front-end notion of "busy" is not the kernel's notion of "can start a
+       * turn", and only the latter decides where the message goes.
+       *
+       * Recomputing it from the live phase later would say the opposite twice
+       * over: a queued message would stop looking queued the instant the turn it
+       * is waiting behind finishes, and a message sent from idle would start
+       * looking queued as soon as its own turn began.
+       */
+      queued: kernelQueuesInput(phase),
     };
     const sentTo = cardId;
     activeSend.current = { cardId: sentTo, echoId: echo.id };
@@ -672,8 +702,36 @@ export function useConversationStore(
   };
 
   const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
-  const hasUnreconciledSend = echoes.length > 0
-    || registry.turnsOf(cardId).some(isOptimisticConversationTurn);
+  /*
+   * ── An echo the server *can* still hand back, as against one it cannot ───
+   *
+   * This used to be `echoes.length > 0 || …some(isOptimisticConversationTurn)`,
+   * i.e. "any echo at all", and against a queued message that is a lock with no
+   * key. A message posted during a turn goes onto the harness pending queue and
+   * writes **no `harness_items` row**: `should_persist_item_method`
+   * (`harness/run_loop.rs`) persists `item/started` and `item/completed` only,
+   * and those are Codex's, emitted after the turn is issued. So the reconciling
+   * row a queued echo is waiting for cannot exist until the running turn ends
+   * and the queue drains. Counting it here did not mean "wait a moment"; it
+   * meant the composer went dead for the length of a turn after one message —
+   * which cancels the point of being able to send during a turn at all.
+   *
+   * An echo minted from idle is the opposite case and still counts: its turn is
+   * issued at once, so the row that clears it is one round trip away, and that
+   * *is* a moment worth waiting.
+   *
+   * **This is not the duplicate-submit guard and does not weaken it.** That is
+   * `sending` / `sendingAcrossMounts` above — "a POST is in flight" — set
+   * synchronously inside `send` and released by its own `finally`. Both are
+   * untouched, so a second press while a request is open is refused exactly as
+   * before, queued or not, and the `unconfirmedEchoId` invariant one screen up
+   * survives with it: at most one echo can be unanswered at a time, because at
+   * most one POST can be open at a time.
+   */
+  const awaitsReconciliation = (turn: TranscriptEntry) =>
+    isOptimisticConversationTurn(turn) && !turn.queued;
+  const hasUnreconciledSend = echoes.some(awaitsReconciliation)
+    || registry.turnsOf(cardId).some(awaitsReconciliation);
   const sendBlocked = sending || sendingAcrossMounts || hasUnreconciledSend;
   return {
     conversations,

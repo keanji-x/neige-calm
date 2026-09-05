@@ -4899,11 +4899,47 @@
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-511,651-681;
-    fe/web/src/app/router/public.tsx:2105-2162
+    fe/web/src/app/router/public.tsx:2163-2220
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:401-443
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-PLANNERQUEUE-001
+  kind: capability
+  family: input-path
+  statement: >
+    A message typed while the kernel cannot start a turn must still be posted, be marked as queued
+    by `kernelQueuesInput` against the phase at the press, and must not be counted by
+    `hasUnreconciledSend` — so the composer stays open and a second message can follow it.
+  why: >
+    `POST /planner/input` never reads the phase: it folds the text into the harness pending queue
+    and `can_issue_turn()` (`harness/state.rs`) starts a turn only from `Idle`/`TurnCompleted`.
+    Two client-side beliefs about that fact can each kill the conversation. Refusing to send while
+    a turn runs discarded the message in silence (#1505's original symptom: the composer's guard
+    returned before `onSend` and before the draft was cleared). Sending it but recording it as
+    issued is worse, because a queued message writes no `harness_items` row until the queue drains
+    (`should_persist_item_method` persists `item/started` / `item/completed` only), so the echo
+    waits for a row that cannot arrive and the composer is dead for the rest of the turn.
+    The criterion therefore has to be the kernel's own two-name whitelist and not a front-end
+    notion of "busy": `working` (`issuing_turn || turn_running`) omits four queueing phases, and
+    the composer sends in one of them (`issuing_interrupt`) because `stopShown` is
+    `working || stopping`.
+    The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
+    stays `migration: pending` against `web/e2e`.
+  source: fe/web/src/app/router/public.tsx:586-588,729-734
+  # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
+  # the composer stays open, and whether a second message can be sent. The predicate itself is
+  # tabulated a second time at the platform-independent tier
+  # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
+  # here because a row declares one `test_tier` and that suite is not jsdom.
+  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:677-710
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
@@ -4920,7 +4956,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:2168-2176
+  source: fe/web/src/app/router/public.tsx:2226-2234
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:529-556
   owner_slice: features/track/create
   intentional_omission: false
@@ -5025,7 +5061,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:2185-2192
+  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:2243-2250
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:583
   owner_slice: features/track/create
   intentional_omission: false
@@ -5059,7 +5095,7 @@
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-532;
-    fe/web/src/app/router/public.tsx:2105-2110,2159-2162
+    fe/web/src/app/router/public.tsx:2163-2168,2217-2220
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:209;
     fe/web/src/app/router/new-track-route.test.tsx:374
   owner_slice: features/track/create
@@ -5171,8 +5207,8 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:47,95-113,191-224,293-353;
-    fe/web/src/app/router/public.tsx:1521-1531,2221-2226,2611-2624;
-    fe/web/src/features/chat/thread/public.tsx:1798-1800,1890,1951-1970
+    fe/web/src/app/router/public.tsx:1579-1589,2279-2284,2669-2682;
+    fe/web/src/features/chat/thread/public.tsx:1827-1829,1919,1980-1999
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose
   # landing failed arms it again, 327 that redeeming is one-shot, 355 that the mark is struck off even

@@ -151,6 +151,49 @@ async function sendWithEnter(field: HTMLElement) {
   });
 }
 
+/**
+ * Wait out exactly one `POST /planner/input`: the request itself, then one
+ * macrotask, which is past the promise chain's own `finally` and therefore past
+ * the point where `sending` is released. What is still holding the composer
+ * shut after this is the echo and nothing else.
+ */
+async function settleOneSend(requests: ApiRequest[], expected = 1) {
+  await waitFor(() => {
+    expect(requests.filter((request) => request.path.endsWith('/planner/input')))
+      .toHaveLength(expected);
+  });
+  await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+}
+
+/**
+ * ── Every phase, against the kernel's own whitelist ──────────────────────
+ *
+ * `HarnessState::can_issue_turn()` is `Idle | TurnCompleted`; everything else
+ * queues. This is that list transcribed, and it is a table rather than one test
+ * about `turn_running` because the criterion is now a phase whitelist, and a
+ * whitelist is only pinned by naming what is on each side of it. The first
+ * version of this slice keyed off `working` (`issuing_turn || turn_running`)
+ * and a single-phase test could not see the four it left out — one of which,
+ * `issuing_interrupt`, the composer will happily send in, because `stopShown`
+ * is `working || stopping`.
+ *
+ * `wedged` is in the queueing column because that is what the kernel does with
+ * the message. It is *not* a claim that the queue drains: a wedged harness
+ * never issues another turn, so the message waits forever. That is #1507 and it
+ * is not fixed here; what this row pins is that the composer stays open and
+ * says the message is queued rather than going dead with no explanation.
+ */
+const PHASE_QUEUES = Object.freeze([
+  ['idle', false],
+  ['turn_completed', false],
+  ['pending_thread_start', true],
+  ['issuing_turn', true],
+  ['issuing_interrupt', true],
+  ['turn_running', true],
+  ['resumed', true],
+  ['wedged', true],
+] as const);
+
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
     setupWithTurns((request) => request.path.endsWith('/planner/run')
@@ -448,6 +491,239 @@ describe('planner conversation regressions', () => {
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
     reject(new Error('send exploded'));
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
+  });
+
+  /*
+   * ── #1505 ────────────────────────────────────────────────────────────────
+   *
+   * The whole bug and the whole fix, at the one tier that can see both: a real
+   * transport, a real phase query, and the composer the app actually builds.
+   *
+   * Before the fix this test's first assertion read `toHaveLength(0)` if you
+   * wrote it honestly — Enter during `turn_running` reached
+   * `ChatComposer`'s `onSubmit`, hit `if (… || stopShown) return;`, and no POST
+   * was ever attempted. Nothing else on the path refused: `send_planner_input`
+   * accepts at any phase and queues the text behind the running turn.
+   *
+   * The second half is what the reader is owed for it. A queued message and a
+   * message being worked on are the same paragraph on the same side of the
+   * transcript; `data-nc-queued` is the difference, and it is present only on
+   * the send that was actually queued.
+   */
+  it('posts a message sent while a turn is running, and marks it queued', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    /* The phase arrives a round trip after the drawer, and "running" is the
+       precondition — without it this would be an ordinary idle send. */
+    await screen.findByRole('button', { name: 'Stop' });
+
+    const field = messageField();
+    await typeInto(field, 'queued words');
+    await sendWithEnter(field);
+
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+    });
+    expect(await screen.findByText('queued words')).toBeTruthy();
+    const queued = document.querySelector('[data-nc-queued]');
+    expect(queued?.textContent).toBe('queued words');
+    expect(document.querySelector('[data-nc-queued-note]')?.textContent)
+      .toContain('sends when this turn ends');
+  });
+
+  /* The same send from an idle conversation is not queued behind anything, and
+     must not claim to be — the marker is a fact about the send, so the negative
+     is what keeps it from decaying into decoration on every optimistic turn. */
+  it('does not mark a message sent from an idle conversation as queued', async () => {
+    setup();
+    await openConversation();
+    const field = messageField();
+    await typeInto(field, 'idle words');
+    await sendWithEnter(field);
+    expect(await screen.findByText('idle words')).toBeTruthy();
+    expect(document.querySelector('[data-nc-queued]')).toBeNull();
+    expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+  });
+
+  /* Sending during a turn does not repeal the one-POST-at-a-time rule: that is
+     `sendBlocked`, and it is about the request in flight rather than about the
+     agent. Same shape as the idle test above, on the running path. */
+  it('still prevents a second send while the first is pending, with a turn running', async () => {
+    let settle!: (response: ApiTransportResponse) => void;
+    const pending = new Promise<ApiTransportResponse>((resolve) => { settle = resolve; });
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' });
+      }
+      return request.path.endsWith('/planner/input') ? pending : undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'first');
+    await sendWithEnter(field);
+    await typeInto(field, 'second');
+    await sendWithEnter(field);
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+
+    /*
+     * ── The settle is asserted, not merely performed ─────────────────────────
+     *
+     * The count above is read *before* `settle`, so for as long as nothing
+     * looked at the release this line could hand back a body the response
+     * schema rejects and the test would stay green — the send would take the
+     * failure path instead of the success path it was written for, silently.
+     * `worker_session_id` is exactly that hazard: #1423 renamed the wire field,
+     * and this literal said `runtime_id` until the rebase.
+     *
+     * So the release is followed through: no error strip, and — the fact only
+     * the success path can produce — the queued send has freed the composer for
+     * a second message.
+     */
+    settle(ok({ card_id: CARD.id, worker_session_id: 'runtime' }));
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+    await typeInto(messageField(), 'second, after the release');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests, 2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  /*
+   * ── The composer survives its own queued message ─────────────────────────
+   *
+   * `hasUnreconciledSend` used to count *every* standing echo, and a queued one
+   * can never be counted down: the pending queue writes no `harness_items` row
+   * (`should_persist_item_method` persists `item/started` / `item/completed`
+   * only, and both are Codex's, after the turn is issued), so the row that
+   * would clear it cannot exist until the turn ends. One message and the
+   * composer was dead for the rest of the turn — which is half the feature.
+   *
+   * Requests, not DOM: what is being claimed is that a second message actually
+   * *left*, and only the transport can say that.
+   */
+  it('keeps taking messages after one has been queued behind a running turn', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+
+    const field = messageField();
+    await typeInto(field, 'first queued');
+    await sendWithEnter(field);
+    await waitFor(() => { expect(input()).toHaveLength(1); });
+
+    /* The composer is still a composer — the field takes text and Enter still
+       reaches the handler. Asserted through the send rather than through an
+       attribute: `disabled` is one of several ways the box could be dead. */
+    await typeInto(field, 'second queued');
+    await sendWithEnter(field);
+    await waitFor(() => { expect(input()).toHaveLength(2); });
+    expect(input().map((request) => (request.body as { text: string }).text))
+      .toEqual(['first queued', 'second queued']);
+  });
+
+  /*
+   * The other side of the split, and the reason it is a split rather than a
+   * removal: an echo minted from **idle** still closes the composer until the
+   * server hands it back. Its turn is issued at once, so the reconciling row is
+   * one round trip away — a moment, not a turn — and waiting for it is what
+   * keeps a second message from being sent into an account nobody has squared.
+   *
+   * Read off `contenteditable`, which is Astryx's own rendering of
+   * `isDisabled` (`ChatComposerInput`: `contentEditable={!isDisabled}`), rather
+   * than off a refused Enter: a settled send has already emptied the draft, so
+   * a second Enter would be refused for having no words in it and would prove
+   * nothing about the block.
+   *
+   * This and the queued test below run the **same helper** — `settleOneSend`,
+   * one `waitFor` for the request and one macrotask past the POST's own
+   * `finally` — and then assert with a bare `expect`. That symmetry is the
+   * point of the pair and it was not there at first: the closed side polled
+   * with `waitFor` and the open side read once, so the closed side was given
+   * time for a late-arriving block that the open side was not, and the pair did
+   * not compare like with like. Neither needs polling — `hasUnreconciledSend`
+   * is derived at render from `echoes`, which `send` sets synchronously, so the
+   * answer is settled before the first of these two lines runs.
+   */
+  it('still closes the composer after an idle send until the server hands it back', async () => {
+    const { requests } = setup();
+    await openConversation();
+    await typeInto(messageField(), 'idle send');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests);
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+  });
+
+  /* And the same reading, in the state the split exists for: after a queued
+     send the box is still open. Same helper, same assertion, opposite answer. */
+  it('leaves the composer open after a queued send', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    await typeInto(messageField(), 'queued send');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests);
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
+  it.each(PHASE_QUEUES)(
+    'phase %s queues the message: %s — marker, open composer and a second send all follow it',
+    async (phase, queues) => {
+      const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase })
+        : undefined);
+      await openConversation();
+      /*
+       * The transport already serves this phase; seeding the same value into
+       * the cache removes the window between the drawer opening and that answer
+       * landing, in which `phase` is `null` and every row would look queued for
+       * the wrong reason. The two agree, so a refetch cannot contradict the
+       * seed, and the wire decode is exercised by the tests around this one.
+       */
+      await act(async () => {
+        client.setQueryData(queryKeys.plannerRun(CARD.id),
+          { card_id: CARD.id, worker_session_id: 'runtime', phase });
+        await Promise.resolve();
+      });
+      const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+
+      await typeInto(messageField(), 'first');
+      await sendWithEnter(messageField());
+      await settleOneSend(requests);
+
+      expect(document.querySelector('[data-nc-queued]') !== null).toBe(queues);
+      expect(messageField().getAttribute('contenteditable')).toBe(queues ? 'true' : 'false');
+
+      /* And the consequence the reader actually feels: whether there is any way
+         to say a second thing. */
+      await typeInto(messageField(), 'second');
+      await sendWithEnter(messageField());
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(input()).toHaveLength(queues ? 2 : 1);
+    },
+  );
+
+  /* And Stop is untouched by all of the above: the second control was added
+     beside it, not in place of it. */
+  it('keeps Stop working while the queue control is on screen', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    const stop = await screen.findByRole('button', { name: 'Stop' });
+    expect(screen.getByRole('button', { name: 'Queue message' })).toBeTruthy();
+    fireEvent.click(stop);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
+    });
   });
 
   it('invalidates history and phase after a successful send', async () => {
