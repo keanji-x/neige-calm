@@ -181,15 +181,15 @@ describe('P8b2 ownership exit', () => {
 describe('ownership event routing', () => {
   const commits: readonly OwnershipCommit[] = [{ sha: 'abc123', message: 'change', paths: ['frozen.txt'] }];
 
-  it('loads trailer-range commits for push events', () => {
+  it('loads trailer-range commits for push events', async () => {
     const load = vi.fn(() => commits);
-    expect(ownershipCommitsForEvent('push', load)).toBe(commits);
+    expect(await ownershipCommitsForEvent('push', load, [], () => Promise.resolve([]))).toEqual(commits);
     expect(load).toHaveBeenCalledOnce();
   });
 
-  it.each(['pull_request', undefined])('loads trailer-range commits for %s events', (eventName) => {
+  it.each(['pull_request', undefined])('loads trailer-range commits for %s events', async (eventName) => {
     const load = vi.fn(() => commits);
-    expect(ownershipCommitsForEvent(eventName, load)).toBe(commits);
+    expect(await ownershipCommitsForEvent(eventName, load, [], () => Promise.resolve([]))).toBe(commits);
     expect(load).toHaveBeenCalledOnce();
   });
 

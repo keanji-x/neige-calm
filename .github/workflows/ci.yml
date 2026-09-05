@@ -805,6 +805,9 @@ jobs:
         run: npm run test
 
   fe-unit:
+    permissions:
+      contents: read
+      pull-requests: read
     name: fe-unit (lint + build + test)
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.fe_changed == 'true') }}
@@ -840,6 +843,7 @@ jobs:
           OWNERSHIP_HEAD_SHA: ${{ env.HEAD_SHA }}
           OWNERSHIP_EVENT_NAME: ${{ github.event_name }}
           OWNERSHIP_PUSH_FORCED: ${{ github.event.forced || false }}
+          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
         run: npm run lint
 
       - name: npm run build
