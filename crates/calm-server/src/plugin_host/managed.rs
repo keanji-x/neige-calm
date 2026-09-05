@@ -332,7 +332,10 @@ mod tests {
     #[test]
     fn a_synthesized_manifest_never_carries_the_credential() {
         let doc = spec(Some("sk-credential")).manifest_json().to_string();
-        assert!(!doc.contains("sk-credential"), "manifest must not hold the key: {doc}");
+        assert!(
+            !doc.contains("sk-credential"),
+            "manifest must not hold the key: {doc}"
+        );
         assert!(doc.contains("\"api_key_secret\":\"api_key\""), "{doc}");
         assert!(doc.contains("\"api_key_in\":\"bearer\""), "{doc}");
     }
@@ -364,9 +367,10 @@ mod tests {
 
         assert!(is_managed_tree(&dir));
         let secrets = dir.join(SECRETS_FILENAME);
-        assert_eq!(
-            std::fs::read_to_string(&secrets).unwrap().contains("sk-credential"),
-            true
+        assert!(
+            std::fs::read_to_string(&secrets)
+                .unwrap()
+                .contains("sk-credential")
         );
         #[cfg(unix)]
         {
