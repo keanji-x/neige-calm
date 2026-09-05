@@ -610,6 +610,42 @@ const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
 /// once per workspace, so the cost is not on any hot path. The re-init and
 /// commit steps that follow are deliberately *not* synced: they are
 /// reconstructible by the repair path, which the marker is what unlocks.
+///
+/// # What a crashed claim leaves behind
+///
+/// Death between staging and the publishing `rename` leaves
+/// `.neige-claim-<track>` in the area directory. The next materialize of this
+/// track reclaims it — debris exists only while `<path>` is still empty and
+/// unmarked, which is the arm that routes here, and the first thing this
+/// function does is `remove_dir_all(&staging)`. A track that is never retried
+/// keeps its entry: one per track that crashed mid-claim and was never
+/// retried, and it stays there.
+///
+/// The one reader that acts on it is `remove_empty_area_dir`
+/// (`workspace_recycle.rs:698`): its `rmdir` answers `ENOTEMPTY`, so
+/// `area_dir_removed` comes back `false` and the area directory is left in
+/// place — classed as cosmetic at that call site's own doc comment. Every
+/// other reader of that directory either filters it (the listing route drops
+/// leading-dot names, `routes/fs.rs:184-187`) or never reaches it.
+///
+/// That residue is not a new cost. Before #1427 the same crash left
+/// `<path>/.git` unmarked, which blocked that same `rmdir` identically *and*
+/// poisoned the create's `Idempotency-Key`; what this version leaves is a
+/// strict subset of what it replaced.
+///
+/// # Two processes, one track
+///
+/// The staging name is shared per track, so a second process entering this
+/// function can `remove_dir_all` a first one's staging mid-flight. The loser
+/// of that race gets a returned `Internal` error with `<path>` still empty, so
+/// the next call succeeds: `remove_dir_all` is called on `staging` and nowhere
+/// else in this module, and `<path>` is not a `remove_dir_all` target here at
+/// all. In one process the per-path mutex makes the interleaving unreachable;
+/// across processes it is untested ground, and
+/// `docs/design-1384-track-idempotency.md` §9 KNOWN GAP 3 already records the
+/// cross-process race as untested. Both windows were driven once through
+/// `claim_crash_point` during #1427's review; **no test pins them**, so treat
+/// this paragraph as a measurement, not as a guarantee.
 fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         CalmError::Internal(format!(
