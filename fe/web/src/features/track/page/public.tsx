@@ -64,6 +64,14 @@ import styles from './page.module.css';
  */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
+export type TrackInputNotification = Readonly<{
+  cardId: string;
+  source: string;
+  message: string;
+  state: 'awaiting-input' | 'errored';
+  updatedAt: number;
+}>;
+
 export type TrackPageProps = Readonly<{
   track: Track;
   cards: readonly CardWire[];
@@ -85,8 +93,9 @@ export type TrackPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  /** Opens the track's coordinating conversation when a worker requests input. */
-  onReviewNeedsInput?: () => void;
+  /** Actionable card-scoped requests, projected by the route from status overlays. */
+  inputNotifications?: readonly TrackInputNotification[];
+  onOpenInputNotification?: (cardId: string) => void;
   /** The route's conversation drawer is open. Input notifications compact
    *  beside it instead of covering its composer. */
   conversationOpen?: boolean;
@@ -160,6 +169,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
   let queued = 0;
   let waiting = 0;
   let failed = 0;
+  let canceled = 0;
   let done = 0;
   for (const task of tasks) {
     if (task.status === 'dispatched' || task.status === 'running' || task.status === 'verifying') {
@@ -168,6 +178,8 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
       failed += 1;
     } else if (task.status === 'done') {
       done += 1;
+    } else if (task.status === 'canceled') {
+      canceled += 1;
     } else if (task.pendingReason?.kind === 'budgetQueued') {
       queued += 1;
     } else if (task.status === 'pending' || task.pendingReason !== null) {
@@ -179,24 +191,31 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
   if (failed > 0) parts.push(`${failed} failed`);
   if (queued > 0) parts.push(`${queued} queued`);
   if (waiting > 0) parts.push(`${waiting} waiting`);
+  if (canceled > 0) parts.push(`${canceled} canceled`);
   if (done > 0) parts.push(`${done} done`);
   return parts.length === 0 ? null : parts.join(' · ');
 }
 
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
-  onStartConversation, conversationOpen = false,
+  onStartConversation, conversationOpen = false, inputNotifications = [], onOpenInputNotification,
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
-  panel = null, onOpenPanel, onClosePanel, onReviewNeedsInput,
+  panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
   const resumeFeedback = useOperationFeedback();
   const [resumePending, setResumePending] = useState(false);
-  const [noticeExpanded, setNoticeExpanded] = useState(track.anyCardNeedsInput);
+  const notificationSignature = inputNotifications
+    .map(({ cardId, state, updatedAt }) => `${cardId}:${state}:${updatedAt}`)
+    .join('|');
+  const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
+  const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
   const resumePendingRef = useRef(false);
-  const noticePreviouslyNeededRef = useRef(track.anyCardNeedsInput);
+  const previousNotificationSignatureRef = useRef('');
+  const previousNotificationCountRef = useRef(0);
+  const previousConversationOpenRef = useRef(conversationOpen);
   useEffect(() => {
     // The PATCH promise settles before its invalidation refetch. Keep Resume
     // fenced after a successful response until the authoritative capability
@@ -206,12 +225,22 @@ export function TrackPage({
     setResumePending(false);
   }, [canResumeTrack]);
   useEffect(() => {
-    if (track.anyCardNeedsInput && !noticePreviouslyNeededRef.current) setNoticeExpanded(true);
-    noticePreviouslyNeededRef.current = track.anyCardNeedsInput;
-  }, [track.anyCardNeedsInput]);
+    if (notificationSignature === previousNotificationSignatureRef.current) return;
+    const count = inputNotifications.length;
+    setNotificationAnnouncement(count > 0
+      ? `${count} ${count === 1 ? 'notification needs' : 'notifications need'} your attention.`
+      : (previousNotificationCountRef.current > 0 ? 'All notifications cleared.' : ''));
+    if (count > 0 && !conversationOpen) setNoticeExpanded(true);
+    previousNotificationSignatureRef.current = notificationSignature;
+    previousNotificationCountRef.current = count;
+  }, [conversationOpen, inputNotifications.length, notificationSignature]);
+  useEffect(() => {
+    if (conversationOpen && !previousConversationOpenRef.current) setNoticeExpanded(false);
+    previousConversationOpenRef.current = conversationOpen;
+  }, [conversationOpen]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
-  const noticePanelOpen = noticeExpanded && !conversationOpen;
+  const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
   /** The drill-down page's entrance animation — a *panel* fact, not a card one:
    *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
@@ -738,7 +767,14 @@ export function TrackPage({
         />
       )}
 
-      {track.anyCardNeedsInput && (
+      <VisuallyHidden
+        role="status"
+        aria-label="Input notifications"
+        aria-live="polite"
+        aria-atomic="true"
+      >{notificationAnnouncement}</VisuallyHidden>
+
+      {inputNotifications.length > 0 && (
         <aside
           className={`${styles.needsInputNotice} ${noticePanelOpen
             ? styles.needsInputNoticeExpanded
@@ -748,28 +784,16 @@ export function TrackPage({
           role="region"
           aria-label="Notifications"
         >
-          <VisuallyHidden
-            role="status"
-            aria-label="Planner needs input"
-            aria-live="polite"
-            aria-atomic="true"
-          >Planner needs your input</VisuallyHidden>
           {noticePanelOpen ? (
             <>
-              <span className={styles.needsInputNoticeIcon}><Icon name="notification" /></span>
-              <span className={styles.needsInputNoticeCopy}>
-                <strong className={styles.needsInputNoticeTitle}>Planner needs your input</strong>
-                <span className={styles.needsInputNoticeDetail}>Review the latest request to keep work moving.</span>
-              </span>
-              <span className={styles.needsInputNoticeActions}>
-                {onReviewNeedsInput !== undefined && (
-                  <button
-                    type="button"
-                    className={styles.needsInputAction}
-                    aria-label="Review input request"
-                    onClick={onReviewNeedsInput}
-                  >Review</button>
-                )}
+              <span className={styles.needsInputNoticeHeader}>
+                <span className={styles.needsInputNoticeIcon}><Icon name="notification" /></span>
+                <span className={styles.needsInputNoticeCopy}>
+                  <strong className={styles.needsInputNoticeTitle}>Notifications</strong>
+                  <span className={styles.needsInputNoticeDetail}>
+                    {inputNotifications.length} {inputNotifications.length === 1 ? 'item needs' : 'items need'} attention
+                  </span>
+                </span>
                 <button
                   type="button"
                   className={styles.needsInputCollapse}
@@ -778,22 +802,40 @@ export function TrackPage({
                   onClick={() => setNoticeExpanded(false)}
                 ><Icon name="chevron-right" size="sm" /></button>
               </span>
+              <ul className={styles.needsInputNoticeList}>
+                {inputNotifications.map((notification) => (
+                  <li
+                    key={notification.cardId}
+                    className={styles.needsInputNoticeItem}
+                    data-nc-notification-state={notification.state}
+                  >
+                    <span className={styles.needsInputNoticeCopy}>
+                      <strong className={styles.needsInputNoticeSource}>{notification.source}</strong>
+                      <span className={styles.needsInputNoticeDetail}>{notification.message}</span>
+                    </span>
+                    {onOpenInputNotification !== undefined && (
+                      <button
+                        type="button"
+                        className={styles.needsInputAction}
+                        aria-label={`Review ${notification.source} notification`}
+                        onClick={() => onOpenInputNotification(notification.cardId)}
+                      >Review</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </>
           ) : (
             <button
               type="button"
               className={styles.needsInputLauncher}
               data-nc-notification-launcher=""
-              aria-label={conversationOpen ? 'Review input request' : 'Open notifications'}
-              title={conversationOpen ? 'Review input request' : 'Open notifications'}
-              disabled={conversationOpen && onReviewNeedsInput === undefined}
-              onClick={() => {
-                if (conversationOpen) onReviewNeedsInput?.();
-                else setNoticeExpanded(true);
-              }}
+              aria-label={`Open ${inputNotifications.length} ${inputNotifications.length === 1 ? 'notification' : 'notifications'}`}
+              title="Open notifications"
+              onClick={() => setNoticeExpanded(true)}
             >
               <Icon name="notification" />
-              <span className={styles.needsInputIndicator} aria-hidden="true" />
+              <span className={styles.needsInputIndicator} aria-hidden="true">{inputNotifications.length}</span>
             </button>
           )}
         </aside>

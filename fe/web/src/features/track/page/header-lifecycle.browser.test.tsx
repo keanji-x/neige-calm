@@ -38,6 +38,11 @@ function contrast(first: Rgb, second: Rgb): number {
   return (high + 0.05) / (low + 0.05);
 }
 
+const plannerNotification = [{
+  cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
+  state: 'awaiting-input' as const, updatedAt: 1,
+}];
+
 describe('the track lifecycle status in the page header', () => {
   it('sits directly beside the title as quiet text', async () => {
     await browserPage.viewport(1200, 800);
@@ -77,11 +82,11 @@ describe('the track lifecycle status in the page header', () => {
 
   it('floats a worker input request at the viewport corner with a direct action', async () => {
     await browserPage.viewport(1200, 800);
-    const onReviewNeedsInput = vi.fn();
-    renderPage({ track: track({ anyCardNeedsInput: true }), onReviewNeedsInput });
+    const onOpenInputNotification = vi.fn();
+    renderPage({ inputNotifications: plannerNotification, onOpenInputNotification });
 
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
-    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review input request"]')!;
+    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review Planner notification"]')!;
     const noticeBox = notice.getBoundingClientRect();
     expect(review.innerText).toBe('Review');
     expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(32);
@@ -90,16 +95,14 @@ describe('the track lifecycle status in the page header', () => {
     expect(window.innerHeight - noticeBox.bottom).toBeGreaterThanOrEqual(20);
     expect(window.innerHeight - noticeBox.bottom).toBeLessThanOrEqual(28);
     await userEvent.click(review);
-    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+    expect(onOpenInputNotification).toHaveBeenCalledWith('planner');
   });
 
   it('compacts an input notification beside an open conversation drawer', async () => {
     await browserPage.viewport(1200, 800);
-    const onReviewNeedsInput = vi.fn();
     renderPage({
-      track: track({ anyCardNeedsInput: true }),
+      inputNotifications: plannerNotification,
       conversationOpen: true,
-      onReviewNeedsInput,
     });
 
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
@@ -110,7 +113,7 @@ describe('the track lifecycle status in the page header', () => {
     expect(window.innerWidth - box.right).toBeGreaterThan(250);
     expect(notice.querySelector('strong')).toBeNull();
     await userEvent.click(launcher);
-    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+    expect(notice.dataset.ncNotificationMode).toBe('expanded');
   });
 
   it('returns focus to the Track actions button when Escape closes its menu', async () => {
@@ -185,9 +188,8 @@ describe('the track lifecycle status in the page header', () => {
       track: track({
         title: 'A deliberately long track title '.repeat(12),
         lifecycle: 'working',
-        anyCardNeedsInput: true,
       }),
-      onReviewNeedsInput: vi.fn(),
+      inputNotifications: plannerNotification,
     });
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;

@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
-import { TrackPage, type TrackPageProps } from './public.tsx';
+import { useState } from '../../../ui/state/public.ts';
+import { TrackPage, type TrackInputNotification, type TrackPageProps } from './public.tsx';
 import { card, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
@@ -110,23 +111,69 @@ describe('TrackPage header', () => {
   });
 
   it('turns a card input request into a bottom-right notification action', async () => {
-    const onReviewNeedsInput = vi.fn();
+    const onOpenInputNotification = vi.fn();
     renderPage({
-      track: track({ anyCardNeedsInput: true }),
-      onReviewNeedsInput,
+      inputNotifications: [{
+        cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
+        state: 'awaiting-input', updatedAt: 1,
+      }],
+      onOpenInputNotification,
     });
     const notice = screen.getByRole('region', { name: 'Notifications' });
-    expect(screen.getByRole('status', { name: 'Planner needs input' })).toBeTruthy();
-    expect(notice.textContent).toContain('Planner needs your input');
-    expect(notice.textContent).toContain('Review the latest request to keep work moving.');
+    expect(screen.getByRole('status', { name: 'Input notifications' }).textContent)
+      .toBe('1 notification needs your attention.');
+    expect(notice.textContent).toContain('Notifications');
+    expect(notice.textContent).toContain('1 item needs attention');
+    expect(notice.textContent).toContain('Requires input to continue.');
     expect(screen.queryByText('Needs input')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Collapse notifications' }));
     expect(notice.getAttribute('data-nc-notification-mode')).toBe('compact');
     expect(notice.querySelector('strong')).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Open notifications' }));
+    expect(notice.textContent).toContain('1');
+    await userEvent.click(screen.getByRole('button', { name: 'Open 1 notification' }));
     expect(notice.getAttribute('data-nc-notification-mode')).toBe('expanded');
-    await userEvent.click(screen.getByRole('button', { name: 'Review input request' }));
-    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('button', { name: 'Review Planner notification' }));
+    expect(onOpenInputNotification).toHaveBeenCalledWith('planner');
+  });
+
+  it('reopens a collapsed center when another card requests attention', async () => {
+    const planner: TrackInputNotification = {
+      cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
+      state: 'awaiting-input', updatedAt: 1,
+    };
+    const worker: TrackInputNotification = {
+      cardId: 'worker', source: 'Worker', message: 'Stopped with an error and needs attention.',
+      state: 'errored', updatedAt: 2,
+    };
+    function NotificationHarness() {
+      const [notifications, setNotifications] = useState<readonly TrackInputNotification[]>([planner]);
+      return (
+        <>
+          <button type="button" onClick={() => setNotifications([worker, planner])}>Add notification</button>
+          <TrackPage
+            track={track({ anyCardNeedsInput: true })}
+            cards={[]}
+            tasks={[]}
+            inputNotifications={notifications}
+            canResumeTrack={false}
+            onRenameTrack={vi.fn()}
+            onResumeTrack={vi.fn()}
+            onDeleteTrack={vi.fn()}
+          />
+        </>
+      );
+    }
+
+    render(<NotificationHarness />);
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse notifications' }));
+    expect(screen.getByRole('region', { name: 'Notifications' })
+      .getAttribute('data-nc-notification-mode')).toBe('compact');
+    await userEvent.click(screen.getByRole('button', { name: 'Add notification' }));
+    expect(screen.getByRole('region', { name: 'Notifications' })
+      .getAttribute('data-nc-notification-mode')).toBe('expanded');
+    expect(screen.getByText('2 items need attention')).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Input notifications' }).textContent)
+      .toBe('2 notifications need your attention.');
   });
 });
 
@@ -253,6 +300,11 @@ describe('TrackPage task inventory', () => {
     expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Queued 1/1"]')).not.toBeNull();
     expect(screen.getByText('1 active · 1 queued')).toBeTruthy();
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
+  });
+
+  it('includes canceled tasks in the compact status totals', () => {
+    renderPage({ tasks: [running('stopped', 'canceled', null)] });
+    expect(screen.getByText('1 canceled')).toBeTruthy();
   });
 
   /* The compact carrier prints the bare word and keeps the full kernel reason

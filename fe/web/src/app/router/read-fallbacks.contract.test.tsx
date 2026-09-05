@@ -18,6 +18,10 @@ const areas = [
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const track = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+const plannerCard = {
+  id: 'planner', track_id: 'w1', kind: 'codex', title: 'Planner', sort: 1,
+  payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 1,
+};
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 
@@ -84,11 +88,14 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await within(await screen.findByRole('navigation', { name: 'Workspace' })).findByText('Reliable');
-    resolveDetail(ok({ track, can_resume: false, cards: [], overlays: [{
-      id: 'o1', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
+    resolveDetail(ok({ track, can_resume: false, cards: [plannerCard], overlays: [{
+      id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1',
       kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
+    }, {
+      id: 'o2', plugin_id: 'kernel', entity_kind: 'card', entity_id: plannerCard.id,
+      kind: 'status', payload: { state: 'AwaitingInput' }, updated_at: 2,
     }] }));
-    expect(await screen.findByRole('status', { name: 'Planner needs input' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'Notifications' })).toBeTruthy();
   });
 
   it('uses a successful neutral detail read instead of stale workspace activity', async () => {
@@ -105,7 +112,7 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByRole('status', { name: 'Planner needs input' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Notifications' })).toBeNull();
   });
 });
 

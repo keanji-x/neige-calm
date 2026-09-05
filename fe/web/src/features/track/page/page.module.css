@@ -213,9 +213,9 @@
   }
 
   .needsInputNoticeExpanded {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     gap: var(--space-4);
     inline-size: min(22rem, calc(100vw - var(--space-10) * 2));
     padding: var(--space-5);
@@ -248,6 +248,13 @@
     color: var(--accent);
   }
 
+  .needsInputNoticeHeader {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
   .needsInputNoticeCopy {
     display: flex;
     flex-direction: column;
@@ -262,6 +269,16 @@
     line-height: var(--leading-tight);
   }
 
+  .needsInputNoticeSource {
+    overflow: hidden;
+    color: var(--text);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
   .needsInputNoticeDetail {
     color: var(--text-3);
     font-size: var(--text-xs);
@@ -269,10 +286,23 @@
     line-height: var(--leading-snug);
   }
 
-  .needsInputNoticeActions {
-    display: inline-flex;
-    align-items: center;
+  .needsInputNoticeList {
+    display: flex;
+    flex-direction: column;
     gap: var(--space-2);
+    max-block-size: min(22rem, 45vh);
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+  }
+
+  .needsInputNoticeItem {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--hairline);
   }
 
   .needsInputAction {
@@ -333,13 +363,20 @@
 
   .needsInputIndicator {
     position: absolute;
-    inset-block-start: var(--space-2);
-    inset-inline-end: var(--space-2);
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
+    inset-block-start: calc(var(--space-1) * -1);
+    inset-inline-end: calc(var(--space-1) * -1);
+    display: grid;
+    place-items: center;
+    min-inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding-inline: var(--space-1);
     border: 1px solid var(--paper);
     border-radius: var(--radius-pill);
-    background: var(--warn);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
   }
 
   /* Track-level mutations live behind one conventional overflow trigger. The
