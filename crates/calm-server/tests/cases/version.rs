@@ -129,8 +129,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
-    // #1354: "3" -> "4" when the Area conversation endpoints were deleted.
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "4");
+    // #1450: "4" -> "5" because Track detail now requires `can_resume`.
+    assert_eq!(v["apiVersion"].as_str().unwrap(), "5");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
@@ -146,14 +146,14 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    // #1354: 20 -> 21 so a cached bundle still rendering the deleted Area page
-    // gets the refresh curtain before it can call a retired endpoint.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 21);
+    // #1450: 21 -> 22 so a cached bundle that cannot consume the required
+    // Track-detail capability gets the refresh curtain before parsing it.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 22);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 21);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 22);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -251,5 +251,36 @@ async fn web_compat_floor_is_above_the_previous_bundle() {
     assert!(
         floor > LAST_PRE_RENAME_FLOOR,
         "minWebCompatVersion must exclude pre-rename bundles, got {floor}"
+    );
+}
+
+#[tokio::test]
+async fn web_compat_floor_excludes_track_detail_without_resume_capability() {
+    const LAST_TRACK_DETAIL_WITHOUT_CAN_RESUME: u64 = 21;
+
+    let state = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let floor = v["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_TRACK_DETAIL_WITHOUT_CAN_RESUME,
+        "minWebCompatVersion must exclude bundles without can_resume, got {floor}"
     );
 }

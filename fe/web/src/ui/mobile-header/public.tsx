@@ -21,9 +21,10 @@ function scrollHosts(header: HTMLElement): HTMLElement[] {
 }
 
 export function MobileHeader({
-  title, level = 2, backLabel, onBack, actions, titleFieldMarker,
+  title, meta, level = 2, backLabel, onBack, actions, titleFieldMarker,
 }: Readonly<{
   title: string;
+  meta?: ReactNode;
   level?: 1 | 2;
   backLabel?: string;
   onBack?: () => void;
@@ -74,15 +75,18 @@ export function MobileHeader({
           />
         )}
       </span>
-      <AstryxHeading
-        level={level}
-        color="secondary"
-        maxLines={1}
-        className={styles.title}
-        {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
-      >
-        {title}
-      </AstryxHeading>
+      <div className={styles.titleGroup}>
+        <AstryxHeading
+          level={level}
+          color="secondary"
+          maxLines={1}
+          className={styles.title}
+          {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
+        >
+          {title}
+        </AstryxHeading>
+        {meta}
+      </div>
       <span className={styles.trailing}>{actions}</span>
     </header>
   );

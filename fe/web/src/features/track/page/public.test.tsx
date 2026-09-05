@@ -23,12 +23,12 @@ describe('TrackPage header', () => {
   it('shows the track title and the lifecycle badge', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('status', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
+    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Blocked' })).toHaveLength(2);
   });
 
   it('puts Draft in the header', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.getByRole('status', { name: 'Track lifecycle: Draft' })).toBeTruthy();
+    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Draft' })).toHaveLength(2);
   });
 
   it('shows done, canceled and failed', () => {
@@ -37,7 +37,7 @@ describe('TrackPage header', () => {
     ] as const) {
       cleanup();
       renderPage({ track: track({ lifecycle }) });
-      expect(screen.getByRole('status', { name: `Track lifecycle: ${label}` })).toBeTruthy();
+      expect(screen.getAllByRole('status', { name: `Track lifecycle: ${label}` })).toHaveLength(2);
     }
   });
 

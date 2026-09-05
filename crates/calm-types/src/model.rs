@@ -346,6 +346,12 @@ impl Default for TrackWorkspace {
 
 // ---------------- Track ----------------
 
+/// Purpose marker on retired Area-conversation tracks.
+///
+/// Shared by transport authorization and read-side capability derivation so a
+/// Track detail never advertises a lifecycle action the route must refuse.
+pub const AREA_CHAT_PURPOSE: &str = "area-chat";
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Track {

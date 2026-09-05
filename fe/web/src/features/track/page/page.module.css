@@ -1041,8 +1041,7 @@
       box-shadow: none !important;
     }
 
-    .needsInput,
-    .page [data-nc-lifecycle-tone] {
+    .needsInput {
       display: none;
     }
 

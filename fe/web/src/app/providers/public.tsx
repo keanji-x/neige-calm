@@ -17,8 +17,10 @@ import { ThemeProvider } from '../theme/public.tsx';
  * 16 -> 17: #1209 PR-2 renamed the two template fields of the `POST /api/tracks`
  * request body, which `deny_unknown_fields` makes a hard break for older
  * bundles.
+ * 21 -> 22: #1450 makes Track detail's `can_resume` capability required, so an
+ * old cached bundle must refresh and a new bundle must not pair with API v4.
  */
-export const WEB_COMPAT_VERSION = 21;
+export const WEB_COMPAT_VERSION = 22;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

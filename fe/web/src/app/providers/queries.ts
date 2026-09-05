@@ -924,6 +924,19 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     mutationFn: ({ trackId, body }: { trackId: string; areaId: string; body: TrackPatchBody }) =>
       runOperation(transport, updateTrackOperation(trackId, body), unauthorized),
     onSuccess: (track, variables) => {
+      // The PATCH response is the row the server committed. Write it through
+      // before starting the best-effort invalidation so a failed detail GET
+      // cannot leave the acknowledged transition rendered as stale Done. A
+      // Working row is never resumable; later authoritative reads may make a
+      // newer Blocked/Reviewing state resumable again.
+      client.setQueryData(queryKeys.trackDetail(variables.trackId), (previous: TrackDetailWire | undefined) => {
+        if (previous === undefined) return previous;
+        return {
+          ...previous,
+          track,
+          ...(track.lifecycle === 'working' ? { can_resume: false } : {}),
+        };
+      });
       // Prefer the area the server just reported: a patch can move the track.
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
       if (track.area_id !== variables.areaId) {

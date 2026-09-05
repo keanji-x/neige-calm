@@ -32,6 +32,7 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
     archived_at: null, pinned_at: null, terminal_at: 42, created_at: 1, updated_at: 2,
   };
   let canResume = true;
+  let patchCommitted = false;
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = {
     send(request) {
@@ -47,9 +48,13 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
           updated_at: track.updated_at + 1,
         };
         canResume = false;
+        patchCommitted = true;
         return Promise.resolve(ok(track));
       }
       if (request.path === '/api/tracks/w1') {
+        if (patchCommitted) {
+          return Promise.resolve({ status: 500, statusText: 'Refresh failed', body: {} });
+        }
         return Promise.resolve(ok({ track, can_resume: canResume, cards: [], overlays: [] }));
       }
       if (request.path.endsWith('/conversations')) return Promise.resolve(ok([]));
@@ -78,5 +83,9 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
     expect(requests.filter((request) => request.method === 'PATCH' && request.path === '/api/tracks/w1'))
       .toEqual([expect.objectContaining({ body: { lifecycle: 'working' } })]);
   });
-  await screen.findByRole('status', { name: 'Track lifecycle: Working' });
+  expect(await screen.findAllByRole('status', { name: 'Track lifecycle: Working' }))
+    .toHaveLength(2);
+  await userEvent.click(screen.getByRole('button', { name: 'Track actions for Recover me' }));
+  expect(screen.queryByRole('menuitem', { name: 'Resume work' })).toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
 });

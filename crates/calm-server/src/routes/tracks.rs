@@ -145,6 +145,19 @@ pub struct TrackDeleteCommitHook {
     pub panic_after_release: bool,
 }
 
+/// Test seam for the lifecycle PATCH pre-read/transaction boundary.
+///
+/// A fixture can commit a newer lifecycle after the route has validated its
+/// first snapshot but before `BEGIN IMMEDIATE`. The in-transaction validation
+/// must then reject the stale request; deleting that production call makes the
+/// route-level race regression fail.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct TrackLifecyclePatchRaceHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
 #[cfg(feature = "fixtures")]
 fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteTeardownHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteTeardownHook>>> = OnceLock::new();
@@ -154,6 +167,14 @@ fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDelet
 #[cfg(feature = "fixtures")]
 fn track_delete_commit_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteCommitHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteCommitHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+fn track_lifecycle_patch_race_hooks()
+-> &'static StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>>> =
+        OnceLock::new();
     HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
@@ -172,6 +193,18 @@ pub fn install_track_delete_commit_hook_for_test(track_id: &str, hook: TrackDele
     track_delete_commit_hooks()
         .lock()
         .expect("track delete commit hook mutex")
+        .insert(track_id.to_string(), hook);
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_track_lifecycle_patch_race_hook_for_test(
+    track_id: &str,
+    hook: TrackLifecyclePatchRaceHook,
+) {
+    track_lifecycle_patch_race_hooks()
+        .lock()
+        .expect("track lifecycle patch hook mutex")
         .insert(track_id.to_string(), hook);
 }
 
@@ -207,6 +240,22 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
     #[cfg(not(feature = "fixtures"))]
     let _ = track_id;
     false
+}
+
+async fn wait_at_track_lifecycle_patch_race_hook(track_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = track_lifecycle_patch_race_hooks()
+            .lock()
+            .expect("track lifecycle patch hook mutex")
+            .remove(track_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = track_id;
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -3541,6 +3590,7 @@ pub(crate) async fn update_track(
         || p.require_task_gates.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
+    wait_at_track_lifecycle_patch_race_hook(id.as_str()).await;
     let p_for_tx = p.clone();
     let (track, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {

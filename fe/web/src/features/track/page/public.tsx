@@ -475,6 +475,7 @@ export function TrackPage({
       <div className={styles.mobileTrackHeader}>
         <MobileHeader
           title={trackDisplayTitle(track.title)}
+          meta={<TrackLifecycleBadge lifecycle={track.lifecycle} />}
           level={1}
           backLabel={mobileBackLabel}
           onBack={onMobileBack}

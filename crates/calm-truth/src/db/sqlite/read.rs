@@ -462,6 +462,7 @@ impl RepoRead for SqlxRepo {
         // Reviewing children may legally return to Working, while a terminal
         // child has already resolved its parent task and cannot be reopened.
         let can_resume = calm_types::track_lifecycle::user_can_resume(row.track.lifecycle)
+            && row.track.purpose.as_deref() != Some(calm_types::model::AREA_CHAT_PURPOSE)
             && (!row.track.lifecycle.is_terminal() || !row.referenced_as_child);
         Ok(Some(TrackDetail {
             track: Track::from(row.track),

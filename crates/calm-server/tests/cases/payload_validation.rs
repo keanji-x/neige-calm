@@ -19,14 +19,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::error::CalmError;
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack, TrackLifecycle, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::routes::tracks::{
+    TrackLifecyclePatchRaceHook, install_track_lifecycle_patch_race_hook_for_test,
+};
 use calm_server::state::{AppState, DaemonClient};
-use calm_server::track_lifecycle::validate_transition_snapshot_in_tx;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -982,6 +983,36 @@ async fn track_detail_exposes_resume_when_transition_is_structurally_allowed() {
     assert_eq!(body_to_json(response).await["can_resume"], false);
 }
 
+#[tokio::test]
+async fn track_detail_withholds_resume_from_area_chat_tracks() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Done),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("seed Done lifecycle");
+    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+        .bind(&track_id)
+        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .await
+        .expect("mark retired area-chat track");
+
+    let response = get_track_detail(app(state.clone()), &track_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_to_json(response).await["can_resume"],
+        false,
+        "the capability must include the route's area-chat authority fence"
+    );
+
+    let response = patch_track(app(state), &track_id, json!({"lifecycle": "working"})).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 // --------------------------------------------------------------------------
 // Track lifecycle PATCH — issue #145 followup, idempotent same-state semantics
 //
@@ -1113,8 +1144,41 @@ async fn track_patch_user_resume_done_to_working_clears_terminal_at_and_emits() 
 }
 
 #[tokio::test]
-async fn stale_rest_lifecycle_snapshot_conflicts_before_the_row_or_events_change() {
+async fn racing_rest_lifecycle_patch_rechecks_the_snapshot_before_writing_or_emitting() {
     let (state, track_id, repo) = boot_with_repo().await;
+    repo.track_update(
+        &track_id,
+        TrackPatch {
+            lifecycle: Some(TrackLifecycle::Done),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .expect("seed Done before the REST pre-read");
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    install_track_lifecycle_patch_race_hook_for_test(
+        &track_id,
+        TrackLifecyclePatchRaceHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    );
+    let request_track_id = track_id.clone();
+    let request_app = app(state.clone());
+    let request = tokio::spawn(async move {
+        patch_track(
+            request_app,
+            &request_track_id,
+            json!({"lifecycle": "working"}),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .expect("REST PATCH reaches the post-preflight race hook");
     repo.track_update(
         &track_id,
         TrackPatch {
@@ -1123,24 +1187,13 @@ async fn stale_rest_lifecycle_snapshot_conflicts_before_the_row_or_events_change
         },
     )
     .await
-    .expect("advance row after the simulated REST pre-read");
+    .expect("commit newer lifecycle before the route transaction");
+    release.notify_one();
 
-    let pool = repo.sqlite_pool().expect("sqlite-backed fixture");
-    let mut tx = pool.begin().await.expect("begin guard transaction");
-    let typed_track_id = calm_server::ids::TrackId::from(track_id.clone());
-    let error = validate_transition_snapshot_in_tx(
-        &mut tx,
-        &typed_track_id,
-        TrackLifecycle::Done,
-        TrackLifecycle::Working,
-        &ActorId::User,
-    )
-    .await
-    .expect_err("stale Done snapshot must not authorize Planning -> Working");
-    assert!(matches!(error, CalmError::Conflict(_)), "got {error:?}");
-    tx.rollback()
-        .await
-        .expect("rollback read-only guard transaction");
+    let response = request.await.expect("REST PATCH task joins");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = body_to_json(response).await;
+    assert_eq!(body["code"], "conflict");
 
     let current = state.repo.track_get(&track_id).await.unwrap().unwrap();
     assert_eq!(current.lifecycle, TrackLifecycle::Planning);

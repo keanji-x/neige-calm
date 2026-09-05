@@ -173,6 +173,7 @@ describe('Track mobile presentation', () => {
     const mobileHeader = document.querySelector<HTMLElement>('[data-nc-mobile-header]')!;
     expect(getComputedStyle(mobileHeader).backdropFilter).toBe('none');
     expect(getComputedStyle(mobileHeader).borderBlockEndWidth).toBe('0px');
+    expect(page.getByRole('status', { name: 'Track lifecycle: Working' })).toBeTruthy();
     expect(page.getByRole('button', { name: 'New conversation' })).toBeTruthy();
 
     // ── Back to Pages opens the shell's own sheet, through the route ───────

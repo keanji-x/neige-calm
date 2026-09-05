@@ -1,67 +1,59 @@
-# Design QA — Track lifecycle Resume work
+# Design QA — Track lifecycle recovery
 
-## Evidence
+## Review basis
 
-- Source visual truth: `/home/kenji/.codex/visualizations/2026/09/04/01a06d1e-6d25-7503-b36f-825ecead8179/neige-next-lifecycle-resume-source-normalized.png`
-- Rendered implementation: `/home/kenji/.codex/visualizations/2026/09/04/01a06d1e-6d25-7503-b36f-825ecead8179/neige-next-lifecycle-resume-implementation-final.png`
-- Full comparison: `/home/kenji/.codex/visualizations/2026/09/04/01a06d1e-6d25-7503-b36f-825ecead8179/neige-next-lifecycle-resume-compare-final.png`
-- Focused header comparison: `/home/kenji/.codex/visualizations/2026/09/04/01a06d1e-6d25-7503-b36f-825ecead8179/neige-next-lifecycle-resume-header-compare-final.png`
-- Viewport and CSS size: `1440 × 1024`.
-- Device scale factor: `1`.
-- Source pixels: `1487 × 1058`, normalized to `1440 × 1024`; the source and target aspect ratios differ by less than 0.1%.
-- Implementation pixels: `1440 × 1024`.
-- State: light theme, expanded workspace rail, Track lifecycle `Done`, lifecycle menu open, one `Resume work` action.
+- Product source of truth: the existing Next Track page, its shared design tokens, and its production `PageHeader`, `MobileHeader`, `MoreMenu`, and workspace-rail components.
+- Desktop verification: real Chromium at `1200 × 800`, expanded workspace rail, Track lifecycle `Done`, with Track actions both closed and open.
+- Mobile verification: real Chromium at `390 × 844`, Track root page with lifecycle `Working` and compact Track actions.
+- Automated evidence:
+  - `fe/web/src/features/track/page/header-lifecycle.browser.test.tsx`
+  - `fe/web/src/app/shell/mobile.browser.test.tsx`
+  - `fe/web/src/app/router/track-lifecycle-resume.test.tsx`
+  - `fe/e2e/track-lifecycle-resume.spec.ts`
 
-The source mock predates the final product decision. Its extra current-state heading and Planner attribution are intentionally absent: the user narrowed the menu to exactly one lifecycle action, `Resume work`. The shallow status button, placement, surface, radius, tone, and anchored-menu interaction remain the selected visual target.
+No developer-local screenshot path is part of the review contract. The browser tests above carry the durable geometry, visibility, focus, and interaction assertions.
 
-## Findings
+## Accepted presentation
 
-- No actionable P0, P1, or P2 mismatch remains.
-- The final menu is deliberately shorter than the source mock because it contains only the approved action and its one-line consequence.
-- The final status button is slightly quieter than the generated mock and uses the real Next tokens rather than image-inferred colors. This is the intended implementation of the user request: `--surface-card`, `--radius-md`, no border, and lifecycle-tone text.
+- Every lifecycle is rendered as inert status text beside the Track title. It has no background, border, chevron, or click behavior.
+- The status uses the shared lifecycle phrase and three existing tone ranks: attention, running, and neutral.
+- Desktop Track mutations live behind the far-right three-dot action. A recoverable Track shows `Resume work`, a divider, and `Delete track`; a non-recoverable Track shows only `Delete track`.
+- The three-dot action keeps its accessible name but has no redundant visible tooltip. Its resting ink uses the secondary text rank and darkens on hover, focus, and open state.
+- Mobile renders the same lifecycle fact in the centered title group and exposes recovery from compact Track actions.
+- The expanded workspace entry says `Today` in semibold text while preserving the Neige mark and its navigation behavior.
 
-## Full-view comparison
+## Desktop findings
 
-- The left workspace rail, page header, document column, outline, and right panel retain the current Next proportions and hierarchy.
-- The lifecycle control stays attached to the Track title and does not create another header row or displace the right panel.
-- The menu opens below the status control without covering the delete action or changing document geometry.
+- The lifecycle text shares the title cluster's vertical center and remains attached to the title with the existing 4–12px gap contract.
+- A long title truncates before either the lifecycle text or the trailing Track action can overlap.
+- The 24px lifecycle line box is visually subordinate to the 18px title while remaining readable.
+- The right-side action replaces the ambiguous destructive cross; deletion is expressed inside the menu and still requires the shared confirmation dialog.
+- The open menu aligns to the three-dot trigger and does not change document or panel geometry.
 
-## Focused comparison
+## Mobile findings
 
-- The status control is a compact, shallow button beside the title, with a small chevron only when `Resume work` is available.
-- `Resume work` and `Set this track back to Working.` are legible at the compact menu density.
-- The ordinary title `Planner lifecycle recovery` renders in full. Long titles retain the existing ellipsis behavior before reaching the status button or delete action.
+- The visible `MobileHeader` carries both the Track title and lifecycle; the desktop header remains hidden at the compact breakpoint.
+- The title group stays centered between the 44px Back and Track-actions targets.
+- The status remains text-only and does not create a second header row.
+- Recovery and deletion remain reachable from the existing compact Track-actions menu.
 
-## Required fidelity surfaces
+## Accessibility and interaction
 
-- Fonts and typography: existing Next sans/serif tokens are unchanged; the status control is browser-verified at 11px and preserves the lifecycle tone hierarchy.
-- Spacing and layout rhythm: browser tests pin a 4–12px title/control gap, no ordinary-title clipping, and no overlap with trailing actions. The status button and side-panel card resolve to the same radius.
-- Colors and visual tokens: the status button and side-panel card resolve to the same painted background; the button has a zero-width border. Running text contrast is at least 4.5:1 against the button surface in light and dark themes.
-- Image quality and asset fidelity: no raster, logo, illustration, or custom icon asset was introduced. The existing Astryx chevron is used.
-- Copy and content: the lifecycle label comes from the shared domain vocabulary. The menu exposes exactly `Resume work` with the consequence `Set this track back to Working.`
-
-## Interaction and browser evidence
-
-- Opening the lifecycle control exposes one menu item.
-- Activating `Resume work` updates the real API-backed Track from a terminal state to `Working` and clears `terminal_at`.
-- The action is driven by the server-derived `can_resume` capability, so a terminal child track whose parent verdict cannot be rolled back keeps the status visible without advertising a failing action.
-- Escape closes the menu and restores focus to the lifecycle button; an outside click light-dismisses it. Both are covered in real Chromium.
-- While Resume is pending, both desktop and compact actions are disabled and duplicate requests are deduplicated. After keyboard Resume succeeds, focus moves to the stable lifecycle fact with a visible focus ring instead of falling back to the document body.
-- Compact Track actions expose the same `Resume work` callback.
-- Browser console inspection found no errors. One development-only WebSocket warning was recorded during an explicit page reload because the old connection closed before the replacement connected; the subsequent lifecycle events and Resume action completed normally.
-
-## Comparison history
-
-1. Round 1 found a P1 title-clipping regression: an ordinary title rendered as `Planner lifecycle recov…` despite abundant row space.
-2. The title control intrinsic width was corrected and a real-browser regression added.
-3. The final capture shows the full title, unchanged page geometry, matching status/card surface and radius, and no remaining P0/P1/P2 difference.
+- Lifecycle uses `role="status"` with the accessible name `Track lifecycle: <label>`.
+- The status itself is not focusable because it performs no action.
+- Escape and outside click close Track actions. Focus returns to the current three-dot trigger, including after `Resume work` removes itself from the menu.
+- A successful Working PATCH is written through to the Track-detail cache before the best-effort refetch. A failed refetch therefore cannot leave stale Done text or a permanently disabled Resume action.
+- The server-derived `can_resume` includes lifecycle permission, child-track integrity, and the retired area-chat authority fence, so the UI does not advertise an action the route must refuse.
+- Running lifecycle text meets 4.5:1 contrast in both themes; the full token contrast gate remains green.
 
 ## Implementation checklist
 
-- [x] All lifecycle values remain visible beside the title.
-- [x] Only recoverable states expose `Resume work`.
-- [x] Non-recoverable status buttons do not advertise a popup.
-- [x] Desktop and compact access paths reach the same mutation.
-- [x] Focus, Escape, outside-click, color, radius, border, spacing, and truncation are verified in Chromium.
+- [x] All lifecycle values are visible on desktop and mobile.
+- [x] Lifecycle is a non-interactive fact; edits live in Track actions.
+- [x] Only server-authorized Tracks expose `Resume work`.
+- [x] Desktop and compact access paths use the same mutation.
+- [x] Delete remains behind the shared destructive confirmation.
+- [x] Tooltip, focus, Escape, outside-click, color, spacing, truncation, and responsive visibility are covered.
+- [x] The document contains no machine-local evidence links.
 
-final result: passed
+Final result: passed.

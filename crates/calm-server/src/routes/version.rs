@@ -34,7 +34,12 @@ use utoipa::ToSchema;
 /// chat-track ensure endpoint are gone with the Area page. Cached clients that
 /// still call them must be rejected by the compatibility gate rather than
 /// discovering the break as a 404 after the reader starts an action.
-pub const API_VERSION: &str = "4";
+///
+/// #1450 bumps `"4"` -> `"5"`: Track detail gains the required `can_resume`
+/// capability. A newer bundle cannot parse an older server's response without
+/// that field, so web-only/server-only upgrades must be rejected instead of
+/// passing preflight and failing later in the Track route.
+pub const API_VERSION: &str = "5";
 
 /// Monotonically increasing frontend compatibility floor.
 ///
@@ -63,7 +68,11 @@ pub const API_VERSION: &str = "4";
 /// #1354 bumps 20 -> 21 with API v4 so both cached bundles show the hard refresh
 /// curtain before they can navigate to the retired Area page or call its
 /// conversation endpoints.
-pub const WEB_COMPAT_VERSION: u32 = 21;
+///
+/// #1450 bumps 21 -> 22 with API v5. Cached bundles at 21 do not carry the
+/// required Track-detail `can_resume` contract and must refresh before they
+/// communicate with this server.
+pub const WEB_COMPAT_VERSION: u32 = 22;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
