@@ -2721,3 +2721,230 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
         "premise: the compensation must have run its fail_runtime step"
     );
 }
+
+/// #1449 — the give-back must not delete a sentence it cannot identify.
+///
+/// `remaining.is_empty()` has two causes and the code cannot tell them apart
+/// from the value alone: every id went back, or the entry never had one. An
+/// entry with no ids was enqueued before #1449 shipped — migration 0095
+/// deliberately does not stamp live rows, so such a queue is still harvestable
+/// — and it is NOT returned, because the give-back only returns ids the failing
+/// runtime still holds. Pruning it as "returned" deletes it from the successor
+/// while the source row has already been emptied: gone from both sides, with no
+/// error and no log line.
+///
+/// It is also the exact opposite of what `HarnessSnapshot::pending_message_ids`
+/// documents. The false statement and the defect were the same thing.
+#[tokio::test]
+async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
+    const LEGACY: &str = "typed before the upgrade, no id to its name";
+    const RETURNED: &str = "typed after, and going back";
+    const RETURNED_ID: &str = "instance-of-the-returned-sentence";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "give-back-legacy.db");
+    let (source_id, failing_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "give-back-legacy".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "give back legacy".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let source_id = new_id();
+        let failing_id = new_id();
+        let now = now_ms();
+
+        // The failing runtime holds both: an upgraded entry with no identity,
+        // and one this operation harvested and can name.
+        let mut failing_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![
+                Observation::UserMessage {
+                    text: LEGACY.into(),
+                },
+                Observation::UserMessage {
+                    text: RETURNED.into(),
+                },
+            ],
+        );
+        failing_snapshot.pending_message_ids = vec![Vec::new(), vec![RETURNED_ID.to_string()]];
+
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": failing_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(&failing_snapshot).unwrap(),
+            "harvested_from": [{
+                "runtime_id": source_id.clone(),
+                "messages": [{"text": RETURNED, "ids": [RETURNED_ID]}],
+            }],
+        });
+        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+            actor: ActorId::User,
+            track_id: track.id.to_string(),
+            planner_card_id: card.id.clone(),
+            report_card_id: None,
+            sort: None,
+            cwd: track.workspace.path.clone(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: true,
+            profile: Default::default(),
+            create_card: None,
+            opening_briefing: None,
+            first_message: None,
+            create_request_sha256: None,
+        })
+        .unwrap();
+        let compensation_state = json!({
+            "version": 1,
+            "from_phase": "app_server_interact",
+            "reason": "injected thread/start failure",
+            "steps": [{
+                "op": "fail_runtime",
+                "args": {"runtime_id": failing_id.clone()},
+                "completed": false,
+                "attempts": 0,
+                "last_error": null,
+            }],
+        });
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: source_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                // Emptied by the harvest, as a move leaves it.
+                handle_state_json: Some(
+                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                ),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        session_mark_superseded_runtime_tx(&mut tx, &source_id)
+            .await
+            .unwrap();
+        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
+            .await
+            .unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: failing_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&failing_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, compensation_state, phase, last_error,
+                   created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, ?8, 'compensating',
+                       'injected thread/start failure', ?9, ?9)"#,
+        )
+        .bind(new_id())
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(serde_json::to_string(&compensation_state).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (source_id, failing_id)
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let state = app_state_for_boot_test(repo.clone()).with_shared_codex_appserver(
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+    );
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let source_state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&source_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        source_state.contains(RETURNED),
+        "premise: the identifiable sentence must go back to the row it came from"
+    );
+
+    let failing_state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&failing_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        failing_state.contains(LEGACY),
+        "a sentence with no id was never returned, and its source row is already empty — \
+         pruning it here deletes it from both sides. It has to stay: {failing_state}"
+    );
+    assert!(
+        !failing_state.contains(RETURNED),
+        "premise: what WAS returned is pruned from the failing runtime"
+    );
+}
