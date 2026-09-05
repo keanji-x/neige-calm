@@ -139,7 +139,7 @@ journalctl --user -u neige-app.service -n 50 --no-pager
 
 `system install` refuses to overwrite an existing unit; do not reflexively add
 `--force` on a first install. Missing `claude` warnings are harmless if only using
-Codex; missing `codex` or `git` must be addressed for their workflows.
+Codex; install `codex` and `git` before starting agent tasks.
 
 Without systemd, after the same `system install` preparation above:
 
