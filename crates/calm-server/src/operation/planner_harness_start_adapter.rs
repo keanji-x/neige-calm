@@ -29,9 +29,9 @@ use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
 // this module into `crate::per_card_lock` so the `/planner/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
+use crate::activity_window::launchpad_opening_briefing;
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
-use crate::activity_window::launchpad_opening_briefing;
 use crate::routes::cards::{MAX_PLANNER_INPUT_CHARS, card_scope, card_scope_tx};
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
