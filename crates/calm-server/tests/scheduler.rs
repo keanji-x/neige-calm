@@ -6555,6 +6555,43 @@ async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
         .unwrap();
     assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
 
+    // Production gives every task its own card/session. Configure the next
+    // stub runtime for a distinct worker rather than reusing t1's identity.
+    let second_card = boot
+        .repo
+        .card_create(NewCard {
+            track_id: boot.track_id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
+    boot.card_role_cache.insert(
+        second_card.id.clone(),
+        CardRole::Worker,
+        boot.track_id.clone(),
+    );
+    seed_runtime_session_in_pool(
+        &boot.repo.sqlite_pool().unwrap(),
+        second_card.id.as_str(),
+        "second-worker-session",
+        "second-worker-thread",
+    )
+    .await;
+    let mut second_identity = worker_identity(&boot);
+    second_identity.card_id = second_card.id.to_string();
+    second_identity.session_id = "second-worker-session".into();
+    second_identity.thread_id = "second-worker-thread".into();
+    let (_second_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: second_card.id.to_string(),
+        })],
+    );
+
     // t2's dep is now satisfied; in production the task.completed
     // envelope pokes the scheduler. The claim from a Reviewing track
     // must promote it back to Working in the same tx — otherwise the
@@ -6575,11 +6612,14 @@ async fn reviewing_track_promotes_back_to_working_on_dependent_claim() {
         "claim tx must ride the legal Reviewing → Working edge"
     );
 
+    assert_ne!(t1.worker_card_id, t2.worker_card_id);
+    assert_eq!(t2.worker_card_id.as_deref(), Some(second_card.id.as_str()));
+
     // The second completion promotes Working → Reviewing again.
     call_tool(
         &boot,
         TOOL_TASK_COMPLETE,
-        worker_identity(&boot),
+        second_identity,
         json!({ "idempotency_key": t2.id, "result": { "ok": true } }),
     )
     .await
