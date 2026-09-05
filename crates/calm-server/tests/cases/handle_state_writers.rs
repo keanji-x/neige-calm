@@ -261,7 +261,7 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
     )
     .expect("write probe");
 
-    let found = writers_in_tree(&crates.parent().unwrap().parent().unwrap().to_path_buf());
+    let found = writers_in_tree(crates.parent().unwrap().parent().unwrap());
     let names: BTreeSet<String> = found
         .iter()
         .map(|entry| entry.rsplit("::").next().unwrap_or(entry).to_owned())
