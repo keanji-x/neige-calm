@@ -485,8 +485,12 @@ describe('track conversations', () => {
     expect(post?.body).toEqual({ text: 'what is in this repo?' });
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* And the answer is adopted: the drawer moves off the draft onto the row
-       the derived id names, which is the one this key would have minted. */
-    await screen.findByRole('complementary', { name: 'Assistant' });
+       the derived id names, which is the one this key would have minted.
+       Named after the sentence, not `Assistant` — since #1449 the create path
+       mints the same optimistic echo the send path always did, so the row has
+       a first message the moment it is adopted rather than once codex echoes
+       it back. */
+    await screen.findByRole('complementary', { name: 'what is in this repo?' });
   });
 
   it('[G4] sends the first message once, to the track in the URL and no other', async () => {
@@ -607,7 +611,8 @@ describe('track conversations', () => {
       releaseFirst(created(landed));
       await firstCreate;
     });
-    await screen.findByRole('complementary', { name: 'Assistant' });
+    /* Named from the words that made it, per #1449's create-path echo. */
+    await screen.findByRole('complementary', { name: 'words still in flight' });
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
   });
 

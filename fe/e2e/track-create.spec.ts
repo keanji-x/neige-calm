@@ -203,6 +203,31 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
 
   /*
+   * ── #1449 — the sentence that made the track is on screen ─────────────────
+   *
+   * The landing opens the planner conversation (#1211 S2), and until this
+   * change it opened onto an empty thread: the create delivered the message,
+   * but a transcript is `harness_items` and rows land there only when the
+   * app-server echoes the turn back. The paragraph above says why this tier
+   * cannot see that echo at all — the `osc-probe-child` fixture emits no items
+   * — which makes this the exact window the echo covers, with the real read
+   * answering the real nothing.
+   *
+   * `Planner` names the drawer here (the planner card carries a title, unlike
+   * an assistant card), so the name is not the assertion; the turn is.
+   */
+  const drawer = page.getByRole('complementary', { name: 'Planner' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
+  await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
+  const plannerItems = await request.get(`/api/cards/${plannerCard?.id ?? ''}/harness/items`);
+  expect(plannerItems.ok()).toBe(true);
+  expect(
+    await plannerItems.json() as unknown[],
+    'the sentence must be visible before any server item exists',
+  ).toEqual([]);
+
+  /*
    * Once, and still once after the interaction settles.
    *
    * `waitForRequest` returned on the *first* create, so the count taken at that

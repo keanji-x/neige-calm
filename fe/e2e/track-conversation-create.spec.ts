@@ -170,7 +170,37 @@ test('starts a conversation from a track page and sends the first message to tha
   // — a conversation the user can see twice, or one the kernel never made.
   // (The drawer replaces the list while it is open, so the list is counted
   // after closing it — the count is the assertion, not the drawer.)
-  await expect(page.getByRole('complementary', { name: 'Assistant' })).toBeVisible();
+  // Named after the sentence, not by the bare kind label: an assistant card is
+  // minted `title: null`, and since #1449 the create path mints the same
+  // optimistic echo the send path always did, so the conversation has a first
+  // message the moment it is adopted.
+  await expect(page.getByRole('complementary', { name: message })).toBeVisible();
+
+  /*
+   * ── #1449 — and the sentence is *in* the thread, against a real kernel ─────
+   *
+   * This is the acceptance the jsdom cases cannot claim: the transcript here
+   * is the real `GET /api/cards/{id}/harness/items`, and it is genuinely
+   * empty. `harness_items` is written only when the app-server echoes the turn
+   * back (`crates/calm-server/src/harness/run_loop.rs`), and CI's
+   * `osc-probe-child` fixture emits no items at all (`e2e/README.md`). So the
+   * item read below returning `[]` is not a stub standing in for the kernel —
+   * it is what the kernel answers in the window this feature exists for.
+   *
+   * Both halves are asserted, because either alone is satisfiable by the bug:
+   * the words are on screen, and the empty state — "Nothing said yet.", which
+   * used to paint here beside the live `Working` dot — is not.
+   */
+  const drawer = page.getByRole('complementary', { name: message });
+  await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
+  await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
+  const items = await request.get(`/api/cards/${conversation.id}/harness/items`);
+  expect(items.ok()).toBe(true);
+  expect(
+    await items.json() as unknown[],
+    'the sentence must be readable before any server item exists — that is the whole point',
+  ).toEqual([]);
+
   await page.getByRole('button', { name: 'Close conversation' }).click();
   await expect(conversationRows(page)).toHaveCount(2);
 

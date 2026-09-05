@@ -131,6 +131,27 @@ export type ConversationRegistry = Readonly<{
   updateExisting: (
     conversationId: string, amend: (entry: RememberedConversation) => RememberedConversation,
   ) => void;
+  /**
+   * `updateExisting`'s sibling for an entry that may not exist yet: `amend`
+   * runs inside the state updater against whatever is there at the moment of
+   * the write, and `null` when nothing is.
+   *
+   * It exists because "carry the turns over" is a read-modify-write, and the
+   * read cannot come off a render (#1449). An effect that runs *earlier in the
+   * same commit* can create or extend an entry — the create-path optimistic
+   * echo is exactly that — and a later effect merging a `turnsOf(id)` it read
+   * during the render would put the older, shorter list back. The echo then
+   * disappeared before the store that renders it had mounted, which is a
+   * failure that leaves no trace: the write happened, and something correct
+   * overwrote it.
+   *
+   * `amend` must be a pure function of its argument — React may call it more
+   * than once for one write.
+   */
+  rememberMerging: (
+    conversationId: string,
+    amend: (entry: RememberedConversation | null) => RememberedConversation,
+  ) => void;
   /* There is no `forget`. The only caller it ever had was the conversation
      reset, which is gone from the product (#1139) — a registry entry now
      leaves exactly one way, by the tab ending. Re-adding a removal door needs
@@ -243,6 +264,18 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         : { ...current, [conversationId]: next };
     });
   }, []);
+  const rememberMerging = useCallback((
+    conversationId: string,
+    amend: (entry: RememberedConversation | null) => RememberedConversation,
+  ) => {
+    setEntries((current) => {
+      const entry = current[conversationId] ?? null;
+      const next = amend(entry);
+      return entry !== null && equalEntry(entry, next.conversation, next.turns)
+        ? current
+        : { ...current, [conversationId]: next };
+    });
+  }, []);
   const requestOpen = useCallback(
     (conversationId: string, options?: { focusComposer?: boolean }) =>
       setOpenRequest({ id: conversationId, focusComposer: options?.focusComposer ?? false }),
@@ -283,7 +316,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const turnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? [], [entries]);
   const value = useMemo<ConversationRegistry>(
     () => ({
-      conversations, turnsOf, remember, updateExisting,
+      conversations, turnsOf, remember, updateExisting, rememberMerging,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
@@ -291,7 +324,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
       discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, finishSend, pendingSendIds,
-      remember, requestOpen, sendErrors,
+      remember, rememberMerging, requestOpen, sendErrors,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,
       updateExisting],
   );

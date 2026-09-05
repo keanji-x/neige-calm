@@ -995,6 +995,42 @@ describe('the sentence is delivered by the create, and the track opens on it', (
   });
 
   /*
+   * ── #1449 ──────────────────────────────────────────────────────────────────
+   *
+   * And the sentence is *on* that conversation when the reader arrives.
+   *
+   * The create delivered it, but delivered is not readable: a transcript is
+   * `harness_items` (`crates/calm-truth/src/db/sqlite/read.rs`) and rows land
+   * there only when codex echoes the turn back
+   * (`crates/calm-server/src/harness/run_loop.rs`). This harness serves `[]`
+   * for the item read, which is what the kernel really answers in that window,
+   * so the only thing that can put the words on screen is the optimistic echo
+   * the landing mints — and the only way that echo can name the right card is
+   * by riding the history entry, since `POST /api/tracks` answers with a
+   * `Track` and the planner card id arrives a route later.
+   */
+  it('shows the sentence that made the track before the server echoes it', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    const drawer = await screen.findByRole('complementary', { name: 'Planner' });
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['Read it']));
+    expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
+    /* With zero server items — the read happened and answered nothing, so the
+       words on screen came from the echo and from nowhere else. */
+    const items = sent.filter((request) => request.path.includes('/harness/items'));
+    expect(items.length).toBeGreaterThan(0);
+    expect(plannerInputTexts(sent)).toEqual([]);
+  });
+
+  /*
    * A slow landing must not hold the reader on the form.
    *
    * The create used to read the track detail *here*, race it against a deadline,

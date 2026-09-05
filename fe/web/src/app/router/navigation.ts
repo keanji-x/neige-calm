@@ -32,12 +32,20 @@ declare module '@tanstack/history' {
     ncFilePushed?: boolean;
     /** See {@link usePlannerOpenIntent}. */
     ncOpenPlanner?: boolean;
+    /**
+     * The sentence that created the track, riding to the route that can show
+     * it. See {@link usePlannerOpenIntent} — it travels with the intent
+     * because it is the same fact: this navigation exists to land the reader
+     * in the conversation that message was delivered into (#1449).
+     */
+    ncOpenPlannerMessage?: string;
   }
 }
 
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
 export const FILE_PUSHED_STATE_KEY = 'ncFilePushed';
 export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
+export const PLANNER_OPEN_MESSAGE_STATE_KEY = 'ncOpenPlannerMessage';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
@@ -78,6 +86,12 @@ export type NavTarget =
     panel?: MobilePanel;
     from?: TrackSource;
     openPlanner?: boolean;
+    /**
+     * The words that made this track, carried so the arriving route can echo
+     * them into the planner conversation before codex does (#1449). Only ever
+     * present beside `openPlanner`.
+     */
+    openPlannerMessage?: string;
   }>
   /**
    * #1292 — the reader's own recipes: the list, and the editor for one.
@@ -174,7 +188,15 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     // and nowhere else (#1211 S2) — see `usePlannerOpenIntent`. Written only when
     // asked for, so an ordinary move leaves `state` alone.
     const state = target.name === 'track' && target.openPlanner === true
-      ? { [PLANNER_OPEN_STATE_KEY]: true }
+      ? {
+        [PLANNER_OPEN_STATE_KEY]: true,
+        /* Absent, not `''`, when the track was created with nothing said: the
+           consumer's "is there a sentence to echo" is that question and not a
+           blankness test. */
+        ...(target.openPlannerMessage === undefined || target.openPlannerMessage === ''
+          ? {}
+          : { [PLANNER_OPEN_MESSAGE_STATE_KEY]: target.openPlannerMessage }),
+      }
       : undefined;
     void navigate({
       to: pathFor(target),
@@ -250,11 +272,32 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  * and a caller asking about a track the location does not name should be told
  * `false` rather than handed somebody else's marker.
  */
-export type PlannerOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
+export type PlannerOpenIntent = Readonly<{
+  armed: boolean;
+  /**
+   * The sentence that created this track, when the entry carries one.
+   *
+   * It rides here rather than in a registry slot for the reason the intent
+   * itself does: `POST /api/tracks` answers with a `Track` and the planner
+   * card's id does not exist until a route later, so there is no card to
+   * record an echo against at the moment the words are posted. Reading it off
+   * the entry means only the body rendering *that* landing can echo it, and
+   * `disarm()` strikes it off with the intent — one landing, one echo.
+   */
+  message: string | null;
+  disarm: () => void;
+}>;
 
 export function hasPlannerOpenMarker(state: unknown): boolean {
   if (typeof state !== 'object' || state === null) return false;
   return (state as Record<string, unknown>)[PLANNER_OPEN_STATE_KEY] === true;
+}
+
+/** The first message on a planner-open entry, or `null`. */
+export function plannerOpenMessage(state: unknown): string | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const value = (state as Record<string, unknown>)[PLANNER_OPEN_MESSAGE_STATE_KEY];
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
@@ -262,6 +305,10 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
   const location = useRouterState({ select: (state) => state.location });
   const armed = hasPlannerOpenMarker(location.state)
     && routeParamFromPath(location.pathname, '/track/') === trackId;
+  /* Read under `armed`, never on its own: a message without the marker is an
+     entry the redemption has already run for, and echoing it again would put a
+     second copy of the sentence in the thread on every Back to this entry. */
+  const message = armed ? plannerOpenMessage(location.state) : null;
   const disarm = useCallback(() => {
     void navigate({
       to: pathFor({ name: 'track', trackId }),
@@ -273,11 +320,16 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
       state: (previous) => {
         const next = { ...previous };
         delete next[PLANNER_OPEN_STATE_KEY];
+        /* Both, together. The message is half of the same one-shot intent, and
+           an entry left holding it would hand the sentence to a later reading
+           of this entry with nothing to say whether it had already been
+           echoed. */
+        delete next[PLANNER_OPEN_MESSAGE_STATE_KEY];
         return next;
       },
     });
   }, [navigate, trackId]);
-  return useMemo(() => ({ armed, disarm }), [armed, disarm]);
+  return useMemo(() => ({ armed, message, disarm }), [armed, disarm, message]);
 }
 
 /**

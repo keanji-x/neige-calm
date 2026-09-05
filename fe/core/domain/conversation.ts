@@ -183,6 +183,29 @@ export type ConversationTurn = Readonly<{
  * remounts through the conversation registry. */
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
+  /**
+   * The request that carried this message has already been answered; the only
+   * thing still outstanding is the agent writing the turn back.
+   *
+   * Only the two *create* paths mint one (#1449). `POST /api/tracks` and
+   * `POST /api/tracks/{id}/conversations` both mint the card **and** deliver
+   * the message, so their 201 is the whole of "this arrived" — while the
+   * transcript stays empty until codex echoes the turn, which may be a long
+   * time or never. A send-path echo carries no flag and needs none: the store
+   * tracks its own request through `unconfirmedEchoId` and the provider's send
+   * lease, both of which end when the response does.
+   *
+   * It is read by `sendBlocked` (`app/router/public.tsx`), which closes the
+   * composer while a send is unreconciled. Without the distinction the reader
+   * would land in the conversation their sentence just created and be unable
+   * to type in it until the agent replied — which is the opposite of the
+   * landing #1211/#1299 builds.
+   *
+   * Deliberately not a reconciliation input: retiring an echo is still one
+   * server row matching one echo above its own high-water mark, and this flag
+   * changes nothing about that.
+   */
+  deliveredByCreate?: true;
 }>;
 
 /** A kernel observation delivered through Codex's user-message transport.
