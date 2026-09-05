@@ -39,13 +39,25 @@
 //! * V4 — a daemon outage adopts the track it already minted, instead of
 //!   minting one per retry.
 //!
-//! # What is STILL not promised, and is asserted rather than assumed
+//! # #1426 — the message-less half, header-optional
 //!
-//! A **message-less** `POST /api/tracks` remains non-idempotent: the header is
-//! not read on that path, no binding row is written, and a retry mints a second
-//! track exactly as it always has
-//! (`a_create_without_a_first_message_is_unchanged`,
-//! `a_message_less_create_writes_no_binding_row`).
+//! #1384 left a message-less create non-idempotent and registered it as KNOWN
+//! GAP 1. #1426 closes it **for creates that send an `Idempotency-Key`** and
+//! changes nothing for the ones that do not, which is every message-less caller
+//! alive today. The two tests that pinned the old boundary were changed rather
+//! than routed around, each carrying the before/after in its own doc comment:
+//!
+//! * `a_message_less_create_without_a_key_is_unchanged` — narrowed to the
+//!   key-less shape, which really is unchanged, payload bytes included;
+//! * `a_message_less_create_with_a_key_binds_and_replays` — **inverted**: what
+//!   asserted `binding_count == 0` and two tracks now asserts one binding and
+//!   one track;
+//! * `a_key_bound_by_one_create_shape_refuses_the_other` — new, and the reason
+//!   the binding row needs a fingerprint *variant* rather than a nullable
+//!   digest.
+//!
+//! What is still not promised: a key-less message-less create is not
+//! idempotent, and never will be — there is nothing to key it on.
 //!
 //! Two further arms used to be **not covered here, and no test pretended to
 //! cover them**: the in-flight duplicate and the primary-key race.
@@ -711,37 +723,51 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
 }
 
 /// The largest regression surface in this slice: a create with **no**
-/// `first_message` is unchanged.
+/// `first_message` **and no `Idempotency-Key`** is unchanged.
 ///
-/// The header is not merely optional there, it is **not read at all** — so a
-/// caller that sends a duplicate key twice still gets two tracks. That is a
-/// KNOWN GAP stated in the module header, not an accident, and asserting it
-/// here is what keeps someone from "fixing" it without reading why.
+/// # What this used to assert, and why the change is deliberate (#1426)
 ///
-/// The operation payload must stay byte-identical in shape — no
-/// `first_message` key at all, because `skip_serializing_if` is what keeps an
-/// in-flight retry across a deploy from becoming a spurious payload-hash 409.
+/// Until #1426 this test also sent a duplicate key twice and asserted **four**
+/// tracks, on the ground that the header was "not read at all" on this path.
+/// That was true and it was #1384's stated KNOWN GAP 1, not an accident. #1426
+/// closed the gap the header-**optional** way: a message-less create that sends
+/// a key now binds it, so the keyed half of the old assertion has moved to
+/// `a_message_less_create_with_a_key_binds_and_replays`, inverted.
+///
+/// What survives here is the half the old sentence was really protecting, and
+/// it is the one that governs every message-less caller alive today — none of
+/// which sends a key (`web/`'s HTTP helper cannot even carry one). For them the
+/// path is byte-for-byte the pre-#1299 one: two identical creates are two
+/// tracks, and the operation payload carries no `first_message` key at all,
+/// because `skip_serializing_if` is what keeps an in-flight retry across a
+/// deploy from becoming a spurious payload-hash 409.
+///
+/// Fails when the message-less fork stops returning `CreatePlan::Legacy` for a
+/// key-less request.
 #[tokio::test]
-async fn a_create_without_a_first_message_is_unchanged() {
+async fn a_message_less_create_without_a_key_is_unchanged() {
     let b = boot().await;
     let (first, body) = b.create_track(None, None).await;
     assert_eq!(first, StatusCode::CREATED, "body={body}");
     let (second, _) = b.create_track(None, None).await;
     assert_eq!(second, StatusCode::CREATED);
-    // Same key twice, no first message: the header is ignored, so these are two
-    // more independent tracks.
-    let (third, _) = b.create_track(Some("ignored-key"), None).await;
-    let (fourth, _) = b.create_track(Some("ignored-key"), None).await;
-    assert_eq!(third, StatusCode::CREATED);
-    assert_eq!(fourth, StatusCode::CREATED);
-    assert_eq!(b.track_count().await, 4);
+    assert_eq!(
+        b.track_count().await,
+        2,
+        "no key means nothing to be idempotent about: two creates are two tracks"
+    );
+    assert_eq!(
+        b.binding_count().await,
+        0,
+        "and no binding row, because there is no key to bind"
+    );
     assert_eq!(
         b.user_message_event_count().await,
         0,
         "nothing was typed, so nothing may be enqueued"
     );
     let payloads = b.operation_payloads().await;
-    assert_eq!(payloads.len(), 4, "one start per create: {payloads:?}");
+    assert_eq!(payloads.len(), 2, "one start per create: {payloads:?}");
     for payload in payloads {
         assert!(
             payload.get("first_message").is_none(),
@@ -1301,40 +1327,136 @@ async fn a_first_message_without_an_idempotency_key_is_rejected_before_any_mint(
     assert_eq!(b.binding_count().await, 0);
 }
 
-/// T-LEGACY-1 — the binding row is written on the **`Mint` arm only**.
+/// T-LEGACY-1, **inverted by #1426** — a message-less create that sends an
+/// `Idempotency-Key` binds it, and the same key again returns the same track.
 ///
-/// Sent WITH an `Idempotency-Key` and WITHOUT a `first_message`, which is the
-/// only shape that can tell the two conditions apart: "the header was present"
-/// and "the plan was `Mint`". `plan_first_message` returns `Legacy` before the
-/// header is read, so the key here is inert.
+/// # What this used to assert
 ///
-/// Writing it on `Legacy` too would be actively wrong rather than merely
-/// wasteful: `Legacy` has already returned from the dispatch, so there is no
-/// resuming arm for a primary-key collision to map onto, and the second create
-/// below — a working 201 today — would become an error.
+/// This test previously asserted `binding_count == 0` and `track_count == 2`
+/// for exactly this request: the key was inert, because `plan_first_message`
+/// returned `Legacy` before reading the header. That was #1384's KNOWN GAP 1,
+/// registered deliberately. #1426 closes it, so the test is inverted rather
+/// than deleted — the same interleaving, the opposite verdict — the way #1458
+/// inverted its own characterization test.
 ///
-/// Fails when the `Mint`-arm condition on the binding write is removed.
+/// #1384's argument for not writing the binding here was that `Legacy` "has
+/// already returned from the dispatch, so there is no resuming arm for a
+/// primary-key collision to map onto". #1426 answers it by *building* the arm
+/// (`CreatePlan::MessageLessResume`), not by relaxing anything: the second
+/// create below takes it, mints nothing, and answers 201 with the first track.
+///
+/// Sent WITH a key and WITHOUT a `first_message`, which is still the only shape
+/// that can tell "the header was present" from "the plan minted".
+///
+/// Fails when the message-less binding write is removed (the second create then
+/// mints a second track), and when the message-less resume arm is removed.
 #[tokio::test]
-async fn a_message_less_create_writes_no_binding_row() {
+async fn a_message_less_create_with_a_key_binds_and_replays() {
     let b = boot().await;
-    let (first, body) = b.create_track(Some("idem-legacy"), None).await;
-    assert_eq!(first, StatusCode::CREATED, "body={body}");
+    let (first, first_body) = b.create_track(Some("idem-message-less"), None).await;
+    assert_eq!(first, StatusCode::CREATED, "body={first_body}");
     assert_eq!(
         b.binding_count().await,
-        0,
-        "a message-less create must write no binding row even when the caller sends a key — the \
-         header is not read on that path at all"
+        1,
+        "a keyed message-less create must bind its key inside the mint transaction"
     );
-    let (second, body) = b.create_track(Some("idem-legacy"), None).await;
+    let (second, second_body) = b.create_track(Some("idem-message-less"), None).await;
     assert_eq!(
         second,
         StatusCode::CREATED,
-        "…and the same key again must still be a plain 201, not a collision: body={body}"
+        "the same key again is still a 201: body={second_body}"
+    );
+    assert_eq!(
+        second_body["id"], first_body["id"],
+        "…and it is the SAME track, not a second one: first={first_body:?} second={second_body:?}"
     );
     assert_eq!(
         b.track_count().await,
+        1,
+        "one key, one track — the property #1384 bought for the first_message path and #1426 \
+         extends to this one"
+    );
+    assert_eq!(
+        b.binding_count().await,
+        1,
+        "and the resume writes no second binding"
+    );
+    assert_eq!(
+        b.user_message_event_count().await,
+        0,
+        "nothing was typed on either request, so nothing may be enqueued"
+    );
+    // A different key is a different create: the mechanism is per-key, not a
+    // global "one track per area".
+    let (third, third_body) = b.create_track(Some("idem-message-less-2"), None).await;
+    assert_eq!(third, StatusCode::CREATED);
+    assert_ne!(third_body["id"], first_body["id"]);
+    assert_eq!(b.track_count().await, 2);
+    b.shutdown_harnesses().await;
+}
+
+/// #1426 — one `Idempotency-Key` names one create **shape**, in both
+/// directions, and one create body.
+///
+/// The shape half is the load-bearing one and it cannot be caught by the
+/// request digest: `create_request_sha256` covers the mint inputs and
+/// `first_message` is not one of them, so the two bodies below hash
+/// identically. Only the binding row's fingerprint variant distinguishes them.
+/// Without that check, the `first_message` create at the bottom would take the
+/// resuming arm over a message-less binding and answer **201 for a delivery
+/// nobody made**.
+///
+/// Fails when the create-shape comparison in `ensure_binding_create_matches` is
+/// removed.
+#[tokio::test]
+async fn a_key_bound_by_one_create_shape_refuses_the_other() {
+    let b = boot().await;
+    // A message-less create binds the key.
+    let (created, body) = b.create_track(Some("idem-shape"), None).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+
+    // Same key, same body, plus a sentence: the digests match, the shapes do
+    // not, and adopting the track would promise a delivery that never happened.
+    let (with_message, body) = b.create_track(Some("idem-shape"), Some("ship it")).await;
+    assert_eq!(
+        with_message,
+        StatusCode::CONFLICT,
+        "adding a first_message under a message-less binding must be a conflict: body={body}"
+    );
+
+    // And the reverse direction, on a key a first_message create bound.
+    let (created, body) = b.create_track(Some("idem-shape-2"), Some("ship it")).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let (message_less, body) = b.create_track(Some("idem-shape-2"), None).await;
+    assert_eq!(
+        message_less,
+        StatusCode::CONFLICT,
+        "dropping the first_message under a message-carrying binding must be a conflict too: \
+         body={body}"
+    );
+
+    // The ordinary payload-conflict half still applies to this shape: same key,
+    // no message either time, different create body.
+    let (renamed, body) = b
+        .post_create(
+            Some("idem-shape"),
+            json!({
+                "area_id": b.area_id,
+                "title": "a different title",
+                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+            }),
+        )
+        .await;
+    assert_eq!(
+        renamed,
+        StatusCode::CONFLICT,
+        "a different message-less create under a bound key is a payload conflict: body={body}"
+    );
+
+    assert_eq!(
+        b.track_count().await,
         2,
-        "a message-less create is deliberately still NOT idempotent (KNOWN GAP 1)"
+        "every refusal above minted nothing: only the two accepted creates exist"
     );
     b.shutdown_harnesses().await;
 }
@@ -2617,7 +2739,10 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
 /// directory, then replay K.
 ///
 /// Fails when the `materialize_workspace` call is deleted from
-/// `resume_prior_attempt`: the replay then 201s onto a directory with no `HEAD`.
+/// `adopt_prior_track`: the replay then 201s onto a directory with no `HEAD`.
+/// (#1426 moved that call out of `resume_prior_attempt` into `adopt_prior_track`,
+/// which both resuming arms call; this case drives it through
+/// `resume_prior_attempt`.)
 #[tokio::test]
 async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
     let b = boot().await;
@@ -2846,8 +2971,12 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
 
 /// #1299 F2 — the `Resume` arm's fail-closed answer when the track is gone.
 ///
-/// `resume_prior_attempt` reads `track_get(prior.track_id)` and turns `None`
-/// into a 500. Both the code and the OpenAPI description call that branch
+/// `adopt_prior_track` — which `resume_prior_attempt` calls, and which #1426
+/// factored out of it so the message-less resuming arm shares one copy of this
+/// decision — reads `track_get(prior.track_id)` and turns `None` into a 500.
+/// This case drives that branch through `resume_prior_attempt`; it does not
+/// drive the message-less arm. Both the code and the OpenAPI description call
+/// that branch
 /// fail-closed, and until this case nothing drove it: the module header's
 /// "Pinned by the branch" identified the code, which is not an assertion about
 /// behaviour. #1299's review wrote the gap up rather than closing it, so it is
@@ -3060,7 +3189,7 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
 /// back 409 `conflict` — a spurious "you changed your message" for a request
 /// nobody changed.
 ///
-/// Companion of `a_create_without_a_first_message_is_unchanged`: that one pins
+/// Companion of `a_message_less_create_without_a_key_is_unchanged`: that one pins
 /// the absence of `first_message`, this one the absence of the digest, and both
 /// on the same bytes.
 ///

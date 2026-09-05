@@ -50,17 +50,69 @@
 //! The create shape itself never gets that exception: once the track exists,
 //! those inputs have already taken effect and no operation can reapply them.
 //!
-//! # A message-less create is still NOT idempotent, and that is stated
+//! # A message-less create is idempotent too, but only when it asks (#1426)
 //!
-//! [`plan_first_message`] returns [`CreatePlan::Legacy`] from its first
-//! statement when `first_message` is absent — before the header is read. So a
-//! message-less create writes no binding row, derives no key, and is
-//! byte-for-byte the pre-#1299 path; a retry mints a second track exactly as it
-//! always has. Writing the binding on `Legacy` too would be actively wrong:
-//! `Legacy` has already returned from this dispatch, so there is no `Resume`
-//! arm for a primary-key collision to map onto, and a message-less same-key
-//! retry would turn a working 201 into an error. Pinned by
-//! `a_message_less_create_writes_no_binding_row`.
+//! #1384 left this shape out and said so: [`plan_first_message`] returned
+//! [`CreatePlan::Legacy`] from its first statement when `first_message` was
+//! absent, before the header was read, so a message-less retry minted a second
+//! track. #1426 extends the mechanism to it — **header-optional, not
+//! header-required**.
+//!
+//! The fork was decided from the callers, not from taste. Every message-less
+//! caller alive today sends no `Idempotency-Key`: the new-track route's
+//! blank-message branch (`fe/web/src/app/router/public.tsx`), all four `web/`
+//! call sites (whose HTTP helper `web/src/api/calm.ts` takes no headers
+//! argument at all, so they *cannot* send one), every shell and Playwright
+//! e2e, and every Rust integration test. Requiring the header would 400 all of
+//! them at once, for a property none of them asked for. So:
+//!
+//! * **no key** ⇒ [`CreatePlan::Legacy`], the pre-#1299 path verbatim — no
+//!   lookup, no binding row, no reordering, and a retry still mints a second
+//!   track. Pinned by `a_message_less_create_without_a_key_is_unchanged`.
+//! * **a key** ⇒ [`CreatePlan::MessageLessMint`] or
+//!   [`CreatePlan::MessageLessResume`], deciding on the binding row alone.
+//!   Pinned by `a_message_less_create_with_a_key_binds_and_replays`.
+//!
+//! #1384's stated reason for not writing the binding on `Legacy` was that
+//! `Legacy` "has already returned from the dispatch, so there is no `Resume`
+//! arm for a primary-key collision to map onto". That reason is answered by
+//! building the arm rather than by weakening anything: the keyed message-less
+//! create no longer returns from the dispatch early, it selects between a mint
+//! and a resume exactly as the `first_message` path does. The unkeyed create
+//! still returns from the first statement, and *it* is the shape the old
+//! sentence was really protecting.
+//!
+//! # Why the message-less arms are a two-cell table, not [`select_arm`]'s four
+//!
+//! [`SelectedArm`]'s second input is "what sits on the chosen operation key",
+//! and a message-less create has no such key: `start_planner_harness` submits
+//! with `idempotency_key: None` and a fresh `operation_key`, so
+//! `find_by_kind_and_idempotency` could never find its predecessor. Nothing is
+//! gained by inventing one — the message-less start carries no user text, so
+//! there is no delivery to deduplicate and no `Stuck` verdict to replay. The
+//! binding row alone answers the only question this shape asks: *did this key
+//! already mint a track?*
+//!
+//! Two consequences, stated rather than left to be discovered. A keyed
+//! message-less create never consumes a `#N` retry slot, so it cannot answer
+//! 409 `idempotency_key_exhausted` for slot exhaustion (only for the
+//! un-materializable-workspace case its resume shares with
+//! [`resume_prior_attempt`]). And its resume re-runs `start_planner_harness`,
+//! whose failure is a `warn!` and a 201 on the mint arm and stays one here:
+//! the resume can answer 201-with-the-same-track, or fail closed, and nothing
+//! in between.
+//!
+//! # One key means one create shape, in both directions
+//!
+//! `create_request_sha256` covers the mint inputs, and the presence of a
+//! `first_message` is not one of them — the same body with and without a
+//! sentence hashes the same value. So the binding row's **fingerprint variant**
+//! carries that fact instead: `V1` was written by a create that carried a
+//! message, `V2MessageLess` by one that did not. A request whose shape does not
+//! match the binding's is 409 `conflict`, both ways round. Without that check a
+//! message-carrying create could resume onto a message-less binding and answer
+//! 201 for a delivery nobody made. Pinned by
+//! `a_key_bound_by_one_create_shape_refuses_the_other`.
 //!
 //! # The arm is decided BEFORE the create path validates the request
 //!
@@ -93,7 +145,7 @@
 //! row and `materialize_workspace` runs after the commit, so "non-201 ⇒ no side
 //! effect" remains false for it. What is guaranteed is the narrower thing:
 //! under one `Idempotency-Key`, at most one track — and a rejected message
-//! leaves no track at all. A create that carries no `first_message` keeps every
+//! leaves no track at all. A create that sends no `Idempotency-Key` keeps every
 //! one of its old properties, good and bad.
 
 use axum::http::HeaderMap;
@@ -267,11 +319,19 @@ struct PriorAttempt {
 /// structurally always has one, so the resuming path cannot be reached without
 /// one.
 pub(super) enum CreatePlan {
-    /// The body carried no `first_message`: the pre-#1299 path verbatim. The
-    /// `Idempotency-Key` header is not read, no key is derived, no lookup
-    /// happens, no binding row is written, and `create_track` runs its checks in
-    /// the order it always did.
+    /// The body carried no `first_message` **and** the caller sent no
+    /// `Idempotency-Key`: the pre-#1299 path verbatim. No key is derived, no
+    /// lookup happens, no binding row is written, and `create_track` runs its
+    /// checks in the order it always did. A retry mints a second track, exactly
+    /// as it always has, because the caller asked for nothing else.
     Legacy,
+    /// #1426 — no `first_message`, but a key with no binding to adopt. Mints
+    /// through the unchanged `create_track_with_planner_harness`, with the
+    /// binding row written inside the same transaction as the id.
+    MessageLessMint(MessageLessPlan),
+    /// #1426 — no `first_message`, and a key a prior create already minted
+    /// under. Mints nothing; see [`resume_message_less`].
+    MessageLessResume(MessageLessResume),
     /// A `first_message` on a key with no binding to adopt. This request
     /// **mints**, so the create path's request validation runs in full.
     Mint(FirstMessagePlan),
@@ -307,6 +367,52 @@ pub(super) struct CreateRequestShape {
     pub attach_folder: bool,
     pub theme: RequestTheme,
     pub fork_report_from: Option<String>,
+}
+
+/// #1426 — what a keyed **message-less** create needs, which is strictly less
+/// than [`FirstMessagePlan`]: no text, no message digest, and no operation key,
+/// because `start_planner_harness` submits under a fresh `operation_key` with
+/// `idempotency_key: None` and therefore has no attempt to join.
+pub(super) struct MessageLessPlan {
+    /// The caller's `Idempotency-Key`, verbatim — half of the binding row's
+    /// primary key.
+    idempotency_key: String,
+    create_request_sha256: String,
+    /// Held from before the binding lookup until after the mint settles, so two
+    /// concurrent same-key message-less creates in one process cannot both read
+    /// "no binding" and each mint a track. The binding table's primary key is
+    /// the cross-instance wall underneath it, exactly as on the keyed
+    /// `first_message` arm.
+    _same_key_claim: crate::per_card_lock::PerCardLockGuard,
+}
+
+impl MessageLessPlan {
+    /// The claim `create_track_structure` writes inside the mint transaction.
+    ///
+    /// `first_message_sha256: None` is not a missing value: it is the fact that
+    /// this create carried no message, and it is what makes the binding row
+    /// fingerprint version 2 rather than version 1.
+    pub(super) fn claim(&self) -> TrackCreateIdempotencyClaim {
+        TrackCreateIdempotencyClaim {
+            key: self.idempotency_key.clone(),
+            create_request_sha256: self.create_request_sha256.clone(),
+            first_message_sha256: None,
+        }
+    }
+}
+
+/// #1426 — a [`CreatePlan::MessageLessResume`]'s payload.
+///
+/// Carries no `NewTrack` and no `CreateTrackOptions`, which is the same
+/// structural statement [`ResumeFirstMessage`] makes: this arm cannot mint, so
+/// `create_track` is right to skip the request validation that guards minting.
+pub(super) struct MessageLessResume {
+    track_id: String,
+    planner_card_id: String,
+    report_card_id: String,
+    /// See [`MessageLessPlan::_same_key_claim`]. Held through the resume too,
+    /// so a resume and a concurrent mint under one key cannot interleave.
+    _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
 /// Everything a keyed `POST /api/tracks` needs to submit the operation.
@@ -376,10 +482,25 @@ pub(super) async fn plan_first_message(
     area_id: &str,
     shape: CreateRequestShape,
 ) -> Result<CreatePlan> {
+    // #1426 — the header is parsed BEFORE the `first_message` fork, because it
+    // now decides the message-less fork too. The one behaviour this reorders for
+    // an existing caller is a *malformed* header on a message-less create: an
+    // empty or non-ASCII `Idempotency-Key` used to be ignored and is now a 400,
+    // the same answer the `first_message` path has always given it. A
+    // well-formed header, and the total absence of one, are unaffected — and no
+    // caller in this repository sends a malformed one (the caller sweep in
+    // #1426 enumerated all of them by directory).
+    let idempotency_key = parse_idempotency_key_header(headers)?;
     let Some(text) = first_message else {
-        return Ok(CreatePlan::Legacy);
+        // #1426 — header-optional. No key means the pre-#1299 path verbatim,
+        // which is what every message-less caller alive today sends; a key opts
+        // this shape into the same binding row the `first_message` path uses.
+        let Some(idempotency_key) = idempotency_key else {
+            return Ok(CreatePlan::Legacy);
+        };
+        return plan_message_less(s, area_id, shape, idempotency_key).await;
     };
-    let idempotency_key = parse_idempotency_key_header(headers)?.ok_or_else(|| {
+    let idempotency_key = idempotency_key.ok_or_else(|| {
         CalmError::BadRequest(
             "Idempotency-Key header is required when `first_message` is present, so a retried create cannot mint a second track or deliver the message twice"
                 .into(),
@@ -391,17 +512,7 @@ pub(super) async fn plan_first_message(
     // track behind.
     validate_first_message(&text)?;
 
-    let create_request_sha256 = stable_payload_hash(&serde_json::json!({
-        "title": shape.title,
-        "sort": shape.sort,
-        "cwd": shape.cwd,
-        "template_id": shape.template_id,
-        "recipe_id": shape.recipe_id,
-        "template_input": shape.template_input,
-        "attach_folder": shape.attach_folder,
-        "theme": shape.theme,
-        "fork_report_from": shape.fork_report_from,
-    }))?;
+    let create_request_sha256 = create_request_digest(&shape)?;
     let first_message_sha256 = first_message_digest(&text);
     let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
     // Taken before either lookup, released when the plan is dropped at the end
@@ -417,7 +528,12 @@ pub(super) async fn plan_first_message(
         .track_create_idempotency_get(area_id, &idempotency_key)
         .await?;
     if let Some(binding) = binding.as_ref() {
-        ensure_binding_create_matches(binding, &create_request_sha256, &idempotency_key)?;
+        ensure_binding_create_matches(
+            binding,
+            &create_request_sha256,
+            &idempotency_key,
+            CreateShape::WithFirstMessage,
+        )?;
     }
 
     // Lookup 2 — unchanged in role: which harness-start *attempt* this request
@@ -485,7 +601,96 @@ pub(super) async fn plan_first_message(
     }
 }
 
-fn binding_fingerprint(binding: &crate::db::sqlite::TrackCreateBinding) -> Result<(&str, &str)> {
+/// #1426 — the message-less twin of [`plan_first_message`]'s keyed half.
+///
+/// Deliberately NOT a code path through `plan_first_message`'s body with the
+/// message parts made optional. There is one lookup here, not two, and the arm
+/// is a two-cell table (`binding hit ⇒ resume`, `miss ⇒ mint`) rather than
+/// [`select_arm`]'s four: `start_planner_harness` submits under a fresh
+/// `operation_key` with `idempotency_key: None`, so there is no operation for
+/// `find_by_kind_and_idempotency` to select, no `#N` chain to step along, and
+/// no delivery to replay. Folding the two would mean carrying three `Option`s
+/// whose only legal combinations are the ones these two functions already are.
+///
+/// The lock is taken on the SAME derived key the `first_message` path uses,
+/// which is required rather than incidental: the two shapes contend on one
+/// binding row, so they must serialize against each other, not merely against
+/// themselves.
+async fn plan_message_less(
+    s: &RouteState,
+    area_id: &str,
+    shape: CreateRequestShape,
+    idempotency_key: String,
+) -> Result<CreatePlan> {
+    let create_request_sha256 = create_request_digest(&shape)?;
+    let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
+    let same_key_claim = lock_card(&s.conversation_first_message_locks, &base_key).await;
+    let binding = s
+        .repo
+        .track_create_idempotency_get(area_id, &idempotency_key)
+        .await?;
+    let Some(binding) = binding else {
+        return Ok(CreatePlan::MessageLessMint(MessageLessPlan {
+            idempotency_key,
+            create_request_sha256,
+            _same_key_claim: same_key_claim,
+        }));
+    };
+    // Before anything is resumed, and before the track is even read: the create
+    // shape is permanent once its track commits, so a request that does not
+    // match the binding is a conflict rather than something to act on.
+    ensure_binding_create_matches(
+        &binding,
+        &create_request_sha256,
+        &idempotency_key,
+        CreateShape::MessageLess,
+    )?;
+    Ok(CreatePlan::MessageLessResume(MessageLessResume {
+        track_id: binding.track_id,
+        planner_card_id: binding.planner_card_id,
+        report_card_id: binding.report_card_id,
+        _same_key_claim: same_key_claim,
+    }))
+}
+
+/// The create-shape digest, in one place because both plans compute it and a
+/// second copy of this field list would drift silently — the two would then
+/// disagree about whether one key names the same create.
+fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
+    stable_payload_hash(&serde_json::json!({
+        "title": shape.title,
+        "sort": shape.sort,
+        "cwd": shape.cwd,
+        "template_id": shape.template_id,
+        "recipe_id": shape.recipe_id,
+        "template_input": shape.template_input,
+        "attach_folder": shape.attach_folder,
+        "theme": shape.theme,
+        "fork_report_from": shape.fork_report_from,
+    }))
+}
+
+/// #1426 — which create shape a request is, and therefore which binding
+/// fingerprint variant it may adopt.
+///
+/// This is request identity that `create_request_sha256` cannot carry: the
+/// digest covers the mint inputs, and `first_message` is not one of them, so
+/// the same body with and without a sentence hashes identically. Without this
+/// discriminator a message-carrying create could resume onto a binding written
+/// by a message-less one and answer 201 for a delivery that never happened.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CreateShape {
+    WithFirstMessage,
+    MessageLess,
+}
+
+/// The binding's create digest, plus its message digest when the create that
+/// wrote it carried a message. `None` on the #1426 message-less variant means
+/// "that create sent no message", never "the digest is unavailable" — the
+/// legacy-unknown row is the unavailable case and it refuses outright.
+fn binding_fingerprint(
+    binding: &crate::db::sqlite::TrackCreateBinding,
+) -> Result<(&str, Option<&str>)> {
     match &binding.request_fingerprint {
         TrackCreateRequestFingerprint::LegacyUnknown => Err(CalmError::Conflict(format!(
             "this Idempotency-Key names track {} but predates durable request fingerprints, so \
@@ -496,7 +701,10 @@ fn binding_fingerprint(binding: &crate::db::sqlite::TrackCreateBinding) -> Resul
         TrackCreateRequestFingerprint::V1 {
             create_request_sha256,
             first_message_sha256,
-        } => Ok((create_request_sha256, first_message_sha256)),
+        } => Ok((create_request_sha256, Some(first_message_sha256))),
+        TrackCreateRequestFingerprint::V2MessageLess {
+            create_request_sha256,
+        } => Ok((create_request_sha256, None)),
     }
 }
 
@@ -507,8 +715,25 @@ fn ensure_binding_create_matches(
     binding: &crate::db::sqlite::TrackCreateBinding,
     create_request_sha256: &str,
     idempotency_key: &str,
+    shape: CreateShape,
 ) -> Result<()> {
-    let (bound_create_request_sha256, _) = binding_fingerprint(binding)?;
+    let (bound_create_request_sha256, bound_first_message_sha256) = binding_fingerprint(binding)?;
+    // #1426 — checked first, and checked at all because the digest below cannot
+    // see it: `create_request_sha256` omits `first_message`, so a create that
+    // added or dropped the sentence hashes to the same value as the one that
+    // bound the key. Refusing both directions is what keeps a message-carrying
+    // request from replaying a message-less binding — which would answer 201
+    // for a delivery nobody made — and a message-less request from silently
+    // adopting a track whose create did deliver one.
+    let bound_shape = match bound_first_message_sha256 {
+        Some(_) => CreateShape::WithFirstMessage,
+        None => CreateShape::MessageLess,
+    };
+    if bound_shape != shape {
+        return Err(crate::operation::idempotency_payload_conflict(Some(
+            idempotency_key,
+        )));
+    }
     if bound_create_request_sha256 != create_request_sha256 {
         return Err(crate::operation::idempotency_payload_conflict(Some(
             idempotency_key,
@@ -525,7 +750,15 @@ fn ensure_binding_message_matches(
     plan: &FirstMessagePlan,
     allow_edited_message: bool,
 ) -> Result<()> {
+    // `None` is unreachable here: `ensure_binding_create_matches` already
+    // refused a message-less binding for this request's shape. Fail closed
+    // rather than assume it, because the two checks are not adjacent.
     let (_, first_message_sha256) = binding_fingerprint(binding)?;
+    let Some(first_message_sha256) = first_message_sha256 else {
+        return Err(crate::operation::idempotency_payload_conflict(Some(
+            &plan.idempotency_key,
+        )));
+    };
     if !allow_edited_message && first_message_sha256 != plan.first_message_sha256 {
         return Err(crate::operation::idempotency_payload_conflict(Some(
             &plan.idempotency_key,
@@ -576,13 +809,14 @@ pub(super) async fn create_track_with_first_message(
 ) -> Result<Response> {
     // #1384 — the `Mint`-arm condition on the binding write, in one place.
     //
-    // `create_track_structure` is reached by BOTH arms of the message-less
-    // dispatch too (`create_track_with_planner_harness` calls it), so
-    // conditioning the write on "the closure ran" would write a binding for
-    // `Legacy` creates as well. It is conditioned on the plan instead: this
-    // function is the only writer of the field, and it is reachable only from
-    // `CreatePlan::Mint`. Pinned by
-    // `a_message_less_create_writes_no_binding_row`.
+    // `create_track_structure` is reached by the unkeyed create too
+    // (`create_track_with_planner_harness` calls it), so conditioning the write
+    // on "the closure ran" would write a binding for `CreatePlan::Legacy` as
+    // well — for a request that sent no key to bind. It is conditioned on the
+    // plan instead: this function is the only writer of the field with a
+    // message digest, and it is reachable only from `CreatePlan::Mint`. #1426's
+    // `MessageLessMint` sets the same field from `create_track` itself, because
+    // its mint is the unforked legacy entry.
     // #1430 — `None` in production and in every other test; one `Option` check
     // on the mint path. Armed only by the cross-instance primary-key race case,
     // which needs this request held *after* its lookup 1 missed and *before*
@@ -596,7 +830,7 @@ pub(super) async fn create_track_with_first_message(
     options.idempotency_claim = Some(TrackCreateIdempotencyClaim {
         key: plan.idempotency_key.clone(),
         create_request_sha256: plan.create_request_sha256.clone(),
-        first_message_sha256: plan.first_message_sha256.clone(),
+        first_message_sha256: Some(plan.first_message_sha256.clone()),
     });
     let (track, _created, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.clone(), p, options).await?;
@@ -617,34 +851,30 @@ pub(super) async fn create_track_with_first_message(
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
-/// The arms where this key **already** minted a track ([`CreatePlan::Resume`]).
+/// Adopt the track a previous attempt under this `Idempotency-Key` minted, and
+/// repair its workspace — the half both resuming arms share.
 ///
-/// Takes neither `NewTrack` nor `CreateTrackOptions`, and that absence is the
-/// structural statement: nothing here can mint, so `create_track` is right to
-/// have skipped the request validation that guards minting — see the module docs
-/// for why re-running it was actively wrong.
-pub(super) async fn resume_prior_attempt(
-    s: RouteState,
-    actor: Actor,
-    resume: ResumeFirstMessage,
-) -> Result<Response> {
-    let ResumeFirstMessage { plan, prior } = resume;
+/// #1426 factored this out of [`resume_prior_attempt`] rather than restating it
+/// in [`resume_message_less`]: the `track_get` refusal and the
+/// materialization-failure mapping are the two fail-closed decisions this
+/// mechanism turns on, and two copies of them would be two chances to drift
+/// apart on what a poisoned key answers.
+async fn adopt_prior_track(s: &RouteState, track_id: &str) -> Result<Track> {
     // Direct replay materialization bypasses OperationRuntime, so take the
     // same per-track fence as lazy harness recovery. It is released before the
     // operation is submitted, preserving the operation-drive → track-delete
     // order used by DELETE while preventing a replay from recreating a path
     // already being moved to trash.
-    let track_delete_guard =
-        crate::per_card_lock::lock_key(&s.track_delete_locks, &prior.track_id).await;
+    let track_delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, track_id).await;
     // Fail closed. A 201 here would have to mint a replacement track under a key
     // that already means "that track", i.e. answer a byte-identical request with
     // a *different* track. The binding row deliberately has no `ON DELETE
     // CASCADE`, so a deleted track poisons its key rather than silently
     // recycling it.
-    let track = s.repo.track_get(&prior.track_id).await?.ok_or_else(|| {
+    let track = s.repo.track_get(track_id).await?.ok_or_else(|| {
         CalmError::Internal(format!(
             "track {} recorded by an earlier attempt under this Idempotency-Key no longer exists",
-            prior.track_id
+            track_id
         ))
     })?;
     // #1384 — `Resume` re-materializes, and the mint arm's failure semantics is
@@ -705,6 +935,22 @@ pub(super) async fn resume_prior_attempt(
         ))
     })?;
     drop(track_delete_guard);
+    Ok(track)
+}
+
+/// The arms where this key **already** minted a track ([`CreatePlan::Resume`]).
+///
+/// Takes neither `NewTrack` nor `CreateTrackOptions`, and that absence is the
+/// structural statement: nothing here can mint, so `create_track` is right to
+/// have skipped the request validation that guards minting — see the module docs
+/// for why re-running it was actively wrong.
+pub(super) async fn resume_prior_attempt(
+    s: RouteState,
+    actor: Actor,
+    resume: ResumeFirstMessage,
+) -> Result<Response> {
+    let ResumeFirstMessage { plan, prior } = resume;
+    let track = adopt_prior_track(&s, &prior.track_id).await?;
     // The one place the two arms diverge. See `PriorArm`: a replay owes the
     // caller the selected operation's payload byte for byte, a genuine retry
     // owes it the world as it is now.
@@ -728,6 +974,43 @@ pub(super) async fn resume_prior_attempt(
         plan.operation_key,
     )
     .await?;
+    Ok((StatusCode::CREATED, Json(track)).into_response())
+}
+
+/// #1426 — the message-less resuming arm.
+///
+/// Answers the same 201 the mint would have, for the track this key already
+/// minted. Like [`resume_prior_attempt`] it takes neither `NewTrack` nor
+/// `CreateTrackOptions`, so it structurally cannot mint, and `create_track` is
+/// therefore right to have skipped the create path's request validation.
+///
+/// **What it does NOT do, and why that is the whole point:** it derives no
+/// operation key and looks no operation up. `start_planner_harness` is the
+/// unchanged pre-#1299 submit — a fresh `operation_key`, `idempotency_key:
+/// None` — so there is nothing to join and nothing to replay. Re-running it is
+/// a *repair*, in the same sense `materialize_workspace` above is one: it is
+/// what boot recovery and the worker lease path already do to an inert planner
+/// agent, it carries no user text, and its failure is a `warn!` and a 201 on
+/// the minting path and stays one here.
+///
+/// So this arm's total answer set is: 201 with the key's own track; 500 when
+/// the track was deleted out from under the binding; 409
+/// `idempotency_key_exhausted` when its workspace can no longer be
+/// materialized. It has no `#N` chain and cannot exhaust retry slots, because
+/// it consumes none.
+pub(super) async fn resume_message_less(
+    s: RouteState,
+    actor: Actor,
+    resume: MessageLessResume,
+) -> Result<Response> {
+    let MessageLessResume {
+        track_id,
+        planner_card_id,
+        report_card_id,
+        _same_key_claim,
+    } = resume;
+    let track = adopt_prior_track(&s, &track_id).await?;
+    super::start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
