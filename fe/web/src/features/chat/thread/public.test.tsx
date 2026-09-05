@@ -1179,10 +1179,7 @@ describe('ChatComposer', () => {
    * The restore must not take the field from the keystroke that is in it.
    *
    * The reader can type again the moment the field is cleared, and the answer
-   * to their first sentence arrives whenever the server gets round to it. The
-   * check that decides this asks the editable itself: `draft` is a copy that a
-   * state update still in React's queue can leave one keystroke behind, and
-   * that keystroke is the entire subject.
+   * to their first sentence arrives whenever the server gets round to it.
    */
   it('leaves a refused sentence out when the reader has already typed the next one', async () => {
     let answer: (result: 'refused') => void = () => {};

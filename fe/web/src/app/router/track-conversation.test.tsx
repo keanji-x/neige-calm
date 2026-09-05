@@ -501,6 +501,36 @@ describe('track conversations', () => {
   });
 
   /*
+   * #1449 — a dormant harness is the everyday shape of this, not the rare one.
+   *
+   * `ensure_live_planner_harness` answers `planner_harness_dormant` before it
+   * has anything to write to, so the sentence is unspent. The store drops the
+   * optimistic echo on any failure, so without the restore the sentence is off
+   * the transcript AND out of the field at once, leaving one line of error text
+   * where the reader's words were.
+   */
+  it('keeps the message in the composer when the harness is dormant', async () => {
+    setup((request) => request.path.endsWith('/planner/input')
+      ? {
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          error: 'no recoverable planner harness session for this card; reset to start a session',
+          code: 'planner_harness_dormant',
+        },
+      }
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('the sentence a dormant harness must not eat');
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeNull());
+    await waitFor(() =>
+      expect(messageField().textContent).toBe('the sentence a dormant harness must not eat'));
+  });
+
+  /*
    * #1449 review round 7 — an unresolved send is not a refusal.
    *
    * `POST /planner/input` carries no `Idempotency-Key`, so a 503 leaves the

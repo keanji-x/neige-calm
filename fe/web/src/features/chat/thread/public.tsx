@@ -2142,6 +2142,12 @@ export function ChatComposer({
            *
            * Only into an empty field: the reader can type again the moment the
            * field is cleared, and what they typed is theirs.
+           *
+           * KNOWN GAPs (#1449). The restore reaches THIS composer, not the
+           * conversation: close the drawer during the request and re-open the
+           * same conversation and it runs into an unmounted one, so the error
+           * line stands with the sentence gone. And the trimmed `text` is what
+           * goes back, so trailing whitespace the reader typed does not.
            */
           if (isThenable(outcome)) {
             void outcome.then((result) => {

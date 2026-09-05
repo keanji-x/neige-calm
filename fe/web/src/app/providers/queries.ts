@@ -69,14 +69,6 @@ export class ApiError extends Error {
 }
 
 /**
- * The structured folder clash inside a rejected mutation, or `null`.
- *
- * Lives beside `ApiError` because unwrapping it is the only step that needs to
- * know this class exists; the decode and the wording are `core/domain/area.ts`.
- * `'body' in failure` is the narrowing: transport and decode failures never
- * carry one, and reading `.body` off the union without it does not compile.
- */
-/**
  * The `ErrorBody.code` a rejected request carried, or `null`.
  *
  * `'code' in failure` is the narrowing: transport and decode failures never
@@ -88,6 +80,14 @@ export function apiFailureCodeOf(error: unknown): string | null {
   return 'code' in error.failure ? error.failure.code : null;
 }
 
+/**
+ * The structured folder clash inside a rejected mutation, or `null`.
+ *
+ * Lives beside `ApiError` because unwrapping it is the only step that needs to
+ * know this class exists; the decode and the wording are `core/domain/area.ts`.
+ * `'body' in failure` is the narrowing: transport and decode failures never
+ * carry one, and reading `.body` off the union without it does not compile.
+ */
 export function folderConflictOf(error: unknown): FolderConflict | null {
   if (!(error instanceof ApiError)) return null;
   return 'body' in error.failure ? asFolderConflict(error.failure.body) : null;

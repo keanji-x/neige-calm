@@ -640,6 +640,11 @@ export function useConversationStore(
         };
       });
     }).catch((error: unknown) => {
+      /* KNOWN GAP (#1449): one sentence for both. `settled` on the next line
+         already separates "the server has nothing, send it again" from "this
+         may have landed"; the reader is left to infer which from whether the
+         text came back, and on an endpoint with no idempotency key a wrong
+         guess is a duplicate turn. */
       sendFailure = errorMessage(error, 'Could not send the message.');
       settled = isSendRefusalCode(apiFailureCodeOf(error)) ? 'refused' : 'unresolved';
       /* A failure belongs to the conversation that failed. Reported on another
@@ -1271,11 +1276,11 @@ function useConversationPanel(
    * The draft's own send, and it owns a different stage than `store.send`.
    *
    * This one runs while there is no card: it mints one, and its text lives in
-   * the registry's draft entry until the row it created is adopted. `ChatThread`
-   * is not mounted at that point — the draft renders `DraftConversationView` —
-   * so the composer's own restore (`SendOutcome`) governs a stage this function
-   * never reaches, and the registry draft governs a stage that one never
-   * reaches. Returning `void` keeps this stage on the registry.
+   * the registry's draft entry until the row it created is adopted. The draft
+   * branch renders its own turns and its own `<ChatComposer onSend={sendDraft}>`
+   * below, not `ChatThread`, so the composer's `SendOutcome` restore governs a
+   * stage this function never reaches, and the registry draft governs a stage
+   * that one never reaches. Returning `void` keeps this stage on the registry.
    */
   const sendDraft = (text: string) => {
     if (creating || draft === null) return;
