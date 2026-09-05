@@ -43,9 +43,9 @@ import {
   overlaysByKindOperation, toTrack, updateTrackOperation, updateTrackRecipeOperation,
   trackActivityFrom, trackDetailOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
-  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewTrackBody,
-  type OverlayWire, type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe,
-  type TrackTemplate,
+  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
+  type NewTrackBodyWithFirstMessage, type NewTrackBodyWithoutFirstMessage, type OverlayWire,
+  type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
@@ -875,6 +875,15 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   };
 }
 
+type TrackCreateMutation = {
+  (body: NewTrackBodyWithoutFirstMessage): Promise<Track>;
+  (body: NewTrackBodyWithFirstMessage, idempotencyKey: string): Promise<Track>;
+};
+
+type TrackCreateVariables =
+  | Readonly<{ body: NewTrackBodyWithoutFirstMessage }>
+  | Readonly<{ body: NewTrackBodyWithFirstMessage; idempotencyKey: string }>;
+
 export type TrackMutations = Readonly<{
   /**
    * `idempotencyKey` is required by the kernel whenever `body.first_message` is
@@ -882,7 +891,7 @@ export type TrackMutations = Readonly<{
    * retry — a fresh key on a retry mints a second track holding the same
    * sentence, which is precisely what the key exists to stop.
    */
-  create: (body: NewTrackBody, idempotencyKey?: string) => Promise<Track>;
+  create: TrackCreateMutation;
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
   createTerminal: (trackId: string, body: NewTerminalCardBody) => Promise<CardWire>;
@@ -895,8 +904,13 @@ export type TrackMutations = Readonly<{
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: ({ body, idempotencyKey }: { body: NewTrackBody; idempotencyKey?: string }) =>
-      runOperation(transport, createTrackOperation(body, idempotencyKey), unauthorized),
+    mutationFn: (variables: TrackCreateVariables) => runOperation(
+      transport,
+      'idempotencyKey' in variables
+        ? createTrackOperation(variables.body, variables.idempotencyKey)
+        : createTrackOperation(variables.body),
+      unauthorized,
+    ),
     onSuccess: (track, { body }) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(track.area_id) });
       // Explicit `attach_folder` still mints a area_folders row. Drop any
@@ -986,9 +1000,25 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
   });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
     toTrack(await patch.mutateAsync({ trackId, areaId, body }));
+  async function createTrack(body: NewTrackBodyWithoutFirstMessage): Promise<Track>;
+  async function createTrack(
+    body: NewTrackBodyWithFirstMessage,
+    idempotencyKey: string,
+  ): Promise<Track>;
+  async function createTrack(
+    body: NewTrackBodyWithoutFirstMessage | NewTrackBodyWithFirstMessage,
+    idempotencyKey?: string,
+  ): Promise<Track> {
+    if (body.first_message === undefined) {
+      return toTrack(await create.mutateAsync({ body }));
+    }
+    if (idempotencyKey === undefined) {
+      throw new TypeError('Idempotency-Key is required when first_message is present');
+    }
+    return toTrack(await create.mutateAsync({ body, idempotencyKey }));
+  }
   return {
-    create: async (body, idempotencyKey) =>
-      toTrack(await create.mutateAsync({ body, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) })),
+    create: createTrack,
     patch: patchTrack,
     createTerminal: async (trackId, body) => createTerminal.mutateAsync({ trackId, body }),
     createCodex: async (trackId, body) => createCodex.mutateAsync({ trackId, body }),

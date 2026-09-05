@@ -509,6 +509,25 @@ describe('card mutation cache writes', () => {
 });
 
 describe('track create folders cache', () => {
+  it('does not loosen the keyed-create requirement at the provider boundary', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const send = vi.fn<ApiTransportPort['send']>();
+    const transport: ApiTransportPort = { send };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper });
+
+    await expect(
+      result.current.create({
+        area_id: 'c1',
+        theme: { fg: [1, 2, 3], bg: [4, 5, 6] },
+        // @ts-expect-error first_message makes Idempotency-Key required here too.
+        first_message: 'missing key',
+      }),
+    ).rejects.toThrow(/Idempotency-Key/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('drops a successful empty folders cache after attach_folder create', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areaFolders('c1'), []);

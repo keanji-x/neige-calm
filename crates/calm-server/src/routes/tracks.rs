@@ -971,14 +971,14 @@ pub(crate) async fn get_track_detail(
     path = "/api/tracks",
     tag = "tracks",
     params(
-        ("Idempotency-Key" = Option<String>, Header, description = "**Required if and only if the body carries `first_message`**; ignored entirely otherwise, so every existing caller is unaffected — and, as a consequence, a create **without** `first_message` is NOT idempotent: repeating one still mints a second track, exactly as it always has.\n\nWith `first_message`, the key is bound to the track it creates by a row written inside the same transaction that mints the track id, so the binding survives every failure after that commit — including a planner-daemon outage, where the operation row that used to carry it is never written at all.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, the same four-arm contract as `POST /api/tracks/{track_id}/conversations`: (a) same key after a **success** returns the same track and does **not** re-deliver the first message — and it does so *without* re-running the create path's request validation, because it mints nothing, so a replay still succeeds after the workspace it attached was deleted or repointed; two cases it answers differently are a track that has since been **deleted** (500, fail-closed, rather than minting a different track under a key that already names one) and a managed workspace that can no longer be materialized (409 `idempotency_key_exhausted` — retry under a new key, which mints a fresh track at a fresh path); (b) same key after a **terminally failed** attempt genuinely RETRIES against the track that attempt already created, so it may return 201 where the first call returned 500; (c) same key after a **stuck** attempt keeps returning the recorded 500 on purpose (fail-closed), and that retry delivers no second copy of the message; (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted` — use a new key; (e) same key with a **different create** — a different `first_message`, `title`, `template_id` or `recipe_id` — is 409 `conflict`, because all four are bound into the operation payload, except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited request resent after a terminal failure is **not** rejected *for the old hash*; that attempt genuinely re-executes against the track the failed attempt already created, and its final status is whatever the execution produces (201 on success). Arms (b) and (e) are the same rule read from two sides, not a contradiction.\n\nNot bound into the payload, and therefore silently ignored on a replay: `template_input`, `attach_folder`, `fork_report_from`, `sort`, and `cwd` (which is deliberately frozen to the first attempt's value, because `PATCH /api/tracks/{id}` can move it)."),
+        ("Idempotency-Key" = Option<String>, Header, description = "**Required if and only if the body carries `first_message`**; ignored entirely otherwise, so a create without `first_message` remains non-idempotent.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, and `fork_report_from`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 because the server cannot prove request equality."),
     ),
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
         (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), or — with `first_message` — a missing/blank `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
-        (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), or — with `first_message` — `conflict` when this `Idempotency-Key` was already used with a different create (see the header description for the arm-(b) exception), or `idempotency_key_exhausted` when the key used up its 64 retry slots or when the track it names has a workspace that can no longer be materialized. In every case: retry under a new `Idempotency-Key`.", body = ErrorBody),
+        (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots or its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it.", body = ErrorBody),
     ),
 )]
@@ -1038,8 +1038,14 @@ pub(crate) async fn create_track(
         // See `create::CreateRequestShape`.
         create::CreateRequestShape {
             title: request.title.clone(),
+            sort: request.sort,
+            cwd: request.cwd.clone(),
             template_id: request.template_id.clone(),
             recipe_id: request.recipe_id.clone(),
+            template_input: request.template_input.clone(),
+            attach_folder: request.attach_folder,
+            theme: request.theme,
+            fork_report_from: request.fork_report_from.clone(),
         },
     )
     .await?;
@@ -1269,7 +1275,7 @@ pub(crate) async fn create_track(
         // write cannot be conditioned on the closure running;
         // `create::create_track_with_first_message` is the sole writer of this
         // field, and it is reachable only from `CreatePlan::Mint`.
-        idempotency_key: None,
+        idempotency_claim: None,
     };
     // #1384 — the only fork left in this handler's tail: the resuming arms
     // returned above, so `Some` here is always a mint. Without a `first_message`
@@ -1794,18 +1800,22 @@ struct CreateTrackOptions {
     /// each create entry point; `create_track_structure` materializes the
     /// managed case right after the transaction commits.
     workspace_plan: TrackWorkspacePlan,
-    /// #1384 — the caller's `Idempotency-Key`, and `Some` on exactly one arm:
-    /// a create that carried a `first_message` and therefore took
-    /// `CreatePlan::Mint`. When set, `create_track_structure` writes the
-    /// `track_create_idempotency` row **inside** the transaction that mints the
-    /// track id, so there is no interval in which the track exists and the
-    /// binding does not.
+    /// #1384 / #1434 — the caller's key plus both required request digests,
+    /// present together on exactly the keyed `CreatePlan::Mint` arm. Keeping
+    /// them in one type prevents a caller from asking the transaction to write
+    /// an id binding without the request identity that now makes it safe.
     ///
     /// `None` for every other entry — the message-less create included. A
     /// message-less create is deliberately still not idempotent; see
     /// `tracks/create.rs`'s module docs for why writing the binding there would
     /// turn a working 201 into an error.
-    idempotency_key: Option<String>,
+    idempotency_claim: Option<TrackCreateIdempotencyClaim>,
+}
+
+struct TrackCreateIdempotencyClaim {
+    key: String,
+    create_request_sha256: String,
+    first_message_sha256: String,
 }
 
 #[allow(deprecated)]
@@ -1846,7 +1856,7 @@ async fn create_track_structure(
         normalized_cwd,
         init,
         workspace_plan,
-        idempotency_key,
+        idempotency_claim,
     } = options;
     // #1147 — captured before `s` is moved into the write closure. Only the
     // managed branch uses it; `materialize_workspace` ignores it for attached.
@@ -1860,7 +1870,7 @@ async fn create_track_structure(
     let report_card_id_for_tx = report_card_id.clone();
     let area_id_for_attach = body_area_id;
     let normalized_cwd_for_tx = normalized_cwd;
-    let idempotency_key_for_tx = idempotency_key;
+    let idempotency_claim_for_tx = idempotency_claim;
     // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
     // (`User` when no `X-Calm-Actor` header was present, `Planner` otherwise) and
     // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
@@ -1945,15 +1955,17 @@ async fn create_track_structure(
                 // `Some` on the `Mint` arm only. `create_track_structure` is
                 // reached by the message-less path too, so the condition is on
                 // the plan rather than on reaching this closure.
-                if let Some(key) = idempotency_key_for_tx.as_deref() {
+                if let Some(claim) = idempotency_claim_for_tx.as_ref() {
                     track_create_idempotency_claim_tx(
                         tx,
                         area_id.as_str(),
-                        key,
-                        &calm_truth::db::sqlite::TrackCreateBinding {
+                        &claim.key,
+                        &calm_truth::db::sqlite::TrackCreateBindingClaim {
                             track_id: track_id.to_string(),
                             planner_card_id: planner_card_id_for_tx.clone(),
                             report_card_id: report_card_id_for_tx.clone(),
+                            create_request_sha256: claim.create_request_sha256.clone(),
+                            first_message_sha256: claim.first_message_sha256.clone(),
                         },
                     )
                     .await

@@ -345,6 +345,16 @@ describe('NewTrackForm asks only what the track starts from', () => {
     expect(screen.getByRole('alert').textContent).toContain('Could not create');
   });
 
+  it('offers the caller-owned explicit new-track action beside a payload conflict', async () => {
+    const onRetryAsNewTrack = vi.fn();
+    renderForm({
+      error: 'This key belongs to different words.',
+      onRetryAsNewTrack,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Start as a new track' }));
+    expect(onRetryAsNewTrack).toHaveBeenCalledTimes(1);
+  });
+
   /*
    * #1211 — there is no Cancel, and its absence is the assertion.
    *

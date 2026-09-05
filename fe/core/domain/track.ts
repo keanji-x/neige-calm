@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import { visibleAreas, type Area } from './area.js';
 
 export const trackLifecycleSchema = z.enum([
@@ -298,6 +298,14 @@ export type NewTrackBody = Readonly<{
   first_message?: string;
 }>;
 
+/** The two legal request-body shapes at the operation boundary. */
+export type NewTrackBodyWithoutFirstMessage = Omit<NewTrackBody, 'first_message'> & Readonly<{
+  first_message?: undefined;
+}>;
+export type NewTrackBodyWithFirstMessage = Omit<NewTrackBody, 'first_message'> & Readonly<{
+  first_message: string;
+}>;
+
 /**
  * A selectable starting point for a new track (#1209).
  *
@@ -438,10 +446,9 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
  * `POST /api/tracks`.
  *
  * `idempotencyKey` is **required by the kernel whenever `body.first_message` is
- * present** (#1384) and ignored entirely otherwise, which is why it is a
- * separate optional parameter rather than a body field: it travels as a header,
- * and an operation that cannot express a header cannot call this endpoint with
- * a first message at all.
+ * present** (#1384) and ignored entirely otherwise. The overloads make that
+ * relationship structural: the body variant with a message requires the
+ * separate header value, while the message-less variant accepts no key.
  *
  * What the key buys, and it is the reason it must be minted **per draft and not
  * per call**: the kernel binds it to the track it creates, inside the same
@@ -453,10 +460,15 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
  * Not sent when `first_message` is absent: the kernel does not read it there,
  * and a message-less create is deliberately still not idempotent.
  */
+export function createTrackOperation(body: NewTrackBodyWithoutFirstMessage): ApiOperation<TrackWire>;
 export function createTrackOperation(
-  body: NewTrackBody,
-  idempotencyKey?: string,
-): ApiOperation<TrackWire> {
+  body: NewTrackBodyWithFirstMessage,
+  idempotencyKey: string,
+): ApiOperation<TrackWire>;
+export function createTrackOperation(body: NewTrackBody, idempotencyKey?: string): ApiOperation<TrackWire> {
+  if (body.first_message !== undefined && idempotencyKey === undefined) {
+    throw new TypeError('Idempotency-Key is required when first_message is present');
+  }
   return {
     method: 'POST',
     path: '/api/tracks',
@@ -466,6 +478,29 @@ export function createTrackOperation(
       ? {}
       : { headers: { 'Idempotency-Key': idempotencyKey } }),
   };
+}
+
+export type TrackCreateKeyAction = 'preserve' | 'replace' | 'offer-explicit-replace';
+
+/**
+ * Whether the next explicit submit of this draft must use a fresh key.
+ *
+ * Only the structured exhausted code earns replacement. Transport errors and
+ * 5xx may have committed, so replacing their key could mint a second track;
+ * payload conflicts and legacy keys whose payload cannot be proved stay on the
+ * original key but expose an explicit new-create choice; they must never rotate
+ * silently.
+ */
+export function trackCreateKeyAction(failure: ApiFailure): TrackCreateKeyAction {
+  if (failure.kind !== 'http') return 'preserve';
+  if (failure.code === 'idempotency_key_exhausted') return 'replace';
+  if (failure.code === 'conflict' && (
+    failure.message.includes('already used with different payload')
+    || failure.message.includes('predates durable request fingerprints')
+  )) {
+    return 'offer-explicit-replace';
+  }
+  return 'preserve';
 }
 
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {

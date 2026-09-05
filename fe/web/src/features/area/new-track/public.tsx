@@ -278,6 +278,13 @@ export type NewTrackFormProps = Readonly<{
   submitting: boolean;
   error: string | null;
   /**
+   * Offered when the server proved either that this key belongs to a different
+   * payload or that its legacy binding cannot prove equality. The callback
+   * changes no server state; it explicitly turns the retained draft into a new
+   * create before the reader presses Create again.
+   */
+  onRetryAsNewTrack?: () => void;
+  /**
    * Templates the user may start from, from `GET /api/track-templates`. An
    * empty canonical roster is fully usable when the Area has no saved
    * template. If an Area preference is still unresolved, Create stays blocked
@@ -376,6 +383,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 export function NewTrackForm({
   submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
+  onRetryAsNewTrack,
 }: NewTrackFormProps) {
   const fieldId = useId();
   // Creation preferences are a route-opening snapshot. Area events may update
@@ -528,7 +536,20 @@ export function NewTrackForm({
     <div className={styles.page}>
       <VStack gap={2} className={styles.form}>
         {error !== null && (
-          <Banner status="error" title={error} data-nc-new-track-error />
+          <Banner
+            status="error"
+            title={error}
+            endContent={onRetryAsNewTrack === undefined
+              ? undefined
+              : (
+                <Button
+                  label="Start as a new track"
+                  variant="ghost"
+                  onClick={onRetryAsNewTrack}
+                />
+              )}
+            data-nc-new-track-error
+          />
         )}
 
         {/* The mark, the greeting, and where you are — see `.masthead`. */}

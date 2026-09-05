@@ -7,6 +7,14 @@ Every claim below cites `path:line` read in this worktree at that commit.
 > carrier (§4.3.0), the `Resume` arm re-runs `materialize_workspace` (§4.4), the
 > `create_request_sha256` carrier is named (§6.2), and the concurrency test
 > moved to KNOWN GAPS because the in-process lock makes it vacuous (§9.3).
+>
+> Post-merge follow-up #1434 supersedes §6.2 and KNOWN GAP 7: migration 0089
+> stores a versioned create-request fingerprint and initial-message digest in
+> the binding row itself. The create digest now covers every mint input and is
+> enforced across every operation attempt; only the message digest may change,
+> and only after a persisted terminal `Failed` attempt selects a fresh `#N`
+> operation key. Pre-0089 rows are represented explicitly as legacy-unknown and
+> fail closed because their original request cannot be reconstructed.
 
 ---
 
@@ -691,7 +699,7 @@ parameter.
 | T-BIND-2 | `the_database_refuses_two_tracks_under_one_area_and_key` | the primary key is the cross-process wall | **widen** the PK to `(area_id, idempotency_key, track_id)` — keeps the `WITHOUT ROWID` DDL valid, so exactly this test reddens rather than every test that boots a DB | same |
 | T-ARM-1 | `the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key` | §4.2's table, as a pure unit test | swap any row of the table | `#[cfg(test)]` in `routes/tracks/create.rs` |
 | T-ARM-2 | `a_binding_miss_with_an_occupied_key_mints_nothing` | §4.2's last row: `Internal`, never `Mint` | make the `(miss, occupied)` cell resolve to `Mint` — the test then observes `track_count == 1` behind the 409 instead of `0` | `track_create_first_message.rs`, **not** the pure unit module: the claim is about what is written, so it is constructed by inserting an occupied operation row under the derived key with no binding row, then POSTing that key |
-| T-HASH-1 | `the_same_key_with_a_different_title_is_a_conflict` | §6.2's binding of `title`/`template_id`/`recipe_id` | drop `create_request_sha256` from the payload struct | `track_create_first_message.rs` |
+| T-HASH-1 | `the_same_key_with_a_different_title_is_a_conflict` | the durable binding's complete create-request digest | omit `title` from the binding digest assembled in `plan_first_message` | `track_create_first_message.rs` |
 | T-HASH-2 | `a_message_less_create_writes_byte_identical_payload_json` | `skip_serializing_if` keeps old callers' `payload_hash` stable | remove `skip_serializing_if` from `create_request_sha256` | same (companion of `a_create_without_a_first_message_is_unchanged`, `:437`) |
 | T-COLL-1 | `a_collision_outcome_is_a_success_only_on_a_resume_arm` | §6.1's split | fold `SucceededViaCollision` back into `Succeeded` in `response_for` | `#[cfg(test)]` in `routes/tracks/create.rs`; constructs the `OperationOutcome` directly — §9.2 says why there is no integration construction |
 | T-500-1 | `a_stuck_start_after_spawn_has_already_delivered_the_first_message` (amended) | §6.3 | assert non-delivery in the 500 text (existing negatives fire), or drop the two proven properties (new positive fires) | `track_create_first_message.rs:891` |
@@ -748,12 +756,12 @@ test went red, not how many.
    (`workspace_materialize.rs:152-158`). A replay of a track whose attached
    directory was deleted answers 201 and the workspace is broken — unchanged
    from today, and excluded from every "safe retry" sentence here.
-7. **Fields not bound into `payload_hash`:** `template_input`, `attach_folder`,
-   `fork_report_from`, `sort`. A same-key retry differing only in one of these
-   returns 201 + the original track and silently ignores the change. Also, the
-   digest binds `template_id` as the **caller's string**, not the admitted
-   roster key (§6.2), so under a future non-exact admission rule two spellings
-   of one template would 409 against each other instead of replaying.
+7. **Resolved by #1434.** The durable binding fingerprint now covers
+   `template_input`, `attach_folder`, `fork_report_from`, `sort`, `theme`, and
+   the request's original `cwd` in addition to the three original fields. It
+   still binds `template_id` as the **caller's string**, not the admitted roster
+   key, because deriving it from mutable admission state would reintroduce the
+   replay-validation failure this design avoids.
 8. **Operations-row retention** (§6.4). No pruner exists today. If one is added,
    the `Replay`/`GenuineRetry` `cwd` distinction and the `#N` exhaustion chain
    degrade. Follow-up: *"operations retention must not silently degrade the

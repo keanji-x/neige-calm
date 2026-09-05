@@ -250,8 +250,11 @@ function plannerInputTexts(sent: readonly ApiRequest[]): unknown[] {
 }
 
 function createdTrackBodies(sent: readonly ApiRequest[]): unknown[] {
-  return sent.filter((request) => request.method === 'POST' && request.path === '/api/tracks')
-    .map((request) => request.body);
+  return createdTrackRequests(sent).map((request) => request.body);
+}
+
+function createdTrackRequests(sent: readonly ApiRequest[]): ApiRequest[] {
+  return sent.filter((request) => request.method === 'POST' && request.path === '/api/tracks');
 }
 
 describe('the new-track page is a route reached from Area groups', () => {
@@ -823,6 +826,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     expect(createdTrackBodies(sent)[0]).toMatchObject({ first_message: 'Read it' });
+    expect(createdTrackRequests(sent)[0]?.headers?.['Idempotency-Key']).toBeDefined();
     /*
      * Exactly once, and written so it says that rather than "at least once".
      *
@@ -830,9 +834,9 @@ describe('the sentence is delivered by the create, and the track opens on it', (
      * second one emitted a tick later would still be in flight when it
      * resolved. The landing that follows is the settle window: by the time the
      * track page has mounted, every continuation this create started has run,
-     * and *then* the count is read. The create carries no `Idempotency-Key`
-     * (deliberately — #1384), so a second POST is a second track AND a second
-     * delivery of the same sentence, which is the failure this counts.
+     * and *then* the count is read. The create carries one draft-scoped
+     * `Idempotency-Key`; this count still guards against a second POST because
+     * automatic retries are a separate policy from server-side replay safety.
      */
     await findTrackPage();
     expect(createdTrackBodies(sent)).toHaveLength(1);
@@ -976,9 +980,9 @@ describe('the sentence is delivered by the create, and the track opens on it', (
   /* Not "and creates nothing": a failed create is not a create that did not
      happen. `first_message` makes a failed harness start answer 500 *after*
      the track is minted (#1299), so what this route owes the reader on a
-     failure is the report, their text back, and no retry — the state of the
-     server is the kernel's to say, not this test's. */
-  it('reports a create that failed, keeps the sentence, and does not retry', async () => {
+     failure is the report, their text back, and no automatic retry — the state
+     of the server is the kernel's to say, not this test's. */
+  it('reports a create that failed, keeps the sentence, and does not automatically retry', async () => {
     const { sent } = harness({
       trackCreate: { status: 500, statusText: 'Server Error', body: { error: 'boom' } },
     });
@@ -991,10 +995,76 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`);
     expect(composerText()).toBe('Read it');
-    /* One attempt, and no second one on the reader's behalf. The create carries
-       no idempotency key, so an automatic retry would be a second track and a
-       second delivery of the same sentence (#1384). */
+    /* One attempt, and no automatic second one on the reader's behalf. */
     expect(createdTrackBodies(sent)).toHaveLength(1);
     expect(plannerInputTexts(sent)).toEqual([]);
+
+    /* An explicit retry is the same draft and therefore the same key. */
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [first, retry] = createdTrackRequests(sent);
+    expect(retry?.headers?.['Idempotency-Key']).toBe(first?.headers?.['Idempotency-Key']);
+  });
+
+  it('rekeys an exhausted draft before the reader explicitly retries it', async () => {
+    const { sent } = harness({
+      trackCreate: {
+        status: 409,
+        statusText: 'Conflict',
+        body: { error: 'this key is used up', code: 'idempotency_key_exhausted' },
+      },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('this key is used up');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [exhausted, fresh] = createdTrackRequests(sent);
+    expect(fresh?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(fresh?.headers?.['Idempotency-Key'])
+      .not.toBe(exhausted?.headers?.['Idempotency-Key']);
+    expect(createdTrackBodies(sent)).toEqual([
+      expect.objectContaining({ first_message: 'Read it' }),
+      expect.objectContaining({ first_message: 'Read it' }),
+    ]);
+  });
+
+  it.each([
+    ['payload conflict', 'already used with different payload'],
+    ['legacy unprovable key', 'this key predates durable request fingerprints'],
+  ])('does not silently rekey a %s', async (_case, errorMessage) => {
+    const { sent } = harness({
+      trackCreate: {
+        status: 409,
+        statusText: 'Conflict',
+        body: { error: errorMessage, code: 'conflict' },
+      },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain(errorMessage);
+    expect(screen.getByRole('button', { name: 'Start as a new track' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [conflict, retry] = createdTrackRequests(sent);
+    expect(retry?.headers?.['Idempotency-Key']).toBe(conflict?.headers?.['Idempotency-Key']);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Start as a new track' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(createdTrackRequests(sent)).toHaveLength(2);
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(3));
+    const explicitNew = createdTrackRequests(sent)[2];
+    expect(explicitNew?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(explicitNew?.headers?.['Idempotency-Key'])
+      .not.toBe(conflict?.headers?.['Idempotency-Key']);
   });
 });

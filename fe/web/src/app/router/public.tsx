@@ -17,8 +17,8 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import {
-  isBlankForKernel, toTrack, trackActivityFrom, trackDisplayTitle,
-  type Track, type TrackDetailWire,
+  isBlankForKernel, toTrack, trackActivityFrom, trackCreateKeyAction, trackDisplayTitle,
+  type NewTrackBodyWithoutFirstMessage, type Track, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
@@ -1815,10 +1815,11 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
  * say goes. That landing is stated on the navigation itself (`openPlanner`),
  * and its only effect is a drawer.
  *
- * The create is **not** retryable, and this route does not retry it: a repeated
- * create makes a second track, and on a 500 the kernel cannot say whether the
- * sentence was delivered. The failure is reported and the composer keeps its
- * text (#1384 owns teaching the endpoint to answer what happened).
+ * The create is safely retryable under the draft-scoped key below. Ambiguous
+ * failures preserve that key for an explicit retry, an exhausted key is replaced
+ * before the next submit, and a payload conflict offers a separate explicit
+ * "Start as a new track" choice. Nothing silently changes identity or submits on
+ * the reader's behalf.
  *
  * The create posts **no title** — the kernel stores the empty string and the
  * planner agent names the track through `calm.track.rename` once it knows what the
@@ -1841,17 +1842,19 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
    * the header exists to stop, reintroduced at the caller. Same rule the
    * conversation drawer already follows for its own draft.
    *
-   * Mount-scoped is exactly the draft's lifetime here: a successful create
-   * navigates away and unmounts this route, so the next new-track page gets a
-   * fresh key; a failed one keeps the reader on the page with their sentence,
-   * and pressing Create again is the retry this key makes safe.
+   * Mount-scoped is the normal draft lifetime: success navigates away, while
+   * an ambiguous failure preserves the key for a safe explicit retry. The one
+   * state that replaces it in-place is structured `idempotency_key_exhausted`:
+   * the server has proved that key can never recover, so the next user submit
+   * gets a fresh one (#1435).
    *
    * Minted off `getRandomValues` (via `mintIdempotencyKey`) because the app is
    * served over plain http on the LAN, where `crypto.randomUUID` does not
    * exist.
    */
-  const [createKey] = useState(mintIdempotencyKey);
+  const [createKey, setCreateKey] = useState(mintIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
+  const [canRetryAsNewTrack, setCanRetryAsNewTrack] = useState(false);
   const listDirectory = createDirectoryLister(transport, unauthorized);
   const area = areaId === undefined
     ? undefined
@@ -1897,7 +1900,9 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
     if (areaId === undefined) return;
     setCreating(true);
     setError(null);
-    void trackMutations.create({
+    setCanRetryAsNewTrack(false);
+    const messageIsBlank = isBlankForKernel(draft.message);
+    const body = {
       area_id: areaId,
       /* No `title` (#1211): the sentence the reader typed is the track's intent,
          not its name. It rides on `first_message` below, and the landing still
@@ -1908,9 +1913,9 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        *
        * Two separate decisions, and only the first one touches whitespace.
        *
-       * *Whether* the key rides at all is spread on blankness, for the same
-       * reason `cwd` is spread: "the reader said nothing" is the **absent
-       * key**, not `''`. The kernel validates this field before it mints
+       * *Whether* the key rides at all is decided by the two typed calls below:
+       * "the reader said nothing" is the **absent field and key**, not `''`.
+       * The kernel validates this field before it mints
        * anything and 400s a blank one, so posting an empty string would turn
        * "opened the page and pressed nothing" into a failed create. Blank is
        * `isBlankForKernel` — the kernel's own criterion, written once in
@@ -1923,7 +1928,6 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * would deliver a sentence the reader did not type — and it would do it
        * invisibly, since the composer still shows theirs.
        */
-      ...(isBlankForKernel(draft.message) ? {} : { first_message: draft.message }),
       // Spread, not two optional fields: no template leaves both keys absent,
       // and `template_id: undefined` is not the same request as no
       // `template_id` for anything that inspects the object before it is
@@ -1945,13 +1949,18 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * track in the same repository does not conflict with the first.
        */
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
+    } satisfies NewTrackBodyWithoutFirstMessage;
     /*
-     * #1384 — the key rides only when the sentence does, because that is
-     * exactly when the kernel requires it and exactly when it means anything.
-     * A message-less create is deliberately still not idempotent, and sending
-     * a key there would suggest otherwise.
+     * #1384 / #1436 — the two calls are distinct overloads. The keyed one
+     * cannot be constructed without both `first_message` and its key; the
+     * message-less one cannot accidentally advertise idempotency it does not
+     * have.
      */
-    }, isBlankForKernel(draft.message) ? undefined : createKey).then((track) => {
+    const keyForAttempt = messageIsBlank ? undefined : createKey;
+    const creation = messageIsBlank
+      ? trackMutations.create(body)
+      : trackMutations.create({ ...body, first_message: draft.message }, createKey);
+    void creation.then((track) => {
       /*
        * And only if the reader is still here.
        *
@@ -1982,8 +1991,25 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
         setError(folderConflictMessage(conflict, owner?.name ?? null));
         return;
       }
+      if (failure instanceof ApiError && keyForAttempt !== undefined && liveRef.current) {
+        const keyAction = trackCreateKeyAction(failure.failure);
+        if (keyAction === 'replace') {
+          // Replace only the key this response spent. `creating` serializes
+          // submits today; the equality check keeps a late response safe if
+          // that policy changes later.
+          setCreateKey((current) => current === keyForAttempt ? mintIdempotencyKey() : current);
+        } else if (keyAction === 'offer-explicit-replace') {
+          setCanRetryAsNewTrack(true);
+        }
+      }
       setError(failure instanceof ApiError ? failure.message : 'Could not create the track.');
     }).finally(() => { setCreating(false); });
+  };
+
+  const retryAsNewTrack = () => {
+    setCreateKey(mintIdempotencyKey());
+    setCanRetryAsNewTrack(false);
+    setError(null);
   };
 
   /*
@@ -2025,6 +2051,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
       templatesLoaded={templates.loaded}
       templatesError={templates.error}
       recipes={recipes.recipes}
+      onRetryAsNewTrack={canRetryAsNewTrack ? retryAsNewTrack : undefined}
       onManageRecipes={() => go({ name: 'recipes' })}
       initialTemplateId={area.defaultTemplateId}
       initialCwd={area.defaultCwd}
