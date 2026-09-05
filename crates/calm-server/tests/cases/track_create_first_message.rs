@@ -47,24 +47,36 @@
 //! (`a_create_without_a_first_message_is_unchanged`,
 //! `a_message_less_create_writes_no_binding_row`).
 //!
-//! Two further arms are **not covered here, and no test pretends to cover
-//! them**: the in-flight duplicate and the primary-key race.
+//! Two further arms used to be **not covered here, and no test pretended to
+//! cover them**: the in-flight duplicate and the primary-key race.
 //! `plan_first_message` takes a claim before either lookup and holds it through
 //! the mint, so two same-key creates served by **one `AppState`** serialize and
 //! the second takes the resuming arm without ever reaching the primary key.
 //!
-//! #1430 narrowed what that costs to close — this used to end "Both need a
-//! cross-instance harness", which was too strong in two ways, both measured.
-//! The serializing claim is `conversation_first_message_locks`, a
+//! **#1430 closed two of the three, and both had been mis-scoped.** The
+//! serializing claim is `conversation_first_message_locks`, a
 //! **per-`AppState`** field, not a per-process one: two `AppState`s over one
 //! on-disk SQLite file, in **one process**, already race, and no second OS
-//! process is required. And the `Stuck` half needs no second instance at all —
-//! `retryable_operation_key` stops on any non-`Failed` phase, so an
-//! `operations` row inserted directly under the derived key drives it here, the
-//! way `a_binding_miss_with_an_occupied_key_mints_nothing` below already does.
-//! What is left needing two instances is the primary-key race and a *live*
-//! in-flight duplicate; see `docs/design-1384-track-idempotency.md` §9 gaps 2,
-//! 3 and 12.
+//! process is required. So:
+//!
+//! * the primary-key race is
+//!   `a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner`
+//!   — two instances over one database file, with the loser *held* at the mint
+//!   rendezvous rather than raced-and-hoped;
+//! * the `Stuck` arm needed no second instance at all and is
+//!   `a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing`.
+//!   (The `Stuck` → 500 mapping was already exercised on the *minting* arm by
+//!   `a_stuck_start_after_spawn_has_already_delivered_the_first_message`; what
+//!   was unpinned is a *replay* joining a `Stuck` predecessor — that
+//!   `retryable_operation_key` does not step over it, and that the replay
+//!   opens no `#N` attempt and delivers no second copy.)
+//!
+//! What remains uncovered is one thing only: a **live** in-flight duplicate on
+//! a second instance, i.e. a runtime future actually awaiting a `running`
+//! operation. It buys one response shape that `select_arm`'s decision table
+//! already pins, at the cost of a parking `planner-harness-start` adapter, and
+//! is recorded with that reasoning as
+//! `docs/design-1384-track-idempotency.md` §9 gap 12.
 
 #![cfg(unix)]
 
