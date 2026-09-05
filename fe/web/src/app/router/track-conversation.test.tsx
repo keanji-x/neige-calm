@@ -1115,7 +1115,7 @@ describe('registry write-through', () => {
         rows, rememberOn: 'w1',
       });
       const send = store.send;
-      useEffect(() => { latestSend = (text) => { send(ASSISTANT_CARD.id, text); }; });
+      useEffect(() => { latestSend = (text) => { void send(ASSISTANT_CARD.id, text); }; });
       return null;
     }
 
@@ -1390,7 +1390,7 @@ describe('registry write-through', () => {
       const send = store.send;
       const turns = store.turnsOf(ASSISTANT_CARD.id);
       useEffect(() => {
-        latestSend = (text) => { send(ASSISTANT_CARD.id, text); };
+        latestSend = (text) => { void send(ASSISTANT_CARD.id, text); };
         visibleTurns = turns;
       });
       return null;
