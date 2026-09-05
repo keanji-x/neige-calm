@@ -62,7 +62,7 @@ const launchpadTrack = { ...track, id: 'lp', title: 'Today' };
 const INITIAL_BODY = '<!-- 报告维护契约: 当下快照，每次 REWRITE -->\n\n'
   + '# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n';
 const SECTION_HEADINGS = ['概要', '待你定', '已完成', '决策'] as const;
-const EMPTY_COPY = 'Nothing written today yet.';
+const GUIDE_LABEL = 'Getting started';
 
 function reportCard(body: string) {
   return {
@@ -141,7 +141,7 @@ afterEach(cleanup);
 describe('INV-TODAYDOC-003 the canonical initial report is an empty state, not four empty headings', () => {
   it('renders the empty state for a report the server says nobody has written', async () => {
     renderToday({ resolve: resolved(false), body: INITIAL_BODY });
-    expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
+    expect(await screen.findByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     const main = screen.getByRole('main');
     for (const heading of SECTION_HEADINGS) {
       expect(within(main).queryByRole('heading', { name: heading })).toBeNull();
@@ -151,7 +151,7 @@ describe('INV-TODAYDOC-003 the canonical initial report is an empty state, not f
   it('renders the document once the server says the report has content', async () => {
     renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n' });
     expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 
   it('is the server field and not the document that decides', async () => {
@@ -161,14 +161,14 @@ describe('INV-TODAYDOC-003 the canonical initial report is an empty state, not f
     renderToday({ resolve: resolved(true), body: INITIAL_BODY });
     const main = await screen.findByRole('main');
     expect(await within(main).findByRole('heading', { name: '概要' })).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
 
 describe('INV-TODAYDOC-001 the page load only resolves', () => {
   it('never bootstraps the launchpad while rendering Today', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
-    await screen.findByText(EMPTY_COPY);
+    await screen.findByRole('region', { name: GUIDE_LABEL });
     /* `ensure` materializes a workspace and waits on a `planner-harness-start`
        operation, so putting it on this path would make Today's first paint
        depend on codex being up. Asserting on the whole request log rather than
@@ -186,7 +186,7 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
        specs that assert none. Feeding a 404 here now takes the error branch
        and this case goes red — which is the point. */
     const { requests } = renderToday({ resolve: noLaunchpad(), body: INITIAL_BODY });
-    expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
+    expect(await screen.findByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryAllByRole('alert')).toEqual([]);
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     // No launchpad means no track to read either.
@@ -205,7 +205,7 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
     });
     const alerts = await screen.findAllByRole('alert');
     expect(alerts.some((alert) => alert.textContent?.includes('launchpad route missing'))).toBe(true);
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
 
@@ -214,7 +214,7 @@ describe('INV-TODAYDOC-002 a failed resolve surfaces as an error', () => {
     renderToday({ resolve: fail('launchpad read exploded'), body: INITIAL_BODY });
     const alerts = await screen.findAllByRole('alert');
     expect(alerts.some((alert) => alert.textContent?.includes('launchpad read exploded'))).toBe(true);
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
 
@@ -236,7 +236,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
     await waitFor(() => { expect(requests.map((request) => request.path)).toContain('/api/tracks/lp'); });
     const main = screen.getByRole('main');
     expect(within(main).queryByText(DECODE_COPY)).toBeNull();
-    expect(within(main).queryByText(EMPTY_COPY)).toBeNull();
+    expect(within(main).queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
     expect(within(main).queryAllByRole('alert')).toEqual([]);
   });
 
@@ -247,7 +247,7 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
     const alerts = await screen.findAllByRole('alert');
     expect(alerts.some((alert) => alert.textContent?.includes('track detail exploded'))).toBe(true);
     expect(screen.queryByText(DECODE_COPY)).toBeNull();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
   });
 
@@ -264,12 +264,12 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
       }),
     });
     expect(await screen.findByText(DECODE_COPY)).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 
   it('does not read the track detail at all when the server says there is no content', async () => {
     const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY, detail: 'hung' });
-    await screen.findByText(EMPTY_COPY);
+    await screen.findByRole('region', { name: GUIDE_LABEL });
     // Nothing to draw ⇒ nothing to fetch. It also keeps the states above
     // honest: each is about a document the reader is actually owed.
     expect(requests.map((request) => request.path)).not.toContain('/api/tracks/lp');
@@ -294,7 +294,7 @@ describe('#1343 the document’s Reset control', () => {
      are all the same growth back. */
   it('offers no write-the-report control in either document state', async () => {
     renderToday({ resolve: resolved(false), body: INITIAL_BODY });
-    await screen.findByText(EMPTY_COPY);
+    await screen.findByRole('region', { name: GUIDE_LABEL });
     expect(screen.queryByRole('button', { name: /today’s progress/ })).toBeNull();
 
     cleanup();
@@ -307,7 +307,7 @@ describe('#1343 the document’s Reset control', () => {
      and the empty state stays one sentence. */
   it('is absent while the report is already empty', async () => {
     renderToday({ resolve: resolved(false), body: INITIAL_BODY });
-    await screen.findByText(EMPTY_COPY);
+    await screen.findByRole('region', { name: GUIDE_LABEL });
     expect(screen.queryByRole('button', { name: RESET })).toBeNull();
   });
 
@@ -377,7 +377,7 @@ describe('#1343 the document’s Reset control', () => {
     expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: RESET }));
     await userEvent.click(await screen.findByRole('button', { name: CONFIRM }));
-    expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
+    expect(await screen.findByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryByText('今天合了两个 PR。')).toBeNull();
   });
 
@@ -395,7 +395,7 @@ describe('#1343 the document’s Reset control', () => {
     const alerts = await screen.findAllByRole('alert');
     expect(alerts.some((alert) => alert.textContent?.includes('it exploded'))).toBe(true);
     expect(screen.getByText('今天合了两个 PR。')).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
 
@@ -455,11 +455,11 @@ describe('#1253 §6 the report-edit refresh chain', () => {
       <RouterProvider router={router} />
     </ThemeProvider></QueryClientProvider>);
 
-    await screen.findByText(EMPTY_COPY);
+    await screen.findByRole('region', { name: GUIDE_LABEL });
     hasContent = true;
     applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(reportEdited('edit-1')).invalidate }]);
     expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 
   it('redraws a report that was already written when it is rewritten', async () => {

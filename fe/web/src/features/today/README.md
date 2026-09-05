@@ -184,7 +184,11 @@ Running is ambience and lives in the panel.
   summary run" needs its own persistent marker or event.
 - **The write-the-report trigger is gone** (#1343, owner call). `onWriteSummary`,
   its `Write` / `Rewrite` labels, its pending state and its notice are all
-  removed. The empty state is now **one sentence** and nothing else.
+  removed. The confirmed empty desktop day now includes a quiet Area/Track guide:
+  Area keeps context and related work together; Track gives an agent a goal and
+  retains its result in a report. The guide points to the existing sidebar `+`
+  controls and Today's conversation entry. It creates nothing on page load and
+  is absent while loading, on a failed read, or beside a written report.
 
   What replaced it is not another control. Two server-side changes carry it:
   the day's activity window is injected when a conversation is started on the
@@ -226,7 +230,7 @@ Running is ambience and lives in the panel.
     track delete on this route. The copy lives in `ui/confirm-dialog/copy.ts`
     and names what is *not* lost as well as what is.
   * **It is offered only beside a written report.** There is nothing to reset
-    when the report is already canonical, and the empty state is one sentence.
+    when the report is already canonical; onboarding guidance occupies that state.
 - **Waiting remains a count, not a main-column list.** The header still reports
   the true waiting total; the document begins immediately below it. Tracks stay
   reachable through their Area and the selected day in Calendar.
@@ -235,7 +239,7 @@ Running is ambience and lives in the panel.
   the launchpad lives there — so "no tracks, no areas" is an ordinary state,
   not a reason to replace the page with a second generic empty sentence. The
   Calendar and Conversations panel remain visible; the document region alone
-  says `Nothing written today yet.`. The conversation `+` remains visible
+  shows muted Area/Track guidance without a separate empty-state headline. The conversation `+` remains visible
   before a launchpad exists and explicitly creates it when pressed.
 
 ### The refresh chain, and why nothing generated protects it

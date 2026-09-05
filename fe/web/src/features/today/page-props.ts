@@ -96,9 +96,8 @@ export type TodayPageProps = Readonly<{
    * this domain composes neither. What lands here is already wired.
    *
    * It is rendered **only** beside a written document. There is nothing to
-   * reset when the report is already canonical, and the empty state is one
-   * sentence by owner ruling — a control under it would be the second thing on
-   * a surface whose whole message is that there is nothing yet.
+   * reset when the report is already canonical. The empty state offers quiet
+   * Area/Track guidance, with creation remaining in the sidebar.
    *
    * It replaces `onWriteSummary` / `summaryPending` / `summaryNotice`, which
    * are gone: the day's activity now reaches an agent server-side when a
