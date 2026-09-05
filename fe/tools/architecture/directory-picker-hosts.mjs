@@ -89,10 +89,13 @@
 //     intermediate module, imported from there. The importing file binds
 //     `Folder` from a specifier this sweep does not follow, so nothing matches.
 //     Unlike the default-import form above, nothing else catches this one.
-//   * **Values that stop being names.** A component pushed into an array, a
-//     record, or a prop and rendered through that indirection
-//     (`<map[key] />`). Only a direct local `const` alias of a bound name is
-//     followed.
+//   * **Values that stop being names.** Only a direct local `const` alias of a
+//     bound name — or of a namespace member — is followed. *Every* other way of
+//     moving the component through a value is invisible, and the list is open:
+//     a `let` assigned on a later line, a ternary, an array or record entry, a
+//     function's return, a prop. Read the general statement, not the examples —
+//     the examples are how it was found (the `let` and the ternary were both
+//     constructed and confirmed silent), not its extent.
 //   * **Behaviour.** It proves the set of call sites is *known*, never that an
 //     entry's claim holds — that `new-card` really pushes into a surrounding
 //     dialog, and that `new-track` really opens its own modal, are behavioural
@@ -104,8 +107,10 @@
 //     the part it could not parse is not seen.
 //
 // `tools/architecture/fixtures/directory-picker-*` drives one violation per
-// case through `architecture.test.ts`, including one for each of the three
-// holes above, so "it would really go red" is executed rather than asserted.
+// case through `architecture.test.ts` — one for each of the three fail-open
+// holes named further up, one for the stale-registration direction, and one for
+// each arm of `checkPickerModuleShape` — so "it would really go red" is
+// executed rather than asserted.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
