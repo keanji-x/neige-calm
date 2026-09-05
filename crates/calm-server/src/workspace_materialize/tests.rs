@@ -1285,7 +1285,11 @@ fn claim_park_point() {
         let mut slot = slot.borrow_mut();
         let park = slot.as_mut()?;
         park.seen += 1;
-        if park.seen == park.at { slot.take() } else { None }
+        if park.seen == park.at {
+            slot.take()
+        } else {
+            None
+        }
     });
     let Some(park) = park else { return };
     let _ = park.arrived.send(());
@@ -1310,7 +1314,9 @@ fn spawn_parked_claim(
 ) {
     let (handback_tx, handback_rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
-        handback_tx.send(arm_park(at)).expect("hand the rendezvous back");
+        handback_tx
+            .send(arm_park(at))
+            .expect("hand the rendezvous back");
         super::claim_owner_marker(&path, TRACK)
     });
     let (release_tx, arrived_rx) = handback_rx
@@ -1390,7 +1396,10 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
         "and the next materialization must succeed: it reads the winner's marker and takes \
          the `Some(owner) if owner == track_id` branch",
     );
-    assert!(head_resolves(&path), "the recovered workspace is a real repository");
+    assert!(
+        head_resolves(&path),
+        "the recovered workspace is a real repository"
+    );
 }
 
 /// **#1430 — the half the source comment did not measure, and it is a defect.**

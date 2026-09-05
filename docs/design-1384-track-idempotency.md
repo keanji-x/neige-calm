@@ -720,22 +720,53 @@ test went red, not how many.
    dispatching on the header for every create, which changes the pre-#1299
    ordering for every existing caller — none of which sends the header today.
    Follow-up: *"make message-less track creates idempotent"*.
-2. **The in-flight and `Stuck` arms are not coverable in-process.** The claim
-   spans the whole submit-and-wait (`driver.rs:267-300`) and
-   `planner-harness-start` never parks, so a second request cannot observe a
-   first one mid-flight within one process. Needs a cross-instance harness or an
-   injection point. Declared in the test module header; **no test pretends to
-   cover them.**
+2. **The in-flight and `Stuck` arms are not covered.** The claim spans the
+   whole submit-and-wait (`driver.rs:267-300`) and `planner-harness-start`
+   never parks, so a second request cannot observe a first one mid-flight
+   *through the route*, in one instance. Declared in the test module header;
+   **no test pretends to cover them.**
+
+   **Narrowed by #1430** (this said "not coverable in-process" and "needs a
+   cross-instance harness"; both were too strong, measured):
+   * No second OS **process** is required. The boundary that serializes two
+     same-key creates is `conversation_first_message_locks`, a per-`AppState`
+     field (`state.rs:174`, minted at `:268`), so two `AppState`s over one
+     on-disk SQLite file in **one process** already race. `SqlxRepo::open`
+     takes any URL and sets WAL + `busy_timeout` on every connection
+     (`db/sqlite/mod.rs:241-260`); the shared-file spelling
+     `sqlite://{path}?mode=rwc` is already in the tree
+     (`tests/support/kernel_proc.rs:129-131`). `sqlite::memory:` cannot be
+     shared — sqlx gives each parse its own named cache (`mod.rs:186`).
+   * The **`Stuck` arm needs no harness at all.** `retryable_operation_key`
+     stops on any non-`Failed` phase (`conversations_shared.rs:84`), so an
+     `operations` row inserted directly under the derived key drives it in one
+     instance — the technique `a_binding_miss_with_an_occupied_key_mints_nothing`
+     (`track_create_first_message.rs:2217-2255`) already uses.
+
+   What remains a gap, for a smaller reason: see gap 12.
 3. **The cross-process primary-key race is not tested, and the mapping is
    fail-closed rather than recovering.** `plan_first_message` takes
    `lock_card(&s.conversation_first_message_locks, &base_key)` *before* the
    lookup and holds it through the mint, so two same-key creates in one process
    serialize and the second takes `Resume` without ever reaching the primary
-   key. An in-process test of the unique-violation mapping therefore passes with
-   or without the mapping — vacuous, so it is not written. The mapping ships as
-   a fail-closed `CalmError::Internal` (the losing racer's client retries and
-   gets `Resume`), explicitly commented as unreachable in one process. Same
+   key. A test of the unique-violation mapping built on **one** `AppState`
+   therefore passes with or without the mapping — vacuous, so it is not
+   written. The mapping ships as a fail-closed `CalmError::Internal`
+   (`routes/tracks.rs:1958-1984`; the losing racer's client retries and gets
+   `Resume`), explicitly commented as unreachable within one instance. Same
    root cause as gap 2. Follow-up: *"cross-instance idempotency harness"*.
+
+   **Narrowed by #1430**: this said "unreachable in one process" and pointed at
+   a cross-*process* harness. Measured, the wall is the per-`AppState` lock map,
+   not the process: **two `AppState`s over one on-disk database, in one
+   process**, reach the primary key, and no second OS process is required. The
+   DB-layer refusal is already pinned by T-BIND-2
+   (`track_create_idempotency_tests.rs:137`) sequentially; what is unpinned is
+   the route-level `map_err`, that the loser's transaction leaves no orphan
+   track, and that its retry resolves to the winner. Making the interleaving
+   deterministic still needs one injection point between lookup 1
+   (`routes/tracks/create.rs:412`) and the mint — a `Repo` decorator is not the
+   cheap way there (109 methods across the supertraits, one impl in the tree).
 4. **A deleted track poisons its key permanently.** No FK, no cascade (§3): the
    binding row survives, `track_get` misses, and the key answers 500 forever.
    Deliberate — fail-closed beats minting a different track for a byte-identical
@@ -779,6 +810,29 @@ test went red, not how many.
     the new code goes to `routes/tracks/create.rs` (the `tracks/` module
     directory already exists — `fork_guard.rs`), but the file stays far past the
     800-line governance target. Pre-existing; not addressed here.
+12. **A *live* in-flight duplicate on a second instance is not pinned, and is
+    not worth the machinery today.** Measured while closing #1430: over a
+    directly-inserted `running` `operations` row, a second instance contributes
+    exactly one thing — a live runtime future actually awaiting that operation.
+    Buying it costs a `planner-harness-start` adapter that parks plus a
+    two-`AppState` boot, to pin one response shape whose decision table T-ARM-1
+    already pins (`select_arm`, `routes/tracks/create.rs:175-182`). Recorded as
+    a gap with that reason rather than built. The `Stuck` half of gap 2 does
+    **not** need any of this — see gap 2.
+13. **The ownership claim is crash-atomic but not concurrency-atomic**, and
+    #1430 measured the window rather than inferring it. Two claimers on one
+    `<path>` share the staging name `<parent>/.neige-claim-<track_id>`. If one
+    is between its fsyncs and its publishing `rename` when the other enters,
+    the other's `remove_dir_all(<staging>)` deletes the assembled claim and its
+    `create_dir_all` puts a **bare, unmarked** `.git` back under the same name;
+    the first then renames *that* onto `<path>` and returns **`Ok`**, leaving
+    `<path>` non-empty and unmarked — the exact brick state #1427 abolished for
+    process death, reached instead through a peer. Pinned by
+    `a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`
+    (`workspace_materialize/tests.rs`), which characterizes today's behaviour
+    and **must be inverted, not deleted, by the fix.** The benign interleaving
+    the source comment described is pinned beside it. Follow-up: *"the ownership
+    claim's staging name must not be shared by two claimers"*.
 
 ---
 
