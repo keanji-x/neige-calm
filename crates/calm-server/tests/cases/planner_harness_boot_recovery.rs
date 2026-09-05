@@ -2265,3 +2265,199 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         handle.shutdown().await.unwrap();
     }
 }
+
+/// #1449 S1 — a harness is started from the queue on its OWN ROW, never from
+/// the copy its operation output has been carrying since `prepare_tx`.
+///
+/// `output` is durable (`operations.tx_output_json`) and is written once, at
+/// mint time. Everything else in it is the operation's own decision and rightly
+/// travels there — but the pending queue is shared state that later mints move
+/// between rows, and no transfer can reach a copy sitting in a finished
+/// operation's output.
+///
+/// So an operation whose `prepare_tx` committed and which is re-driven later —
+/// after a crash, or on a second `AppState` over the same file — would start its
+/// harness from a queue somebody else has already taken, deliver the sentence a
+/// second time, and then write the resurrected queue back over the row via
+/// `handle.persist_snapshot()`. That is one of the four concurrency
+/// constructions the second review round found, and it is the reason the row is
+/// now the single home for a queue.
+///
+/// Staged at `SpawnStarted`, which re-drives `spawn_side_effect` directly, with
+/// the two copies deliberately disagreeing: the row's queue is empty (the
+/// sentence has been moved away), the carried output still holds it.
+#[tokio::test]
+async fn a_redriven_spawn_starts_from_the_row_not_from_the_carried_output() {
+    const MOVED_AWAY: &str = "this sentence already belongs to somebody else";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "row-is-the-single-home.db");
+    let (card_id, track_id, runtime_id, op_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "single-home".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "single home".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let runtime_id = new_id();
+        // The row: the queue is empty, because a mint in between moved the
+        // sentence to another runtime.
+        let row_snapshot = HarnessSnapshot::initial(0, vec![]);
+        // The carried output: still holds it, frozen at `prepare_tx` time.
+        let carried_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![Observation::UserMessage {
+                text: MOVED_AWAY.into(),
+            }],
+        );
+        let now = now_ms();
+        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+            actor: ActorId::User,
+            track_id: track.id.to_string(),
+            planner_card_id: card.id.clone(),
+            report_card_id: None,
+            sort: None,
+            cwd: track.workspace.path.clone(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: true,
+            profile: Default::default(),
+            create_card: None,
+            opening_briefing: None,
+            first_message: None,
+            create_request_sha256: None,
+        })
+        .unwrap();
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": runtime_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "codex_thread_id": "thread-already-minted",
+            "snapshot": serde_json::to_value(&carried_snapshot).unwrap(),
+        });
+        let op_id = new_id();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: runtime_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some("thread-already-minted".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&row_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, 'spawn_started', ?8, ?8)"#,
+        )
+        .bind(&op_id)
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(now + 1)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (card.id.to_string(), track.id.to_string(), runtime_id, op_id)
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    role_cache.insert(
+        CardId::from(card_id.clone()),
+        CardRole::Planner,
+        TrackId::from(track_id.clone()),
+    );
+    let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
+        .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+            repo.clone(),
+            None,
+        ));
+
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+    assert!(
+        state.harness.get(&runtime_id).is_some(),
+        "premise: the re-drive must start the harness: op {op_id}"
+    );
+
+    // The harness must have started from the row's (empty) queue. Give the run
+    // loop room to drain anything it thinks it owes before concluding.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let handed_over =
+            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
+                .unwrap_or_default();
+        assert!(
+            !handed_over.contains(MOVED_AWAY),
+            "the re-drive started the harness from the queue its output has been carrying since \
+             `prepare_tx`, so a sentence another mint already took has been delivered again"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let persisted: Option<String> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&runtime_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !persisted.unwrap_or_default().contains(MOVED_AWAY),
+        "and `handle.persist_snapshot()` must not have written the resurrected queue back onto \
+         the row"
+    );
+
+    if let Some(handle) = state.harness.remove(&runtime_id) {
+        handle.shutdown().await.unwrap();
+    }
+}

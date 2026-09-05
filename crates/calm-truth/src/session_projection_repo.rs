@@ -133,6 +133,16 @@ pub trait WorkerSessionProjectionRepo {
     /// that conflation is a wrong answer in the unsafe direction.
     async fn session_projection_state_by_id(&self, id: &str) -> Result<Option<WorkerSessionState>>;
 
+    /// #1449 S1 — a runtime's persisted `handle_state_json`, by id.
+    ///
+    /// Join-free and keyed on the id for the same reason as the reader above:
+    /// the caller asks about a row precisely when the card may already point
+    /// somewhere else.
+    async fn session_projection_handle_state_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>>;
+
     /// Idempotent: if no active runtime exists for this card, returns
     /// `Ok(())` without writing. This handles fast-exit races and
     /// pre-#488-backfilled-but-already-completed cards.

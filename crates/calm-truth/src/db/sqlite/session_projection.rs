@@ -642,6 +642,21 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         row.as_deref().map(run_status_from_db).transpose()
     }
 
+    async fn session_projection_handle_state_by_id(
+        &self,
+        id: &str,
+    ) -> WorkerSessionProjectionResult<Option<serde_json::Value>> {
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(row
+            .flatten()
+            .map(|text| serde_json::from_str(&text))
+            .transpose()?)
+    }
+
     async fn session_projection_by_id(
         &self,
         id: &str,

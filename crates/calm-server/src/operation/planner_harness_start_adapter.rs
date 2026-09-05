@@ -1343,16 +1343,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     let mut checkpoint_output = output_clone;
                     let mut old_runtime_id = None;
                     let mut old_runtime_status = None;
-                    // #1449 — what this transaction harvested, hoisted out of
-                    // the branch so it can leave the closure. The snapshot the
-                    // successor is started from lives in `output`, and
-                    // `spawn_side_effect` reads it from there: a harvest that
-                    // only reached the row would start the harness without the
-                    // sentences it had just stamped as taken, and
-                    // `handle.persist_snapshot()` would then write that shorter
-                    // queue straight back over the row. Database, checkpoint
-                    // and returned output have to agree.
-                    let mut harvested_snapshot = None;
+                    // #1449 — the rows this transaction stamped, so the
+                    // compensation can undo the harvest. The harvested
+                    // SENTENCES need no such channel: since S1 the successor's
+                    // queue is read from its own row at spawn, so writing it
+                    // into the row is the whole of writing it down.
                     let mut harvested_runtime_ids: Vec<String> = Vec::new();
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
@@ -1407,12 +1402,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                         .push(Observation::UserMessage { text });
                                 }
                                 runtime_snapshot.align_pending_envelope_ids();
-                                checkpoint_output.set_output_data(
-                                    "snapshot",
-                                    serde_json::to_value(&runtime_snapshot)?,
-                                    "planner harness",
-                                )?;
-                                harvested_snapshot = Some(runtime_snapshot.clone());
                             }
                         }
                         let runtime_init = WorkerSessionInit {
@@ -1507,7 +1496,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             old_runtime_id,
                             old_runtime_status,
                             cleared_measure,
-                            harvested_snapshot,
                             harvested_runtime_ids,
                         ),
                         Event::CardUpdated(card),
@@ -1521,23 +1509,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             old_runtime_id,
             old_runtime_status,
             cleared_measure,
-            harvested_snapshot,
             harvested_runtime_ids,
         ) = tx_out;
         drop(mint_lock_guard);
         card = updated_card;
-        // #1449 — the three copies of "what the successor owes" are reconciled
-        // here: the row (written inside the transaction), the checkpoint
-        // (written inside the transaction) and `output`, which is what
-        // `spawn_side_effect` starts the harness from and what
-        // `handle.persist_snapshot()` writes back.
-        if let Some(harvested_snapshot) = harvested_snapshot {
-            output.set_output_data(
-                "snapshot",
-                serde_json::to_value(&harvested_snapshot)?,
-                "planner harness",
-            )?;
-        }
         if !harvested_runtime_ids.is_empty() {
             let mut all = output
                 .data
@@ -1598,7 +1573,32 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
-        let snapshot = output_snapshot(output)?;
+        let mut snapshot = output_snapshot(output)?;
+        // #1449 S1 — THE ROW IS THE SINGLE HOME FOR THE QUEUE.
+        //
+        // Everything else in this snapshot is the operation's own decision
+        // (phase, thread id, watermarks) and rightly travels in `output`. The
+        // pending queue is not: it is shared state that other operations move
+        // between rows, and `output` is a durable copy written at
+        // `prepare_tx` time that no later transfer can reach.
+        //
+        // Reading it from `output` is how a stranded sentence comes back from
+        // the dead. An operation whose `prepare_tx` committed, and which is
+        // re-driven later — after a crash, or on a second `AppState` over the
+        // same file — carries a queue that a mint in between may already have
+        // handed to somebody else. Starting the harness from that copy
+        // delivers the same sentence twice, and `handle.persist_snapshot()`
+        // then writes the resurrected queue back over the row.
+        //
+        // So the queue is re-read here, from the runtime's own row, at the
+        // last moment before the harness is built.
+        //
+        // Unreadable or absent row: keep what `output` carries. That is not a
+        // safety argument, it is the pre-#1449 behaviour preserved — a missing
+        // row at spawn means the mint transaction's own insert is gone, and
+        // this function is not where that gets adjudicated.
+        overwrite_queue_from_the_runtimes_own_row(self.repo.as_ref(), &runtime_id, &mut snapshot)
+            .await?;
         // #953 §5 — atomic replace claim: the old remove-then-insert pair
         // left a window where a concurrent registration could land between
         // the two ops. `reserve_replacing` swaps the slot to Reserved in one
@@ -1927,6 +1927,30 @@ fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
 /// Bad shapes warn and yield nothing rather than failing the mint — the same
 /// posture the dormant-restart inherit above takes — and the caller stamps the
 /// row either way, so a snapshot nothing can read is not re-examined forever.
+/// #1449 S1 — replace a snapshot's pending queue with the one persisted on the
+/// runtime's own row, leaving every other field alone.
+async fn overwrite_queue_from_the_runtimes_own_row(
+    repo: &dyn Repo,
+    runtime_id: &str,
+    snapshot: &mut HarnessSnapshot,
+) -> Result<()> {
+    let Some(state) = repo
+        .session_projection_handle_state_by_id(runtime_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE)
+        || !is_harness_snapshot_value(&state)
+    {
+        return Ok(());
+    }
+    let row = HarnessSnapshot::from_value_strict(state);
+    snapshot.pending_queue = row.pending_queue;
+    snapshot.pending_envelope_ids = row.pending_envelope_ids;
+    Ok(())
+}
+
 fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> Vec<String> {
     let Ok(state) = serde_json::from_str::<Value>(handle_state_json) else {
         tracing::warn!(
