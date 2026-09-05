@@ -7210,7 +7210,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Issue #250 PR 2 — unix-ms timestamp the track most recently\nentered a terminal lifecycle state (Done / Canceled / Failed),\nor `None` while the track is non-terminal. Stamped inside the\nsame transaction as the `TrackLifecycleChanged` event by\n`track_update_tx`; cleared back to `None` on reopen\n(Done/Canceled/Failed → Planning). The calendar window query\n`GET /api/tracks?since&until` uses `(terminal_at IS NULL OR\nterminal_at >= since)` to keep open tracks visible across every\nday they span.\n\nBackfill semantics: rows that existed before this migration\nstay `None` even when their lifecycle is already terminal —\nthe event log carries the original transition timestamp but\nthe migration deliberately doesn't read from `events` (mixing\nmigration with replay is fragile). A user-driven reopen →\nre-Done cycle stamps the column with the current time, which\nis the first defensible point."
+            "description": "Issue #250 PR 2 — unix-ms timestamp the track most recently\nentered a terminal lifecycle state (Done / Canceled / Failed),\nor `None` while the track is non-terminal. Stamped inside the\nsame transaction as the `TrackLifecycleChanged` event by\n`track_update_tx`; cleared back to `None` when a terminal track\nreturns to Planning or Working. The calendar window query\n`GET /api/tracks?since&until` uses `(terminal_at IS NULL OR\nterminal_at >= since)` to keep open tracks visible across every\nday they span.\n\nBackfill semantics: rows that existed before this migration\nstay `None` even when their lifecycle is already terminal —\nthe event log carries the original transition timestamp but\nthe migration deliberately doesn't read from `events` (mixing\nmigration with replay is fragile). A user-driven reopen →\nre-Done cycle stamps the column with the current time, which\nis the first defensible point."
           },
           "title": {
             "type": "string"
@@ -7336,13 +7336,18 @@
       },
       "TrackDetail": {
         "type": "object",
-        "description": "What a Track detail page renders: the track itself plus its cards and\nany overlays scoped to the track (status/progress badges) and its cards.",
+        "description": "What a Track detail page renders: the track itself, its server-derived\ncapabilities, its cards, and overlays scoped to the track or those cards.",
         "required": [
           "track",
+          "can_resume",
           "cards",
           "overlays"
         ],
         "properties": {
+          "can_resume": {
+            "type": "boolean",
+            "description": "Server-derived capability for the user-facing `Resume work` action.\nLifecycle permission and child-track structural integrity are resolved\ntogether so clients do not advertise an action the write must reject."
+          },
           "cards": {
             "type": "array",
             "items": {

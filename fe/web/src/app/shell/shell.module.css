@@ -280,7 +280,7 @@
     gap: var(--space-2);
     min-inline-size: 0;
     font-size: var(--text-base);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-semibold);
     /* --leading-tight, never --leading-none, on any clipped text: this element
        carries `overflow: hidden` for its ellipsis, and `--leading-none` makes
        the line box exactly the font size (12.5px) while the glyphs need 14 —

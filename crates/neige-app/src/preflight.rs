@@ -843,6 +843,30 @@ mod tests {
     }
 
     #[test]
+    fn web_only_denies_api_version_mismatch() {
+        let mut target = compat(2, 2);
+        target.api_version = "2".into();
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "web".into(),
+                        compatibility: target,
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "ship-matching-web-or-bundle");
+        assert_eq!(result.reason, "apiVersion mismatch: current 1, target 2");
+    }
+
+    #[test]
     fn server_only_forward_only_requires_db_backup() {
         let result = run_preflight(
             PreflightMode::ServerOnly,
@@ -882,6 +906,30 @@ mod tests {
 
         assert!(!result.allowed);
         assert_eq!(result.required_action, "manual-migration-required");
+    }
+
+    #[test]
+    fn server_only_denies_api_version_mismatch() {
+        let mut target = server(DbMigrationPolicy::None, 2);
+        target.compatibility.api_version = "2".into();
+        let result = run_preflight(
+            PreflightMode::ServerOnly,
+            &current(),
+            &manifest(
+                ReleaseUnits {
+                    calm_server: Some(target),
+                    bundle: Some(BundleUnit {
+                        binaries: bundle_binaries(),
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                backend_files(),
+            ),
+        );
+
+        assert!(!result.allowed);
+        assert_eq!(result.required_action, "ship-matching-server-or-bundle");
+        assert_eq!(result.reason, "apiVersion mismatch: current 1, target 2");
     }
 
     #[test]

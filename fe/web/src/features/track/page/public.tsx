@@ -15,12 +15,14 @@
 // that line for the whole subtree.
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
+import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownMenu';
+import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
-  UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track, type TrackLifecycle,
+  UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track,
 } from '../../../../../core/domain/track.ts';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -29,7 +31,9 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
-import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
+import {
+  OperationFeedback, useDeleteConfirm, useOperationFeedback,
+} from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
@@ -121,16 +125,11 @@ export type TrackPageProps = Readonly<{
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
+  canResumeTrack: boolean;
   onRenameTrack: (title: string) => void | Promise<void>;
+  onResumeTrack: () => void | Promise<void>;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
 }>;
-
-
-/** Draft / done / canceled are idle facts; they do not earn a header badge. */
-function headerLifecycle(lifecycle: TrackLifecycle): TrackLifecycle | null {
-  if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
-  return lifecycle;
-}
 
 /**
  * The view model's module under `key`.
@@ -155,9 +154,20 @@ export function TrackPage({
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
-  onRenameTrack, onDeleteTrack,
+  canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
+  const resumeFeedback = useOperationFeedback();
+  const [resumePending, setResumePending] = useState(false);
+  const resumePendingRef = useRef(false);
+  useEffect(() => {
+    // The PATCH promise settles before its invalidation refetch. Keep Resume
+    // fenced after a successful response until the authoritative capability
+    // disappears; otherwise the stale Done detail can launch a second PATCH.
+    if (canResumeTrack || !resumePendingRef.current) return;
+    resumePendingRef.current = false;
+    setResumePending(false);
+  }, [canResumeTrack]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
@@ -165,7 +175,27 @@ export function TrackPage({
    *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
    *  detail page it was named after is gone; the motion is not.) */
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
-  const lifecycle = headerLifecycle(track.lifecycle);
+  const resumeWork = async (): Promise<boolean> => {
+    if (!canResumeTrack || resumePendingRef.current) return false;
+    resumePendingRef.current = true;
+    setResumePending(true);
+    const resumed = await resumeFeedback.run(
+      Promise.resolve().then(() => onResumeTrack()),
+      'Could not resume this track.',
+    );
+    if (!resumed) {
+      resumePendingRef.current = false;
+      setResumePending(false);
+    }
+    return resumed;
+  };
+  const trackMutationActions = [
+    ...(canResumeTrack ? [
+      { label: 'Resume work', isDisabled: resumePending, onClick: resumeWork },
+      { type: 'divider' as const },
+    ] : []),
+    { label: 'Delete track', onClick: () => deletion.request(track.id) },
+  ];
   /*
    * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
    *
@@ -202,6 +232,8 @@ export function TrackPage({
    */
   const panelView = deriveTrackPageView({ cards, tasks });
   const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
+  const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
+  const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
@@ -320,7 +352,7 @@ export function TrackPage({
           })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
-          { label: 'Delete track', onClick: () => deletion.request(track.id) },
+          ...trackMutationActions,
         ]}
       />
     </span>
@@ -377,40 +409,51 @@ export function TrackPage({
               while the title is empty), so clearing the name is a real request
               here and not the cancel it is on an area.
             */}
-            <h1 className={styles.titleHeading}><EditableTitle
-              value={track.title}
-              placeholder={UNTITLED_TRACK_LABEL}
-              emptyCommit="clear"
-              onCommit={onRenameTrack}
-              editLabel="Rename track"
-              inputLabel="Track title"
-              className={styles.title}
-              isPageTitle
-            /></h1>
+            <div className={styles.titleCluster}>
+              <h1 className={styles.titleHeading}><EditableTitle
+                value={track.title}
+                placeholder={UNTITLED_TRACK_LABEL}
+                emptyCommit="clear"
+                onCommit={onRenameTrack}
+                editLabel="Rename track"
+                inputLabel="Track title"
+                className={styles.title}
+                isPageTitle
+              /></h1>
+              <TrackLifecycleBadge
+                lifecycle={track.lifecycle}
+              />
+            </div>
           </>
         }
-        meta={
-          <>
-            {lifecycle !== null && <TrackLifecycleBadge lifecycle={lifecycle} />}
-            {track.anyCardNeedsInput && (
-              <span className={styles.needsInput}>
-                <span className={styles.needsInputDot} aria-hidden="true" />
-                Needs input
-              </span>
-            )}
-          </>
-        }
+        meta={track.anyCardNeedsInput ? (
+          <span className={styles.needsInput}>
+            <span className={styles.needsInputDot} aria-hidden="true" />
+            Needs input
+          </span>
+        ) : undefined}
         actions={(
-          <button
-            type="button"
-            data-nc-role="icon"
-            className={styles.headerDelete}
-            aria-label={`Delete track ${trackDisplayTitle(track.title)}`}
-            title="Delete track"
-            onClick={() => deletion.request(track.id)}
-          >
-            <Icon name="close" />
-          </button>
+          <span className={styles.headerActions}>
+            <AstryxDropdownMenu
+              button={{
+                ref: desktopActionsRef,
+                label: `Track actions for ${trackDisplayTitle(track.title)}`,
+                icon: getAstryxIcon('moreHorizontal'),
+                variant: 'ghost',
+                size: 'sm',
+                isIconOnly: true,
+              }}
+              items={trackMutationActions}
+              hasChevron={false}
+              isMenuOpen={desktopActionsOpen}
+              onOpenChange={(isOpen) => {
+                setDesktopActionsOpen(isOpen);
+                if (!isOpen) {
+                  requestAnimationFrame(() => desktopActionsRef.current?.focus());
+                }
+              }}
+            />
+          </span>
         )}
         /*
          * No identity row — `--header-h` is 62 here now, not 92.
@@ -432,6 +475,7 @@ export function TrackPage({
       <div className={styles.mobileTrackHeader}>
         <MobileHeader
           title={trackDisplayTitle(track.title)}
+          meta={<TrackLifecycleBadge lifecycle={track.lifecycle} />}
           level={1}
           backLabel={mobileBackLabel}
           onBack={onMobileBack}
@@ -663,6 +707,7 @@ export function TrackPage({
         onCancel={deletion.cancel}
       />
       <OperationFeedback feedback={deletion.feedback} />
+      <OperationFeedback feedback={resumeFeedback} />
     </section>
   );
 }

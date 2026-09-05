@@ -123,9 +123,14 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, BARE_TRACK]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') {
-        return ok({ track: TRACK, cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [] });
+        return ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [],
+        });
       }
-      if (request.path === '/api/tracks/w2') return ok({ track: BARE_TRACK, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({
+        track: BARE_TRACK, can_resume: false, cards: [], overlays: [],
+      });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
       if (request.path.includes(HISTORY_PATH)) return ok([]);

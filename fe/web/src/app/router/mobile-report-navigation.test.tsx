@@ -69,7 +69,9 @@ function setup(path: string) {
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA, OTHER_AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
-      if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, cards: [CARD, REPORT_CARD], overlays: [] }));
+      if (request.path === '/api/tracks/w1') return Promise.resolve(ok({
+        track: TRACK, can_resume: false, cards: [CARD, REPORT_CARD], overlays: [],
+      }));
       if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));
     },

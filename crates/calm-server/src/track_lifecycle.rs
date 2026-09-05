@@ -16,7 +16,8 @@ use sqlx::{Sqlite, Transaction};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. Source
 // definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::track_lifecycle::{
-    ActorKind, TransitionError, actor_is_planner_author, actor_kind, validate_transition,
+    ActorKind, TransitionError, actor_is_planner_author, actor_kind, user_can_resume,
+    validate_transition,
 };
 
 /// Auto-promote a draft track to planning from inside an audited write tx.
@@ -80,6 +81,31 @@ pub async fn apply_requested_transition_in_tx(
             Some(agent_message),
         )),
     ]))
+}
+
+/// Re-check a REST handler's pre-transaction lifecycle snapshot after the
+/// IMMEDIATE write transaction has serialized with every competing writer.
+///
+/// `update_track` needs fields from a read before it opens the transaction, but
+/// that snapshot cannot authorize or describe a later lifecycle event. A stale
+/// snapshot is a retryable conflict: writing from it would persist an edge the
+/// FSM never approved and would record the wrong `from` value.
+pub async fn validate_transition_snapshot_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &crate::ids::TrackId,
+    expected_from: TrackLifecycle,
+    to: TrackLifecycle,
+    actor: &crate::ids::ActorId,
+) -> Result<(), CalmError> {
+    let current = track_get_tx(tx, track_id).await?;
+    if current.lifecycle != expected_from {
+        return Err(CalmError::Conflict(format!(
+            "track {} lifecycle changed from {expected_from:?} to {:?}; retry",
+            track_id, current.lifecycle
+        )));
+    }
+    validate_transition(current.lifecycle, to, actor)
+        .map_err(|e| CalmError::Forbidden(format!("track lifecycle: {e}")))
 }
 
 /// Auto-transition a track when it is exactly in `from`.

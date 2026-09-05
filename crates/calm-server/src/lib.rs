@@ -50,7 +50,7 @@ use std::time::Duration;
 
 /// Purpose marker on retired Area-conversation tracks. Kept so historical rows
 /// remain hidden from public Track lists and retain safe recovery behaviour.
-pub const AREA_CHAT_PURPOSE: &str = "area-chat";
+pub use calm_types::model::AREA_CHAT_PURPOSE;
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns

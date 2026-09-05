@@ -65,7 +65,9 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, template_by_key};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
-use crate::track_lifecycle::{track_get_tx, validate_transition};
+use crate::track_lifecycle::{
+    track_get_tx, validate_transition, validate_transition_snapshot_in_tx,
+};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
     tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
@@ -143,6 +145,19 @@ pub struct TrackDeleteCommitHook {
     pub panic_after_release: bool,
 }
 
+/// Test seam for the lifecycle PATCH pre-read/transaction boundary.
+///
+/// A fixture can commit a newer lifecycle after the route has validated its
+/// first snapshot but before `BEGIN IMMEDIATE`. The in-transaction validation
+/// must then reject the stale request; deleting that production call makes the
+/// route-level race regression fail.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct TrackLifecyclePatchRaceHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
 #[cfg(feature = "fixtures")]
 fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteTeardownHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteTeardownHook>>> = OnceLock::new();
@@ -152,6 +167,14 @@ fn track_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, TrackDelet
 #[cfg(feature = "fixtures")]
 fn track_delete_commit_hooks() -> &'static StdMutex<HashMap<String, TrackDeleteCommitHook>> {
     static HOOKS: OnceLock<StdMutex<HashMap<String, TrackDeleteCommitHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+fn track_lifecycle_patch_race_hooks()
+-> &'static StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, TrackLifecyclePatchRaceHook>>> =
+        OnceLock::new();
     HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
@@ -170,6 +193,18 @@ pub fn install_track_delete_commit_hook_for_test(track_id: &str, hook: TrackDele
     track_delete_commit_hooks()
         .lock()
         .expect("track delete commit hook mutex")
+        .insert(track_id.to_string(), hook);
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_track_lifecycle_patch_race_hook_for_test(
+    track_id: &str,
+    hook: TrackLifecyclePatchRaceHook,
+) {
+    track_lifecycle_patch_race_hooks()
+        .lock()
+        .expect("track lifecycle patch hook mutex")
         .insert(track_id.to_string(), hook);
 }
 
@@ -205,6 +240,22 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
     #[cfg(not(feature = "fixtures"))]
     let _ = track_id;
     false
+}
+
+async fn wait_at_track_lifecycle_patch_race_hook(track_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = track_lifecycle_patch_race_hooks()
+            .lock()
+            .expect("track lifecycle patch hook mutex")
+            .remove(track_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = track_id;
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -3436,10 +3487,11 @@ pub(crate) async fn update_track(
         ));
     }
 
-    // Issue #145 — lifecycle transitions go through a typed state
-    // machine. The validator runs *before* the write so an illegal
-    // transition surfaces as `Forbidden` without persisting either
-    // the row update or the event.
+    // Issue #145 — lifecycle transitions go through a typed state machine.
+    // This preflight returns deterministic illegal-edge errors before opening
+    // a write transaction. The same snapshot is checked again after BEGIN
+    // IMMEDIATE below: only that in-tx check can authorize the row write and
+    // supply a truthful `from` value when another lifecycle request races us.
     //
     // Same-state requests (`p.lifecycle == Some(current)`) are an
     // idempotent silent success for authorized actors: the validator
@@ -3538,11 +3590,22 @@ pub(crate) async fn update_track(
         || p.require_task_gates.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
+    wait_at_track_lifecycle_patch_race_hook(id.as_str()).await;
     let p_for_tx = p.clone();
     let (track, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
+                if let Some((expected_from, to)) = lifecycle_change {
+                    validate_transition_snapshot_in_tx(
+                        tx,
+                        &track_id_for_event,
+                        expected_from,
+                        to,
+                        &actor_id,
+                    )
+                    .await?;
+                }
                 let track = track_update_tx(tx, &id, p_for_tx).await?;
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {

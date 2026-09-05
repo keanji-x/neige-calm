@@ -12,7 +12,7 @@ import { areaWireSchema, toArea } from '../../../../core/domain/area.ts';
 import {
   readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
-import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
+import { NEUTRAL_ACTIVITY, type TrackDetailWire } from '../../../../core/domain/track.ts';
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
@@ -431,13 +431,14 @@ describe('delete mutation wiring', () => {
  * Nothing here is observing `['track', trackId]`, so the invalidation these
  * mutations queue cannot refetch: what the assertions read is the write itself.
  */
-describe('card mutation cache writes', () => {
+describe('track detail mutation cache writes', () => {
   const cardWire = (id: string) => ({
     id, track_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
+    track: { ...baseTrackWire }, can_resume: false,
+    cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
   function mounted(transport: ApiTransportPort) {
@@ -505,6 +506,26 @@ describe('card mutation cache writes', () => {
 
     expect(client.getQueryData<typeof detail>(queryKeys.trackDetail('w1'))?.cards.map((card) => card.id))
       .toEqual(['card-a', 'card-b']);
+  });
+
+  it('writes an acknowledged Working patch through before the detail refetch', async () => {
+    const working = { ...baseTrackWire, lifecycle: 'working', terminal_at: null, updated_at: 3 };
+    const transport: ApiTransportPort = {
+      send: (request) => (request.method === 'PATCH'
+        ? Promise.resolve(ok(working))
+        : new Promise<ApiTransportResponse>(() => undefined)),
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.trackDetail('w1'), {
+      ...detail,
+      track: { ...baseTrackWire, lifecycle: 'done', terminal_at: 2 },
+      can_resume: true,
+    });
+
+    await act(() => result.current.patch('w1', 'c1', { lifecycle: 'working' }));
+
+    expect(client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('w1')))
+      .toMatchObject({ track: working, can_resume: false });
   });
 });
 

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
-  createTrackOperation, deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser, lifecycleLabel, toTrack,
+  createTrackOperation, deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser,
+  lifecycleLabel, toTrack, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
   trackCreateKeyAction, userVisibleTracks,
   type Track,
@@ -158,6 +159,19 @@ describe('lifecycle predicates', () => {
     const labels = trackLifecycleSchema.options.map(lifecycleLabel);
     expect(new Set(labels).size).toBe(labels.length);
     expect(lifecycleLabel('reviewing')).toBe('In review');
+  });
+
+  it('requires the server-derived Resume work capability on track detail', () => {
+    const detail = { track: { ...baseWire }, cards: [], overlays: [] };
+    expect(trackDetailSchema.safeParse(detail).success).toBe(false);
+    expect(trackDetailSchema.parse({ ...detail, can_resume: true }).can_resume).toBe(true);
+  });
+
+  it('builds the lifecycle recovery PATCH without a parallel endpoint', () => {
+    const operation = updateTrackOperation('w/1', { lifecycle: 'working' });
+    expect(operation).toMatchObject({
+      method: 'PATCH', path: '/api/tracks/w%2F1', body: { lifecycle: 'working' },
+    });
   });
 
   it('falls back to a single untitled label', () => {

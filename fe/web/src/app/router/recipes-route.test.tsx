@@ -115,7 +115,7 @@ function harness(options: Options = {}) {
         return Promise.resolve({
           status: 200,
           statusText: 'OK',
-          body: { track: { ...TRACK_ROW }, cards: [], overlays: [] },
+          body: { track: { ...TRACK_ROW }, can_resume: false, cards: [], overlays: [] },
         });
       }
       const body = request.path === '/api/areas' ? [AREA] : [];

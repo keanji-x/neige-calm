@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,27 +15,71 @@ async function openCards(): Promise<void> {
   await userEvent.click(screen.getByRole('menuitem', { name: 'Cards' }));
 }
 
+async function openDesktopTrackActions(): Promise<void> {
+  await userEvent.click(screen.getByRole('button', { name: /^Track actions for / }));
+}
+
 describe('TrackPage header', () => {
   it('shows the track title and the lifecycle badge', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
     expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('img', { name: 'Track lifecycle: Blocked' })).toBeTruthy();
+    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Blocked' })).toHaveLength(2);
   });
 
-  it('does not put Draft in the header', () => {
+  it('puts Draft in the header', () => {
     renderPage({ track: track({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Draft' })).toBeNull();
+    expect(screen.getAllByRole('status', { name: 'Track lifecycle: Draft' })).toHaveLength(2);
   });
 
-  it('hides done and canceled, and still shows failed', () => {
-    renderPage({ track: track({ lifecycle: 'done' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Done' })).toBeNull();
-    cleanup();
-    renderPage({ track: track({ lifecycle: 'canceled' }) });
-    expect(screen.queryByRole('img', { name: 'Track lifecycle: Canceled' })).toBeNull();
-    cleanup();
-    renderPage({ track: track({ lifecycle: 'failed' }) });
-    expect(screen.getByRole('img', { name: 'Track lifecycle: Failed' })).toBeTruthy();
+  it('shows done, canceled and failed', () => {
+    for (const [lifecycle, label] of [
+      ['done', 'Done'], ['canceled', 'Canceled'], ['failed', 'Failed'],
+    ] as const) {
+      cleanup();
+      renderPage({ track: track({ lifecycle }) });
+      expect(screen.getAllByRole('status', { name: `Track lifecycle: ${label}` })).toHaveLength(2);
+    }
+  });
+
+  it('resumes a recoverable lifecycle from the desktop Track actions menu', async () => {
+    const onResumeTrack = vi.fn();
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+    await openDesktopTrackActions();
+    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+  });
+
+  it('deduplicates Resume work while the first request is pending', async () => {
+    let finishResume!: () => void;
+    const pendingResume = new Promise<void>((resolve) => { finishResume = resolve; });
+    const onResumeTrack = vi.fn(() => pendingResume);
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+
+    const trigger = screen.getByRole('button', { name: /^Track actions for / });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+
+    const desktopMenu = screen.getByRole('menu', { name: /^Track actions for /, hidden: true });
+    const repeatedAction = within(desktopMenu)
+      .getByRole('menuitem', { name: /Resume work/, hidden: true });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+    repeatedAction.click();
+    expect(onResumeTrack).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      finishResume();
+      await pendingResume;
+    });
+    expect(repeatedAction.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps Resume work reachable from compact Track actions', async () => {
+    const onResumeTrack = vi.fn();
+    renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true, onResumeTrack });
+    await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Resume work' }));
+    expect(onResumeTrack).toHaveBeenCalledOnce();
   });
 
   it('falls back to the untitled label for a blank title', () => {
@@ -567,7 +611,7 @@ describe('TrackPage card inventory', () => {
   it('renders whatever panel it is handed, and closes when that becomes null', () => {
     const props = {
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
-      onRenameTrack: vi.fn(), onDeleteTrack: vi.fn(),
+      canResumeTrack: false, onRenameTrack: vi.fn(), onResumeTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -649,7 +693,9 @@ describe('TrackPage card inventory', () => {
       track={track()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
       tasks={[]}
+      canResumeTrack={false}
       onRenameTrack={vi.fn()}
+      onResumeTrack={vi.fn()}
       onDeleteTrack={vi.fn()}
     />);
     // Exactly once: with no title the kind stands alone rather than twice.
@@ -728,7 +774,8 @@ describe('TrackPage delete', () => {
 
   it('uses the shared destructive copy', async () => {
     renderPage();
-    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await openDesktopTrackActions();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
     expect(screen.getByText(/This cannot be undone/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete track' })).toBeTruthy();
@@ -737,7 +784,8 @@ describe('TrackPage delete', () => {
   it('cancelling closes the confirm without deleting', async () => {
     const onDeleteTrack = vi.fn();
     renderPage({ onDeleteTrack });
-    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await openDesktopTrackActions();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(onDeleteTrack).not.toHaveBeenCalled();
@@ -746,10 +794,11 @@ describe('TrackPage delete', () => {
   it('confirming calls onDeleteTrack and closes', async () => {
     const onDeleteTrack = vi.fn(() => Promise.resolve());
     renderPage({ onDeleteTrack });
-    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await openDesktopTrackActions();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     expect(onDeleteTrack).toHaveBeenCalledTimes(1);
-    await screen.findByRole('button', { name: /^Delete track / });
+    await screen.findByRole('button', { name: /^Track actions for / });
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

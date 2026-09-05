@@ -156,6 +156,7 @@ function harness(options: {
           statusText: 'OK',
           body: {
             track: { ...TRACK_ROW },
+            can_resume: false,
             cards: [{
               id: 'card-planner', track_id: 'w-new', kind: 'codex', title: 'Planner',
               payload: { planner_harness: true }, sort: 0, created_at: 1, updated_at: 1,

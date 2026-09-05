@@ -67,6 +67,12 @@
 
   .title {
     min-inline-size: 0;
+    /* EditableTitle offsets its own inline padding into the leading gutter.
+       Inside the title/status flex cluster, intrinsic sizing otherwise counts
+       that negative margin against the control and clips its last 4px even
+       when the row has abundant room. Spend the matching space at the trailing
+       edge; the outer heading still owns truncation for genuinely long names. */
+    max-inline-size: calc(100% + var(--space-2));
     font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
@@ -74,8 +80,20 @@
     color: var(--text);
   }
 
-  /* Grow so the rename control's max-inline-size: 100% has a definite
-     parent. Without flex-grow that 100% resolved against a 0-width box. */
+  /* Size the cluster to its content so lifecycle metadata stays attached to
+     the title instead of being pushed into the middle of the header. It may
+     still shrink as one unit when a long title meets the trailing actions. */
+  .titleCluster {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: var(--space-4);
+    min-inline-size: 0;
+    max-inline-size: 100%;
+  }
+
+  /* Grow inside the content-sized cluster so the rename control's
+     max-inline-size has a definite parent while long titles still truncate. */
   .titleHeading {
     flex: 1 1 auto;
     min-inline-size: 0;
@@ -196,23 +214,27 @@
     background: var(--warn);
   }
 
-  /* Coloured at rest, not on hover (§4.3). 28px box, 16px glyph — the one
-     chrome pairing. */
-  .headerDelete {
-    display: grid;
-    place-items: center;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--error-text);
-    cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out;
+  /* Track-level mutations live behind one conventional overflow trigger. The
+     destructive colour belongs to the confirmation step, not permanently in
+     the page header. */
+  .headerActions {
+    display: inline-flex;
+    color: var(--text-2);
   }
 
-  .headerDelete:hover,
-  .headerDelete:focus-visible {
-    background: var(--error-soft);
+  .headerActions button {
+    inline-size: var(--control-h) !important;
+    min-inline-size: var(--control-h) !important;
+    block-size: var(--control-h) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: inherit !important;
+  }
+
+  .headerActions button:hover,
+  .headerActions button:focus-visible,
+  .headerActions button[aria-expanded='true'] {
+    color: var(--text) !important;
   }
 
   .mobilePanelButton,
@@ -224,12 +246,6 @@
 
   .desktopPanelSurface {
     display: contents;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .headerDelete {
-      transition: none;
-    }
   }
 
   /* Main column plus the `--panel-span` track, separated by the standard
@@ -1025,12 +1041,7 @@
       box-shadow: none !important;
     }
 
-    .headerDelete {
-      display: none;
-    }
-
-    .needsInput,
-    .page [data-nc-lifecycle-tone] {
+    .needsInput {
       display: none;
     }
 

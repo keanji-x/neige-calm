@@ -101,6 +101,9 @@
  *   exactly the "partially works" outcome `docs/upgrade-stability.md` forbids.
  *   Raising the floor makes those bundles show the hard refresh curtain
  *   instead of issuing a doomed request.
+ * * `22` — issue #1450 adds required `can_resume` to Track detail. A bundle
+ *   without that contract must refresh before it reads the new response, and a
+ *   new bundle must not be deployed web-only against an API v4 server.
  *
  * This constant must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and in
@@ -109,7 +112,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 21;
+export const WEB_COMPAT_VERSION = 22;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here
