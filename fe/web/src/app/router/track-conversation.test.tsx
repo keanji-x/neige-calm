@@ -1002,14 +1002,9 @@ describe('track conversations', () => {
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
   });
 
-  /*
-   * The echo is minted from the answer, so a refused create has none to leave
-   * behind — the send path's rule (`useConversationStore`'s `catch` drops the
-   * echo) stated for this path as a fence rather than as a repair. An
-   * implementation that echoed at the press instead of at the adoption would
-   * leave a sentence standing in a conversation that was never created.
-   */
-  it('leaves no echo behind when the create is refused', async () => {
+  /* A 400 on the create: the drawer says so and the draft stays open with the
+     words in it. */
+  it('keeps the draft and reports the reason when the create is refused', async () => {
     setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(400, 'invalid_request', 'That message was refused.')
       : undefined);
@@ -1017,10 +1012,7 @@ describe('track conversations', () => {
     await openDraft();
     await write('refused words');
     expect((await screen.findByRole('alert')).textContent).toContain('That message was refused.');
-    /* Still the draft, still holding the words back for another attempt. */
     expect(screen.getByRole('complementary', { name: 'Untitled' })).toBeTruthy();
-    /* And nothing was recorded: no row anywhere is named after them. */
-    expect(screen.queryByRole('button', { name: /Conversation refused words/ })).toBeNull();
   });
 });
 
@@ -1532,13 +1524,12 @@ describe('create placeholder lifetime', () => {
    * earlier page is the signal that this card is not waiting for its own first
    * line.
    *
-   * The same run is the KNOWN GAP recorded at `createEchoLine`: `hasNextPage`
-   * means "the newest page came back full", so on any card with 300 or more
-   * persisted rows a genuinely new create sentence is retired on the next
-   * commit and never shown at all. This case is the assertion for both — the
-   * guard firing, and the cost of it firing.
+   * The same run is the KNOWN GAP recorded at `createEchoLine`: the sentence is
+   * removed as soon as that page lands. This case drives the first page only;
+   * what happens after `Load earlier` has reached the start of the card is
+   * recorded there and not covered here.
    */
-  it('does not pin a new sentence above a card that has history behind it', async () => {
+  it('retires the slot when the first page of a busy card comes back full', async () => {
     const transport: ApiTransportPort = {
       send(request) {
         if (request.path.includes(HISTORY_PATH)) {

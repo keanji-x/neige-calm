@@ -134,12 +134,7 @@ export type RememberedConversation = Readonly<{
  * the fetch moves. Once written it is written, for the life of the tab,
  * whatever any later window contains.
  *
- * Three things write it, all in `useConversationStore`: the sentence appearing
- * in a loaded page, the transcript reporting an earlier page (a card with
- * history behind it is not waiting for its own first line), and the reader
- * leaving the conversation — which ends the landing this slot exists for, and
- * is what stops a slot that never saw its row from printing over a
- * conversation someone else has since reset.
+ * It is written in `useConversationStore`.
  */
 type CreateEchoSlot = Readonly<{ text: string; retired: boolean }>;
 

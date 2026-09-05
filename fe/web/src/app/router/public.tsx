@@ -369,18 +369,8 @@ export function useConversationStore(
       && reconcileUserEchoes([turn], [createEchoLine(createEcho)]).length === 0),
     [createEcho, serverTurns],
   );
-  /*
-   * The transcript reports a page behind the one that is loaded.
-   *
-   * A create's sentence is the first thing on its card, so a card with a page
-   * of history behind the newest one either has it further back or never will.
-   * The signal is `getNextPageParam` in `app/providers/queries.ts`, and it is
-   * exactly "the last page came back full" — 300 rows. So this guard covers
-   * cards with at least a full page and nothing smaller: a slot minted against
-   * a card holding 1–299 rows still renders at the head, above rows that are
-   * genuinely older than it. It is a bound on the worst case, not the property
-   * itself.
-   */
+  /* `getNextPageParam` (`app/providers/queries.ts`) reports this off the last
+     page fetched, which is the oldest one loaded. */
   const hasEarlierPage = history.hasNextPage;
   const retireCreateEcho = registry.retireCreateEcho;
   useEffect(() => {
@@ -406,8 +396,6 @@ export function useConversationStore(
      */
     if (createEchoShown || hasEarlierPage) retireCreateEcho(cardId);
   }, [cardId, createEcho, createEchoShown, hasEarlierPage, retireCreateEcho]);
-  /* At the head, always: a create's sentence is by construction the oldest
-     thing on the card, so its position is a fact rather than a comparison. */
   const transcript = useMemo(
     () => {
       const merged = mergeTranscript(serverEntries, echoes);
@@ -797,19 +785,16 @@ const CREATE_ECHO_ID = 'create-echo';
  * narrowed here: the matcher is the send path's, shared on purpose, and
  * changing it is a change to the send path.
  *
- * **KNOWN GAP — on a busy card the sentence is not shown at all.** The
- * previous version of this note had the direction backwards and contradicted
- * the test beside it. `hasEarlierPage` is true exactly when the newest page
- * came back full (300 rows), so a card with that much history retires the slot
- * on the next commit: the reader's sentence is never displayed, rather than
- * lingering. Reachable through the redemption re-armed after a failed landing
+ * **KNOWN GAP — a full page retires the slot.** When the oldest loaded page
+ * came back full, the sentence is removed as soon as that page lands.
+ * Reachable through the redemption re-armed after a failed landing
  * (`usePlannerOpenIntent`), which can mint a slot on a planner card that has
- * been talking for days. Accepted here as the safer direction — not showing a
- * new sentence is a feature that did not fire; showing it above genuinely
- * older messages is a lie about the order of the conversation. Pinned by
- * `track-conversation.test.tsx`'s "does not pin a new sentence above a card
- * that has history behind it", which is this same fact seen from the other
- * side.
+ * been talking for days.
+ *
+ * **KNOWN GAP — a reader who has paged back gets the opposite.** Measured on
+ * a 350-row card: after the first page the guard is true at 300 rows; after
+ * `Load earlier` it is false at 350 rows, and a slot minted then sits at the
+ * head of all 350.
  *
  * **KNOWN GAP — a slot that never saw its row outlives the tab.** Nothing
  * retires a placeholder whose sentence the agent never echoes, so if another
@@ -817,8 +802,8 @@ const CREATE_ECHO_ID = 'create-echo';
  * (`POST /api/cards/{id}/planner/reset`) the reader can open an emptied thread
  * and be shown a line from a session that no longer exists. It is one stale
  * line and nothing more: it is not in `turns`, `confirmedTurns`, `echoes` or
- * `hasUnreconciledSend`, so it names nothing, orders nothing, consumes no
- * server row and cannot shut the composer.
+ * `hasUnreconciledSend`, so it does not name the conversation, orders nothing,
+ * consumes no server row and cannot shut the composer.
  *
  * A visit-scoped bound was tried and withdrawn: it did not close this — the
  * store's effects see `cardId` change only while the hook stays mounted, so
@@ -835,13 +820,10 @@ const CREATE_ECHO_ID = 'create-echo';
  * **KNOWN GAP — the placeholder takes the first exchange's rail dot.**
  * `exchangesOf` (`features/chat/thread`) opens an exchange at a `you` turn
  * whose predecessor is not one. With the placeholder at index 0 and a server
- * `you` turn at index 1 — reachable only in the stale-slot cases above, since
- * otherwise the sentence's arrival retires the slot — that real message stops
- * opening an exchange and the rail's first dot is labelled with the
- * placeholder's text. Registered rather than fixed: excluding it from
- * `exchangesOf` means teaching the rail about a kind of line that exists for
- * one feature, and the mislabelled dot is downstream of gaps already listed
- * above rather than a separate defect.
+ * `you` turn at index 1, that message stops opening an exchange and the rail's
+ * first dot is labelled with the placeholder's text. Registered rather than
+ * fixed: excluding it from `exchangesOf` means teaching the rail about a kind
+ * of line that exists for one feature.
  */
 function createEchoLine(text: string, atMs = 0): ConversationTurn {
   return { id: CREATE_ECHO_ID, author: 'you', text, atMs };
