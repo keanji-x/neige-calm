@@ -2351,7 +2351,9 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
             "cwd": track.workspace.path.clone(),
             "goal": null,
             "report_card_id": null,
-            "codex_thread_id": "thread-already-minted",
+            // No `codex_thread_id`: with one already in the output the
+            // app-server phase short-circuits and never writes the row, which
+            // is precisely the writer under test.
             "snapshot": serde_json::to_value(&carried_snapshot).unwrap(),
         });
         let op_id = new_id();
@@ -2366,7 +2368,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,
-                thread_id: Some("thread-already-minted".into()),
+                thread_id: None,
                 session_id: None,
                 active_turn_id: None,
                 handle_state_json: Some(serde_json::to_value(&row_snapshot).unwrap()),
@@ -2417,6 +2419,17 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
     calm_server::recover_operations_on_boot(&state)
         .await
         .unwrap();
+
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(&op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        phase, "succeeded",
+        "premise: the re-drive must run the operation to completion, THROUGH \
+         `app_server_interact` — that is the writer this test exists for"
+    );
     assert!(
         state.harness.get(&runtime_id).is_some(),
         "premise: the re-drive must start the harness: op {op_id}"
