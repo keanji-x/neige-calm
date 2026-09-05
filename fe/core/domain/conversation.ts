@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 import type {
-  HarnessInputPresentation, HarnessInputSegment, HarnessItem, TrackConversationSummary,
+  HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
+  TrackConversationSummary,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
@@ -184,14 +185,23 @@ export type ConversationTurn = Readonly<{
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
   /**
-   * True when this message was posted while a turn was already running, so the
-   * kernel put it on the harness `pending_queue` instead of issuing it.
+   * True when the kernel put this message on the harness `pending_queue`
+   * instead of issuing it as a turn — decided by `kernelQueuesInput` against
+   * the phase at the moment of the press.
    *
-   * Required rather than optional: every echo is minted at one call site, which
-   * knows the phase it was minted in, and a missing flag would be read as
-   * "already running" — the reading a queued message must never get. It is a
-   * fact about the *send*, not a live status, so nothing recomputes it: the
-   * echo it belongs to is reconciled away the moment the server hands the
+   * **Required rather than optional, and the reason is the direction a missing
+   * flag falls.** Absent, it is `undefined`, which is falsy, which reads as
+   * *not* queued — and that is the dangerous side: an echo the kernel really
+   * queued but the client believes it issued is an echo waiting for a
+   * `harness_items` row that cannot arrive until the queue drains, i.e. a
+   * composer that goes dead (#1505). Typing it required puts that on the
+   * compiler rather than on whoever adds the next mint site. `isQueuedConversationTurn`
+   * is the read side of the same rule: it answers false for anything that is
+   * not an optimistic turn carrying the flag, so a server row — which has no
+   * such field — is never mistaken for a queued one.
+   *
+   * It is a fact about the *send*, not a live status, so nothing recomputes it:
+   * the echo it belongs to is reconciled away the moment the server hands the
    * message back, which is exactly when it stops being queued.
    */
   queued: boolean;
@@ -236,6 +246,44 @@ const harnessPhaseSchema = z.enum([
   'pending_thread_start', 'idle', 'issuing_turn', 'issuing_interrupt',
   'turn_running', 'turn_completed', 'resumed', 'wedged',
 ]);
+
+/**
+ * Whether a message posted *now* goes on the harness pending queue rather than
+ * straight into a turn.
+ *
+ * This is `HarnessState::can_issue_turn()` (`crates/calm-server/src/harness/
+ * state.rs`) read from the other side: the kernel starts a turn from `Idle` and
+ * `TurnCompleted` and from nothing else, so every other phase queues. Stated
+ * against the kernel's own two-name whitelist rather than against any front-end
+ * notion of "busy", because the two are not the same set and a near-miss here
+ * is not cosmetic — an input the kernel queued but the client thinks it issued
+ * is an echo waiting for a row that cannot arrive until the queue drains, i.e.
+ * a composer that goes dead (#1505).
+ *
+ * The near-miss that produced this function was `working`, i.e. `issuing_turn ||
+ * turn_running`. It omits four queueing phases: `issuing_interrupt`,
+ * `pending_thread_start`, `resumed` — which reads as idle in the session
+ * projection but is *not* in `can_issue_turn` — and `wedged`, where the queue
+ * never drains at all (#1507).
+ *
+ * **`null` is not a phase and is deliberately read as queueing.** It means the
+ * client does not know: the run query has not answered yet, or it answered
+ * `{runtime_id: null, phase: null}` because no live harness is registered
+ * (`get_planner_run`'s `dormant`). What the POST then does is decided by
+ * `ensure_live_planner_harness` (`routes/cards.rs`), not by this value — it
+ * either 409s as dormant (the send fails, the echo is dropped, and this flag
+ * never matters), 503s while a start is in flight, or lazily recovers a harness
+ * from its snapshot, whose restored state is unknown to us and is frequently
+ * one that queues. So the honest reading of `null` is "unknown", and the two
+ * ways of being wrong about an unknown are not symmetric: guessing *queued* on
+ * a conversation that was really idle costs one wrong caption for the single
+ * round trip until the server hands the message back and the echo reconciles;
+ * guessing *issued* on a conversation that really queued is the dead composer
+ * above, with no round trip that ends it. It fails toward the recoverable side.
+ */
+export function kernelQueuesInput(phase: HarnessPhaseTag | null): boolean {
+  return !(phase === 'idle' || phase === 'turn_completed');
+}
 
 export type PlannerRun = Readonly<{
   card_id: string;

@@ -151,6 +151,49 @@ async function sendWithEnter(field: HTMLElement) {
   });
 }
 
+/**
+ * Wait out exactly one `POST /planner/input`: the request itself, then one
+ * macrotask, which is past the promise chain's own `finally` and therefore past
+ * the point where `sending` is released. What is still holding the composer
+ * shut after this is the echo and nothing else.
+ */
+async function settleOneSend(requests: ApiRequest[], expected = 1) {
+  await waitFor(() => {
+    expect(requests.filter((request) => request.path.endsWith('/planner/input')))
+      .toHaveLength(expected);
+  });
+  await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+}
+
+/**
+ * ── Every phase, against the kernel's own whitelist ──────────────────────
+ *
+ * `HarnessState::can_issue_turn()` is `Idle | TurnCompleted`; everything else
+ * queues. This is that list transcribed, and it is a table rather than one test
+ * about `turn_running` because the criterion is now a phase whitelist, and a
+ * whitelist is only pinned by naming what is on each side of it. The first
+ * version of this slice keyed off `working` (`issuing_turn || turn_running`)
+ * and a single-phase test could not see the four it left out — one of which,
+ * `issuing_interrupt`, the composer will happily send in, because `stopShown`
+ * is `working || stopping`.
+ *
+ * `wedged` is in the queueing column because that is what the kernel does with
+ * the message. It is *not* a claim that the queue drains: a wedged harness
+ * never issues another turn, so the message waits forever. That is #1507 and it
+ * is not fixed here; what this row pins is that the composer stays open and
+ * says the message is queued rather than going dead with no explanation.
+ */
+const PHASE_QUEUES = Object.freeze([
+  ['idle', false],
+  ['turn_completed', false],
+  ['pending_thread_start', true],
+  ['issuing_turn', true],
+  ['issuing_interrupt', true],
+  ['turn_running', true],
+  ['resumed', true],
+  ['wedged', true],
+] as const);
+
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
     setupWithTurns((request) => request.path.endsWith('/planner/run')
@@ -576,44 +619,75 @@ describe('planner conversation regressions', () => {
    * a second Enter would be refused for having no words in it and would prove
    * nothing about the block.
    *
-   * This and the queued test above are the same wait and the same transport,
-   * differing only in the phase the send was made in — which is what makes the
-   * pair discriminating rather than two separate observations.
+   * This and the queued test below run the **same helper** — `settleOneSend`,
+   * one `waitFor` for the request and one macrotask past the POST's own
+   * `finally` — and then assert with a bare `expect`. That symmetry is the
+   * point of the pair and it was not there at first: the closed side polled
+   * with `waitFor` and the open side read once, so the closed side was given
+   * time for a late-arriving block that the open side was not, and the pair did
+   * not compare like with like. Neither needs polling — `hasUnreconciledSend`
+   * is derived at render from `echoes`, which `send` sets synchronously, so the
+   * answer is settled before the first of these two lines runs.
    */
   it('still closes the composer after an idle send until the server hands it back', async () => {
     const { requests } = setup();
     await openConversation();
-    const field = messageField();
-    await typeInto(field, 'idle send');
-    await sendWithEnter(field);
-    await waitFor(() => {
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
-    });
-    /* Past the POST's own `finally`, so `sending` has been released and the
-       only thing that can still be holding the box shut is the echo. */
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
-    await waitFor(() => {
-      expect(messageField().getAttribute('contenteditable')).toBe('false');
-    });
+    await typeInto(messageField(), 'idle send');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests);
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
   });
 
   /* And the same reading, in the state the split exists for: after a queued
-     send the box is still open. Same assertion, opposite answer. */
+     send the box is still open. Same helper, same assertion, opposite answer. */
   it('leaves the composer open after a queued send', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
       : undefined);
     await openConversation();
     await screen.findByRole('button', { name: 'Stop' });
-    const field = messageField();
-    await typeInto(field, 'queued send');
-    await sendWithEnter(field);
-    await waitFor(() => {
-      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
-    });
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    await typeInto(messageField(), 'queued send');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests);
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
+
+  it.each(PHASE_QUEUES)(
+    'phase %s queues the message: %s — marker, open composer and a second send all follow it',
+    async (phase, queues) => {
+      const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
+        ? ok({ card_id: CARD.id, runtime_id: 'runtime', phase })
+        : undefined);
+      await openConversation();
+      /*
+       * The transport already serves this phase; seeding the same value into
+       * the cache removes the window between the drawer opening and that answer
+       * landing, in which `phase` is `null` and every row would look queued for
+       * the wrong reason. The two agree, so a refetch cannot contradict the
+       * seed, and the wire decode is exercised by the tests around this one.
+       */
+      await act(async () => {
+        client.setQueryData(queryKeys.plannerRun(CARD.id),
+          { card_id: CARD.id, runtime_id: 'runtime', phase });
+        await Promise.resolve();
+      });
+      const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+
+      await typeInto(messageField(), 'first');
+      await sendWithEnter(messageField());
+      await settleOneSend(requests);
+
+      expect(document.querySelector('[data-nc-queued]') !== null).toBe(queues);
+      expect(messageField().getAttribute('contenteditable')).toBe(queues ? 'true' : 'false');
+
+      /* And the consequence the reader actually feels: whether there is any way
+         to say a second thing. */
+      await typeInto(messageField(), 'second');
+      await sendWithEnter(messageField());
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(input()).toHaveLength(queues ? 2 : 1);
+    },
+  );
 
   /* And Stop is untouched by all of the above: the second control was added
      beside it, not in place of it. */
