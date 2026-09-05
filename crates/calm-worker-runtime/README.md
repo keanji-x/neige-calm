@@ -101,8 +101,10 @@ a test failure is explicit, not a skipped success.
 The ordinary workspace command with `--features calm-server/codex-e2e` does **not**
 enable this crate's `test-support`. It therefore does not execute the runtime
 integration target or establish the 22-test result recorded during development.
-Main must add a targeted required CI check before treating runtime integration as
-covered by CI; this standalone commit does not modify broad CI configuration.
+The CI workflow runs the targeted **worker process isolation** job on an ephemeral
+GitHub-hosted Linux runner. The required `rust (test)` aggregate depends on both
+the ordinary Rust shards and this job, so a failed or skipped isolation check
+cannot produce a successful Rust verdict for an affected change.
 
 Use a Linux runner with bubblewrap and Python 3 installed, a kernel supporting
 user/PID/network namespaces and pidfd/close-range operations, and a runner policy
