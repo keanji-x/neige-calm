@@ -32,12 +32,38 @@ declare module '@tanstack/history' {
     ncFilePushed?: boolean;
     /** See {@link usePlannerOpenIntent}. */
     ncOpenPlanner?: boolean;
+    /**
+     * The sentence that created the track, riding to the route that can show
+     * it. See {@link usePlannerOpenIntent} — it travels with the intent
+     * because it is the same fact: this navigation exists to land the reader
+     * in the conversation that message was delivered into (#1449).
+     */
+    ncOpenPlannerMessage?: string;
   }
 }
 
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
 export const FILE_PUSHED_STATE_KEY = 'ncFilePushed';
 export const PLANNER_OPEN_STATE_KEY = 'ncOpenPlanner';
+/**
+ * KNOWN GAP (#1449) — this carrier is browser session history, and #1449's
+ * scope fence did not name it.
+ *
+ * The fence listed "no kernel projection, no longer client cache, no
+ * localStorage". `history.state` is none of those and is still a store: the
+ * reader's own sentence is written into the session-history entry, browsers
+ * persist that for session restore, and it survives a hard reload of the same
+ * URL. A successful landing strikes it off (`usePlannerOpenIntent`'s
+ * `disarm`), but the documented failed-landing path — the track detail read
+ * errors, so the body that would redeem the intent never mounts — leaves it
+ * there indefinitely.
+ *
+ * It does not reach the URL, the title or the query string: `state` and
+ * `search` are separate arguments to `navigate` and only `search` is
+ * serialized into the location. Registered rather than fixed: making the
+ * sentence readable without a client-side carrier at all is #1475.
+ */
+export const PLANNER_OPEN_MESSAGE_STATE_KEY = 'ncOpenPlannerMessage';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
@@ -78,6 +104,12 @@ export type NavTarget =
     panel?: MobilePanel;
     from?: TrackSource;
     openPlanner?: boolean;
+    /**
+     * The words that made this track, carried so the arriving route can echo
+     * them into the planner conversation before codex does (#1449). Only ever
+     * present beside `openPlanner`.
+     */
+    openPlannerMessage?: string;
   }>
   /**
    * #1292 — the reader's own recipes: the list, and the editor for one.
@@ -174,7 +206,15 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     // and nowhere else (#1211 S2) — see `usePlannerOpenIntent`. Written only when
     // asked for, so an ordinary move leaves `state` alone.
     const state = target.name === 'track' && target.openPlanner === true
-      ? { [PLANNER_OPEN_STATE_KEY]: true }
+      ? {
+        [PLANNER_OPEN_STATE_KEY]: true,
+        /* Absent, not `''`, when the track was created with nothing said: the
+           consumer's "is there a sentence to echo" is that question and not a
+           blankness test. */
+        ...(target.openPlannerMessage === undefined || target.openPlannerMessage === ''
+          ? {}
+          : { [PLANNER_OPEN_MESSAGE_STATE_KEY]: target.openPlannerMessage }),
+      }
       : undefined;
     void navigate({
       to: pathFor(target),
@@ -250,11 +290,33 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  * and a caller asking about a track the location does not name should be told
  * `false` rather than handed somebody else's marker.
  */
-export type PlannerOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
+export type PlannerOpenIntent = Readonly<{
+  armed: boolean;
+  /**
+   * The sentence that created this track, when the entry carries one.
+   *
+   * It rides here rather than in a registry slot for the reason the intent
+   * itself does: `POST /api/tracks` answers with a `Track`, so the browser
+   * does not learn the planner card's id until the track detail lands a route
+   * later, and there is no card id to key a slot by at the moment the words
+   * are posted. Reading it off
+   * the entry means only the body rendering *that* landing can echo it, and
+   * `disarm()` strikes it off with the intent — one landing, one echo.
+   */
+  message: string | null;
+  disarm: () => void;
+}>;
 
 export function hasPlannerOpenMarker(state: unknown): boolean {
   if (typeof state !== 'object' || state === null) return false;
   return (state as Record<string, unknown>)[PLANNER_OPEN_STATE_KEY] === true;
+}
+
+/** The first message on a planner-open entry, or `null`. */
+export function plannerOpenMessage(state: unknown): string | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const value = (state as Record<string, unknown>)[PLANNER_OPEN_MESSAGE_STATE_KEY];
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
@@ -262,6 +324,10 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
   const location = useRouterState({ select: (state) => state.location });
   const armed = hasPlannerOpenMarker(location.state)
     && routeParamFromPath(location.pathname, '/track/') === trackId;
+  /* Read under `armed`, never on its own: a message without the marker is an
+     entry the redemption has already run for, and echoing it again would put a
+     second copy of the sentence in the thread on every Back to this entry. */
+  const message = armed ? plannerOpenMessage(location.state) : null;
   const disarm = useCallback(() => {
     void navigate({
       to: pathFor({ name: 'track', trackId }),
@@ -273,11 +339,17 @@ export function usePlannerOpenIntent(trackId: string): PlannerOpenIntent {
       state: (previous) => {
         const next = { ...previous };
         delete next[PLANNER_OPEN_STATE_KEY];
+        /* The marker alone already makes the message unreachable — `message`
+           above is read only under `armed`. Deleting it too is depth, not the
+           mechanism, and it is what stops the sentence from staying in this
+           entry's browser history state after the landing (see the KNOWN GAP
+           on `PLANNER_OPEN_MESSAGE_STATE_KEY`). */
+        delete next[PLANNER_OPEN_MESSAGE_STATE_KEY];
         return next;
       },
     });
   }, [navigate, trackId]);
-  return useMemo(() => ({ armed, disarm }), [armed, disarm]);
+  return useMemo(() => ({ armed, message, disarm }), [armed, disarm, message]);
 }
 
 /**

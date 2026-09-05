@@ -100,6 +100,42 @@ export type RememberedConversation = Readonly<{
   turns: readonly TranscriptEntry[];
 }>;
 
+/**
+ * The sentence a **create** delivered, held until the conversation can show it
+ * back from the server (#1449).
+ *
+ * ── Why this is a slot of its own and not an optimistic turn ────────────────
+ *
+ * A create's first message is not a send. It is delivered by the request that
+ * mints the card, its answer does **not** promise the transcript already
+ * carries it — an idempotent replay, a late answer, and `adoptIfItLanded` can
+ * all reach a card that already has rows — and the only thing it owes the
+ * reader is to be *on screen* until the agent echoes it back. Three rounds of review found the same class of defect —
+ * an echo resurrected by a page window that had moved past its row, an echo
+ * eating the row that belonged to a later identical send, a pairing cost that
+ * grew with the square — and every one of them came from putting this sentence
+ * into the send path's optimistic-turn lifecycle: a growing list, reconciled
+ * as a set on every render, ordered against the rest of the transcript, and
+ * counted by the composer lock.
+ *
+ * So it is none of those. **One per card, at most.** It is not in the turn
+ * list, so no send reconciliation can spend a server row on it and no
+ * conversation metadata counts it; it is not in `hasUnreconciledSend`, so it
+ * can never shut the composer. What does read it is the drawer that renders
+ * it — including `exchangesOf`, which makes its id and text the identity and
+ * the label of one dot on the exchange rail. It renders pinned at the head of
+ * the thread, which is the whole of what `serverHighWaterBefore: 0` used to be
+ * asked to express: this sentence is by construction the oldest thing the card
+ * has.
+ *
+ * `retired` is a one-way latch. That is the direct lesson of the page-window
+ * defect: retirement computed per render from "the rows currently loaded" is
+ * not a fact about the conversation, it is a fact about the last fetch, and
+ * the fetch moves. Once written it is written, for the life of the tab,
+ * whatever any later window contains.
+ */
+type CreateEchoSlot = Readonly<{ text: string; retired: boolean }>;
+
 export type ConversationRegistry = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
@@ -147,6 +183,18 @@ export type ConversationRegistry = Readonly<{
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
+  /**
+   * The create sentence still owed to this card's reader, or `null`.
+   *
+   * `null` once it has been retired, so a reader of this never has to know
+   * that a slot exists at all.
+   */
+  createEchoOf: (conversationId: string) => string | null;
+  /** Claim the slot for this card. A no-op when it is already claimed, which
+   *  is what makes minting idempotent for a landing redeemed twice. */
+  noteCreateEcho: (conversationId: string, text: string) => void;
+  /** One way. A retired slot never comes back (`CreateEchoSlot`). */
+  retireCreateEcho: (conversationId: string) => void;
   /** Failed first-message attempts live here, above every route remount. */
   draftOf: (scopeId: string) => ConversationDraft | null;
   startDraft: (draft: ConversationDraft) => void;
@@ -243,6 +291,24 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         : { ...current, [conversationId]: next };
     });
   }, []);
+  const [createEchoes, setCreateEchoes] = useState<Readonly<Record<string, CreateEchoSlot>>>({});
+  const createEchoOf = useCallback((conversationId: string) => {
+    const slot = createEchoes[conversationId];
+    return slot === undefined || slot.retired ? null : slot.text;
+  }, [createEchoes]);
+  const noteCreateEcho = useCallback((conversationId: string, text: string) => {
+    setCreateEchoes((current) => conversationId in current
+      ? current
+      : { ...current, [conversationId]: { text, retired: false } });
+  }, []);
+  const retireCreateEcho = useCallback((conversationId: string) => {
+    setCreateEchoes((current) => {
+      const slot = current[conversationId];
+      return slot === undefined || slot.retired
+        ? current
+        : { ...current, [conversationId]: { ...slot, retired: true } };
+    });
+  }, []);
   const requestOpen = useCallback(
     (conversationId: string, options?: { focusComposer?: boolean }) =>
       setOpenRequest({ id: conversationId, focusComposer: options?.focusComposer ?? false }),
@@ -284,12 +350,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ConversationRegistry>(
     () => ({
       conversations, turnsOf, remember, updateExisting,
+      createEchoOf, noteCreateEcho, retireCreateEcho,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       pendingSendIds, sendErrors, tryBeginSend, finishSend,
     }),
-    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
+    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, createEchoOf, discardDraft,
+      noteCreateEcho, retireCreateEcho,
       discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, finishSend, pendingSendIds,
       remember, requestOpen, sendErrors,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,

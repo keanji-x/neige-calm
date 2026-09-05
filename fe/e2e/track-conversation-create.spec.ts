@@ -170,7 +170,62 @@ test('starts a conversation from a track page and sends the first message to tha
   // — a conversation the user can see twice, or one the kernel never made.
   // (The drawer replaces the list while it is open, so the list is counted
   // after closing it — the count is the assertion, not the drawer.)
+  /*
+   * The drawer is located by the control only it has — never by a name that
+   * depends on the thing under test. Same rule as the sibling spec.
+   */
+  const drawer = page.locator('[role="complementary"]')
+    .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
+  await expect(drawer).toBeVisible();
+
+  /*
+   * The adoption itself, which is a fact independent of the echo: the drawer
+   * moved off the draft and onto **this** conversation.
+   *
+   * `Untitled` is the draft drawer's literal title (`app/router/public.tsx`),
+   * so its absence says the draft is gone. An adopted assistant row is named
+   * `Assistant`: the create placeholder is not a turn, so it supplies no
+   * derived title, which is why the name is asserted separately from it.
+   *
+   * The second half is the identity, and it is asked of the browser rather
+   * than of the server: an open drawer polls the card it is showing, so the
+   * page's own traffic names it. A `GET /api/tracks/{id}/conversations` would
+   * not have said this — the server list contains the new conversation whether
+   * or not the drawer opened on it, which is satisfied just as well by the
+   * planner drawer having sprung open instead.
+   */
+  await expect(page.getByRole('complementary', { name: 'Untitled' })).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: 'Assistant' })).toBeVisible();
+  await expect
+    .poll(() => requests.some((pending) => pending.method() === 'GET'
+      && new URL(pending.url()).pathname === `/api/cards/${conversation.id}/harness/items`))
+    .toBe(true);
+
+  /*
+   * ── #1449 — and the sentence is *in* the thread, against a real kernel ─────
+   *
+   * This is the acceptance the jsdom cases cannot claim: the transcript here
+   * is the real transcript endpoint, and it is genuinely empty: the table it
+   * reads (`crates/calm-truth/src/db/sqlite/read.rs`) is written only when the
+   * app-server echoes the turn back
+   * (`crates/calm-server/src/harness/run_loop.rs`), and CI's
+   * `osc-probe-child` fixture emits no items at all (`e2e/README.md`). So the
+   * item read below returning `[]` is not a stub standing in for the kernel —
+   * it is what the kernel answers in the window this feature exists for.
+   *
+   * Both halves are asserted, because either alone is satisfiable by the bug:
+   * the words are on screen, and the empty state — which used to paint here
+   * beside the live `Working` dot — is not.
+   */
+  await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
+  await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
+  const items = await request.get(`/api/cards/${conversation.id}/harness/items`);
+  expect(items.ok()).toBe(true);
+  expect(
+    await items.json() as unknown[],
+    'the sentence must be readable before any server item exists — that is the whole point',
+  ).toEqual([]);
+
   await page.getByRole('button', { name: 'Close conversation' }).click();
   await expect(conversationRows(page)).toHaveCount(2);
 

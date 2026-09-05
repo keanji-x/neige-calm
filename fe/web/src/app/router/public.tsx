@@ -53,9 +53,10 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  mergeTranscript, reconcileOptimisticConversationTurns, serverItemHighWater, trackConversationCardId,
+  mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
+  trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
-  type OptimisticConversationTurn, type TranscriptEntry,
+  type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
@@ -344,7 +345,66 @@ export function useConversationStore(
      a completed action retains the started row's place even when its end time
      is later than an interleaved message. A completed tail thought stops being
      the tail as soon as the user speaks again. */
-  const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
+  /*
+   * ── The create placeholder (#1449) ────────────────────────────────────────
+   *
+   * Read, retired, and rendered — and nothing else touches it. It is not in
+   * `echoes`, `turns`, `confirmedTurns` or `confirmedTranscript`, so no send
+   * reconciliation can spend a server row on it, no conversation metadata
+   * counts it, it is never written to the registry's turn list, and it cannot
+   * reach `hasUnreconciledSend`.
+   */
+  const createEcho = registry.createEchoOf(cardId);
+  /*
+   * Whether the server has this sentence *now*, decided at render.
+   *
+   * At render and not in the effect below, because an effect runs after the
+   * commit: the page that brings the sentence back would paint once with the
+   * placeholder and the persisted row side by side — the reader's words
+   * twice — and only then settle. This decides what is shown; the effect only
+   * writes the fact down.
+   */
+  const createEchoShown = useMemo(
+    () => createEcho !== null && serverTurns.some((turn) => turn.author === 'you'
+      && reconcileUserEchoes([turn], [createEchoLine(createEcho)]).length === 0),
+    [createEcho, serverTurns],
+  );
+  /* `getNextPageParam` (`app/providers/queries.ts`) reports this off the last
+     page fetched, which is the oldest one loaded. */
+  const hasEarlierPage = history.hasNextPage;
+  const retireCreateEcho = registry.retireCreateEcho;
+  useEffect(() => {
+    if (createEcho === null) return;
+    /*
+     * Written down once, and never asked again.
+     *
+     * One way, and that is the point rather than an optimisation. A transcript
+     * page is a window — the reader's query asks for the newest rows and every
+     * send invalidates it — so "is my sentence in what is loaded?" is a fact
+     * about the last fetch, not about the conversation. Recomputed as the
+     * standing answer it says yes, then no once the agent has written a
+     * pageful past it, and no again the moment another client resets the card
+     * and the first page comes back empty. A line that un-retires reappears at
+     * the head of a thread that has long moved on.
+     *
+     * The criterion is this sentence rather than "any user turn": if the agent
+     * never echoes this one — the create's message stranded in the pending
+     * queue, which #1449 does not fix — the reader keeps seeing what they
+     * typed instead of watching it vanish behind a later message.
+     * `reconcileUserEchoes` is the matcher the send path already uses, called
+     * with one echo, so this is a scan and not a pairing.
+     */
+    if (createEchoShown || hasEarlierPage) retireCreateEcho(cardId);
+  }, [cardId, createEcho, createEchoShown, hasEarlierPage, retireCreateEcho]);
+  const transcript = useMemo(
+    () => {
+      const merged = mergeTranscript(serverEntries, echoes);
+      if (createEcho === null || createEchoShown) return merged;
+      /* Borrowing the time of the entry it precedes — see `createEchoLine`. */
+      return [createEchoLine(createEcho, merged[0]?.atMs ?? 0), ...merged];
+    },
+    [createEcho, createEchoShown, echoes, serverEntries],
+  );
   const confirmedTranscript = useMemo(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
   );
@@ -672,6 +732,102 @@ type ConversationPanelSource = Readonly<{
     create: (text: string, idempotencyKey: string) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
   }>;
+
+/**
+ * The identity of a create's placeholder line in the transcript.
+ *
+ * Fixed, because there is at most one per card. It is read by React's list
+ * reconciliation and by `exchangesOf`, which makes it the identity and the
+ * label of the exchange the rail draws for this line.
+ */
+const CREATE_ECHO_ID = 'create-echo';
+
+/**
+ * The sentence a create delivered, as one transcript line pinned at the head.
+ *
+ * Why it exists: a transcript is read from one persisted table
+ * (`crates/calm-truth/src/db/sqlite/read.rs`), and a row lands in that table
+ * only when codex echoes the turn back
+ * (`crates/calm-server/src/harness/run_loop.rs`). The create POST delivering
+ * the message is therefore not the message being *readable*: between the 201
+ * and codex's echo — seconds, or unbounded when the agent is down — the new
+ * card's item read answers `[]`. Without this the reader's own first sentence
+ * was on no surface at all, and the thread painted its empty state beside a
+ * live `Working` dot.
+ *
+ * Why it is a plain line and not an `OptimisticConversationTurn`: see
+ * `CreateEchoSlot` in `app/conversations`. It carries no provenance because it
+ * is never reconciled.
+ *
+ * **`atMs` is borrowed, not invented.** It is read: the thread stamps a time
+ * wherever two consecutive entries are `CONVERSATION_GAP_MS` apart
+ * (`opensAfterGap`), so a made-up `0` put a ten-minute separator between this
+ * line and the very next thing on screen — a gap the reader never took. The
+ * placeholder takes the time of the entry it sits in front of, so the distance
+ * it introduces is zero and the separator it introduces is none. That is a
+ * server timestamp copied, not a clock read: nothing here compares the
+ * browser's clock with the kernel's, which is the mistake that produced a
+ * different misordering two rounds ago. With nothing to sit in front of there
+ * is nothing to be apart from, and the value is unobservable.
+ *
+ * **The hole this leaves, stated rather than papered over** (#1475): the slot
+ * lives in this tab's memory. Reload before codex echoes and the thread is
+ * empty again; a second device never sees it. Making the sentence readable
+ * from `GET /api/cards/{id}/harness/items` is a persistence-boundary change
+ * with its own review surface and is deliberately not this change.
+ *
+ * **KNOWN GAP — the retirement criterion is `userTextMatchesEcho`, which is
+ * wider than equality.** It also matches a persisted row that *starts with*
+ * this sentence followed by a newline. So a later, longer, genuinely different
+ * message whose first line happens to repeat these words retires the slot —
+ * and when the create's own sentence was stranded and never delivered, that is
+ * the reader's words disappearing from the head of the thread for good. Not
+ * narrowed here: the matcher is the send path's, shared on purpose, and
+ * changing it is a change to the send path.
+ *
+ * **KNOWN GAP — a full page retires the slot.** When the oldest loaded page
+ * came back full, the sentence is removed as soon as that page lands.
+ * Reachable through the redemption re-armed after a failed landing
+ * (`usePlannerOpenIntent`), which can mint a slot on a planner card that has
+ * been talking for days.
+ *
+ * **KNOWN GAP — a reader who has paged back gets the opposite.** Measured on
+ * a 350-row card: after the first page the guard is true at 300 rows; after
+ * `Load earlier` it is false at 350 rows, and a slot minted then sits at the
+ * head of all 350.
+ *
+ * **KNOWN GAP — a slot that never saw its row outlives the tab.** Nothing
+ * retires a placeholder whose sentence the agent never echoes, so if another
+ * client empties the conversation
+ * (`POST /api/cards/{id}/planner/reset`) the reader can open an emptied thread
+ * and be shown a line from a session that no longer exists. It is one stale
+ * line and nothing more: it is not in `turns`, `confirmedTurns`, `echoes` or
+ * `hasUnreconciledSend`, so it does not name the conversation, orders nothing,
+ * consumes no server row and cannot shut the composer.
+ *
+ * A visit-scoped bound was tried and withdrawn: it did not close this — the
+ * store's effects see `cardId` change only while the hook stays mounted, so
+ * navigating away retired nothing — and it cost the feature outright, because
+ * closing and reopening the drawer erased the sentence. If this is to be
+ * closed, the signal is the `harness.transcript.cleared` event the frontend
+ * already consumes (`fe/core/events/invalidation-plan.ts`), which names the
+ * hazard itself. It is **not** the identity of the runtime the slot was minted
+ * under: a repoint changes the runtime too, and the kernel work in flight for
+ * #1449 exists precisely to carry an undelivered sentence across a repoint, so
+ * retiring on a runtime change would hide it at the moment the kernel saved
+ * it.
+ *
+ * **KNOWN GAP — the placeholder takes the first exchange's rail dot.**
+ * `exchangesOf` (`features/chat/thread`) opens an exchange at a `you` turn
+ * whose predecessor is not one. With the placeholder at index 0 and a server
+ * `you` turn at index 1, that message stops opening an exchange and the rail's
+ * first dot is labelled with the placeholder's text. Registered rather than
+ * fixed: excluding it from `exchangesOf` means teaching the rail about a kind
+ * of line that exists for one feature.
+ */
+function createEchoLine(text: string, atMs = 0): ConversationTurn {
+  return { id: CREATE_ECHO_ID, author: 'you', text, atMs };
+}
 
 /** Which row is open, or the draft that has not become a row yet. */
 type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
@@ -1041,8 +1197,15 @@ function useConversationPanel(
    * reader may hold another draft. The provider reducer records the row only
    * if `from` is still held; this route opens only that recorded adoption.
    */
-  const adopt = (from: ConversationDraftId, row: Conversation) => {
+  const adopt = (from: ConversationDraftId, row: Conversation, firstMessage: string | null) => {
     registry.adoptDraft(from, row.id);
+    /* The echo is minted from the *answer*, never from the press. That is what
+       makes the failure path need no undo: a create that was refused produced
+       no row, so there is nothing to record and nothing to roll back — the
+       words stay in the draft, where the composer already shows them back. */
+    if (firstMessage !== null && firstMessage !== '') {
+      registry.noteCreateEcho(row.id, firstMessage);
+    }
   };
 
   const UNCONFIRMED = 'Could not check whether the last attempt went through. Try again in a moment.';
@@ -1075,13 +1238,17 @@ function useConversationPanel(
     derivedCardId: (idempotencyKey: string) => string,
     scopeId: string,
     key: string,
+    /* The words this key posted, or null if it never got that far. A landed row
+       means that POST committed, so its message is as delivered as the direct
+       success path's — and just as invisible until codex echoes it. */
+    sentText: string | null,
   ): Promise<'landed' | 'absent' | 'unknown'> => {
     const rows = await refresh().catch(() => null);
     if (rows === null) return 'unknown';
     const cardId = derivedCardId(key);
     const landed = rows.find((row) => row.id === cardId);
     if (landed === undefined) return 'absent';
-    adopt({ scopeId, key }, landed);
+    adopt({ scopeId, key }, landed, sentText);
     return 'landed';
   };
 
@@ -1131,7 +1298,9 @@ function useConversationPanel(
          * Only a re-read that came back and said "no new row" earns a new key.
          */
         if (previousText !== null && previousText !== text) {
-          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+          const landing = await adoptIfItLanded(
+            refresh, derivedCardId, scopeId, attempt.key, previousText,
+          );
           if (landing === 'landed') return;
           if (landing === 'unknown') {
             amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
@@ -1141,7 +1310,7 @@ function useConversationPanel(
         }
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key));
+        adopt(attempt, await create(text, attempt.key), text);
       } catch (error: unknown) {
         attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
@@ -1191,7 +1360,9 @@ function useConversationPanel(
            choice yet — a new key here would be a second card next to the one
            the server just told us exists. */
         amendDraft(attempt, { error: message });
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+        const landing = await adoptIfItLanded(
+          refresh, derivedCardId, scopeId, attempt.key, attempt.sentText,
+        );
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
         return attempt;
@@ -1212,7 +1383,9 @@ function useConversationPanel(
          * is the same key and the same words again.
          */
         amendDraft(attempt, { error: message });
-        if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key) !== 'landed') {
+        if (await adoptIfItLanded(
+          refresh, derivedCardId, scopeId, attempt.key, attempt.sentText,
+        ) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
         return attempt;
@@ -1229,7 +1402,9 @@ function useConversationPanel(
       try {
         /* Pressed deliberately, but the same fence applies: a new key is only
            safe once the list has actually said the old one produced nothing. */
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+        const landing = await adoptIfItLanded(
+          refresh, derivedCardId, scopeId, attempt.key, attempt.sentText,
+        );
         if (landing === 'landed') return;
         if (landing === 'unknown') {
           amendDraft(attempt, { error: UNCONFIRMED, remedy: 'new-conversation' });
@@ -1238,7 +1413,7 @@ function useConversationPanel(
         attempt = rekeyDraft(attempt, mintIdempotencyKey());
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key));
+        adopt(attempt, await create(text, attempt.key), text);
       } catch (error: unknown) {
         attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
@@ -1309,9 +1484,6 @@ function useConversationPanel(
         onClose={closeDrawer}
         footer={draftOpen ? (
           <>
-            {/* No optimistic echo: the POST starts the thread *and* delivers
-                this message, so by the time it answers the message is already
-                persisted and the first item fetch on the new card carries it. */}
             {/* The strip is welded to the well's top edge, so it renders
                 *before* the composer. Each child keeps the condition it had:
                 a remedy can be offered with no error beside it. */}
@@ -1410,12 +1582,33 @@ function useConversationPanel(
               * wrong reason. The same treatment the sibling state above already
               * gets on `[cardId]`; this was the one place it was left out.
               */}
-            <ChatThread
-              key={open.id}
-              conversation={open}
-              turns={store.turnsOf(open.id)}
-              pending={store.pending.has(open.id)}
-            />
+            {/*
+              * Not while the first page is unknown and there is nothing to
+              * show (#1449).
+              *
+              * `ChatThread` renders its empty state for an empty turn list,
+              * and it draws the live `Working` dot in that state. Mounted
+              * unconditionally, it painted that state *under* `Loading conversation…`
+              * above — the surface saying "I have not read this thread" and
+              * "this thread is empty" in the same frame, one of which is not a
+              * claim it is entitled to make.
+              *
+              * The condition is the invariant and not a proxy for it: the
+              * empty state is reachable only once the read has answered.
+              * `turnsOf` is the second arm rather than a redundancy — a reopen
+              * whose query was collected renders the remembered transcript
+              * while a fresh read is in flight (`serverEntries`'s fallback),
+              * and that thread has words in it, so gating it away would blank
+              * a conversation the tab can already show.
+              */}
+            {(store.historyReady || store.turnsOf(open.id).length > 0) && (
+              <ChatThread
+                key={open.id}
+                conversation={open}
+                turns={store.turnsOf(open.id)}
+                pending={store.pending.has(open.id)}
+              />
+            )}
             {/*
               * Nothing follows the transcript.
               *
@@ -2012,7 +2205,24 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * a real "is this surface current" signal rather than a mount flag.
        */
       if (!liveRef.current) return;
-      go({ name: 'track', trackId: track.id, openPlanner: true });
+      /*
+       * The sentence rides along (#1449).
+       *
+       * The card that holds this message does not exist as far as this route
+       * is concerned — `POST /api/tracks` answers with a `Track` — and the
+       * kernel's transcript will not carry the message either until codex
+       * echoes the turn back (the transcript table is written only there). So the
+       * words travel on the entry this navigation creates, and the track route
+       * mints the optimistic echo once it knows its planner card. Same
+       * one-landing scope as `openPlanner` itself, and struck off by the same
+       * `disarm()`.
+       */
+      go({
+        name: 'track',
+        trackId: track.id,
+        openPlanner: true,
+        ...(messageIsBlank ? {} : { openPlannerMessage: draft.message }),
+      });
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
@@ -2342,32 +2552,6 @@ function TrackRouteBody({
   const plannerCard = cards.find((card) => card.kind === 'codex' && isPlannerHarnessPayload(card.payload));
   const registry = useConversationRegistry();
   /*
-   * ── Redeeming "open the planner conversation of the track I just created" ────
-   *
-   * The intent rides on the history entry the create navigated to
-   * (`usePlannerOpenIntent`), so `armed` is already "this track, this visit": no
-   * other route body can see it, and there is no global slot for one of them
-   * to clear out from under another. What is left here is the half only this
-   * component knows — which card the intent names. `POST /api/tracks` answers
-   * with a `Track`, and the planner card's id exists only once the detail has
-   * landed, which is here.
-   *
-   * `disarm()` before the open, unconditionally: a track with no planner card has
-   * nothing to open, and an intent left armed on this entry would fire on the
-   * next visit to it (the Back button reaches one).
-   *
-   * `focusComposer` is what makes the landing complete: the sentence that made
-   * this track was delivered into that conversation (#1299), so the caret
-   * belongs where the reply to it will be read and answered.
-   */
-  const plannerOpenIntent = usePlannerOpenIntent(track.id);
-  useEffect(() => {
-    if (!plannerOpenIntent.armed) return;
-    plannerOpenIntent.disarm();
-    if (plannerCard === undefined) return;
-    registry.requestOpen(plannerCard.id, { focusComposer: true });
-  }, [registry, plannerCard, plannerOpenIntent]);
-  /*
    * The track's assistant conversations (#1189). Its own endpoint, its own list;
    * the planner card is deliberately not in it — the server's list predicate is
    * `role == Assistant` — so the row for it is injected below.
@@ -2404,6 +2588,39 @@ function TrackRouteBody({
     state: null,
     updatedAt: plannerCard.updated_at,
   }, [plannerCard, track.id, trackTitle]);
+  /*
+   * ── Redeeming "open the planner conversation of the track I just created" ────
+   *
+   * The intent rides on the history entry the create navigated to
+   * (`usePlannerOpenIntent`), so `armed` is already "this track, this visit": no
+   * other route body can see it, and there is no global slot for one of them
+   * to clear out from under another. What is left here is the half only this
+   * component knows — which card the intent names. `POST /api/tracks` answers
+   * with a `Track`, and the planner card's id exists only once the detail has
+   * landed, which is here.
+   *
+   * `disarm()` before the open, unconditionally: a track with no planner card has
+   * nothing to open, and an intent left armed on this entry would fire on the
+   * next visit to it (the Back button reaches one).
+   *
+   * `focusComposer` is what makes the landing complete: the sentence that made
+   * this track was delivered into that conversation (#1299), so the caret
+   * belongs where the reply to it will be read and answered.
+   */
+  const plannerOpenIntent = usePlannerOpenIntent(track.id);
+  useEffect(() => {
+    if (!plannerOpenIntent.armed) return;
+    /* Read before the disarm, which is what makes this one-shot: the message
+       is struck off the entry with the marker. */
+    const firstMessage = plannerOpenIntent.message;
+    plannerOpenIntent.disarm();
+    if (plannerCard === undefined) return;
+    registry.requestOpen(plannerCard.id, { focusComposer: true });
+    /* And this is where the sentence that made the track finally has a card to
+       put it on (#1449): `POST /api/tracks` answers with a Track, so this is
+       the first moment the planner card has an id to key the slot by. */
+    if (firstMessage !== null) registry.noteCreateEcho(plannerCard.id, firstMessage);
+  }, [registry, plannerCard, plannerOpenIntent]);
   /* Every row carries the track's title, so a row that reaches Today can say
      where it is. On this page `showTrack: false` hides it again.
      *
