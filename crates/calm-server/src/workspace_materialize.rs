@@ -367,7 +367,7 @@ fn materialize_managed_workspace_inner(
             // Empty and unclaimed: claim it *before* writing anything else, so
             // a crash at any later point leaves a directory we can prove is
             // ours and repair, instead of an unmarked non-empty brick.
-            write_owner_marker(path, track_id)?;
+            claim_owner_marker(path, track_id)?;
         }
     }
 
@@ -543,6 +543,23 @@ fn read_owner_marker(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Observation seam for #1427's crash-atomicity test. Called at every point
+/// where the ownership claim has just changed what a `read_dir` of `<path>`
+/// would report, i.e. every point at which process death would freeze the
+/// workspace directory in whatever state it is currently in. In non-test
+/// builds it compiles to nothing.
+#[inline]
+fn claim_crash_point(path: &Path) {
+    #[cfg(test)]
+    tests::claim_crash_point(path);
+    #[cfg(not(test))]
+    let _ = path;
+}
+
+fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
+    write_owner_marker(path, track_id)
+}
+
 fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let marker = owner_marker_path(path);
     if let Some(parent) = marker.parent() {
@@ -553,12 +570,15 @@ fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
             ))
         })?;
     }
-    std::fs::write(&marker, format!("{track_id}\n")).map_err(|error| {
+    claim_crash_point(path);
+    let result = std::fs::write(&marker, format!("{track_id}\n")).map_err(|error| {
         CalmError::Internal(format!(
             "materialize workspace: write ownership marker {}: {error}",
             marker.display()
         ))
-    })
+    });
+    claim_crash_point(path);
+    result
 }
 
 fn dir_has_entries(path: &Path) -> Result<bool> {
