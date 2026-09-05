@@ -255,25 +255,6 @@ impl PlannerHarness {
             .await
     }
 
-    /// Persist kernel context and the user's message as one all-or-nothing
-    /// queue change, while keeping their transcript attribution distinct.
-    ///
-    /// The launchpad conversation create uses this for its server briefing plus
-    /// the reader's first message. Persisting them independently opens a state
-    /// where the briefing is durable, the user message fails, and a retry sees
-    /// "some user message" and permanently skips the words the user supplied.
-    pub async fn observe_user_message_with_context_durable(
-        &self,
-        context: String,
-        text: String,
-    ) -> Result<()> {
-        self.observe_durable_observations(vec![
-            Observation::SystemContext { text: context },
-            Observation::UserMessage { text },
-        ])
-        .await
-    }
-
     async fn observe_durable_observations(&self, observations: Vec<Observation>) -> Result<()> {
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {

@@ -29,9 +29,10 @@ use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
 // this module into `crate::per_card_lock` so the `/planner/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
+use crate::activity_window::launchpad_opening_briefing;
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
-use crate::routes::cards::{card_scope, card_scope_tx};
+use crate::routes::cards::{MAX_PLANNER_INPUT_CHARS, card_scope, card_scope_tx};
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -236,6 +237,31 @@ pub enum HarnessProfile {
     Assistant,
 }
 
+/// Whether a conversation create prepends #1343's activity briefing.
+///
+/// **An explicit ruling, because the answer is not a property of the track.**
+/// `POST /api/today/summary` also creates its conversation on the launchpad, by
+/// calling `create_track_conversation_inner`, and it carries the day's counts
+/// itself in `summary_prompt` — briefing it as well would put the same five
+/// numbers in front of the agent twice and leave three
+/// `harness.user_message.enqueued` rows where INV-TODAYDOC-010 requires two.
+/// Deriving the answer from the track would make that outcome unavoidable; a
+/// ruling makes each caller say what it means.
+///
+/// It lives beside [`PlannerHarnessStartOperationPayload`] because that is what
+/// carries it: since #1314 the create has no post-operation step left to act on
+/// it, so the ruling has to reach `prepare_tx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpeningBriefing {
+    /// The user is starting this conversation. On the launchpad track it opens
+    /// with today's activity window; on any other track it opens with nothing.
+    TodaysActivityOnTheLaunchpad,
+    /// The caller supplies its own material and must not be given a second
+    /// copy of it. `POST /api/today/summary` is the only such caller.
+    CallerSuppliesItsOwn,
+}
+
 /// **The serialized field names in this struct are FROZEN and do not follow the
 /// #1316 renames.** They are `wave_id` and `spec_card_id`, and the Rust fields
 /// deliberately disagree with them.
@@ -299,37 +325,40 @@ pub struct PlannerHarnessStartOperationPayload {
     /// older binaries.
     #[serde(default)]
     pub create_card: Option<LazyMintCardSeed>,
-    /// SHA-256 (lower-case hex) of a lazily minted conversation's first
-    /// message, set by `POST /api/tracks/{track_id}/conversations`.
+    /// #1343 — whether this create opens with the launchpad activity briefing.
     ///
-    /// This field is **never read** by this adapter. It exists so the first
-    /// message body reaches `stable_payload_hash`, which is what makes
-    /// `OperationRuntime::submit` answer 409 when one `Idempotency-Key` is
-    /// replayed with a different body instead of silently replaying the
-    /// earlier conversation (see `driver.rs::submit`, which compares
-    /// `payload_hash` before anything else runs).
+    /// **The RULING travels here, never the briefing TEXT.** `prepare_tx`
+    /// renders the text itself, from inside the mint transaction. That split is
+    /// forced by `stable_payload_hash`, which covers the whole payload: the
+    /// day's counts change through the day, so a briefing folded in here would
+    /// give one `Idempotency-Key` a different `payload_hash` on every retry and
+    /// `submit` would answer a permanent 409 — permanent because `operations`
+    /// has no pruner. That is #1377's own argument, made where it used to live
+    /// (`routes/track_conversations.rs`, before #1314 deleted the
+    /// out-of-transaction send it was written against); folding the ruling in
+    /// is safe precisely because it is a fixed two-valued enum chosen per
+    /// caller, so it hashes stably for as long as the caller is the same.
     ///
-    /// A hash, not the text: this payload is persisted verbatim in
-    /// `operations.payload_json`, and storing the body would copy every user
-    /// message into a second table with a different retention story.
-    ///
-    /// `skip_serializing_if` keeps every non-area caller's payload bytes
-    /// byte-identical to what older binaries wrote, so adding this field
-    /// cannot move their `payload_hash` and turn an in-flight retry into a
-    /// spurious 409. `#[serde(default)]` because
-    /// `abandoned_running_operations_on_boot` re-drives old payloads.
+    /// `skip_serializing_if` keeps the key out of the payload JSON of every
+    /// producer that does not set one, so their payload bytes — and therefore
+    /// their `payload_hash` — are byte-identical to what older binaries wrote.
+    /// `#[serde(default)]` because `abandoned_running_operations_on_boot`
+    /// deserializes and re-drives operation rows written before a restart;
+    /// `None` there means "no briefing", which is what every pre-#1343 payload
+    /// meant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_message_sha256: Option<String>,
+    pub opening_briefing: Option<OpeningBriefing>,
     /// #1299 S1 — the track's first user message, delivered **inside this
     /// operation's transaction**.
     ///
-    /// Unlike [`Self::first_message_sha256`] (which exists only to move the
-    /// body into `payload_hash`) this field IS read: `prepare_tx` pushes an
-    /// `Observation::UserMessage { text }` onto the harness snapshot's
-    /// `pending_queue` and writes `harness.user_message.enqueued` in the same
-    /// transaction, so the mint and the delivery commit together. That is the
-    /// structural fix `routes/track_conversations.rs` documents for its two
-    /// known gaps; #1299 S1 puts `POST /api/tracks` on it.
+    /// Read by `prepare_tx`, which pushes an `Observation::UserMessage { text }`
+    /// onto the harness snapshot's `pending_queue` and writes
+    /// `harness.user_message.enqueued` in the same transaction, so the mint and
+    /// the delivery commit together. That is the structural fix
+    /// `routes/track_conversations.rs` documented as the way out of its two
+    /// known gaps; #1299 S1 put `POST /api/tracks` on it and #1314 moved
+    /// `POST /api/tracks/{id}/conversations` onto it too, retiring the gaps
+    /// with the code that had them.
     ///
     /// It is `Observation::UserMessage`, never `TrackGoal`: the two are
     /// different semantic slots (`TrackGoal` renders bare and does not
@@ -342,17 +371,18 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `operations.payload_json`; it is the price of an atomic delivery, and
     /// it is bounded by `validate_first_message`'s 32768-character ceiling.
     ///
-    /// `skip_serializing_if` keeps every caller that does not set it writing
-    /// byte-identical payload JSON, so adding the field cannot move an
-    /// existing `payload_hash`. `#[serde(default)]` because
-    /// `abandoned_running_operations_on_boot` re-drives old payloads.
+    /// `skip_serializing_if` keeps the key out of the payload JSON of every
+    /// caller that does not set one, so a message-less start hashes to the
+    /// same `payload_hash` whether or not this field exists.
+    /// `#[serde(default)]` because `abandoned_running_operations_on_boot`
+    /// deserializes and re-drives operation rows written before a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_message: Option<String>,
     /// #1384 / #1434 — SHA-256 (lower-case hex) of the track create request's
     /// mint inputs.
     ///
-    /// Never read by this adapter, exactly like
-    /// [`Self::first_message_sha256`]. It keeps the operation's local collision
+    /// Never read by this adapter — unlike [`Self::first_message`], which
+    /// `prepare_tx` does read. It keeps the operation's local collision
     /// check aligned with the durable binding-level fingerprint. The binding
     /// is authoritative because it survives the pre-operation failure window;
     /// this copy preserves operation replay compatibility.
@@ -683,6 +713,50 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
         let session_kind = session_kind_for(payload.profile);
+        // #1343 — the launchpad opening briefing, rendered HERE, inside the
+        // mint transaction, because since #1314 there is no post-operation step
+        // left to render it in.
+        //
+        // **The placement is load-bearing: this must stay ABOVE the first write
+        // of this transaction, next to the pool-reading `card_scope` below.**
+        // Both statements it issues (`track_get_launchpad`, and the activity
+        // window's `events ⋈ tracks ⋈ areas`) are single autocommit reads off
+        // the pool — a different connection from `tx`. Run before this
+        // transaction has written anything, that connection can always be
+        // granted its shared lock and can never be the waiter in a cycle.
+        //
+        // The hazardous table is `events`, not `tracks`: this transaction's
+        // write set is `cards` + `events`, and `tracks` is not in it. Reasoning
+        // from a `tracks`-centric story looks at the wrong table and concludes
+        // the read is harmless wherever it sits. It is not. Moved to AFTER the
+        // first write, the same read goes red on the first contended round —
+        // `tx` holds RESERVED, the pool read wants a shared lock on a page the
+        // writer has dirtied, and neither side yields.
+        //
+        // `briefing_ordering_survives_contention_in_the_mint_transaction` is
+        // the wall-clocked contention test that pins this; it is bounded so a
+        // deadlock fails the test rather than hanging the harness.
+        let opening_briefing = match payload.opening_briefing {
+            Some(OpeningBriefing::TodaysActivityOnTheLaunchpad) => {
+                launchpad_opening_briefing(self.repo.as_ref(), track_id.as_str()).await?
+            }
+            Some(OpeningBriefing::CallerSuppliesItsOwn) | None => None,
+        };
+        if let Some(briefing) = opening_briefing.as_deref() {
+            // Server-owned context is bounded independently from the user's
+            // input, and neither consumes the other's allowance — the same
+            // budget, and the same reason for it, that `/planner/input` gave
+            // this material while it still travelled the observation channel.
+            //
+            // `Internal`, not `BadRequest`: nothing the caller sent can make
+            // this fire. The text is the server's own projection of the day,
+            // so an over-long one is the server's bug, not a bad request.
+            if briefing.chars().count() > MAX_PLANNER_INPUT_CHARS {
+                return Err(CalmError::Internal(format!(
+                    "opening briefing must be at most {MAX_PLANNER_INPUT_CHARS} characters",
+                )));
+            }
+        }
         // #1098 §5.6 — mint the chat card in this very transaction, so the
         // card and its session row commit together and compensation can undo
         // both. The SELECT below then reads the row we just wrote and every
@@ -793,6 +867,35 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // producer validates with `validate_first_message` before anything is
         // minted, so a blank string reaching here means the payload was written
         // by something that skipped that gate.
+        //
+        // #1343's briefing goes in FIRST, and the order is the whole point: an
+        // agent whose first turn holds the user's question and no context
+        // answers it from the workspace, which is the state the injection
+        // exists to end. The ordering is only as strong as the enqueue order —
+        // the harness may fold both into one turn — but within that turn the
+        // briefing precedes the question.
+        //
+        // `SystemContext`, not a second `UserMessage`: it renders bare,
+        // presents as System rather than as something the user said, hard-fires
+        // like `UserMessage`, and — the property INV-TODAYDOC-010 rests on —
+        // writes NO audit row. So `harness.user_message.enqueued` counts are
+        // exactly what they were before the briefing existed.
+        //
+        // **KNOWN, and not fixed here: both observations inherit #1449.** They
+        // sit on the `pending_queue` of a runtime that has not started yet, so
+        // a mint superseded before its queue drains strands both. It is worse
+        // for the briefing than for the user's sentence: #1314's healing
+        // predicate keys on `harness.user_message.enqueued` rows, and
+        // `SystemContext` writes none, so a stranded mint loses the briefing
+        // with no re-send even in the cases where the user's sentence is
+        // correctly re-delivered.
+        let mut seeded = false;
+        if let Some(briefing) = opening_briefing {
+            snapshot
+                .pending_queue
+                .push(Observation::SystemContext { text: briefing });
+            seeded = true;
+        }
         if let Some(text) = payload.first_message.as_deref() {
             if text.trim().is_empty() {
                 return Err(CalmError::BadRequest(
@@ -802,6 +905,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_queue.push(Observation::UserMessage {
                 text: text.to_string(),
             });
+            seeded = true;
+        }
+        // One alignment for whatever the two pushes above added, and none at
+        // all when they added nothing: envelope ids are assigned by position,
+        // so aligning between the two pushes would be the same work done twice,
+        // and aligning after zero pushes would touch a snapshot this branch
+        // never changed.
+        if seeded {
             snapshot.align_pending_envelope_ids();
         }
 
@@ -843,10 +954,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // #1299 S1 — the audit row for the seeded first message, written in the
         // SAME transaction as the queue that carries it. `send_planner_input`
         // writes this row *after* a non-transactional `harness.observe`, which
-        // is the "non-transactional evidence" half of the two gaps
-        // `track_conversations.rs` documents; here the observation and its
-        // evidence commit or roll back together, so neither a re-send nor a
-        // silently unrecorded send is reachable on this path.
+        // was the "non-transactional evidence" half of the two gaps
+        // `track_conversations.rs` documented until #1314 moved that route onto
+        // this seam; here the observation and its evidence commit or roll back
+        // together, so neither a re-send nor a silently unrecorded send is
+        // reachable on this path.
         //
         // The actor is `payload.actor` verbatim — the human who submitted the
         // create. `send_planner_input`'s `planner_input_audit_actor` rebind
@@ -1710,7 +1822,7 @@ mod tests {
             force_new_thread: false,
             profile: HarnessProfile::Planner,
             create_card: None,
-            first_message_sha256: None,
+            opening_briefing: None,
             first_message: None,
             create_request_sha256: None,
         };
@@ -2411,7 +2523,7 @@ mod tests {
             force_new_thread: false,
             profile: HarnessProfile::PlainChat,
             create_card: create_card.then(LazyMintCardSeed::default),
-            first_message_sha256: None,
+            opening_briefing: None,
             first_message: None,
             create_request_sha256: None,
         })

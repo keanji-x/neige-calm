@@ -163,10 +163,12 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
  * code-point table, which would be wrong the next time Unicode adds one.
  *
  * It answers only "is this blank". It never returns a *value*: the text the
- * kernel stores, hashes (`first_message_digest` is verbatim, no trim) and
- * forwards to the agent is the reader's own string, indentation and trailing
- * spaces included, so trimming on the way to the wire would silently rewrite
- * what they typed.
+ * kernel enqueues for the agent is the reader's own string, indentation and
+ * trailing spaces included — the operation payload carries those bytes
+ * verbatim, and `first_message_digest` hashes them verbatim too (no trim) into
+ * the create's idempotency binding row — so trimming on the way to the wire
+ * would silently rewrite what they typed, and would change what identifies the
+ * request.
  */
 export function isBlankForKernel(text: string): boolean {
   return /^\p{White_Space}*$/u.test(text);

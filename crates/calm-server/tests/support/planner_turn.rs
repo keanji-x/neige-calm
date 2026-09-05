@@ -29,7 +29,7 @@ pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
         force_new_thread: true,
         profile: HarnessProfile::Planner,
         create_card: None,
-        first_message_sha256: None,
+        opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
     };

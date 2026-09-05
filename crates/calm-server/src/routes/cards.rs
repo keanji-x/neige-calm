@@ -911,22 +911,7 @@ pub(crate) async fn send_planner_input(
     Path(id): Path<String>,
     Json(body): Json<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
-    send_planner_input_with_context(s, w, cs, actor, id, None, body.text).await
-}
-
-/// The production planner-input path, optionally preceded by kernel context
-/// that must become durable in the same batch. The public endpoint supplies no
-/// context; launchpad conversation creation supplies its opening briefing.
-#[allow(deprecated)]
-pub(crate) async fn send_planner_input_with_context(
-    s: RouteState,
-    w: WorkerState,
-    cs: CodexShellState,
-    actor: Actor,
-    id: String,
-    context: Option<String>,
-    text: String,
-) -> Result<Json<SendPlannerInputResponse>> {
+    let (s, w, cs, id, text) = (s, w, cs, id, body.text);
     let validate = |value: &str| {
         if value.trim().is_empty() {
             return Err(CalmError::BadRequest("text must not be empty".into()));
@@ -939,11 +924,6 @@ pub(crate) async fn send_planner_input_with_context(
         }
         Ok(char_count)
     };
-    if let Some(context) = context.as_deref() {
-        // Server-owned context is bounded independently from the user's input;
-        // neither gets to consume the other's public message limit.
-        validate(context)?;
-    }
     let char_count = validate(&text)?;
 
     let card = s
@@ -991,18 +971,7 @@ pub(crate) async fn send_planner_input_with_context(
         _ => planner_input_audit_actor(&actor, &card.id),
     };
 
-    match context {
-        Some(context) => {
-            harness
-                .observe_user_message_with_context_durable(context, text)
-                .await?;
-            tracing::info!(
-                card_id = %card.id,
-                "planner harness system context enqueued with user message"
-            );
-        }
-        None => harness.observe_user_message_durable(text).await?,
-    }
+    harness.observe_user_message_durable(text).await?;
 
     tracing::info!(
         actor = %actor.as_str(),
@@ -1592,9 +1561,11 @@ async fn reset_planner_harness_card(
         force_new_thread: true,
         profile,
         create_card: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_planner_card_operation(&s, "planner-harness-start", start_payload).await?;

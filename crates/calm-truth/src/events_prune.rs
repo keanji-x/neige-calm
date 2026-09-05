@@ -96,17 +96,19 @@ pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 /// Reverse anchor — read before adding a kind here. Some readers depend on a
 /// kind's row being *permanent*, not merely long-lived:
 ///
-///   * `harness.user_message.enqueued` is the only evidence that a lazily
-///     created conversation card has already had a user message ACCEPTED INTO THE
-///     HARNESS QUEUE — `send_planner_input` writes it right after
-///     `harness.observe(UserMessage)` returns, so it proves the observation
-///     was enqueued, not that the agent has consumed it
-///     (`calm-server/src/routes/conversations_shared.rs::user_message_already_enqueued`).
-///     Adding it to this allowlist would, after the retention horizon,
-///     silently make a retry under the same `Idempotency-Key` send the first
-///     message to the agent a second time — a correctness regression with no
-///     failing test unless one is written. `first_message_dedup_kind_is_never_prunable`
-///     below is that test; it fails closed on exactly this mistake.
+///   * `harness.user_message.enqueued` is the only evidence that a user message
+///     was ACCEPTED INTO THE HARNESS QUEUE of a given runtime, so it proves the
+///     observation was enqueued, not that the agent has consumed it
+///     (`calm-server/src/routes/conversations_shared.rs::user_message_enqueued_on_active_runtime`,
+///     which matches the runtime recorded in that row's payload against the
+///     card's currently active runtime). `routes::today_summary` reads it to decide whether the standing
+///     bootstrap instruction still has to be delivered to that runtime
+///     (INV-TODAYDOC-010). Adding it to this allowlist would, after the
+///     retention horizon, silently make a Today trigger against a long-lived
+///     runtime that has already been spoken to send the bootstrap again — a
+///     correctness regression with no failing test unless one is written.
+///     `first_message_dedup_kind_is_never_prunable` below is that test; it
+///     fails closed on exactly this mistake.
 pub const EVENTS_PRUNE_KINDS: &[&str] = &[
     "claude.hook",
     "codex.hook",
@@ -944,15 +946,17 @@ mod tests {
         }
     }
 
-    /// Fail-closed anchor for conversation first-message dedup.
-    /// `user_message_already_enqueued` in
-    /// `calm-server/src/routes/conversations_shared.rs` answers "has this
-    /// conversation's card ever had a user message enqueued into the harness?"
-    /// purely from the presence of a `harness.user_message.enqueued` row
-    /// (enqueued, not consumed by the agent). If that row can be
-    /// pruned, then after the retention horizon a retry under the same
-    /// `Idempotency-Key` sends the first message to the agent AGAIN — and
-    /// nothing else in the suite would go red, because the double-send only
+    /// Fail-closed anchor for the conversation first-message read.
+    /// `user_message_enqueued_on_active_runtime` in
+    /// `calm-server/src/routes/conversations_shared.rs` answers "has a user
+    /// message been enqueued into the harness of this card's *currently active*
+    /// runtime?" from the presence of a `harness.user_message.enqueued` row
+    /// whose payload records that runtime (enqueued, not consumed by the
+    /// agent), and `routes::today_summary` is its caller. If that row can be
+    /// pruned, then after the retention horizon a Today trigger against a
+    /// runtime that outlived the horizon — a launchpad conversation's session
+    /// is exactly that shape — sends the standing bootstrap instruction AGAIN,
+    /// and nothing else in the suite would go red, because the double-send only
     /// happens on aged data.
     ///
     /// Both halves are load-bearing: the constant assertion states the
@@ -963,8 +967,8 @@ mod tests {
     async fn first_message_dedup_kind_is_never_prunable() {
         assert!(
             !EVENTS_PRUNE_KINDS.contains(&"harness.user_message.enqueued"),
-            "conversation first-message dedup reads this kind as permanent evidence; \
-             pruning it re-opens double-send after the horizon"
+            "the Today bootstrap predicate reads this kind as permanent evidence; \
+             pruning it re-opens a duplicate bootstrap after the horizon"
         );
 
         let repo = repo().await;

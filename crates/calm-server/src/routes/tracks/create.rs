@@ -239,12 +239,15 @@ struct PriorAttempt {
     ///   (`track.workspace.path`), and mutable: `PATCH /api/tracks/{id}`
     ///   repoints a managed workspace to an attached one at any time. Hence
     ///   this field.
-    /// - `first_message`, `first_message_sha256`, `create_request_sha256` —
-    ///   pure functions of the request body. The create digest is always checked
-    ///   against the durable binding. The message is checked against the chosen
-    ///   operation on Replay, against the binding on an operation-less base
-    ///   resume, and may be edited only on the genuine `#N` retry after a
-    ///   persisted terminal failure.
+    /// - `first_message`, `create_request_sha256` — pure functions of the
+    ///   request body. The create digest is always checked against the durable
+    ///   binding. The message is checked against the chosen operation on
+    ///   Replay, against the binding on an operation-less base resume, and may
+    ///   be edited only on the genuine `#N` retry after a persisted terminal
+    ///   failure. On the Replay check the payload's `first_message` **is** the
+    ///   comparison input: #1314 deleted the payload's separate
+    ///   `first_message_sha256`, whose bytes this field already carries
+    ///   verbatim.
     /// - `sort`, `goal`, `create_card` — hard-coded `None` here.
     /// - the two reset/force-new-thread flags — hard-coded `false`.
     /// - `profile` — hard-coded `Default::default()`.
@@ -539,13 +542,18 @@ fn ensure_replay_message_matches(
     payload: &PlannerHarnessStartOperationPayload,
     plan: &FirstMessagePlan,
 ) -> Result<()> {
-    let first_message_sha256 = payload.first_message_sha256.as_deref().ok_or_else(|| {
+    // Digested from the payload's verbatim `first_message`, not from a
+    // separate payload digest field: #1314 deleted that field because the text
+    // it hashed is right here. Still fail-closed on absence — a track-create
+    // operation always carries the sentence, so a payload without one is a
+    // corruption, and refusing it beats letting it pass unchecked.
+    let payload_text = payload.first_message.as_deref().ok_or_else(|| {
         CalmError::Internal(format!(
-            "track-create operation {} has no first-message fingerprint",
+            "track-create operation {} has no first message",
             plan.operation_key
         ))
     })?;
-    if first_message_sha256 != plan.first_message_sha256 {
+    if first_message_digest(payload_text) != plan.first_message_sha256 {
         return Err(crate::operation::idempotency_payload_conflict(Some(
             &plan.idempotency_key,
         )));
@@ -592,7 +600,6 @@ pub(super) async fn create_track_with_first_message(
         report_card_id,
         cwd,
         plan.text,
-        plan.first_message_sha256,
         plan.create_request_sha256,
         plan.operation_key,
     )
@@ -707,7 +714,6 @@ pub(super) async fn resume_prior_attempt(
         prior.report_card_id,
         cwd,
         plan.text,
-        plan.first_message_sha256,
         plan.create_request_sha256,
         plan.operation_key,
     )
@@ -833,7 +839,9 @@ async fn start_planner_harness_with_first_message(
     // even if the workspace was repointed in between. See `PriorArm`.
     cwd: String,
     text: String,
-    first_message_sha256: String,
+    // No `first_message_sha256` parameter: the payload no longer has that
+    // field (#1314), and the binding row's copy is set by
+    // `create_track_with_first_message` from `plan` directly.
     create_request_sha256: String,
     operation_key: String,
 ) -> Result<()> {
@@ -851,11 +859,19 @@ async fn start_planner_harness_with_first_message(
         force_new_thread: false,
         profile: Default::default(),
         create_card: None,
-        // Binds the body into `payload_hash` (belt to the braces of the text
-        // field below, which is already part of the payload): replaying one key
-        // with a different sentence is a 409 instead of a silent replay of the
-        // first one.
-        first_message_sha256: Some(first_message_sha256),
+        // The sentence itself, which `prepare_tx` enqueues inside the mint
+        // transaction — and which, being part of the payload, also binds the
+        // body into `payload_hash`: replaying one key with a different sentence
+        // is a 409 instead of a silent replay of the first one. #1314 deleted
+        // the separate `first_message_sha256` **payload field** that used to
+        // sit here; it hashed bytes this field already carries verbatim, and
+        // `ensure_replay_message_matches` now digests this field instead.
+        //
+        // The digest function is NOT gone: `first_message_digest` still
+        // computes `plan.first_message_sha256`, which #1452 persists in the
+        // `track_create_idempotency` binding row. That row carries no message
+        // text, so there the hash is the message's only representation and is
+        // not redundant.
         first_message: Some(text),
         // #1384 / #1434 — also carried in the operation payload for its local
         // collision check. The durable authority is now the binding row, which
@@ -863,6 +879,9 @@ async fn start_planner_harness_with_first_message(
         // Other producers leave the field `None`, preserving their payload
         // bytes across deployment.
         create_request_sha256: Some(create_request_sha256),
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     // Same hash shape as `start_planner_harness`, so the two paths cannot drift

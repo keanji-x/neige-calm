@@ -264,6 +264,64 @@ impl Boot {
         .unwrap()
     }
 
+    /// How many copies of `needle` the assistant harness has actually been
+    /// handed.
+    ///
+    /// Counted at the harness, never at `harness.user_message.enqueued`. The
+    /// audit row is written by `prepare_tx` inside the mint transaction, which
+    /// commits in `TxCommitted` — *before* `AppServerInteract` can fail and
+    /// before any thread exists — so it is evidence that a delivery was
+    /// attempted and says nothing about whether one happened. Counting it would
+    /// answer the opposite of the question
+    /// `a_retry_after_a_failed_attempt_still_delivers_the_message` asks.
+    ///
+    /// Two places are summed because an observation may or may not have been
+    /// drained into a turn yet: turns already started on the fake app-server,
+    /// plus observations still queued on live harness handles. Substring
+    /// occurrences rather than entries, since adjacent `UserMessage`s fold into
+    /// one concatenated entry and counting entries would under-report a double
+    /// delivery. Polls, because the run loop drains on a background task, and
+    /// returns what it saw so a failing assertion reports the real number.
+    async fn copies_in_harness(&self, needle: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let mut seen = self
+                .state
+                .shared_codex_appserver
+                .started_turns_for_test()
+                .iter()
+                .map(|(_, items)| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            serde_json::to_string(item)
+                                .map(|s| s.matches(needle).count())
+                                .unwrap_or(0)
+                        })
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+            let worker_session_ids: Vec<String> =
+                sqlx::query_scalar("SELECT id FROM worker_sessions")
+                    .fetch_all(self.repo.pool())
+                    .await
+                    .unwrap();
+            for id in worker_session_ids {
+                if let Some(handle) = self.state.harness.get(&id) {
+                    for obs in handle.pending_queue_for_test().await {
+                        seen += serde_json::to_string(&obs)
+                            .map(|s| s.matches(needle).count())
+                            .unwrap_or(0);
+                    }
+                }
+            }
+            if seen >= want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     async fn shutdown_harnesses(&self) {
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
             .fetch_all(self.repo.pool())
@@ -405,6 +463,107 @@ async fn retrying_one_idempotency_key_lands_on_the_same_conversation() {
     b.shutdown_harnesses().await;
 }
 
+/// #1314 — a retry after a failed attempt still delivers the message.
+///
+/// This is the one combination the migration onto the in-transaction seam
+/// creates, and it is a trap that reads as correct from the audit log:
+///
+/// * `prepare_tx` seeds the `Observation::UserMessage` and writes
+///   `harness.user_message.enqueued` in one transaction that commits in
+///   `TxCommitted`;
+/// * `AppServerInteract` can still fail afterwards, and it does here
+///   (`fail_next_thread_start_for_test`);
+/// * `plan_compensation` registers `delete_card` whenever `create_card.is_some()`
+///   — and the conversation route is exactly that case — so the card is removed;
+/// * `events` is append-only and compensation only marks the runtime failed, so
+///   the enqueued row stays, keyed by `(scope_track, scope_card)`;
+/// * the retry re-derives **the same card id** from the same `Idempotency-Key`.
+///
+/// So a retry that consulted `harness.user_message.enqueued` to decide whether
+/// to deliver would read a row about a message that never reached an agent, on
+/// a card that no longer exists, and silently drop the user's sentence forever.
+/// The assertion below is therefore made **at the harness**, not by counting
+/// audit rows — counting them would pass in exactly the broken world, which is
+/// what the mutation check confirmed: reinstating the suppression turns only
+/// this case red.
+///
+/// The three premises are asserted rather than assumed. Without them a green
+/// run could mean "the first attempt never failed", "the card was never
+/// deleted", or "there was no stale evidence to be fooled by", none of which
+/// exercise the hazard.
+#[tokio::test]
+async fn a_retry_after_a_failed_attempt_still_delivers_the_message() {
+    const NEEDLE: &str = "do not lose this sentence";
+    let b = boot().await;
+    let track_id = b.create_track("assistant-redeliver").await;
+    let card_id = calm_server::conversation_keys::derive_track_conversation_card_id_for_test(
+        &track_id,
+        "idem-redeliver",
+    );
+
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (status, body) = b
+        .create_conversation(&track_id, "idem-redeliver", NEEDLE)
+        .await;
+    assert!(
+        status.is_server_error(),
+        "a create whose thread/start failed must not answer 2xx: status={status} body={body}"
+    );
+
+    // Premise 1 — nothing was handed to any agent on the failed attempt.
+    assert_eq!(
+        b.copies_in_harness(NEEDLE, 1).await,
+        0,
+        "premise: no thread ever started, so no agent may hold the sentence"
+    );
+    // Premise 2 — the compensation really did take the card back out.
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM cards WHERE track_id = ?1 AND role = 'assistant'",
+            &track_id
+        )
+        .await,
+        0,
+        "premise: `delete_card` runs on this path, so the retry re-mints rather \
+         than replaying"
+    );
+    // Premise 3 — and the evidence row survived it. This is the trap; without
+    // it the case below is green for the wrong reason.
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued' \
+               AND scope_card = ?1",
+            &card_id
+        )
+        .await,
+        1,
+        "premise: the failed attempt left an enqueued row behind on the very \
+         card id the retry re-derives"
+    );
+
+    // The retry: same key, same text.
+    let (status, retried) = b
+        .create_conversation(&track_id, "idem-redeliver", NEEDLE)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={retried}");
+    assert_eq!(
+        retried["id"].as_str(),
+        Some(card_id.as_str()),
+        "the retry must land on the card id the key derives, not on a new one"
+    );
+    // Waits for a *second* copy it must never see, so this catches a double
+    // delivery as well as a dropped one.
+    assert_eq!(
+        b.copies_in_harness(NEEDLE, 2).await,
+        1,
+        "the retry must deliver the sentence exactly once; reading the stale \
+         `harness.user_message.enqueued` row as a delivered-marker gives 0"
+    );
+    b.shutdown_harnesses().await;
+}
+
 /// **G2** — the adapter mints only ids it derived itself.
 ///
 /// Driven through `operation_runtime.submit`, not through the route, because
@@ -443,7 +602,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                     sort: None,
                     idempotency_key: key,
                 }),
-                first_message_sha256: None,
+                opening_briefing: None,
                 first_message: None,
                 create_request_sha256: None,
             })

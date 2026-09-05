@@ -14,12 +14,17 @@
 //!
 //! A conversation created on **Today's launchpad track** is opened with the
 //! day's activity window ahead of the user's first message; see
-//! [`launchpad_opening_briefing`]. Every other track gets exactly the behaviour
+//! [`activity_window::launchpad_opening_briefing`]. Every other track gets
+//! exactly the behaviour
 //! it always had. That is the only track-dependent branch in this module, and
 //! it exists because the launchpad is where the user asks "what happened
 //! today?" — the projection that answers it is server-side by design
 //! (`activity_window`, D4), so nothing but the server can put it in front of
-//! the agent.
+//! the agent. Since #1314 this module only *rules* on it — see
+//! [`OpeningBriefing`] — and the rendering happens inside the mint
+//! transaction.
+//!
+//! [`activity_window::launchpad_opening_briefing`]: crate::activity_window::launchpad_opening_briefing
 
 use axum::{
     Json, Router,
@@ -30,27 +35,23 @@ use axum::{
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use crate::activity_window::{opening_activity_briefing, todays_workspace_activity};
 use crate::actor::Actor;
 use crate::conversation_keys::derive_track_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{CardRole, TrackConversationSummary};
 use crate::operation::planner_harness_start_adapter::{
-    ASSISTANT_HARNESS_PROFILE_MARKER, HarnessProfile, LazyMintCardSeed,
+    ASSISTANT_HARNESS_PROFILE_MARKER, HarnessProfile, LazyMintCardSeed, OpeningBriefing,
     PlannerHarnessStartOperationPayload,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::per_card_lock::lock_card;
-use crate::routes::cards::send_planner_input_with_context;
 use crate::routes::conversations_shared::{
-    PLANNER_HARNESS_START, first_message_digest, retryable_operation_key,
-    user_message_already_enqueued, validate_first_message,
+    PLANNER_HARNESS_START, retryable_operation_key, validate_first_message,
 };
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
 use crate::session_projection_repo::WorkerSessionState;
-use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
+use crate::state::{AppState, RouteState, WorkerState};
 
 /// The `kind` every row of this list carries.
 const TRACK_CONVERSATION_KIND: &str = "track-assistant";
@@ -104,33 +105,40 @@ pub(crate) async fn list_track_conversations(
     ),
     request_body = NewTrackConversationBody,
     responses(
-        (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
+        (status = 201, description = "Conversation card minted, harness started, first message delivered — all three in the mint operation's own transaction, so a 201 means the message is on the assistant's queue and not merely that a card exists. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
         (status = 400, description = "Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
         (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
-        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
-        (status = 500, description = "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.", body = ErrorBody),
+        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
+        (status = 500, description = "Internal error. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.", body = ErrorBody),
         (status = 503, description = "Shared codex app-server not running — retry shortly", body = ErrorBody),
     ),
 )]
 /// Mint a track assistant conversation and deliver its first message.
 ///
-/// The `Idempotency-Key` contract has two known gaps, restated where they bite:
+/// #1314 — the message is folded INTO the mint operation. `first_message`
+/// travels in the `planner-harness-start` payload and
+/// `PlannerHarnessStartAdapter::prepare_tx` seeds the
+/// `Observation::UserMessage` and writes `harness.user_message.enqueued` in the
+/// same transaction that mints the card and its session. There is no
+/// post-operation send here, and consequently no first-message claim: the two
+/// #1098 gaps this handler used to document — a claim that asked "has this CARD
+/// ever had a user message enqueued?" instead of "has THIS request's message
+/// landed?", and evidence written outside the transaction that carried the
+/// message — are gone with the code that had them.
 ///
-/// * the first-message claim asks "has this CARD ever had a user message
-///   enqueued?", not "has THIS request's message landed?", so a foreign
-///   `POST /api/cards/{id}/planner/input` between a failed send and its retry
-///   satisfies the claim;
-/// * the evidence is written non-transactionally, so a send whose audit write
-///   fails is re-sent on retry.
-///
-/// Both are tracked on #1098 and deliberately unchanged here: fixing them means
-/// folding the first message into the mint operation, which would change both
-/// sides of this endpoint and belongs in one dedicated change.
+/// **Nothing on this path may read that evidence row back.** A failed attempt
+/// is compensated by deleting the card, but its `harness.user_message.enqueued`
+/// row survives (`events` is append-only and compensation only marks the
+/// runtime failed), while the retry re-derives the very same card id from the
+/// same `Idempotency-Key`. So the row means "a delivery was attempted", never
+/// "a delivery happened", and treating it as a delivered-marker would turn
+/// every retry-after-failure into a silently dropped message.
+/// `a_retry_after_a_failed_attempt_still_delivers_the_message` pins that, and a
+/// persisted marker that could answer the question honestly is #1384.
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
-    State(cs): State<CodexShellState>,
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
@@ -139,7 +147,6 @@ pub(crate) async fn create_track_conversation(
     create_track_conversation_inner(
         s,
         w,
-        cs,
         actor,
         headers,
         track_id,
@@ -149,37 +156,15 @@ pub(crate) async fn create_track_conversation(
     .await
 }
 
-/// Whether this create prepends #1343's activity briefing.
-///
-/// **An explicit parameter, because the answer is not a property of the track.**
-/// `POST /api/today/summary` also creates its conversation on the launchpad, by
-/// calling the very handler below, and it carries the day's counts itself in
-/// `summary_prompt` — briefing it as well would put the same five numbers in
-/// front of the agent twice and leave three
-/// `harness.user_message.enqueued` rows where INV-TODAYDOC-010 requires two.
-/// Deriving the answer from the track would make that outcome unavoidable; a
-/// parameter makes each caller say what it means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OpeningBriefing {
-    /// The user is starting this conversation. On the launchpad track it opens
-    /// with today's activity window; on any other track it opens with nothing.
-    TodaysActivityOnTheLaunchpad,
-    /// The caller supplies its own material and must not be given a second
-    /// copy of it. `POST /api/today/summary` is the only such caller.
-    CallerSuppliesItsOwn,
-}
-
 /// `create_track_conversation`, plus the caller's ruling on opening material.
 ///
 /// Server-internal callers go through here rather than through the route
 /// handler so that the mint, the derived-id guard, the retry arms and the
-/// first-message claim are still the ones production uses — the only thing that
-/// varies is [`OpeningBriefing`].
-#[allow(clippy::too_many_arguments)]
+/// in-transaction first-message delivery are still the ones production uses —
+/// the only thing that varies is [`OpeningBriefing`].
 pub(crate) async fn create_track_conversation_inner(
     s: RouteState,
     w: WorkerState,
-    cs: CodexShellState,
     actor: Actor,
     headers: HeaderMap,
     track_id: String,
@@ -243,10 +228,23 @@ pub(crate) async fn create_track_conversation_inner(
             // with itself would prove nothing.
             idempotency_key: Some(idempotency_key.clone()),
         }),
-        // Binds the body into `payload_hash` so "same key, different text" is
-        // a 409 instead of a silent replay. Hash, not text.
-        first_message_sha256: Some(first_message_digest(&text)),
-        first_message: None,
+        // #1343's ruling, carried into the transaction that acts on it. The
+        // caller decides; `prepare_tx` renders. `None` is not spelled out for
+        // any caller here — both arms are explicit — but it is what every
+        // payload written before #1343 deserializes to, and it means "no
+        // briefing", which is what those payloads meant.
+        opening_briefing: Some(briefing),
+        // #1314 — the text itself, so the adapter can enqueue the actual bytes
+        // inside the mint transaction. This is the whole change: before it, the
+        // message was sent by a second, non-transactional call after the
+        // operation had already committed.
+        //
+        // It also binds the body into `payload_hash`, which is what makes "same
+        // key, different text" a 409 instead of a silent replay: `submit`
+        // compares that hash before anything else runs.
+        first_message: Some(text),
+        // #1384 — bound only by `POST /api/tracks`; this route mints no track,
+        // so it has no create request to hash.
         create_request_sha256: None,
     };
     let payload = serde_json::to_value(payload)?;
@@ -282,59 +280,20 @@ pub(crate) async fn create_track_conversation_inner(
         }
     }
 
-    // The first message is claimed against real, observable state — never
-    // inferred from "was there already an operation row?". Two concurrent
-    // POSTs under one key share ONE operation and both see it succeed, so a
-    // pre-submit lookup answers "no prior attempt" to both and the agent gets
-    // the same instruction twice. Under the per-card claim exactly one of them
-    // observes an empty transcript and sends. See this handler's doc comment
-    // for what the claim does NOT promise.
-    let _first_message_claim =
-        lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
-    if !user_message_already_enqueued(&w, track.id.as_str(), &derived.card_id).await? {
-        // #1343 — on the launchpad track, and only there, the day's activity
-        // window goes in **before** the user's first message.
-        //
-        // Before, because it is opening material: an agent whose first turn
-        // holds the user's question and no context answers it from the
-        // workspace, which is the state this injection exists to end. The
-        // ordering is only as strong as the enqueue order — the harness may
-        // fold both into one turn — but within that turn the briefing precedes
-        // the question, which is the property that matters.
-        //
-        // Inside the claim and in one durable batch with the first message, not
-        // as two independent sends. If the briefing committed and the user's
-        // message failed, a retry would see "some user message" and permanently
-        // skip the user's words. The batch persists both or restores both.
-        //
-        // **It is not part of the create operation's payload, and must not
-        // become part of it.** `first_message_sha256` above binds the first
-        // message into `payload_hash`; the counts change through the day, so a
-        // briefing folded in there would make every retry under one
-        // `Idempotency-Key` a permanent 409 (`operations` has no pruner). It
-        // travels the harness observation channel instead, as typed system
-        // context paired with the user's message; neither enters the key.
-        let opening = match briefing {
-            OpeningBriefing::TodaysActivityOnTheLaunchpad => {
-                launchpad_opening_briefing(&s, &w, track.id.as_str()).await?
-            }
-            OpeningBriefing::CallerSuppliesItsOwn => None,
-        };
-        // The public one-message handler and this context-aware path share
-        // validation, harness recovery, durable persistence and audit in one
-        // implementation. The context is deliberately not audited or rendered
-        // as a user message; it is kernel material paired atomically with one.
-        let _queued = send_planner_input_with_context(
-            s.clone(),
-            w.clone(),
-            cs,
-            actor,
-            derived.card_id.clone(),
-            opening,
-            text,
-        )
-        .await?;
-    }
+    // No send, no per-card first-message claim, and no briefing call out here;
+    // none of the three is an omission. The message was enqueued by
+    // `prepare_tx` inside the operation above, and the operation is what
+    // serializes concurrent POSTs under one key: two of them share ONE
+    // operation row, so the second is a collision that replays the first's
+    // success rather than a second mint with a second delivery. The claim used
+    // to exist only because the send happened out here, after that
+    // serialization point.
+    //
+    // #1343's opening briefing moved with it. What travels in the payload is
+    // the caller's RULING (`opening_briefing`), never the briefing TEXT; the
+    // adapter renders the text inside the transaction. See
+    // `PlannerHarnessStartOperationPayload::opening_briefing` for why the text
+    // must not enter `payload_hash`.
 
     let summary = load_track_conversation_summaries(&w, track.id.as_str(), Some(&derived.card_id))
         .await?
@@ -346,42 +305,6 @@ pub(crate) async fn create_track_conversation_inner(
             ))
         })?;
     Ok((StatusCode::CREATED, Json(summary)))
-}
-
-/// Today's activity briefing, if this track is the launchpad (#1343).
-///
-/// `None` for every other track. The predicate is
-/// [`routes::today::is_launchpad_track`], which is the one criterion in the
-/// codebase — the agent's identity (`planner_harness_start_adapter`) forks on
-/// the same call, and two spellings of "is this the launchpad?" would let the
-/// briefing and the identity disagree about one track.
-///
-/// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
-///
-/// The window itself comes from `activity_window::todays_workspace_activity`,
-/// the same entry `POST /api/today/summary` uses, so the two surfaces cannot
-/// report different numbers for one day. The launchpad excludes itself — that
-/// is the reflexive exclusion documented on `workspace_activity_window`, so a
-/// report the agent goes on to write does not turn up in the next briefing as
-/// activity the workspace did.
-///
-/// **A workspace with no launchpad yet is `None`, not an empty briefing.**
-/// Nothing is ensured from here: `ensure_today_launchpad` materialises a
-/// workspace and waits on a `planner-harness-start` (INV-TODAYDOC-001), and a
-/// conversation create on some other track has no business doing that.
-async fn launchpad_opening_briefing(
-    s: &RouteState,
-    w: &WorkerState,
-    track_id: &str,
-) -> Result<Option<String>> {
-    if !crate::routes::today::is_launchpad_track(s.repo.as_ref(), track_id).await? {
-        return Ok(None);
-    }
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
-        CalmError::Internal("today's activity window requires a sqlite-backed repo".into())
-    })?;
-    let activity = todays_workspace_activity(&pool, Some(track_id)).await?;
-    Ok(Some(opening_activity_briefing(&activity)))
 }
 
 /// Read the assistant conversation rows of one track.

@@ -42,10 +42,11 @@
 //!
 //! Steps 4 and 5 are **one path, not two branches**. An earlier revision gave
 //! the summary to a "re-run" branch and let the create path carry only its
-//! first message; because `create_track_conversation` skips its send once
-//! `user_message_already_enqueued` is true, that shape produced a summary with
-//! no material on the very first use — the one impression the user gets. See
-//! the design's §0c.1.
+//! first message; since the create carries nothing but
+//! [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — and a same-key replay of it answers 201
+//! without delivering anything a second time — that shape produced a summary
+//! with no material on the very first use, the one impression the user gets.
+//! See the design's §0c.1.
 
 use axum::{
     Json, Router,
@@ -65,16 +66,16 @@ use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversatio
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::ActorId;
 use crate::operation::planner_harness_start_adapter::{
-    HarnessProfile, PlannerHarnessStartOperationPayload,
+    HarnessProfile, OpeningBriefing, PlannerHarnessStartOperationPayload,
 };
 use crate::per_card_lock::lock_card;
 use crate::routes::cards::{
     SendPlannerInputRequest, run_planner_card_operation, send_planner_input,
 };
-use crate::routes::conversations_shared::user_message_already_enqueued;
+use crate::routes::conversations_shared::user_message_enqueued_on_active_runtime;
 use crate::routes::today::ensure_today_launchpad;
 use crate::routes::track_conversations::{
-    NewTrackConversationBody, OpeningBriefing, create_track_conversation_inner,
+    NewTrackConversationBody, create_track_conversation_inner,
 };
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
@@ -161,18 +162,52 @@ fn synthetic_actor() -> Actor {
 
 /// The standing instruction the summary conversation is opened with.
 ///
-/// **Not "the first message ever sent", and the claim was wrong when it said
-/// so.** What the code does is narrower and is stated exactly:
+/// **Not "the first message ever sent".** What the code does is narrower and is
+/// stated exactly:
 ///
-/// > this text is sent when the derived card has **no
-/// > `harness.user_message.enqueued` row at all**, and never again once any
-/// > such row exists.
+/// > this text is sent when the card's **currently ACTIVE runtime** has no
+/// > `harness.user_message.enqueued` row of its own, and never again while that
+/// > runtime stays active.
 ///
 /// So a user who types into this conversation before the first trigger
-/// suppresses it **permanently** — the card is `deletable: false` and the
-/// evidence row is permanent, so the suppression never lifts. That is a
-/// deliberate ruling, and the reason it is acceptable is the only reason this
-/// text exists at all.
+/// suppresses it — **until that runtime is replaced**, not permanently. The
+/// evidence row is permanent, but it is stamped with the runtime the message
+/// went to (`calm-types/src/event.rs`), and the predicate only counts rows
+/// belonging to the runtime that is live now
+/// (`conversations_shared::user_message_enqueued_on_active_runtime`). A restart,
+/// a `/planner/reset`, a crash recovery — anything that mints a new runtime for
+/// this card — lifts the suppression, and the next trigger re-delivers the
+/// standing instruction to the new session.
+///
+/// **That ruling was "permanent" until #1314 and the change is a fix, not a
+/// weakening.** Permanent suppression was measurably wrong in one direction
+/// only, and it was the losing one: when a mint's compensation fails at
+/// `delete_card`, the card survives carrying the seeded bootstrap on a `failed`
+/// session's queue with its evidence row committed alongside it, and the dormant
+/// restart does **not** inherit that queue
+/// (`session_projection_active_for_card_tx` inherits from an ACTIVE row only).
+/// Under the old predicate every later trigger read "already enqueued" and
+/// declined, so the standing instruction never reached any agent, for the life
+/// of a card the user cannot delete.
+///
+/// **Why the new semantics is acceptable, in the terms this text is for.** The
+/// hazard below is "the agent's first turn happens with no material" — and it is
+/// *per session*, because a new runtime is a new codex thread that holds none of
+/// the old one's context. A runtime replacement is precisely the moment the
+/// standing instruction has to be said again. The cost is the mirror case: a
+/// replacement that *inherited* the old queue re-sends an instruction that was
+/// still reachable, so the agent can see "stand by and do nothing yet" more than
+/// once.
+///
+/// **How many copies, stated as what is actually true.** Not "at most two":
+/// nothing here caps the count. Each `reset → trigger` pair run before the
+/// inherited queue has drained carries the previous copies forward and appends
+/// one more, so repeating that pair repeats the copy, and every copy is a
+/// `UserMessage` that can hard-fire a turn of its own. What makes this the
+/// acceptable side to err on is not a bound on the number but the content: the
+/// text tells the agent to stand by and touch nothing, so obeying it an
+/// additional time is obeying it once — the wasted turns are empty. The
+/// alternative, the silent loss, is not recoverable at all.
 ///
 /// **What the bootstrap is for.** `UserMessage` is hard-fire, so if it reaches
 /// an issuable drain before the summary does, the agent takes a turn holding
@@ -183,7 +218,7 @@ fn synthetic_actor() -> Actor {
 /// with something else in hand, and this text has nothing left to protect.
 ///
 /// **Why not a bootstrap-aware predicate.** Researched rather than assumed, and
-/// none of the three candidates beats the kind-level read:
+/// none of the three candidates beats the kind-plus-runtime read above:
 ///
 /// * `harness.user_message.enqueued` carries `char_count` and no text
 ///   (`calm-types/src/event.rs`), so matching a length is a collision, not a
@@ -195,7 +230,7 @@ fn synthetic_actor() -> Actor {
 ///   failure the per-card claim below exists to prevent. It is also erased by
 ///   `/planner/reset` and by legacy-Today adoption.
 /// * A new marker means either a write-only flag — which
-///   `conversations_shared::user_message_already_enqueued`'s own docs reject as
+///   `conversations_shared::user_message_enqueued_on_active_runtime`'s own docs reject as
 ///   "wrong in one direction either way" — or adding a text digest to a shared
 ///   event kind used by two other endpoints, which is an event-version bump
 ///   plus frontend schema and goldens, and is outside this slice.
@@ -405,33 +440,55 @@ pub(crate) async fn write_today_summary(
     let track_id = launchpad.track_id;
     let derived = summary_conversation_keys(&track_id);
 
-    // **The branch predicate is "the card exists AND it has ever been sent a
-    // message", not "the card exists".** Two review channels found the gap from
-    // opposite ends, and both end in the same place: a derived card that exists
-    // with an empty transcript.
+    // **The branch predicate is "the card exists AND its live runtime has
+    // already been sent a message", not "the card exists".** Two review
+    // channels found the gap from opposite ends, and both end in the same
+    // place: a derived card that exists while nothing has spoken to the session
+    // that is running on it.
+    //
+    // #1314 changed what those two entrances look like, and the honest record
+    // of it is:
     //
     // * The create operation lands `Stuck`. `plan_compensation` marks it on the
     //   first compensation error and never re-drives it, leaving the card
-    //   behind (`deletable: false`, so the user cannot clear it) with no
-    //   runtime and no first message.
-    // * The create operation *succeeds* — card and harness minted — and then
-    //   `create_track_conversation`'s own first `send_planner_input` fails (a 503
-    //   from a shared app-server that went down in between). It returns `Err`,
-    //   so no summary is sent either, and the card is left with an empty
-    //   transcript.
+    //   behind (`deletable: false`, so the user cannot clear it) with no active
+    //   runtime. Since #1314 the bootstrap text is enqueued by that operation's
+    //   own transaction, so what survives is a card whose message sits on a
+    //   `failed` session's pending queue with its
+    //   `harness.user_message.enqueued` row committed alongside it. **This
+    //   entrance is reachable and is the one the predicate now heals.** The
+    //   dormant restart does NOT inherit that queue
+    //   (`session_projection_active_for_card_tx` inherits from an ACTIVE row
+    //   only), so the message is stranded; the row is stamped with the `failed`
+    //   runtime, so `user_message_enqueued_on_active_runtime` does not count it
+    //   and the next press re-delivers the standing instruction onto the
+    //   restarted session. Until #1314 the predicate read "any row on this
+    //   card" and declined forever — measured: press 2 and press 3 both sent
+    //   the summary alone, and the agent never received the bootstrap.
+    //   `a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger`
+    //   drives exactly that sequence through the production routes.
+    // * The create operation *succeeds* and `create_track_conversation`'s own
+    //   post-operation `send_planner_input` then fails (a 503 from a shared
+    //   app-server that went down in between). **This entrance no longer
+    //   exists**: #1314 deleted that send, so the mint and the delivery of the
+    //   bootstrap commit or roll back together and a successful create cannot
+    //   leave an empty transcript.
     //
-    // Under a card-only predicate the next press skips the create arm and sends
-    // only the summary. Two things then break at once: the *first successful*
-    // trigger leaves ONE `harness.user_message.enqueued` row where
-    // INV-TODAYDOC-010 requires two, and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — the
-    // standing instruction that keeps a bootstrap-only turn from writing a
-    // report with no material — is never delivered at all, permanently.
+    // The read is not only for the reachable entrance above: what
+    // INV-TODAYDOC-010 and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] are stated in terms
+    // of is *messages*, not cards. Under a card-only predicate a press that
+    // found such a card would skip the create arm and send only the summary,
+    // and two things break at once: the *first successful* trigger leaves ONE
+    // `harness.user_message.enqueued` row where INV-TODAYDOC-010 requires two,
+    // and the standing instruction that keeps a bootstrap-only turn from
+    // writing a report with no material never reaches the session at all.
+    // `a_card_left_with_an_empty_transcript_still_receives_the_bootstrap`
+    // stages that shape directly by deleting the audit rows.
     //
-    // So the transcript is consulted, through the same read the create arm
-    // itself uses to decide whether to send (`user_message_already_enqueued`),
-    // and it is read *after* the create arm rather than inside its condition:
-    // that way one statement covers both entrances, plus the ordinary one where
-    // the card was minted seconds ago by this very request.
+    // It is read *after* the create arm rather than inside its condition: that
+    // way one statement covers the recovery entrance, the 409-race fallback and
+    // the ordinary case where the card was minted seconds ago by this very
+    // request.
     //
     // The recovery is NOT "call `create_track_conversation` again". Against an
     // existing card the adapter's `validate` refuses to re-mint and answers 409
@@ -458,17 +515,21 @@ pub(crate) async fn write_today_summary(
             barrier.wait().await;
         }
         // The real handler, not a reimplementation of it: the mint, the
-        // derived-id guard, the four retry arms and the first-message claim all
-        // have to be the ones production uses. The one thing this caller says
-        // for itself is `CallerSuppliesItsOwn`: #1343 gives a user-started
-        // launchpad conversation the day's counts as opening material, and this
-        // path already carries them in `summary_prompt` below — being briefed
-        // as well would state them twice and leave a third
+        // derived-id guard, the four retry arms and the in-transaction
+        // delivery of the bootstrap text all have to be the ones production
+        // uses. The one thing this caller says for itself is
+        // `CallerSuppliesItsOwn`: #1343 gives a user-started launchpad
+        // conversation the day's counts as opening material, and this path
+        // already carries them in `summary_prompt` below — being briefed as
+        // well would state them twice and leave a third
         // `harness.user_message.enqueued` row where INV-TODAYDOC-010 wants two.
+        //
+        // Since #1314 that ruling rides in the operation payload rather than
+        // being acted on after the operation commits, so it reaches the same
+        // decision from inside the mint transaction.
         let created = create_track_conversation_inner(
             s.clone(),
             w.clone(),
-            cs.clone(),
             synthetic_actor(),
             headers,
             track_id.clone(),
@@ -512,12 +573,13 @@ pub(crate) async fn write_today_summary(
     }
 
     // Whatever route got us here, the standing instruction has to reach the
-    // agent before the day's numbers do — *if nothing has spoken to this card
-    // yet at all*. The predicate is "has any user message ever been enqueued",
-    // not "was the bootstrap delivered", and
-    // [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] says why that is the right question
-    // rather than a cheap proxy: the hazard is a first turn taken with no
-    // material, and any earlier message has already spent it.
+    // agent before the day's numbers do — *if nothing has spoken to the session
+    // that is live on this card*. The predicate is "has a user message been
+    // enqueued onto the current ACTIVE runtime", not "was the bootstrap
+    // delivered", and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] says why that is the
+    // right question rather than a cheap proxy: the hazard is a session's first
+    // turn taken with no material, and any earlier message *on that session*
+    // has already spent it.
     //
     // **Two limits of the evidence, both inherited and neither hidden.**
     // `send_planner_input` enqueues the observation and *then* writes the
@@ -528,22 +590,25 @@ pub(crate) async fn write_today_summary(
     // it" — the agent process can still fail before consuming the persisted
     // observation. Both are properties of shared production code; what would
     // be wrong is claiming an exactly-once guarantee on top of them, so:
-    // at-least-once, deduplicated by a permanent row in the ordinary case.
+    // at-least-once, deduplicated per runtime by a permanent row in the
+    // ordinary case.
     //
     // **Under the per-card first-message claim, and that is not optional.**
-    // This is the same read-then-send `create_track_conversation` performs, and
-    // both paths need the same claim for
-    // the same reason: two concurrent requests both read "no user message yet"
-    // and both send, so the agent gets the same standing instruction twice.
-    // Moving this step out of `create_track_conversation` and into here moved it
-    // out from under that lock; measured, two concurrent triggers against a
-    // card with an empty transcript delivered two bootstraps.
+    // `create_track_conversation` used to perform the same read-then-send under
+    // this same lock; #1314 removed both from there, because its delivery now
+    // rides inside the mint operation and is serialized by the operation row
+    // rather than by a lock. This read-then-send is not, so it keeps the claim
+    // for the reason it was introduced: two concurrent requests both read "no
+    // user message yet" and both send, so the agent gets the same standing
+    // instruction twice. Measured — two concurrent triggers against a card with
+    // an empty transcript delivered two bootstraps.
     //
-    // The window is open **only** in the empty-transcript state, which makes it
-    // worse rather than better: an ordinary double-click on a first trigger is
-    // serialized by the create arm's own idempotency, while the state this
-    // recovery exists for is persistent — the card is `deletable: false` and
-    // never goes away.
+    // The window is open **only** while the live runtime has not been spoken
+    // to, which makes it worse rather than better: an ordinary double-click on
+    // a first trigger is serialized by the create arm's own idempotency, while
+    // the states this recovery exists for persist until something sends —
+    // the card is `deletable: false` and never goes away, and a card left with
+    // a `failed` session sits in that state across every restart.
     //
     // Lock order, which this path must not be the one to break:
     // `conversation_first_message_locks` → `planner_recovery_locks` is the only
@@ -556,7 +621,7 @@ pub(crate) async fn write_today_summary(
     {
         // Counts requests that reached this block. That is ALL it proves — not
         // that two requests observed an empty transcript, which it cannot know:
-        // it increments before `user_message_already_enqueued` runs. **The
+        // it increments before `user_message_enqueued_on_active_runtime` runs. **The
         // barrier below is what creates the race**; the counter is a cheap
         // sanity check that the arm was entered the expected number of times,
         // and it is close to vacuous on its own, because a `Barrier::new(2)`
@@ -582,7 +647,7 @@ pub(crate) async fn write_today_summary(
         // claim" is not true here.
         let _first_message_claim =
             lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
-        if !user_message_already_enqueued(&w, &track_id, &derived.card_id).await? {
+        if !user_message_enqueued_on_active_runtime(&w, &track_id, &derived.card_id).await? {
             send_summary(
                 &s,
                 &w,
@@ -718,9 +783,11 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         // said `assistant`.
         profile: HarnessProfile::Assistant,
         create_card: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
+        // #1343 — not a conversation create; nothing to brief. `None` is
+        // skipped by serde, so this payload's bytes are unchanged.
+        opening_briefing: None,
     })?;
     run_planner_card_operation(s, "planner-harness-start", payload).await
 }

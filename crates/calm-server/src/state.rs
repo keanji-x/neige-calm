@@ -119,11 +119,11 @@ pub struct RouteState {
     /// path taking them in the reverse order would close a deadlock cycle
     /// against it.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
-    /// Per-card claim serializing the "send the conversation's first message"
-    /// step of `POST /api/tracks/{id}/conversations`. Two
-    /// concurrent POSTs under one `Idempotency-Key` share one operation, so
-    /// without this both would observe "no user message yet" and send the same
-    /// instruction twice.
+    /// Per-card claim serializing the "has this card ever been sent a message?
+    /// then send one" step of `routes::today_summary`'s bootstrap recovery.
+    /// Without it two concurrent triggers against a card with an empty
+    /// transcript both read "no user message yet" and both send the standing
+    /// instruction — measured, two bootstraps.
     ///
     /// Deliberately a SEPARATE map from `planner_recovery_locks`: the claim is
     /// held across the call into `send_planner_input`, whose
@@ -139,25 +139,20 @@ pub struct RouteState {
     ///    so it is correct exactly because the deployment is ONE calm-server
     ///    per SQLite data directory (the operation driver runs in this process
     ///    too). Run two instances against one DB and the claim degrades to
-    ///    "each process reads `events` once": worst case one conversation's
-    ///    first message is delivered twice. It can still never mint a second
-    ///    card — that wall is the derived card id, which is independent of
-    ///    this lock. Multi-instance would need a DB-level claim, not a bigger
-    ///    map.
+    ///    "each process reads `events` once": worst case one card's bootstrap
+    ///    is delivered twice. Multi-instance would need a DB-level claim, not
+    ///    a bigger map.
     /// 2. *One permitted lock order:* `conversation_first_message_locks` →
-    ///    `planner_recovery_locks`, and never the reverse. The only nesting in
-    ///    the tree is `create_track_conversation` holding this claim across
-    ///    `send_planner_input` → `ensure_live_planner_harness`. Two distinct facts,
+    ///    `planner_recovery_locks`, and never the reverse. Two distinct facts,
     ///    kept apart because round 3 caught them conflated:
     ///    * *Sharing ONE map* for both purposes self-deadlocks a single
     ///      request outright: it would re-enter the same `tokio::sync::Mutex`
     ///      for the same card while still holding its guard, and
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
-    ///    * *There are two forward-order nestings.*
-    ///      `create_track_conversation` (#1189) and `routes::today_summary`'s
-    ///      bootstrap recovery (#1253 PR2) both hold this claim across
-    ///      `send_planner_input` → `ensure_live_planner_harness`. The Today path also
+    ///    * *There is one forward-order nesting.* `routes::today_summary`'s
+    ///      bootstrap recovery (#1253 PR2) holds this claim across
+    ///      `send_planner_input` → `ensure_live_planner_harness`. It also
     ///      holds it across a `planner-harness-start` operation on its dormant
     ///      branch, which blocks on a codex RPC; that submits no per-card lock
     ///      of its own (the adapter's mint map is private and is taken and
@@ -170,7 +165,7 @@ pub struct RouteState {
     ///      why the order is stated here instead of being left to chance.
     ///      Today no reverse-order path exists (boot replay, `/planner/input`
     ///      and `/planner/reset` take only the recovery lock and never enter
-    ///      conversation create); any new caller must preserve this order.
+    ///      the Today bootstrap arm); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
     /// Per-track fence shared by single-track deletion and direct runtime
     /// recovery/reattach paths that bypass `OperationRuntime`. Once DELETE owns

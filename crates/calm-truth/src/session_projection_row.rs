@@ -36,6 +36,29 @@ pub(crate) const WS_BACKED_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track
            FROM worker_sessions ws
            JOIN cards c ON c.session_id = ws.id"#;
 
+/// The **one** definition of "which runtime is this card's ACTIVE one", as a
+/// single SQL SELECT that yields exactly that runtime's id (or no row).
+/// `?1` is the card id.
+///
+/// It owns the state filter and the newest-first tie-break, and it exists so
+/// that no second reader has to restate either. `runtime_get_active_for_card_from_pool`
+/// — the read behind `Repo::session_projection_active_for_card` — is built from
+/// it, and so is the `harness.user_message.enqueued` predicate in
+/// `calm-server/src/routes/conversations_shared.rs`, which embeds it as a
+/// subquery so that "is there evidence" and "which runtime is live" are decided
+/// by one statement over one snapshot instead of two racing reads (#1314).
+///
+/// A caller that wants the whole projection row wraps this
+/// (`... WHERE ws.id = (<this>)`); a caller that only needs to compare ids uses
+/// it directly. Either way the state list is written here and nowhere else.
+pub const ACTIVE_CARD_RUNTIME_SELECT: &str = r#"SELECT ws.id
+             FROM worker_sessions ws
+             JOIN cards c ON c.session_id = ws.id
+            WHERE c.id = ?1
+              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
+            ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
+            LIMIT 1"#;
+
 pub(crate) const WS_CARD_KEYED_RUNTIME_SELECT: &str = r#"SELECT ws.id, ws.track_id, ws.provider, ws.mode, ws.contract, ws.parent_session_id,
                   ws.requester_session_id, ws.state, ws.mcp_token_hash, ws.thread_id,
                   ws.agent_session_id, ws.active_turn_id, ws.terminal_run_id,

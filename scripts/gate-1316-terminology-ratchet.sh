@@ -288,6 +288,36 @@
 #   If this citation ever dies too, DELETE the sentence rather than reach for a
 #   second one — the narrowing decision stands on its own.
 #
+#   A RAISE OF EXACTLY +2, taken ONCE by #1314, for the PERSISTED PAYLOAD KEY.
+#   Same split as the `spec` note above: prose can be reworded, a persisted
+#   value cannot. `harness.user_message.enqueued` rows already in every
+#   production database carry their runtime under the JSON key `runtime_id`,
+#   written by `send_planner_input` and by
+#   `PlannerHarnessStartAdapter::prepare_tx`. A reader that spells the JSON path
+#   any other way does not read differently, it reads NOTHING — the extract
+#   returns NULL, the predicate answers `false`, and the standing bootstrap is
+#   re-sent on every trigger. Renaming the key is a data migration, i.e. the
+#   matching rename slice's job, not the job of a slice that adds one reader.
+#
+#   Written as a CLOSED ENUMERATION with per-file counts, not as a criterion,
+#   for the reason S3 gives above: "SQL that reads a payload key" would read as
+#   a standing permission that any later `'$.runtime_id'` could re-spend.
+#
+#     crates/calm-server/src/routes/conversations_shared.rs   0 ->  1
+#     crates/calm-server/tests/cases/today_summary.rs         0 ->  1
+#                                                 crates   1556 -> 1558
+#
+#   Both added occurrences are the SQL string literal `'$.runtime_id'` inside a
+#   `json_extract(...)` path — one the production statement, one the assertion
+#   on it. NOT ONE is prose and NOT ONE is an identifier: everything #1314 could
+#   name differently was named differently and cost zero — the constant went
+#   `ACTIVE_RUNTIME_ID_FOR_CARD_SQL` -> `ACTIVE_CARD_RUNTIME_SELECT` (the
+#   sibling convention `WS_BACKED_CARD_RUNTIME_SELECT`), the test helper
+#   `active_runtime_id` -> `active_runtime`, and three prose sentences were
+#   reworded to name the payload rather than its key. The commit message lists
+#   both constituent lines path:line + content. If a later commit needs this
+#   cell higher, that is a NEW raise needing its own argument.
+#
 #   Everything else spelled `Runtime` is
 #   a DIFFERENT concept and is not scanned: `PluginRuntimeStatus` (plugin
 #   process state), `OperationRuntime` (`operation/driver.rs`), `ProcRuntime`,

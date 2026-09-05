@@ -645,7 +645,6 @@ async fn a_create_without_a_first_message_is_unchanged() {
             payload.get("first_message").is_none(),
             "the message-less payload must not carry the key at all: {payload}"
         );
-        assert!(payload.get("first_message_sha256").is_none());
     }
     b.shutdown_harnesses().await;
 }
