@@ -31,8 +31,7 @@ use crate::routes::fs::{
     DirEntry, GitChangedFile, GitDiffResponse, GitStatusResponse, ListdirResponse, ReadFileResponse,
 };
 use crate::routes::models::{
-    DefaultSource, Model, ModelDefaults, ModelSource, ModelsQuery, ModelsResponse,
-    ReasoningEffortOption,
+    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
@@ -265,18 +264,20 @@ use utoipa::OpenApi;
         ViewSizeWire,
         VersionInfo,
         // ---- models (#1505 S4-2) ----
-        // Every `ToSchema` this endpoint reaches must be listed here, not just
-        // the handler in `paths(...)` above. Both lists are hand-maintained,
-        // and a schema missing from THIS one is silent: the emitted document
-        // still regenerates byte-identically, so the drift job stays green
-        // while the frontend gets a dangling `$ref`.
-        Model,
+        // Listed for consistency with the rest of this block, NOT because
+        // omitting them would break the document: utoipa already walks a
+        // registered path's response body and emits every schema it reaches.
+        // Measured on this tree by deleting these names and re-emitting —
+        // the two documents differed in nothing but the entry for the query
+        // struct, which utoipa inlines as parameters anyway. The list in
+        // `paths(...)` above is the hand-maintained one that really is
+        // load-bearing; this one is house style.
+        CatalogModel,
         ReasoningEffortOption,
         ModelDefaults,
         DefaultSource,
         ModelSource,
         ModelsResponse,
-        ModelsQuery,
         // #177 — required theme field on card/track creation DTOs
         crate::routes::theme::RequestTheme,
         // shared error response

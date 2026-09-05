@@ -245,23 +245,54 @@ impl WedgeControl {
 /// would leak between the tests in one binary):
 ///
 ///   * `<sock>.model-list`   — verbatim JSON-RPC `result` for `model/list`.
+///   * `<sock>.model-list-<cursor>` — the result for a `model/list` carrying
+///     that `cursor`, so a test can script a genuinely paginated catalog.
 ///   * `<sock>.config-read`  — verbatim JSON-RPC `result` for `config/read`.
-///   * `<sock>.model-list-no-answer` — present ⇒ `model/list` is read and then
-///     never answered, modelling a daemon that has accepted the request and
-///     stalled. Every other method keeps working.
+///   * `<sock>.model-list-no-answer` / `<sock>.config-read-no-answer` —
+///     present ⇒ that method is read and then never answered, modelling a
+///     daemon that has accepted the request and stalled. Every other method
+///     keeps working.
 #[derive(Clone)]
 struct ReadFixtures {
+    sock: PathBuf,
     model_list: PathBuf,
     config_read: PathBuf,
     model_list_no_answer: PathBuf,
+    config_read_no_answer: PathBuf,
 }
 
 impl ReadFixtures {
     fn for_sock(sock: &std::path::Path) -> Self {
         Self {
+            sock: sock.to_path_buf(),
             model_list: sock.with_extension("model-list"),
             config_read: sock.with_extension("config-read"),
             model_list_no_answer: sock.with_extension("model-list-no-answer"),
+            config_read_no_answer: sock.with_extension("config-read-no-answer"),
+        }
+    }
+
+    /// Appends every request method this fixture sees, one per line, so a
+    /// test can assert an RPC was NOT issued. Distinct from the env-driven
+    /// `FAKE_CODEX_CAPTURE_REQUESTS`: keyed off the socket path, it needs no
+    /// process-global env and cannot bleed between tests.
+    fn record_method(&self, method: &str) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.sock.with_extension("methods"))
+        {
+            let _ = writeln!(file, "{method}");
+        }
+    }
+
+    /// The page a `model/list` with this cursor should be answered with.
+    /// `None` (no cursor) is the first page.
+    fn model_list_page(&self, cursor: Option<&str>) -> PathBuf {
+        match cursor {
+            Some(cursor) => self.sock.with_extension(format!("model-list-{cursor}")),
+            None => self.model_list.clone(),
         }
     }
 
@@ -308,6 +339,9 @@ async fn serve_conn(
             Err(_) => continue,
         };
         record_request(&req);
+        if let Some(m) = req.get("method").and_then(Value::as_str) {
+            reads.record_method(m);
+        }
         let id = req.get("id").cloned();
         let method = req
             .get("method")
@@ -414,13 +448,20 @@ async fn serve_conn(
                 if reads.model_list_no_answer.exists() {
                     continue;
                 }
+                let cursor = req
+                    .get("params")
+                    .and_then(|p| p.get("cursor"))
+                    .and_then(Value::as_str);
                 let result = ReadFixtures::result_or(
-                    &reads.model_list,
+                    &reads.model_list_page(cursor),
                     json!({ "data": [], "nextCursor": null }),
                 );
                 send_result(&mut write, &id, result).await?;
             }
             "config/read" => {
+                if reads.config_read_no_answer.exists() {
+                    continue;
+                }
                 let result = ReadFixtures::result_or(
                     &reads.config_read,
                     json!({ "config": {}, "origins": {} }),

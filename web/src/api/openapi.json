@@ -5514,6 +5514,48 @@
           }
         }
       },
+      "CatalogModel": {
+        "type": "object",
+        "description": "One entry of the model catalog.",
+        "required": [
+          "id",
+          "model",
+          "display_name",
+          "description",
+          "is_default",
+          "supported_reasoning_efforts",
+          "default_reasoning_effort"
+        ],
+        "properties": {
+          "default_reasoning_effort": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Codex's *preset* identifier. Presentation only — a React key. It must\nnever be sent back as a model selection; the slug is\n[`CatalogModel::model`]."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Codex's catalog-level default marker. Useful for ordering and\nhighlighting the list; **not** an answer to \"what am I following now\"."
+          },
+          "model": {
+            "type": "string",
+            "description": "The slug codex is invoked by. This is the value that travels to\n`turn/start`, into `cards.payload_json`, and in a selection request."
+          },
+          "supported_reasoning_efforts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffortOption"
+            }
+          }
+        }
+      },
       "ConnectorInstall": {
         "type": "object",
         "description": "The operator-supplied half of an `mcp-http` connector install.\n\nMirrors the request body of `POST /api/plugins/install` with\n`source.kind = \"mcp_http\"`. Everything the *kernel* decides — the secrets\nkey name, the manifest version, `min_kernel_version` — is a constant above,\nnot a field here.",
@@ -6288,48 +6330,6 @@
           }
         }
       },
-      "Model": {
-        "type": "object",
-        "description": "One entry of the model catalog.",
-        "required": [
-          "id",
-          "model",
-          "display_name",
-          "description",
-          "is_default",
-          "supported_reasoning_efforts",
-          "default_reasoning_effort"
-        ],
-        "properties": {
-          "default_reasoning_effort": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "description": "Codex's *preset* identifier. Presentation only — a React key. It must\nnever be sent back as a model selection; the slug is [`Model::model`]."
-          },
-          "is_default": {
-            "type": "boolean",
-            "description": "Codex's catalog-level default marker. Useful for ordering and\nhighlighting the list; **not** an answer to \"what am I following now\"."
-          },
-          "model": {
-            "type": "string",
-            "description": "The slug codex is invoked by. This is the value that travels to\n`turn/start`, into `cards.payload_json`, and in a selection request."
-          },
-          "supported_reasoning_efforts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ReasoningEffortOption"
-            }
-          }
-        }
-      },
       "ModelDefaults": {
         "type": "object",
         "description": "What a card that has selected nothing currently runs. `null` means \"not\nconfigured anywhere we could read\".",
@@ -6355,18 +6355,6 @@
           "live",
           "unavailable"
         ]
-      },
-      "ModelsQuery": {
-        "type": "object",
-        "properties": {
-          "card_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Resolve the default against this card's workspace.\n\nConfig layers are per-directory: a project layer under the card's\nworkspace can override `model`. Without a card there is no workspace,\nso the read is made without a `cwd` and `default_source` is `unknown`\nrather than a global-layer value dressed up as this card's default."
-          }
-        }
       },
       "ModelsResponse": {
         "type": "object",
@@ -6395,7 +6383,7 @@
           "models": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Model"
+              "$ref": "#/components/schemas/CatalogModel"
             }
           },
           "source": {

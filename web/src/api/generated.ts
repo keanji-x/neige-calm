@@ -1524,6 +1524,29 @@ export interface components {
             thread_status?: string | null;
             worker_session_id: string;
         };
+        /** @description One entry of the model catalog. */
+        CatalogModel: {
+            default_reasoning_effort: string;
+            description: string;
+            display_name: string;
+            /**
+             * @description Codex's *preset* identifier. Presentation only — a React key. It must
+             *     never be sent back as a model selection; the slug is
+             *     [`CatalogModel::model`].
+             */
+            id: string;
+            /**
+             * @description Codex's catalog-level default marker. Useful for ordering and
+             *     highlighting the list; **not** an answer to "what am I following now".
+             */
+            is_default: boolean;
+            /**
+             * @description The slug codex is invoked by. This is the value that travels to
+             *     `turn/start`, into `cards.payload_json`, and in a selection request.
+             */
+            model: string;
+            supported_reasoning_efforts: components["schemas"]["ReasoningEffortOption"][];
+        };
         /**
          * @description The operator-supplied half of an `mcp-http` connector install.
          *
@@ -1945,28 +1968,6 @@ export interface components {
             /** @description Canonical absolute path of the listed directory. */
             path: string;
         };
-        /** @description One entry of the model catalog. */
-        Model: {
-            default_reasoning_effort: string;
-            description: string;
-            display_name: string;
-            /**
-             * @description Codex's *preset* identifier. Presentation only — a React key. It must
-             *     never be sent back as a model selection; the slug is [`Model::model`].
-             */
-            id: string;
-            /**
-             * @description Codex's catalog-level default marker. Useful for ordering and
-             *     highlighting the list; **not** an answer to "what am I following now".
-             */
-            is_default: boolean;
-            /**
-             * @description The slug codex is invoked by. This is the value that travels to
-             *     `turn/start`, into `cards.payload_json`, and in a selection request.
-             */
-            model: string;
-            supported_reasoning_efforts: components["schemas"]["ReasoningEffortOption"][];
-        };
         /**
          * @description What a card that has selected nothing currently runs. `null` means "not
          *     configured anywhere we could read".
@@ -1980,17 +1981,6 @@ export interface components {
          * @enum {string}
          */
         ModelSource: "live" | "unavailable";
-        ModelsQuery: {
-            /**
-             * @description Resolve the default against this card's workspace.
-             *
-             *     Config layers are per-directory: a project layer under the card's
-             *     workspace can override `model`. Without a card there is no workspace,
-             *     so the read is made without a `cwd` and `default_source` is `unknown`
-             *     rather than a global-layer value dressed up as this card's default.
-             */
-            card_id?: string | null;
-        };
         /** @description Response body for `GET /api/models`. */
         ModelsResponse: {
             default: components["schemas"]["ModelDefaults"];
@@ -2002,7 +1992,7 @@ export interface components {
              *     300 s disk cache — so this is the age of this response, nothing else.
              */
             fetched_at_ms?: number | null;
-            models: components["schemas"]["Model"][];
+            models: components["schemas"]["CatalogModel"][];
             source: components["schemas"]["ModelSource"];
         };
         MoveReportBlockBody: {
