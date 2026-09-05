@@ -1227,22 +1227,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             serde_json::to_value(&snapshot)?,
             "planner harness",
         )?;
+        // `output.result` is a card snapshot produced by the PREVIOUS
+        // transactional phase. It is read here only for the card's identity
+        // (`id`, `track_id`, `created_at`) — never for its payload. See
+        // `card_apply_harness_start_payload_tx` for why.
         let mut card: crate::model::Card = serde_json::from_value(output.result.clone())?;
-        let mut card_payload = card.payload.clone();
-        let Some(map) = card_payload.as_object_mut() else {
-            return Err(CalmError::Internal(format!(
-                "planner harness card {card_id} payload is not a JSON object"
-            )));
-        };
-        map.insert("codex_thread_id".into(), Value::String(thread_id.clone()));
-        map.insert(
-            "appserver_sock".into(),
-            Value::String(self.daemon.remote_uri()),
-        );
-        map.remove("appserver_pgid");
-        map.remove("appserver_start_time");
-        map.remove("appserver_boot_id");
-        map.remove("appserver_needs_initial_prompt");
+        let appserver_sock = self.daemon.remote_uri();
 
         let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
         let transcript_scope = scope.clone();
@@ -1342,16 +1332,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
-                    let card = card_update_tx(
+                    let card = card_apply_harness_start_payload_tx(
                         tx,
                         &card_id,
-                        CardPatch {
-                            title: None,
-                            kind: None,
-                            sort: None,
-                            payload: Some(card_payload),
-                            deletable: None,
-                        },
+                        &thread_for_tx,
+                        &appserver_sock,
                     )
                     .await?;
                     checkpoint_output.result = serde_json::to_value(&card)?;
@@ -1714,6 +1699,74 @@ fn output_existing_thread_id(output: &TxOutput) -> Result<Option<String>> {
     Ok(output
         .output_optional_string("codex_thread_id", "planner harness")?
         .filter(|id| !id.trim().is_empty()))
+}
+
+/// Write this adapter's payload keys onto the card, merging them into the
+/// payload **as it stands inside `tx`** rather than onto a snapshot taken
+/// earlier.
+///
+/// #1505 S4-1. The previous shape cloned the payload out of
+/// `TxOutput::result` — a card snapshot produced by the previous
+/// transactional phase — mutated the keys below on that clone, and handed the
+/// whole thing to `card_update_tx`, which replaces `cards.payload_json`
+/// wholesale. Between the snapshot and this write sits a cross-process
+/// `thread/start` JSON-RPC call, and, because an operation is a durable
+/// resumable entity, a process restart: on a recovery replay the snapshot can
+/// be minutes or hours old. Every key another writer had put into the payload
+/// in that window was silently dropped.
+///
+/// The six keys touched below are the ones this adapter owns. Everything else
+/// is read fresh from the row and written back untouched. Note the key set is
+/// deliberately NOT the same as `clear_card_runtime_fields`': that one clears
+/// five keys and does not know about `appserver_needs_initial_prompt`.
+async fn card_apply_harness_start_payload_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+    thread_id: &str,
+    appserver_sock: &str,
+) -> Result<Card> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some((payload_text,)) = row else {
+        return Err(CalmError::NotFound(format!(
+            "planner harness card {card_id} disappeared before its payload write"
+        )));
+    };
+    let mut payload: Value = serde_json::from_str(&payload_text).map_err(|e| {
+        CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}"))
+    })?;
+    let Some(map) = payload.as_object_mut() else {
+        return Err(CalmError::Internal(format!(
+            "planner harness card {card_id} payload is not a JSON object"
+        )));
+    };
+    map.insert(
+        "codex_thread_id".into(),
+        Value::String(thread_id.to_string()),
+    );
+    map.insert(
+        "appserver_sock".into(),
+        Value::String(appserver_sock.to_string()),
+    );
+    map.remove("appserver_pgid");
+    map.remove("appserver_start_time");
+    map.remove("appserver_boot_id");
+    map.remove("appserver_needs_initial_prompt");
+    card_update_tx(
+        tx,
+        card_id,
+        CardPatch {
+            title: None,
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+            deletable: None,
+        },
+    )
+    .await
+    .map_err(CalmError::from)
 }
 
 async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> {
