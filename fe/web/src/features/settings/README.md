@@ -75,6 +75,7 @@ does not draw one-off glyphs for this.
 | `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
 | `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |
+| `/settings/plugins` (2nd level) | the install form | `PluginAddPane` (`plugin-add.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
 Real routes rather than pane-local state: every pane can be linked to, and Back
@@ -138,6 +139,56 @@ the plugin before re-reading anything, so the status code cannot tell "the lock
 was held and nothing happened" from "it is down with a reason in `last_error`".
 `unavailable` is a connector's normal terminal state and is painted in warn
 tones, never error tones.
+
+## Adding and removing a plugin (#1480)
+
+The list ends in an **Add a plugin** drill-in row, and that row is also the only
+thing on the empty list besides its sentence: a screen that says "none" and
+offers no way out of it makes the reader go looking elsewhere for its single
+next step.
+
+The form behind it is a second level for the same reason the configuration pane
+is one — it holds what the operator is typing, including a credential — and it
+is visit state rather than a route for the same reason too.
+
+It offers two sources, because they are not two ways to do one thing. A **remote
+MCP server** is described in the form (name, id, URL, key) and the kernel writes
+the plugin tree itself, credential included, into a `secrets.json` it keeps
+`0600`. A **server directory** installs a tree that already exists on the machine
+the workspace runs on — the only way to install a plugin that runs code — which
+is why it asks for a path and not for a file: a picker would read the operator's
+own computer, which is not where the plugin has to be.
+
+The **API key is typed once**. It is a password field, it goes out with the
+install request, and nothing here can show it again — so this screen offers no
+way to *edit* a stored key; re-adding the plugin is how a key is replaced.
+
+### Remove asks first, in the row
+
+Every row carries a **Remove** button, and pressing it does not remove anything:
+it replaces the row's other controls with `Remove <name>` / `Keep <name>` and
+puts the question under the plugin's name. Three things about that shape are
+deliberate:
+
+* the question **replaces** the switch rather than sitting beside it, so a
+  destructive answer and an ordinary one never share a pointer — and the row
+  stays at two controls, which is what the grammar costs to remain legible;
+* both buttons **name the plugin**, because the confirm is precisely the moment
+  the reader has to know which row they are answering for;
+* the sentence says what removal *costs* — the stored configuration, and a
+  remote server's saved key — since the switch beside it already says that
+  turning a plugin off loses nothing, and this is the act that is not that.
+
+One row asks at a time. Two half-finished removals are two things the reader has
+to keep apart, and nothing is gained by allowing them.
+
+### The row's live region is located by `data-nc-effect-boundary`
+
+astryx renders a visually-hidden `role="status"` region inside every `Button`
+for its loading announcement, so once the row grew a Remove button "the status
+region in this row" stopped being a unique description. The effect-boundary line
+carries a `data-nc-` locator, exactly as the controls cluster does, and its role
+is asserted on the element the locator finds rather than being used to find it.
 
 ## A setting has no Save button (INV-SETTINGS-003)
 

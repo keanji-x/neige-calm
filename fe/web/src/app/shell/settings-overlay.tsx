@@ -32,6 +32,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
+import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
   AboutPane, AppearancePane, GeneralPane, NetworkPane, SettingsSurface,
@@ -41,7 +42,7 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, usePluginConfigMutations,
-  usePluginMutations, useSettingsMutation,
+  usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
@@ -187,7 +188,13 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
   const mutations = usePluginMutations(transport, unauthorized);
   const config = usePluginConfigMutations(transport, unauthorized);
+  const install = usePluginInstall(transport, unauthorized);
   const [openId, setOpenId] = useState<string | null>(null);
+  /* #1480 — the install form is a second level for the same reason the
+     configuration pane is one: it holds what the operator is typing, including
+     a credential, and a shareable link to it could only arrive empty or with
+     somebody else's draft in it. */
+  const [adding, setAdding] = useState(false);
   /*
    * The row is what says the pane may be open at all, and it is re-derived from
    * the list on every render rather than copied into state when it was clicked.
@@ -204,6 +211,21 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
     ...pluginDetailQueryOptions(transport, openId ?? '', unauthorized),
     enabled: open !== undefined,
   });
+
+  if (adding) {
+    return (
+      <PluginAddPane
+        pending={install.pending}
+        onBack={() => setAdding(false)}
+        onInstallConnector={install.installConnector}
+        onInstallLocalPath={install.installLocalPath}
+        /* The list is what says the install worked, so the form leaves as soon
+           as the kernel accepts one — the new row is already on the screen
+           behind it, switched off, waiting to be enabled. */
+        onInstalled={() => setAdding(false)}
+      />
+    );
+  }
 
   if (openId !== null && open !== undefined) {
     return (
@@ -231,6 +253,8 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       effectBoundaryIds={mutations.effectBoundaryIds}
       onSetEnabled={mutations.setEnabled}
       onOpenConfig={setOpenId}
+      onAdd={() => setAdding(true)}
+      onUninstall={mutations.uninstall}
     />
   );
 }

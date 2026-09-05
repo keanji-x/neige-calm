@@ -54,6 +54,8 @@ it('costs a plugin row no height while it is empty', async () => {
       effectBoundaryIds={new Set()}
       onSetEnabled={vi.fn()}
       onOpenConfig={vi.fn()}
+      onAdd={vi.fn()}
+      onUninstall={vi.fn()}
     />,
   );
   await new Promise<void>((resolve) => {
@@ -65,7 +67,10 @@ it('costs a plugin row no height while it is empty', async () => {
    * forbids the latter, and the region's parent is the meta column whose height
    * is the thing under measurement.
    */
-  const region = container.querySelector('[role="status"]');
+  /* Located by the row's own attribute: astryx puts a `role="status"` region
+     inside every Button, and #1480's Remove button is one, so the role alone no
+     longer picks out this line. */
+  const region = container.querySelector('[data-nc-effect-boundary]');
   expect(region).not.toBeNull();
   expect(region?.textContent).toBe('');
   const meta = region?.parentElement;

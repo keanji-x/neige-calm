@@ -1509,6 +1509,47 @@ export interface components {
             thread_status?: string | null;
         };
         /**
+         * @description The operator-supplied half of an `mcp-http` connector install.
+         *
+         *     Mirrors the request body of `POST /api/plugins/install` with
+         *     `source.kind = "mcp_http"`. Everything the *kernel* decides — the secrets
+         *     key name, the manifest version, `min_kernel_version` — is a constant above,
+         *     not a field here.
+         */
+        ConnectorSpec: {
+            /**
+             * @description The credential. Absent or empty ⇒ an unauthenticated connector, and the
+             *     synthesized manifest then names no `api_key_secret` and no
+             *     `secrets.json` is written.
+             *
+             *     **Never echoed.** It reaches disk in `secrets.json` and nowhere else:
+             *     not the manifest, not the row, not any response body.
+             */
+            api_key?: string | null;
+            /**
+             * @description `bearer` | `header:<name>`. Closed set enforced by
+             *     `McpHttpBlock::validate`; `query:<name>` is refused there (#1194).
+             */
+            api_key_in?: string | null;
+            /** Format: int64 */
+            bringup_timeout_ms?: number | null;
+            description?: string | null;
+            display_name: string;
+            /**
+             * @description Plugin id. Validated by `Manifest::parse`, not here — the manifest is
+             *     the single source of truth for what a legal id is.
+             */
+            id: string;
+            /** Format: int64 */
+            request_timeout_ms?: number | null;
+            tools_allow?: string[];
+            /**
+             * @description Absolute `http://` / `https://` endpoint. Shape-checked by
+             *     `McpHttpBlock::validate` once the manifest is parsed.
+             */
+            url: string;
+        };
+        /**
          * @description User-facing Area creation. The raw sync-domain `NewArea` stays narrow for
          *     internal callers; these two preferences belong to the REST product surface
          *     and are applied inside the same audited transaction as the Area row.
@@ -1843,7 +1884,10 @@ export interface components {
             /** @enum {string} */
             kind: "local_path";
             path: string;
-        } | {
+        } | (components["schemas"]["ConnectorSpec"] & {
+            /** @enum {string} */
+            kind: "mcp_http";
+        }) | {
             /** @enum {string} */
             kind: "other";
         };

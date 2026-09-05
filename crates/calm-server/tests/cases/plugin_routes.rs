@@ -2092,3 +2092,338 @@ async fn reload_disabled_plugin_does_not_spawn() {
 // cache (see migration doc §3.3). M5's replacement gate is the `neige.*`
 // prefix check on `POST /api/plugins/:id/tool-call`, covered by
 // `plugin_routes_m5.rs::tool_call_rejects_non_neige_namespace`.
+
+// ===========================================================================
+// #1480 — `source.kind = "mcp_http"`: the tree the kernel writes itself
+// ===========================================================================
+
+/// The credential used across the connector tests. Long enough to satisfy
+/// `HttpCredential::parse`'s minimum, and distinctive enough that a substring
+/// search for it over a whole directory tree is a meaningful assertion.
+const TEST_KEY: &str = "sk-1480-connector-credential";
+
+fn connector_body(id: &str, extra: Value) -> Value {
+    let mut source = json!({
+        "kind": "mcp_http",
+        "id": id,
+        "display_name": "Zhibao",
+        "url": "https://mcp.example.test/mcp",
+        "api_key": TEST_KEY,
+        "api_key_in": "bearer",
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        source[k] = v.clone();
+    }
+    json!({ "source": source })
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// Every regular file under `dir`, as text. Used to state "the credential is
+/// in exactly one file" as a property of the whole tree rather than of the
+/// files this test remembered to look at.
+fn files_under(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
+            out.extend(files_under(&path));
+        } else {
+            out.push((
+                path.clone(),
+                std::fs::read_to_string(&path).unwrap_or_default(),
+            ));
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn connector_install_writes_manifest_secrets_and_marker() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.zhibao", json!({})),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "connector install should 201"
+    );
+    let body = body_to_json(resp).await;
+    assert_eq!(body["id"], "test.zhibao");
+    assert_eq!(body["enabled"], false, "install never enables");
+    assert_eq!(body["manifest"]["kind"], "mcp-http");
+    assert_eq!(
+        body["manifest"]["mcp_http"]["url"],
+        "https://mcp.example.test/mcp"
+    );
+    assert_eq!(
+        body["manifest"]["mcp_http"]["api_key_secret"], "api_key",
+        "the manifest names the secrets key, never the credential"
+    );
+    assert!(
+        !body.to_string().contains(TEST_KEY),
+        "the install response must not echo the credential: {body}"
+    );
+
+    let dir = plugins_dir.join("test.zhibao");
+    let secrets = dir.join("secrets.json");
+    assert!(dir.join("manifest.json").is_file(), "manifest.json written");
+    assert!(secrets.is_file(), "secrets.json written");
+    assert!(
+        dir.join(".neige-managed.json").is_file(),
+        "the tree is stamped as kernel-written"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&secrets).unwrap()).unwrap()["api_key"],
+        TEST_KEY
+    );
+    assert_eq!(
+        mode_of(&secrets),
+        0o600,
+        "secrets.json must not be group/world readable"
+    );
+    assert_eq!(
+        mode_of(&dir),
+        0o700,
+        "the tree itself must not be group/world readable"
+    );
+
+    let holders: Vec<_> = files_under(&dir)
+        .into_iter()
+        .filter(|(_, text)| text.contains(TEST_KEY))
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(
+        holders,
+        vec![secrets.clone()],
+        "the credential must live in secrets.json and nowhere else in the tree"
+    );
+
+    // And the row is real: the list surface sees it.
+    let arr = body_to_json(get_path(app(state.clone()), "/api/plugins").await).await;
+    assert_eq!(arr.as_array().unwrap().len(), 1);
+    assert_eq!(arr[0]["id"], "test.zhibao");
+    assert_eq!(arr[0]["manifest_name"], "Zhibao");
+}
+
+#[tokio::test]
+async fn connector_install_rejects_retired_query_placement_without_writing_a_tree() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.retired", json!({ "api_key_in": "query:api_key" })),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "`query:<name>` was retired by #1194 and must not be reachable from the UI"
+    );
+    assert!(
+        !plugins_dir.join("test.retired").exists(),
+        "a refused install must leave nothing on disk"
+    );
+}
+
+#[tokio::test]
+async fn connector_install_rejects_a_non_http_url_without_writing_a_tree() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.badurl", json!({ "url": "file:///etc/passwd" })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !plugins_dir.join("test.badurl").exists(),
+        "a refused install must leave nothing on disk"
+    );
+}
+
+/// A second install of the same id is refused **and leaves the first install's
+/// credential alone**. The status code is the cheap half of this test; the
+/// point is that answering "already installed" must not have gone through the
+/// tree first.
+#[tokio::test]
+async fn connector_reinstall_conflicts_without_touching_the_installed_tree() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.dup", json!({})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body(
+            "test.dup",
+            json!({ "api_key": "sk-second-attempt-credential" }),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "duplicate id is a 409");
+
+    let secrets = plugins_dir.join("test.dup").join("secrets.json");
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&secrets).unwrap()).unwrap()["api_key"],
+        TEST_KEY,
+        "the refused install must not have rewritten the live plugin's credential"
+    );
+}
+
+/// `plugins_dir/<id>` occupied by something the kernel did not write is
+/// refused, not overwritten.
+#[tokio::test]
+async fn connector_install_refuses_a_directory_the_kernel_did_not_write() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let dir = plugins_dir.join("test.occupied");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("work.txt"), "operator's own file").unwrap();
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.occupied", json!({})),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "an occupied directory is a conflict, not an overwrite"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("work.txt")).unwrap(),
+        "operator's own file",
+        "the operator's directory must survive the refusal"
+    );
+}
+
+/// Uninstalling a kernel-written connector takes the tree — and with it the
+/// credential — off disk.
+#[tokio::test]
+async fn uninstall_removes_a_kernel_written_connector_tree() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.gone", json!({})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let dir = plugins_dir.join("test.gone");
+    assert!(dir.join("secrets.json").is_file());
+
+    let resp = delete_path(app(state.clone()), "/api/plugins/test.gone").await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        !dir.exists(),
+        "the kernel wrote this tree and holds its credential; uninstall must remove it"
+    );
+}
+
+/// The other arm: a tree the **operator** supplied is left exactly where it
+/// was. This is the pre-#1480 contract, and it is what the marker exists to
+/// keep intact.
+#[tokio::test]
+async fn uninstall_leaves_an_operator_supplied_tree_in_place() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let src_root = tempfile::tempdir().unwrap();
+    let src_dir = write_stub_plugin(src_root.path(), "test.operator");
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": src_dir.to_str().unwrap() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = delete_path(app(state.clone()), "/api/plugins/test.operator").await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        src_dir.join("manifest.json").is_file(),
+        "uninstall must never delete a directory the operator supplied"
+    );
+    assert!(
+        std::fs::symlink_metadata(plugins_dir.join("test.operator")).is_ok(),
+        "and the link into plugins_dir is left alone too, as before #1480"
+    );
+}
+
+/// The refusal that keeps the marker a truthful ownership record: a
+/// `local_path` install may not adopt a marked tree, because uninstall would
+/// then delete a directory the kernel never wrote.
+#[tokio::test]
+async fn local_path_install_refuses_a_source_carrying_the_managed_marker() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let src_root = tempfile::tempdir().unwrap();
+    let src_dir = write_stub_plugin(src_root.path(), "test.marked");
+    std::fs::write(src_dir.join(".neige-managed.json"), "{}").unwrap();
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": src_dir.to_str().unwrap() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let text = body_to_text(resp).await;
+    assert!(
+        text.contains(".neige-managed.json"),
+        "the refusal must name the marker so the operator can act on it: {text}"
+    );
+}
+
+/// Reinstalling an id that previously carried a credential, this time without
+/// one, must not inherit the old `secrets.json`. The tree is rebuilt, not
+/// written over.
+#[tokio::test]
+async fn reinstalling_without_a_credential_does_not_inherit_the_previous_secret() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        connector_body("test.rotate", json!({})),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = delete_path(app(state.clone()), "/api/plugins/test.rotate").await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let mut body = connector_body("test.rotate", json!({}));
+    body["source"]["api_key"] = Value::Null;
+    body["source"]["api_key_in"] = Value::Null;
+    let resp = post_json(app(state.clone()), "/api/plugins/install", body).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "keyless connector is legal"
+    );
+
+    let dir = plugins_dir.join("test.rotate");
+    assert!(
+        !dir.join("secrets.json").exists(),
+        "a keyless install must not leave the previous credential readable"
+    );
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    assert!(
+        manifest["mcp_http"].get("api_key_secret").is_none(),
+        "and its manifest must not claim a secret it does not have"
+    );
+}

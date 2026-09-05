@@ -14,6 +14,7 @@ pub mod events;
 mod glob;
 pub mod http_mcp;
 pub mod lifecycle;
+pub mod managed;
 pub mod manifest;
 pub mod mcp;
 pub mod perms;
@@ -35,6 +36,7 @@ pub use config::{effective_config, missing_required};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::{HttpCredential, HttpMcpClient};
+pub use managed::ConnectorSpec;
 pub use manifest::{CONFIG_SCHEMA_KEY, ConnectorKind, Manifest};
 pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, InitializeMeta, McpClient,

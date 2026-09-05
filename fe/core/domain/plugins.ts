@@ -79,6 +79,162 @@ export function setPluginEnabledOperation(id: string, enabled: boolean): ApiOper
 }
 
 // ---------------------------------------------------------------------------
+// Adding and removing a plugin (#1480)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an `mcp-http` connector's API key rides.
+ *
+ * Two placements, and the difference is the value's shape, not just its
+ * location: `bearer` sends `Authorization: Bearer <key>`, `header` sends the
+ * bare key under a header name the operator gives. A third spelling —
+ * `query:<name>`, the key in the URL — existed and was retired by the kernel
+ * (#1194) because every transport error and upstream echo reproduced the
+ * credential; it is not offered here and the kernel refuses it.
+ */
+export type ApiKeyPlacement = 'bearer' | 'header';
+
+/**
+ * What the operator fills in to add a remote MCP server.
+ *
+ * `api_key` is the credential in the clear, on its way to the kernel and into a
+ * `secrets.json` the kernel writes `0600`. It travels **only** in this request
+ * body: it is not stored in the browser, not part of any query key, and the
+ * install response does not echo it back.
+ *
+ * Every field here is validated by the kernel against the same manifest rules a
+ * hand-written plugin goes through (`plugin_host::manifest`). This module does
+ * not re-state those rules — a second copy of "what a legal URL is" would
+ * differ from the kernel's on the day one of them changed, and the operator
+ * would be refused by whichever copy was stricter with no way to tell which.
+ * The one thing decided here is `header_name`, which exists because the wire
+ * field is a single string (`header:<name>`) and a form with two inputs is what
+ * makes that string constructible without teaching the operator its syntax.
+ */
+export type ConnectorInstallDraft = Readonly<{
+  id: string;
+  display_name: string;
+  description: string;
+  url: string;
+  api_key: string;
+  placement: ApiKeyPlacement;
+  header_name: string;
+}>;
+
+export const EMPTY_CONNECTOR_DRAFT: ConnectorInstallDraft = Object.freeze({
+  id: '', display_name: '', description: '', url: '', api_key: '',
+  placement: 'bearer', header_name: '',
+});
+
+/**
+ * The `api_key_in` wire string for a draft, or `null` when the draft cannot
+ * produce one — `header` with no header name.
+ *
+ * `null` is not "send nothing": with a credential present the kernel *requires*
+ * the placement, so a draft in that state is incomplete rather than defaulted,
+ * and [`connectorDraftError`] is what says so before a request is made.
+ */
+export function apiKeyInOf(draft: ConnectorInstallDraft): string | null {
+  if (draft.placement === 'bearer') return 'bearer';
+  const name = draft.header_name.trim();
+  return name === '' ? null : `header:${name}`;
+}
+
+/**
+ * The one refusal this screen makes on its own, or `null`.
+ *
+ * Deliberately short. Emptiness of a required box is a fact the form can see
+ * without knowing anything about plugins; every *judgement* — is this a legal
+ * id, a reachable URL, a placement this kernel accepts — belongs to the kernel,
+ * whose answer arrives as an error string the pane renders verbatim.
+ */
+export function connectorDraftError(draft: ConnectorInstallDraft): string | null {
+  if (draft.id.trim() === '') return 'An id is required.';
+  if (draft.display_name.trim() === '') return 'A name is required.';
+  if (draft.url.trim() === '') return 'A server URL is required.';
+  if (draft.api_key.trim() !== '' && apiKeyInOf(draft) === null) {
+    return 'A header name is required when the key rides in a custom header.';
+  }
+  return null;
+}
+
+/**
+ * The row the install answers with, decoded down to its identity.
+ *
+ * `.loose()` and two fields: the response is the same `PluginDetail` the
+ * lifecycle writes return, and every other field of it is read from the list
+ * this install invalidates. Decoding more here would be a second, weaker copy
+ * of a shape `GET /api/plugins` owns — and it would put the manifest, which
+ * this screen has no use for, through a schema on the credential's own request.
+ */
+export const installedPluginSchema = z.object({ id: z.string(), enabled: z.boolean() }).loose();
+export type InstalledPlugin = z.infer<typeof installedPluginSchema>;
+
+/**
+ * `POST /api/plugins/install` with `source.kind = "mcp_http"` — the kernel
+ * synthesizes the plugin tree from these fields (#1480).
+ *
+ * A blank credential is sent as an **absent** key, not as `""`: the kernel
+ * reads absent as "unauthenticated connector", which is what a blank box means,
+ * while an empty string would be a credential that fails its own minimum
+ * length. Same for the placement, which the kernel only requires alongside a
+ * credential.
+ */
+export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOperation<InstalledPlugin> {
+  const key = draft.api_key.trim();
+  const description = draft.description.trim();
+  return {
+    method: 'POST',
+    path: '/api/plugins/install',
+    body: {
+      source: {
+        kind: 'mcp_http',
+        id: draft.id.trim(),
+        display_name: draft.display_name.trim(),
+        ...(description === '' ? {} : { description }),
+        url: draft.url.trim(),
+        ...(key === '' ? {} : { api_key: key, api_key_in: apiKeyInOf(draft) }),
+      },
+    },
+    responseSchema: installedPluginSchema,
+  };
+}
+
+/**
+ * `POST /api/plugins/install` with `source.kind = "local_path"` — a directory
+ * that already exists **on the server**, carrying its own `manifest.json`.
+ *
+ * This is the only way to install a plugin that runs code (`kind: "app"`), and
+ * the path is resolved by the kernel in its own filesystem: nothing about it is
+ * a browser path, and the operator's machine is not consulted. That is why the
+ * form asks for a path rather than offering a file picker — a picker would
+ * upload from the wrong computer.
+ */
+export function installLocalPathOperation(path: string): ApiOperation<InstalledPlugin> {
+  return {
+    method: 'POST',
+    path: '/api/plugins/install',
+    body: { source: { kind: 'local_path', path: path.trim() } },
+    responseSchema: installedPluginSchema,
+  };
+}
+
+/**
+ * `DELETE /api/plugins/{id}` — the row, its token, its kv and its overlays.
+ *
+ * Destructive and not undoable from this screen: a connector the kernel wrote
+ * loses its stored credential with the tree, so re-adding it means typing the
+ * key again. The confirmation that guards it is the pane's, not this module's.
+ */
+export function uninstallPluginOperation(id: string): ApiOperation<undefined> {
+  return {
+    method: 'DELETE',
+    path: `/api/plugins/${encodeURIComponent(id)}`,
+    responseSchema: z.undefined(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // One plugin's detail, and its configuration (#1284 S4)
 // ---------------------------------------------------------------------------
 

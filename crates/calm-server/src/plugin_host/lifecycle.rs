@@ -46,7 +46,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{HostError, KERNEL_VERSION, Manifest, PluginHost, check_min_kernel_version};
+use super::managed::{self, ConnectorSpec};
+use super::{
+    HostError, KERNEL_VERSION, LifecycleGuard, Manifest, PluginHost, check_min_kernel_version,
+};
 use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::model::{NewPlugin, Plugin};
@@ -140,12 +143,10 @@ impl PluginHost {
     /// kernel" answers 409 instead of today's 422 — an error code silently
     /// changed by the lock. Nothing above the guard writes anything, so
     /// "`Busy` implies no side effects" still holds.
-    pub async fn install(&self, manifest: Manifest, src_path: &StdPath) -> Result<Plugin> {
-        // Issue #45: refuse to install a plugin we can never spawn. Doing this
-        // at install time (vs only at spawn time) avoids littering the DB and
-        // the filesystem with a row + symlink that's permanently inert.
-        // Manifest validation already confirmed the field parses; we just
-        // compare here.
+    /// Issue #45's refusal, shared by both install sources: never record a
+    /// plugin this kernel could not spawn. Nothing here writes, so a refusal is
+    /// fully inert — which is why it is allowed to run before the guard.
+    fn check_min_kernel(&self, manifest: &Manifest) -> Result<()> {
         let required = semver::Version::parse(&manifest.min_kernel_version).map_err(|e| {
             CalmError::PluginInstall(format!(
                 "manifest min_kernel_version `{}` is not valid semver: {e}",
@@ -158,6 +159,16 @@ impl PluginHost {
                 manifest.id, err.required, err.actual,
             )));
         }
+        Ok(())
+    }
+
+    pub async fn install(&self, manifest: Manifest, src_path: &StdPath) -> Result<Plugin> {
+        // Issue #45: refuse to install a plugin we can never spawn. Doing this
+        // at install time (vs only at spawn time) avoids littering the DB and
+        // the filesystem with a row + symlink that's permanently inert.
+        // Manifest validation already confirmed the field parses; we just
+        // compare here.
+        self.check_min_kernel(&manifest)?;
 
         // ---- THE guard. Everything below is one critical section. ---------
         // This is what closes design §1.2 race 2: the duplicate-id probe and
@@ -167,7 +178,84 @@ impl PluginHost {
         let guard = self
             .try_lock_lifecycle(&manifest.id)
             .map_err(spawn_error_to_calm)?;
+        self.install_under(&guard, manifest, |install_dir| {
+            materialize_install_tree(src_path, install_dir)
+        })
+        .await
+    }
 
+    /// #1480 — install an `mcp-http` connector the kernel synthesizes itself.
+    ///
+    /// Same operation as [`Self::install`] with one thing moved: the plugin
+    /// tree does not exist when the call starts, so writing it happens **inside
+    /// the guard**, at the very point the path-based install materializes its
+    /// symlink. That placement is the whole reason this is a host method rather
+    /// than a route that writes a directory and then calls `install`: the
+    /// synthesized tree lands at `plugins_dir/<id>`, which is exactly the path
+    /// a concurrent install/uninstall of the same id is manipulating, and only
+    /// the guard orders them. Writing it in the route would also mean a
+    /// duplicate-id 409 arrives *after* the tree was overwritten — destroying
+    /// the running plugin's `secrets.json` to answer "already installed".
+    ///
+    /// Validation runs through `Manifest::parse`, the same door a hand-written
+    /// manifest comes through; see [`ConnectorSpec::manifest_json`].
+    pub async fn install_managed_connector(&self, spec: &ConnectorSpec) -> Result<Plugin> {
+        let text = serde_json::to_string_pretty(&spec.manifest_json())
+            .map_err(|e| CalmError::PluginInstall(format!("serializing manifest: {e}")))?;
+        let manifest =
+            Manifest::parse(&text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
+        self.check_min_kernel(&manifest)?;
+
+        let guard = self
+            .try_lock_lifecycle(&manifest.id)
+            .map_err(spawn_error_to_calm)?;
+        let credential = spec.credential().map(str::to_owned);
+        // **Whether this call wrote the tree**, not whether a tree exists. The
+        // difference is a live plugin's credential: a duplicate-id refusal
+        // happens with the previous install's tree sitting at exactly this
+        // path, and cleaning up on "the install failed" would delete it.
+        // `write_connector_tree` cleans up its own partial writes, so the only
+        // case left for this flag is a failure *after* a successful write.
+        let wrote_tree = std::sync::atomic::AtomicBool::new(false);
+        let outcome = self
+            .install_under(&guard, manifest, |install_dir| {
+                let written =
+                    managed::write_connector_tree(install_dir, &text, credential.as_deref());
+                if written.is_ok() {
+                    wrote_tree.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                written.map_err(|e| match e {
+                    managed::WriteError::Occupied(_) => CalmError::PluginConflict(e.to_string()),
+                    managed::WriteError::Io(_) => CalmError::PluginInstall(e.to_string()),
+                })
+            })
+            .await;
+
+        // A failure after the tree was written must not leave a `secrets.json`
+        // behind: the credential would outlive the install that was refused,
+        // and the next install of this id would inherit it.
+        if outcome.is_err() && wrote_tree.load(std::sync::atomic::Ordering::Relaxed) {
+            let dir = self.plugins_dir.join(&spec.id);
+            if let Err(msg) = managed::remove_managed_tree(&dir) {
+                tracing::warn!(target: "plugin_host", "{msg}");
+            }
+        }
+        outcome
+    }
+
+    /// The half of install that runs under the guard, shared by both sources.
+    ///
+    /// `place_tree` is the one step that differs: a path install symlinks an
+    /// existing directory in, a connector install writes one. It runs where
+    /// `materialize_install_tree` always ran — after the duplicate-id refusal,
+    /// before the row insert — so neither source can write to disk for an id
+    /// that is already taken.
+    async fn install_under(
+        &self,
+        guard: &LifecycleGuard,
+        manifest: Manifest,
+        place_tree: impl FnOnce(&StdPath) -> Result<()>,
+    ) -> Result<Plugin> {
         // Reject reinstall while the previous row is still around. The
         // uninstall path is the only way to clear it; idempotent-by-conflict
         // matches the §7 table.
@@ -185,7 +273,7 @@ impl PluginHost {
         // user-supplied source — supervision must point at a path under our
         // control.
         let install_dir = self.plugins_dir.join(&manifest.id);
-        materialize_install_tree(src_path, &install_dir)?;
+        place_tree(&install_dir)?;
 
         // Slice H replaces the install-time placeholder: the token row is now
         // created lazily by `PluginHost::ensure_plugin_token` on the first
@@ -207,7 +295,7 @@ impl PluginHost {
         // implicitly: the manifest carries the perms, and the
         // registry/permission checker reads them directly on every callback —
         // no separate "granted" table to update in M3.
-        self.registry_insert(&guard, manifest, Some(install_dir));
+        self.registry_insert(guard, manifest, Some(install_dir));
 
         // The row returned here is `plugin_install`'s own return value, NOT a
         // re-read: install has no runtime step, and the route never re-read
@@ -304,6 +392,13 @@ impl PluginHost {
         // effects, so "Busy implies nothing happened" is untouched.
         self.plugin_row_or_404(id).await?;
         let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        // #1480 — the install path that decides whether a tree may be deleted
+        // is read **inside** the guard and never taken from the probe above. A
+        // concurrent install of this id re-materializes exactly that path, so a
+        // value read before the lock could aim the removal at a tree this
+        // uninstall never owned. The probe stays what its own comment says it
+        // is: an existence check whose result is discarded.
+        let row = self.repo.plugin_get_by_id(id).await?;
         // Stop first so the process can't write into the state we're about to
         // delete out from under it. NotFound is fine (already stopped).
         //
@@ -325,10 +420,37 @@ impl PluginHost {
         self.repo.plugin_delete(id).await?;
         self.registry_remove(&guard);
 
-        // The on-disk tree is left in place: removing it would race with any
-        // observers (the user pointing the install at a checked-out repo loses
-        // their work). Operators can rm -rf manually; the registry no longer
-        // references it.
+        // #1480 — the on-disk tree is left in place **unless the kernel wrote
+        // it**. For a tree the operator supplied (a checked-out repo, an
+        // unpacked release) removing it would destroy work the kernel never
+        // created, and that contract is unchanged: operators `rm -rf` those
+        // themselves, the registry no longer references them.
+        //
+        // A synthesized `mcp-http` connector inverts the argument. Nobody else
+        // owns that directory, it holds the `secrets.json` this uninstall was
+        // asked to forget, and leaving it means the next install of the same id
+        // silently inherits the old credential. `remove_managed_tree` decides
+        // which case it is by the marker the kernel stamps, so no operator tree
+        // can be reached from here however the path was formed.
+        //
+        // Best-effort by the same reasoning as the token/kv/overlay cascade
+        // above: the row is already gone, so a filesystem failure here has no
+        // outcome left to protect — it is logged, not surfaced as a 500 on an
+        // uninstall that did happen.
+        if let Some(row) = row {
+            match managed::remove_managed_tree(StdPath::new(&row.install_path)) {
+                Ok(true) => {
+                    tracing::info!(
+                        target: "plugin_host",
+                        plugin = %id,
+                        path = %row.install_path,
+                        "removed kernel-managed plugin tree"
+                    );
+                }
+                Ok(false) => {}
+                Err(msg) => tracing::warn!(target: "plugin_host", plugin = %id, "{msg}"),
+            }
+        }
         Ok(())
     }
 

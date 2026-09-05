@@ -5460,6 +5460,70 @@
           }
         }
       },
+      "ConnectorSpec": {
+        "type": "object",
+        "description": "The operator-supplied half of an `mcp-http` connector install.\n\nMirrors the request body of `POST /api/plugins/install` with\n`source.kind = \"mcp_http\"`. Everything the *kernel* decides — the secrets\nkey name, the manifest version, `min_kernel_version` — is a constant above,\nnot a field here.",
+        "required": [
+          "id",
+          "display_name",
+          "url"
+        ],
+        "properties": {
+          "api_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The credential. Absent or empty ⇒ an unauthenticated connector, and the\nsynthesized manifest then names no `api_key_secret` and no\n`secrets.json` is written.\n\n**Never echoed.** It reaches disk in `secrets.json` and nowhere else:\nnot the manifest, not the row, not any response body."
+          },
+          "api_key_in": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`bearer` | `header:<name>`. Closed set enforced by\n`McpHttpBlock::validate`; `query:<name>` is refused there (#1194)."
+          },
+          "bringup_timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Plugin id. Validated by `Manifest::parse`, not here — the manifest is\nthe single source of truth for what a legal id is."
+          },
+          "request_timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "tools_allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "url": {
+            "type": "string",
+            "description": "Absolute `http://` / `https://` endpoint. Shape-checked by\n`McpHttpBlock::validate` once the manifest is parsed."
+          }
+        }
+      },
       "CreateAreaRequest": {
         "type": "object",
         "description": "User-facing Area creation. The raw sync-domain `NewArea` stays narrow for\ninternal callers; these two preferences belong to the REST product surface\nand are applied inside the same audited transaction as the Area row.\n\nDeliberately permissive about unknown JSON keys, matching the historical\n`NewArea` contract: in particular a caller-supplied `kind` must continue to\nbe ignored rather than gaining a path to create a system Area.",
@@ -6075,8 +6139,31 @@
             }
           },
           {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorSpec",
+                "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis is the only install source that does not require a directory to\nexist on the server beforehand, which is what makes \"add a connector\"\nexpressible from the UI at all."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "mcp_http"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis is the only install source that does not require a directory to\nexist on the server beforehand, which is what makes \"add a connector\"\nexpressible from the UI at all."
+          },
+          {
             "type": "object",
-            "description": "Catch-all so we can return a friendly 400 for tarball/url/etc. instead\nof a serde deserialize error. Slice D scope is `local_path` only.",
+            "description": "Catch-all so we can return a friendly 400 for tarball/url/etc. instead\nof a serde deserialize error.",
             "required": [
               "kind"
             ],
