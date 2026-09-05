@@ -5012,15 +5012,16 @@ async fn stop_grace_config_default_flag_env_and_validation() {
 /// connections.
 ///
 /// The wedge: the fixture's accept loop used to `.await serve_conn(..)`
-/// inline, so it served exactly one connection at a time. Every adopt/drain
-/// test hands a live daemon from a dropped supervisor to a fresh one, and the
-/// old supervisor's WebSocket closes asynchronously (`Drop for CodexAppServer`
-/// only *requests* the reader task's abort). Whenever the new supervisor's
-/// connect landed inside that window, the fixture never answered its upgrade
-/// — and because the queued connection was then accepted and read from
-/// forever, the accept loop stayed blocked for good. With no timeout anywhere
-/// above `client_async`, the test process sat at 0% CPU until a human killed
-/// it, taking the self-hosted runner with it.
+/// inline, so it served exactly one connection at a time and reached a
+/// connection only after every earlier one closed. Every adopt/drain test
+/// hands a live daemon from a dropped supervisor to a fresh one, and the old
+/// supervisor's WebSocket closes ASYNCHRONOUSLY (`Drop for CodexAppServer`
+/// only *requests* the reader task's abort). A connect landing inside that
+/// window therefore waited exactly as long as the old connection lived — and
+/// with no timeout anywhere above `client_async` (see
+/// `connect_to_a_silent_peer_fails_with_a_bounded_diagnostic`), an old
+/// connection that was never released meant a test process sitting at 0% CPU
+/// until a human killed it, taking the self-hosted runner with it.
 ///
 /// Two clients at once, both fully initialized, is the smallest statement of
 /// the fixed behaviour — and it is also how a real `codex app-server` behaves.

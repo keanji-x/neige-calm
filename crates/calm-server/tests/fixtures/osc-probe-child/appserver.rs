@@ -160,16 +160,24 @@ pub fn run_fake_app_server() {
         // kills us at teardown.
         //
         // #1453 — each connection is served on its OWN task. This used to
-        // `.await` `serve_conn` inline, which made the fixture serve exactly
-        // one connection at a time: a second, overlapping connection sat in
-        // the listen backlog, never got its WebSocket upgrade, and — because
-        // the queued connection was then accepted and read from while its
-        // client had already gone away — permanently head-of-line blocked the
-        // accept loop, so every later connection wedged too. That is not how
-        // a real `codex app-server` behaves, and it is what turned the
-        // supervisor-handoff window in the adopt/drain tests (old supervisor's
-        // connection not yet closed when the new one connects) into an
-        // unbounded hang that wedged the CI runner for hours.
+        // `.await` `serve_conn` inline, so the fixture served exactly ONE
+        // connection at a time and a connection was reached only after every
+        // earlier one had closed. Measured against the old binary with raw
+        // upgrade requests: with connection A open, B never receives its
+        // HTTP 101; a third connection opened after A closes is likewise
+        // unanswered while B is being served. So an overlapping connection
+        // waits exactly as long as the connection ahead of it lives — and if
+        // that one is never released, it waits forever.
+        //
+        // That is a live trap for every test that hands a daemon from one
+        // supervisor to the next, because the old supervisor's WebSocket
+        // closes ASYNCHRONOUSLY: `Drop for CodexAppServer` only *requests*
+        // its reader task's abort, and the socket is closed when the runtime
+        // gets round to dropping that task. A real `codex app-server` accepts
+        // concurrently and has no such window; the fixture should not invent
+        // one. (The unbounded wait on the other side of that window is fixed
+        // separately, by `CONNECT_TIMEOUT` in `codex_appserver.rs` — the two
+        // fixes are independent, and both are needed.)
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
