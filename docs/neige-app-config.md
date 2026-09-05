@@ -110,6 +110,11 @@ machine or another access-control layer.
 `CALM_AUTH_USERNAME` and `CALM_AUTH_PASSWORD`. Set `auth_dev_autologin=true`
 only for local development; it disables the normal owner login flow.
 
+The generated systemd unit records PATH but does not import the interactive
+shell's proxy variables. On hosts requiring a proxy, configure Settings → Network
+before the first agent task; those persisted settings apply to new agent cards.
+See the [Alpha network setup](alpha-release.md#network-setup-before-the-first-agent-task).
+
 ## Install
 
 ```bash

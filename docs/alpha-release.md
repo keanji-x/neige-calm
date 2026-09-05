@@ -152,6 +152,23 @@ with `fe_dist` configured it redirects to `/next/`. Log in with the configured
 owner credentials. `/calm/` remains the legacy fallback. The admin port serves
 operator APIs, not the product UI; keep it loopback-only.
 
+### Network setup before the first agent task
+
+Systemd does not inherit the proxy variables exported in your interactive shell;
+`system install` captures PATH, not HTTP_PROXY/HTTPS_PROXY. If this host needs a
+proxy to reach the model provider, sign in and configure **Settings → Network →
+HTTP proxy / HTTPS proxy** before creating your first Track. Use the proxy URL
+appropriate to your machine, leave each field to save, then start a new Track or
+conversation. Existing running cards retain their launch configuration; changing
+a field does not repair an already waiting request. Direct-network installations
+can leave these fields empty.
+
+A successful web login only verifies local application access, not provider
+connectivity. If a first task remains Working without a reply, inspect the agent
+status/logs and these settings before retrying the same instruction repeatedly.
+The service's isolated Codex log is under
+`<child.data_dir>/logs/shared-codex-appserver/stderr.log`.
+
 ## 4. Verify identity and initialize upgrade bookkeeping
 
 ```bash
