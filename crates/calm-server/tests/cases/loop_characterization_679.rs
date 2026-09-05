@@ -390,9 +390,9 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         .obs_rx
         .try_recv()
         .expect("catch_up_push must deliver the task.completed observation synchronously");
-    assert_eq!(delivery.envelope_id, Some(completed_id));
+    assert_eq!(delivery.entry.envelope_id(), Some(completed_id));
     assert_eq!(
-        delivery.observation,
+        delivery.entry.observation(),
         Observation::TaskCompleted {
             idempotency_key: "loop-pin-a".into(),
             result: json!({"ok": true, "notes": "loop-pin"}),
@@ -420,9 +420,9 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         .obs_rx
         .try_recv()
         .expect("catch_up_push must deliver the task.failed observation synchronously");
-    assert_eq!(delivery.envelope_id, Some(failed_id));
+    assert_eq!(delivery.entry.envelope_id(), Some(failed_id));
     assert_eq!(
-        delivery.observation,
+        delivery.entry.observation(),
         Observation::TaskFailed {
             idempotency_key: "loop-pin-b".into(),
             error: "worker exploded".into(),
@@ -491,9 +491,9 @@ async fn live_task_failed_push_is_observation_only_and_planner_self_events_do_no
         .await
         .expect("live task.failed must reach the planner harness within 5s")
         .expect("observation channel open");
-    assert_eq!(delivery.envelope_id, Some(failed_id));
+    assert_eq!(delivery.entry.envelope_id(), Some(failed_id));
     assert_eq!(
-        delivery.observation,
+        delivery.entry.observation(),
         Observation::TaskFailed {
             idempotency_key: "live-loop-pin".into(),
             error: "worker reported failure".into(),

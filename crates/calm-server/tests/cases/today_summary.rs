@@ -729,10 +729,10 @@ impl Boot {
     /// depends on that staying true.
     ///
     /// Both the guard and the read-back cover the `pending_queue` half only;
-    /// `pending_envelope_ids` is cleared and never read back. That is
-    /// deliberate rather than an oversight: restoring a snapshot resizes the
-    /// ids to `pending_queue`'s length
-    /// (`HarnessSnapshot::align_pending_side_arrays`), so an id with no
+    /// the arrays that run parallel to it are cleared and never read back.
+    /// That is deliberate rather than an oversight: `HarnessSnapshot::
+    /// pending_entries` takes its length from `pending_queue` and pads or
+    /// ignores every side array against it, so a side-array slot with no
     /// observation behind it is dropped and can deliver nothing.
     ///
     /// The clear itself is the same kind of surgical staging as the case's own
@@ -765,6 +765,8 @@ impl Boot {
             let mut parsed: Value = serde_json::from_str(&state).unwrap();
             parsed["pending_queue"] = json!([]);
             parsed["pending_envelope_ids"] = json!([]);
+            parsed["pending_entry_meta"] = json!([]);
+            parsed["pending_message_ids"] = json!([]);
             sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
                 .bind(parsed.to_string())
                 .bind(id)

@@ -1,6 +1,7 @@
 pub mod config;
 pub mod lock;
 pub mod observation;
+pub mod queue;
 pub mod registry;
 pub mod run_loop;
 pub mod snapshot;
@@ -25,9 +26,12 @@ use crate::track_area_cache::TrackAreaCache;
 pub use config::HarnessConfig;
 pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
+pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{PlannerHarness, PlannerHarnessParams};
-pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
+pub use snapshot::{
+    HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
+};
 pub use state::{HarnessState, IssuingKind, run_status_for};
 pub use token_usage::{BASELINE_TOKENS, TokenUsage};
 
@@ -327,6 +331,7 @@ async fn replay_harness_events_since(
         )
         .await?;
     let mut replayed = 0usize;
+    let mut entries = snapshot.pending_entries();
     for row in rows {
         let role = role_needed_for_planner_push_filter(repo.as_ref(), &row.event).await?;
         if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
@@ -342,16 +347,32 @@ async fn replay_harness_events_since(
         let Some(obs) = dispatcher::harness_observation_from_event(track_id, &row.event) else {
             continue;
         };
-        snapshot.pending_queue.push(obs);
-        snapshot.pending_envelope_ids.push(Some(row.id));
-        // #1449 — `harness_observation_from_event` never produces a
-        // `UserMessage`, so a replayed event has no instance to identify; the
-        // slot exists to keep the arrays the same length.
-        snapshot.pending_message_ids.push(Vec::new());
+        // #1505 PR1 — a dispatcher observation can never be a `UserMessage`
+        // (the dispatcher has no path that mints one), and `QueueEntry::system`
+        // is the runtime fence that says so. That is also why a replayed entry
+        // needs no #1449 message id: it has no instance to identify, and
+        // `QueueEntry::system` gives it an empty set by construction. If that ever stops holding, this
+        // replay warns and skips rather than silently enqueuing an unaddressable
+        // user message that the queue UI could neither show nor delete.
+        let entry = match queue::QueueEntry::system(obs, Some(row.id)) {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::warn!(
+                    card_id,
+                    event_id = row.id,
+                    error = %error,
+                    "harness recovery: refusing to replay a user-message observation \
+                     from the dispatcher stream"
+                );
+                continue;
+            }
+        };
+        entries.push(entry);
         snapshot.push_watermark = snapshot.push_watermark.max(row.id);
         replayed += 1;
     }
     if replayed > 0 {
+        snapshot.set_pending_entries(entries);
         persist_recovered_snapshot(repo, card_id, snapshot).await?;
     }
     if replayed > 0 {
@@ -666,11 +687,16 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
 }
 
 pub fn initial_snapshot_with_goal(goal: Option<String>) -> HarnessSnapshot {
-    let pending_queue = goal
+    let entries = goal
         .filter(|text| !text.trim().is_empty())
-        .map(|text| vec![Observation::TrackGoal { text }])
+        .map(|text| {
+            vec![
+                QueueEntry::system(Observation::TrackGoal { text }, None)
+                    .expect("a track goal is never a user message"),
+            ]
+        })
         .unwrap_or_default();
-    HarnessSnapshot::initial(0, pending_queue)
+    HarnessSnapshot::initial(0, entries)
 }
 
 #[cfg(test)]
@@ -881,7 +907,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            snapshot.pending_queue,
+            snapshot.pending_observations(),
             vec![Observation::WorkspaceLeased {
                 track_id: track.id.clone(),
                 card_id: worker_card.id.clone(),
@@ -889,10 +915,17 @@ mod tests {
                 path: workspace_path.clone(),
             }]
         );
-        assert_eq!(snapshot.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(
+            snapshot
+                .pending_entries()
+                .iter()
+                .map(QueueEntry::envelope_id)
+                .collect::<Vec<_>>(),
+            vec![Some(event_id)]
+        );
         assert_eq!(snapshot.push_watermark, event_id);
         assert!(
-            !snapshot.pending_queue[0].is_hard_fire(),
+            !snapshot.pending_entries()[0].is_hard_fire(),
             "workspace observations must remain soft-fire"
         );
 
@@ -903,8 +936,7 @@ mod tests {
             .unwrap();
         let stored: HarnessSnapshot =
             serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
-        assert_eq!(stored.pending_queue, snapshot.pending_queue);
-        assert_eq!(stored.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(stored.pending_entries(), snapshot.pending_entries());
         assert_eq!(stored.push_watermark, event_id);
 
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
@@ -939,8 +971,7 @@ mod tests {
         assert_eq!(daemon.turn_start_count_for_test(), 1);
 
         let after_issue = handle.snapshot().await;
-        assert!(after_issue.pending_queue.is_empty());
-        assert!(after_issue.pending_envelope_ids.is_empty());
+        assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, event_id);
         assert_eq!(
             after_issue.last_thread_id.as_deref(),
@@ -1075,7 +1106,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            snapshot.pending_queue,
+            snapshot.pending_observations(),
             vec![Observation::ReviewRound {
                 track_id: track.id.clone(),
                 phase: "impl".into(),
@@ -1087,10 +1118,17 @@ mod tests {
                 converged: false,
             }]
         );
-        assert_eq!(snapshot.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(
+            snapshot
+                .pending_entries()
+                .iter()
+                .map(QueueEntry::envelope_id)
+                .collect::<Vec<_>>(),
+            vec![Some(event_id)]
+        );
         assert_eq!(snapshot.push_watermark, event_id);
         assert!(
-            snapshot.pending_queue[0].is_hard_fire(),
+            snapshot.pending_entries()[0].is_hard_fire(),
             "review.round observations must hard-fire"
         );
 
@@ -1101,8 +1139,7 @@ mod tests {
             .unwrap();
         let stored: HarnessSnapshot =
             serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
-        assert_eq!(stored.pending_queue, snapshot.pending_queue);
-        assert_eq!(stored.pending_envelope_ids, vec![Some(event_id)]);
+        assert_eq!(stored.pending_entries(), snapshot.pending_entries());
         assert_eq!(stored.push_watermark, event_id);
 
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
@@ -1137,8 +1174,7 @@ mod tests {
         assert_eq!(daemon.turn_start_count_for_test(), 1);
 
         let after_issue = handle.snapshot().await;
-        assert!(after_issue.pending_queue.is_empty());
-        assert!(after_issue.pending_envelope_ids.is_empty());
+        assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, event_id);
         assert_eq!(
             after_issue.last_thread_id.as_deref(),

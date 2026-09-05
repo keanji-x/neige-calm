@@ -292,7 +292,7 @@ async fn reset_plain_chat_card_on_area_chat_track_succeeds_without_planner_goal(
     let snapshot: calm_server::harness::HarnessSnapshot =
         serde_json::from_value(active.handle_state_json.unwrap()).unwrap();
     assert!(
-        snapshot.pending_queue.is_empty(),
+        snapshot.pending_observations().is_empty(),
         "plain chat must not inherit the track title as a goal"
     );
     if let Some(handle) = boot.state.harness.remove(&active.id) {

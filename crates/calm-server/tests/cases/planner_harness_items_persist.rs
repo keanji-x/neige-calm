@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, PlannerHarness,
-    PlannerHarnessParams,
+    PlannerHarnessParams, QueueEntry,
 };
 use calm_server::ids::ActorId;
 use calm_server::model::{HarnessInputPresentation, NewArea, NewCard, NewTrack, new_id, now_ms};
@@ -70,7 +70,8 @@ async fn seed_harness_with_pending(
         .unwrap();
     let runtime_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
-    let mut snapshot = HarnessSnapshot::initial(0, pending);
+    let mut snapshot =
+        HarnessSnapshot::initial(0, QueueEntry::entries_from_observations_for_test(pending));
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
 
@@ -583,10 +584,13 @@ async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
     .unwrap();
     let stored = HarnessSnapshot::from_value_strict(stored);
     assert!(
-        stored.pending_queue.iter().any(|observation| matches!(
-            observation,
-            Observation::UserMessage { text } if text == "survive audit outage"
-        )),
+        stored
+            .pending_observations()
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                Observation::UserMessage { text } if text == "survive audit outage"
+            )),
         "durably accepted input must remain in the committed snapshot"
     );
     sqlx::query("ALTER TABLE events_broken RENAME TO events")

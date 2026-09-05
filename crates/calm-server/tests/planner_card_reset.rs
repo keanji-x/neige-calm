@@ -700,7 +700,7 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(harness.snapshot().await.pending_queue.len(), 1);
+    assert_eq!(harness.snapshot().await.pending_observations().len(), 1);
     boot.state.harness.remove(&runtime_id);
     harness.shutdown().await.unwrap();
 }
@@ -737,7 +737,7 @@ async fn wait_for_user_message(harness: &PlannerHarness, text: &str) -> HarnessS
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let snapshot = harness.snapshot().await;
-        if snapshot.pending_queue.iter().any(|obs| {
+        if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
                 Observation::UserMessage { text: queued } if queued == text
@@ -787,14 +787,14 @@ async fn send_planner_input_happy() {
     assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     let snapshot = wait_for_user_message(&harness, text).await;
     assert!(
-        snapshot.pending_queue.iter().any(|obs| {
+        snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
                 Observation::UserMessage { text: queued } if queued == text
             )
         }),
         "pending_queue={:?}",
-        snapshot.pending_queue
+        snapshot.pending_observations()
     );
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
@@ -2188,9 +2188,9 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
         "corrupt inherited snapshot must be discarded, not carried over"
     );
     assert!(
-        new_snapshot.pending_queue.is_empty(),
+        new_snapshot.pending_observations().is_empty(),
         "fresh queue must be empty — reset seeds no observation: {:?}",
-        new_snapshot.pending_queue
+        new_snapshot.pending_observations()
     );
     assert!(boot.state.harness.get(&active.id).is_some());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
@@ -2290,7 +2290,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         .unwrap();
     let old_snapshot = HarnessSnapshot::from_value_strict(old_runtime.handle_state_json.unwrap());
     assert_eq!(old_snapshot.push_watermark, 3);
-    assert_eq!(old_snapshot.pending_queue.len(), 3);
+    assert_eq!(old_snapshot.pending_observations().len(), 3);
 
     let (status, body) = post_empty(
         boot.app.clone(),
@@ -2313,7 +2313,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
             .expect("new runtime snapshot"),
     );
     assert_eq!(new_snapshot.push_watermark, 3);
-    assert_eq!(new_snapshot.pending_queue.len(), 3);
+    assert_eq!(new_snapshot.pending_observations().len(), 3);
     assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();
@@ -2664,9 +2664,9 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
             .expect("runtime snapshot json"),
     );
     assert!(
-        snapshot.pending_queue.is_empty(),
+        snapshot.pending_observations().is_empty(),
         "{what}: persisted start snapshot must hold no observation; got {:?}",
-        snapshot.pending_queue
+        snapshot.pending_observations()
     );
     let handle = boot
         .state

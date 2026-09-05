@@ -11,8 +11,8 @@ use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
     ClaimMode, DeferredRecoveryParams, HarnessConfig, HarnessPhaseTag, HarnessRegistry,
-    HarnessSnapshot, Observation, PlannerHarness, PlannerHarnessParams, recover_harnesses_deferred,
-    recover_harnesses_on_boot, spawn_recovered_harness,
+    HarnessSnapshot, Observation, PlannerHarness, PlannerHarnessParams, QueueEntry,
+    recover_harnesses_deferred, recover_harnesses_on_boot, spawn_recovered_harness,
 };
 use calm_server::ids::{ActorId, CardId, TrackId};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
@@ -484,9 +484,9 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
-        vec![Observation::TrackGoal {
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
             text: "recover me".into(),
-        }],
+        }]),
     );
     snapshot.phase = HarnessPhaseTag::TurnCompleted;
     snapshot.last_thread_id = Some("thread-recovered".into());
@@ -530,7 +530,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let handle = registry.get(&runtime_id).expect("recovered harness");
     let restored = handle.snapshot().await;
     assert_eq!(restored.push_watermark, 42);
-    assert_eq!(restored.pending_queue.len(), 1);
+    assert_eq!(restored.pending_observations().len(), 1);
     assert_eq!(restored.last_turn_id.as_deref(), Some("turn-recovered"));
     handle.shutdown().await.unwrap();
 }
@@ -834,10 +834,10 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         7,
-        vec![Observation::TaskCompleted {
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
             idempotency_key: "deferred-boot".into(),
             result: json!({"ok": true}),
-        }],
+        }]),
     );
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-deferred".into());
@@ -1026,11 +1026,11 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(stored.push_watermark, queued_id.max(missed_id));
-    assert_eq!(stored.pending_queue.len(), 2);
-    assert!(stored.pending_queue.iter().any(|obs| {
+    assert_eq!(stored.pending_observations().len(), 2);
+    assert!(stored.pending_observations().iter().any(|obs| {
         matches!(obs, Observation::ReportEdited { body, .. } if body == "queued body")
     }));
-    assert!(stored.pending_queue.iter().any(|obs| {
+    assert!(stored.pending_observations().iter().any(|obs| {
         matches!(obs, Observation::ReportEdited { body, .. } if body == "missed body")
     }));
     let handle = registry.get(&runtime_id).expect("recovered harness");
@@ -1080,9 +1080,9 @@ async fn boot_recovery_skips_terminal_tracks() {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         42,
-        vec![Observation::TrackGoal {
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
             text: "do not recover".into(),
-        }],
+        }]),
     );
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-terminal".into());
@@ -1163,9 +1163,9 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let placeholder_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         1,
-        vec![Observation::TrackGoal {
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
             text: "must not recover".into(),
-        }],
+        }]),
     );
     snapshot.phase = HarnessPhaseTag::Idle;
 
@@ -1632,54 +1632,54 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(
-        stored.pending_queue.len(),
+        stored.pending_observations().len(),
         3,
         "ungated self-report + gate result + genuine pre-gate failure, \
          never the gated self-report or the stale gated task.failed: {:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     assert!(
-        stored.pending_queue.iter().any(|obs| matches!(
+        stored.pending_observations().iter().any(|obs| matches!(
             obs,
             Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == &ungated_id
         )),
         "{:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     assert!(
-        stored.pending_queue.iter().any(|obs| matches!(
+        stored.pending_observations().iter().any(|obs| matches!(
             obs,
             Observation::TaskGateResult { idempotency_key, passed: true, .. }
                 if idempotency_key == &gated_id
         )),
         "{:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     assert!(
-        !stored.pending_queue.iter().any(|obs| matches!(
+        !stored.pending_observations().iter().any(|obs| matches!(
             obs,
             Observation::TaskCompleted { idempotency_key, .. } if idempotency_key == &gated_id
         )),
         "gated self-report must be suppressed in replay (§6.5): {:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     // Round-3 review F1 — failure split.
     assert!(
-        !stored.pending_queue.iter().any(|obs| matches!(
+        !stored.pending_observations().iter().any(|obs| matches!(
             obs,
             Observation::TaskFailed { idempotency_key, .. } if idempotency_key == &gated_id
         )),
         "stale task.failed against the verifying gated row must be suppressed in replay: {:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     assert!(
-        stored.pending_queue.iter().any(|obs| matches!(
+        stored.pending_observations().iter().any(|obs| matches!(
             obs,
             Observation::TaskFailed { idempotency_key, .. }
                 if idempotency_key == &gated_failed_id
         )),
         "genuine pre-gate worker failure must replay as today: {:?}",
-        stored.pending_queue
+        stored.pending_observations()
     );
     let handle = registry.get(&runtime_id).expect("recovered harness");
     handle.shutdown().await.unwrap();
@@ -1978,7 +1978,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
                     .expect("recovered runtime keeps its handle state"),
             )
             .unwrap();
-            snapshot.pending_queue
+            snapshot.pending_observations()
         }
     };
 
@@ -2080,12 +2080,8 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
         // The racer carries a sentence a human typed into it during the window.
         let racer_id = new_id();
-        let racer_snapshot = HarnessSnapshot::initial(
-            0,
-            vec![Observation::UserMessage {
-                text: STRANDED.into(),
-            }],
-        );
+        let racer_snapshot =
+            HarnessSnapshot::initial(0, vec![QueueEntry::user_message(STRANDED.into(), None)]);
         let now = now_ms();
         let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
@@ -2356,12 +2352,8 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         // sentence to another runtime.
         let row_snapshot = HarnessSnapshot::initial(0, vec![]);
         // The carried output: still holds it, frozen at `prepare_tx` time.
-        let carried_snapshot = HarnessSnapshot::initial(
-            0,
-            vec![Observation::UserMessage {
-                text: MOVED_AWAY.into(),
-            }],
-        );
+        let carried_snapshot =
+            HarnessSnapshot::initial(0, vec![QueueEntry::user_message(MOVED_AWAY.into(), None)]);
         let now = now_ms();
         let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
@@ -2759,18 +2751,34 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
 
         // The failing runtime holds both: an upgraded entry with no identity,
         // and one this operation harvested and can name.
-        let mut failing_snapshot = HarnessSnapshot::initial(
+        let seeded = HarnessSnapshot::initial(
             0,
             vec![
-                Observation::UserMessage {
-                    text: LEGACY.into(),
-                },
-                Observation::UserMessage {
-                    text: RETURNED.into(),
-                },
+                QueueEntry::user_message(LEGACY.into(), None),
+                QueueEntry::user_message_moved(RETURNED.into(), vec![RETURNED_ID.to_string()]),
             ],
         );
-        failing_snapshot.pending_message_ids = vec![Vec::new(), vec![RETURNED_ID.to_string()]];
+        // The first entry is made into what a row written before #1505 PR1 and
+        // #1449 actually holds: a user sentence with neither an addressable
+        // `QueueEntryId` nor a transfer identity. Editing the JSON is the only
+        // way to reach that shape — no constructor produces it, deliberately.
+        let mut seeded_value = serde_json::to_value(&seeded).unwrap();
+        seeded_value["pending_entry_meta"][0] = serde_json::Value::Null;
+        seeded_value["pending_message_ids"][0] = json!([]);
+        let failing_snapshot = HarnessSnapshot::from_value_strict(seeded_value);
+        {
+            let entries = failing_snapshot.pending_entries();
+            assert_eq!(entries.len(), 2);
+            assert!(
+                entries[0].message_ids().is_empty() && entries[0].id().is_none(),
+                "premise: the upgraded entry has no identity of either kind"
+            );
+            assert_eq!(
+                entries[1].message_ids(),
+                [RETURNED_ID.to_string()],
+                "premise: the harvested entry can be named"
+            );
+        }
 
         let mut output = TxOutput::new(
             "card",

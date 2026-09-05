@@ -1848,6 +1848,24 @@ export interface components {
          */
         GetPlannerRunResponse: {
             card_id: string;
+            /**
+             * @description #1505 PR1 — the addressable user entries still waiting for the next
+             *     turn, in queue order. Empty when the harness is dormant.
+             *
+             *     Only entries minted at or after PR1 appear here. Dispatcher
+             *     observations never do (they are not the user's and cannot be edited),
+             *     and neither do user entries from pre-PR1 snapshots, which have no id to
+             *     address them by; both kinds of omission are counted in
+             *     `pending_overflow` only for the user-authored ones.
+             */
+            pending: components["schemas"]["PendingQueueEntry"][];
+            /**
+             * Format: int32
+             * @description User-authored entries that exist in the queue but are NOT in `pending`:
+             *     pre-PR1 entries with no id, plus anything past the page budget. The UI
+             *     can say "N more not shown" and be honest about not offering buttons.
+             */
+            pending_overflow: number;
             phase?: null | components["schemas"]["HarnessPhaseTag"];
             token_usage?: null | components["schemas"]["PlannerRunTokenUsage"];
             /** @description Active worker-session id, or null when the harness is dormant. */
@@ -2258,6 +2276,31 @@ export interface components {
             entity_id?: string | null;
             entity_kind: string;
         };
+        /** @description #1505 PR1 — one addressable user entry from the harness pending queue. */
+        PendingQueueEntry: {
+            /**
+             * @description Stable identity; never empty, because only entries that HAVE an id
+             *     reach this page.
+             */
+            entry_id: string;
+            /**
+             * Format: int64
+             * @description Wall-clock ms at which the entry entered the queue.
+             */
+            queued_at_ms: number;
+            /**
+             * Format: int32
+             * @description CAS token for the edit/delete endpoints (#1505 PR2). Bumped whenever
+             *     the text is rewritten, folding under backpressure included.
+             */
+            rev: number;
+            /**
+             * @description The complete text. Never truncated — an entry that would not fit the
+             *     page budget is left out of the page entirely rather than shown in a
+             *     form the user cannot safely edit.
+             */
+            text: string;
+        };
         /**
          * @description #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
          *
@@ -2537,6 +2580,17 @@ export interface components {
         };
         SendPlannerInputResponse: {
             card_id: string;
+            /**
+             * @description #1505 PR1 — stable id of the queue entry this text landed in, so the
+             *     client can match its optimistic echo against `GET /planner/run`'s
+             *     `pending` instead of against the text.
+             *
+             *     Null in exactly one accepted case: the text folded into a queue entry
+             *     written before #1505 PR1, which has no id and never gains one. The other
+             *     ways a client sees no id are refusals with a non-200 status (dormant
+             *     harness, 503 saturated queue, 409 shutting down), not this field.
+             */
+            entry_id?: string | null;
             worker_session_id: string;
         };
         /**

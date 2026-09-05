@@ -20,6 +20,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
+use crate::harness::queue::{FoldOutcome, QueueEntry, QueueEntryId, try_fold_tail};
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
@@ -173,11 +174,10 @@ pub(super) struct Inner {
     observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
-    pending_queue: Mutex<VecDeque<Observation>>,
-    pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
-    /// #1449 — message ids, one set per `pending_queue` entry. Identity only;
-    /// see `HarnessSnapshot::pending_message_ids`.
-    pending_message_ids: Mutex<VecDeque<Vec<String>>>,
+    /// #1505 PR1 — one queue, not two parallel arrays. `QueueEntry` carries
+    /// the envelope id and (for user input) the stable entry id, so there is no
+    /// second array that can drift out of step with this one.
+    pending_queue: Mutex<VecDeque<QueueEntry>>,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
@@ -235,15 +235,14 @@ impl<'a> IssueTurnHandle<'a> {
 
 #[derive(Clone, Debug)]
 pub struct HarnessObservationDelivery {
-    pub observation: Observation,
-    pub envelope_id: Option<i64>,
+    pub entry: QueueEntry,
 }
 
 enum HarnessObservationCommand {
     Delivery(HarnessObservationDelivery),
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
-        persisted: oneshot::Sender<Result<()>>,
+        persisted: oneshot::Sender<Result<DurableAck>>,
     },
 }
 
@@ -261,26 +260,45 @@ struct DebounceState {
 }
 
 struct DurableUserMessageCheckpoint {
-    pending_queue: VecDeque<Observation>,
-    pending_envelope_ids: VecDeque<Option<i64>>,
-    pending_message_ids: VecDeque<Vec<String>>,
+    pending_queue: VecDeque<QueueEntry>,
     debounce: DebounceState,
 }
 
 async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageCheckpoint {
     DurableUserMessageCheckpoint {
         pending_queue: inner.pending_queue.lock().await.clone(),
-        pending_envelope_ids: inner.pending_envelope_ids.lock().await.clone(),
-        pending_message_ids: inner.pending_message_ids.lock().await.clone(),
         debounce: *inner.debounce.lock().await,
     }
 }
 
 async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMessageCheckpoint) {
     *inner.pending_queue.lock().await = checkpoint.pending_queue;
-    *inner.pending_envelope_ids.lock().await = checkpoint.pending_envelope_ids;
-    *inner.pending_message_ids.lock().await = checkpoint.pending_message_ids;
     *inner.debounce.lock().await = checkpoint.debounce;
+}
+
+/// #1505 PR1 — what a durable enqueue tells the caller about the entry it
+/// created.
+///
+/// A process-internal channel type, not a wire type: the HTTP layer maps it
+/// into `SendPlannerInputResponse.entry_id`.
+///
+/// `entry_id` is `None` in exactly one accepted case — the incoming message
+/// folded into a [`QueueEntry::LegacyUser`] tail, which never gains an id.
+/// The other `None` paths the client sees are refusals, not acks: a dormant
+/// harness (no runtime at all), a 503 from a saturated observation channel,
+/// and a 409 from a harness that is shutting down.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DurableAck {
+    pub entry_id: Option<QueueEntryId>,
+}
+
+/// Result of offering one entry to the pending queue.
+enum EnqueueOutcome {
+    /// The queue was full of hard-fire entries and nothing could be evicted.
+    Rejected,
+    Accepted {
+        entry_id: Option<QueueEntryId>,
+    },
 }
 
 impl PlannerHarness {
@@ -324,15 +342,13 @@ impl PlannerHarness {
 
     pub fn observe(&self, obs: Observation) -> Result<()> {
         self.observe_delivery(HarnessObservationDelivery {
-            observation: obs,
-            envelope_id: None,
+            entry: QueueEntry::system(obs, None)?,
         })
     }
 
     pub fn observe_envelope(&self, obs: Observation, envelope_id: i64) -> Result<()> {
         self.observe_delivery(HarnessObservationDelivery {
-            observation: obs,
-            envelope_id: Some(envelope_id),
+            entry: QueueEntry::system(obs, Some(envelope_id))?,
         })
     }
 
@@ -361,24 +377,25 @@ impl PlannerHarness {
     }
 
     /// Fold and persist non-replayable user intent before acknowledging it.
-    pub async fn observe_user_message_durable(&self, text: String) -> Result<()> {
-        self.observe_durable_observations(vec![Observation::UserMessage { text }])
+    ///
+    /// The returned [`DurableAck`] names the entry the text ended up in — which
+    /// is NOT always an entry minted for this call: under backpressure the text
+    /// folds into the queue tail and the ack names the survivor.
+    pub async fn observe_user_message_durable(&self, text: String) -> Result<DurableAck> {
+        self.observe_durable_entries(vec![QueueEntry::user_message(text, None)])
             .await
     }
 
-    async fn observe_durable_observations(&self, observations: Vec<Observation>) -> Result<()> {
+    async fn observe_durable_entries(&self, entries: Vec<QueueEntry>) -> Result<DurableAck> {
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "planner harness is shutting down; refusing new observation".into(),
             ));
         }
-        let deliveries = observations
+        let deliveries = entries
             .into_iter()
-            .map(|observation| HarnessObservationDelivery {
-                observation,
-                envelope_id: None,
-            })
+            .map(|entry| HarnessObservationDelivery { entry })
             .collect::<Vec<_>>();
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
@@ -398,21 +415,27 @@ impl PlannerHarness {
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
                 let checkpoint = checkpoint_durable_user_message(&self.inner).await;
+                let mut ack = DurableAck { entry_id: None };
                 for delivery in deliveries {
-                    if !on_observation(&self.inner, delivery.observation, delivery.envelope_id)
-                        .await
-                    {
-                        restore_durable_user_message(&self.inner, checkpoint).await;
-                        return Err(CalmError::ServiceUnavailable(
-                            "planner harness pending queue full, retry shortly".into(),
-                        ));
+                    match on_observation(&self.inner, delivery.entry).await {
+                        EnqueueOutcome::Accepted { entry_id } => {
+                            if entry_id.is_some() {
+                                ack.entry_id = entry_id;
+                            }
+                        }
+                        EnqueueOutcome::Rejected => {
+                            restore_durable_user_message(&self.inner, checkpoint).await;
+                            return Err(CalmError::ServiceUnavailable(
+                                "planner harness pending queue full, retry shortly".into(),
+                            ));
+                        }
                     }
                 }
                 if let Err(error) = persist_snapshot_for_durable_send(&self.inner).await {
                     restore_durable_user_message(&self.inner, checkpoint).await;
                     return Err(error);
                 }
-                Ok(())
+                Ok(ack)
             }
         }
     }
@@ -531,13 +554,29 @@ impl PlannerHarness {
             .lock()
             .await
             .iter()
+            .map(QueueEntry::observation)
+            .collect()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn pending_entries_for_test(&self) -> Vec<QueueEntry> {
+        self.inner
+            .pending_queue
+            .lock()
+            .await
+            .iter()
             .cloned()
             .collect()
     }
 
     #[cfg(feature = "fixtures")]
     pub async fn observe_for_test(&self, obs: Observation, envelope_id: Option<i64>) {
-        let _ = on_observation(&self.inner, obs, envelope_id).await;
+        let entry = match obs {
+            Observation::UserMessage { text } => QueueEntry::user_message(text, envelope_id),
+            other => QueueEntry::system(other, envelope_id)
+                .expect("non-user observation wraps as a system entry"),
+        };
+        let _ = on_observation(&self.inner, entry).await;
     }
 
     /// Issue #682 — dev-only seam for the replay binary's
@@ -691,12 +730,11 @@ fn inner_from_params(
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
     let mut snapshot = params.snapshot;
-    snapshot.align_pending_side_arrays();
     truncate_snapshot_pending_queue(&mut snapshot);
-    let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
+    let pending_queue: VecDeque<_> = snapshot.pending_entries().into_iter().collect();
+    let debounce = debounce_from_initial_queue(&pending_queue);
     let state = state_from_snapshot(&snapshot);
     let last_phase = snapshot.phase;
-    let pending_queue: VecDeque<_> = snapshot.pending_queue.into_iter().collect();
     let (recent_hook_keys, recent_hook_key_set) =
         recent_hook_keys_from_pending_queue(&pending_queue);
     Arc::new(Inner {
@@ -712,8 +750,6 @@ fn inner_from_params(
         observations,
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
-        pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
-        pending_message_ids: Mutex::new(snapshot.pending_message_ids.into_iter().collect()),
         pending_queue: Mutex::new(pending_queue),
         recent_hook_keys: Mutex::new(recent_hook_keys),
         recent_hook_key_set: Mutex::new(recent_hook_key_set),
@@ -762,7 +798,7 @@ fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
     }
 }
 
-fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
+fn debounce_from_initial_queue(queue: &VecDeque<QueueEntry>) -> DebounceState {
     if queue.is_empty() {
         return DebounceState::default();
     }
@@ -770,7 +806,7 @@ fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
     DebounceState {
         first_pending_at: Some(now),
         last_pending_at: Some(now),
-        hard_fire: queue.iter().any(Observation::is_hard_fire),
+        hard_fire: queue.iter().any(QueueEntry::is_hard_fire),
     }
 }
 
@@ -781,21 +817,18 @@ fn debounce_from_initial_queue(queue: &[Observation]) -> DebounceState {
 /// before fallback replay or bridge retry can deliver the same hook again. Empty
 /// keys are skipped because old snapshot rows deserialize them from the default.
 fn recent_hook_keys_from_pending_queue(
-    pending_queue: &VecDeque<Observation>,
+    pending_queue: &VecDeque<QueueEntry>,
 ) -> (VecDeque<String>, HashSet<String>) {
     let mut keys = VecDeque::with_capacity(RECENT_HOOK_KEY_CACHE_LEN);
     let mut set = HashSet::with_capacity(RECENT_HOOK_KEY_CACHE_LEN);
-    for obs in pending_queue {
-        let Observation::WorkerHookStop {
-            idempotency_key, ..
-        } = obs
-        else {
+    for entry in pending_queue {
+        let Some(idempotency_key) = entry.hook_idempotency_key() else {
             continue;
         };
-        if idempotency_key.is_empty() || !set.insert(idempotency_key.clone()) {
+        if !set.insert(idempotency_key.to_string()) {
             continue;
         }
-        keys.push_back(idempotency_key.clone());
+        keys.push_back(idempotency_key.to_string());
         while keys.len() > RECENT_HOOK_KEY_CACHE_LEN {
             if let Some(evicted) = keys.pop_front() {
                 set.remove(&evicted);
@@ -834,8 +867,7 @@ async fn run_loop(
                 let Some(command) = command else { break };
                 match command {
                     HarnessObservationCommand::Delivery(delivery) => {
-                        let _accepted =
-                            on_observation(&inner, delivery.observation, delivery.envelope_id).await;
+                        let _accepted = on_observation(&inner, delivery.entry).await;
                         if let Err(e) = persist_snapshot(&inner).await {
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
@@ -843,21 +875,23 @@ async fn run_loop(
                     HarnessObservationCommand::Durable { deliveries, persisted } => {
                         let checkpoint = checkpoint_durable_user_message(&inner).await;
                         let mut accepted = true;
+                        let mut ack = DurableAck { entry_id: None };
                         for delivery in deliveries {
-                            if !on_observation(
-                                &inner,
-                                delivery.observation,
-                                delivery.envelope_id,
-                            )
-                            .await
-                            {
-                                accepted = false;
-                                break;
+                            match on_observation(&inner, delivery.entry).await {
+                                EnqueueOutcome::Accepted { entry_id } => {
+                                    if entry_id.is_some() {
+                                        ack.entry_id = entry_id;
+                                    }
+                                }
+                                EnqueueOutcome::Rejected => {
+                                    accepted = false;
+                                    break;
+                                }
                             }
                         }
                         let result = if accepted {
                             match persist_snapshot_for_durable_send(&inner).await {
-                                Ok(()) => Ok(()),
+                                Ok(()) => Ok(ack),
                                 Err(error) => {
                                     restore_durable_user_message(&inner, checkpoint).await;
                                     Err(error)
@@ -901,20 +935,22 @@ async fn run_loop(
     }
 }
 
-async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Option<i64>) -> bool {
-    if let Some(envelope_id) = envelope_id {
+async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
+    if let Some(envelope_id) = entry.envelope_id() {
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
     }
-    if suppress_duplicate_hook_stop(inner, &obs).await {
-        return false;
+    if suppress_duplicate_hook_stop(inner, &entry).await {
+        return EnqueueOutcome::Rejected;
     }
-    let hard_fire = obs.is_hard_fire();
-    if !enqueue_pending_observation(inner, obs.clone(), envelope_id).await {
-        return false;
+    let hard_fire = entry.is_hard_fire();
+    let report_sha256 = entry.report_sha256().map(str::to_string);
+    let outcome = enqueue_pending_observation(inner, entry).await;
+    if matches!(outcome, EnqueueOutcome::Rejected) {
+        return outcome;
     }
-    if let Some(hash) = obs.report_sha256() {
-        *inner.last_report_body_sha256.lock().await = Some(hash.to_string());
+    if let Some(hash) = report_sha256 {
+        *inner.last_report_body_sha256.lock().await = Some(hash);
     }
     let now = Instant::now();
     let mut debounce = inner.debounce.lock().await;
@@ -923,7 +959,7 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     }
     debounce.last_pending_at = Some(now);
     debounce.hard_fire |= hard_fire;
-    true
+    outcome
 }
 
 /// KNOWN GAP (#1449): the harvest appends to the successor's queue without
@@ -935,158 +971,58 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
 /// undelivered entries, and it became reachable when the transfer became a
 /// move.
 fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
-    let len = snapshot.pending_queue.len();
+    let len = snapshot.pending_len();
     if len <= MAX_PENDING_QUEUE_LEN {
         return;
     }
     let drop_count = len - MAX_PENDING_QUEUE_LEN;
-    // #1449 — align first, so this function does not depend on its caller
-    // having done it. The two side arrays are drained by the same range as the
-    // queue; against a shorter array that range is out of bounds and `drain`
-    // panics, and a hand-built or pre-#1449 snapshot has exactly that shape.
-    snapshot.align_pending_side_arrays();
-    snapshot.pending_queue.drain(..drop_count);
-    snapshot.pending_envelope_ids.drain(..drop_count);
-    snapshot.pending_message_ids.drain(..drop_count);
+    let mut entries = snapshot.pending_entries();
+    entries.drain(..drop_count);
+    snapshot.set_pending_entries(entries);
     tracing::warn!(
         target: "planner.harness.backpressure",
         original_len = len,
-        retained_len = snapshot.pending_queue.len(),
+        retained_len = snapshot.pending_len(),
         "snapshot pending_queue truncated to newest observations"
     );
 }
 
-async fn enqueue_pending_observation(
-    inner: &Arc<Inner>,
-    obs: Observation,
-    envelope_id: Option<i64>,
-) -> bool {
+async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
     let mut queue = inner.pending_queue.lock().await;
-    let mut envelope_ids = inner.pending_envelope_ids.lock().await;
-    let mut message_ids = inner.pending_message_ids.lock().await;
-    // #1449 — a `UserMessage` entering this queue gets an id here.
-    let minted: Vec<String> = match &obs {
-        Observation::UserMessage { .. } => vec![crate::model::new_id()],
-        _ => Vec::new(),
-    };
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
-        if try_fold_pending_tail(
-            &mut queue,
-            &mut envelope_ids,
-            &mut message_ids,
-            &obs,
-            envelope_id,
-            &minted,
-        ) {
-            return true;
+        match try_fold_tail(&mut queue, &entry, MAX_FOLDED_USER_MESSAGE_CHARS) {
+            FoldOutcome::Folded { entry_id } => {
+                return EnqueueOutcome::Accepted { entry_id };
+            }
+            FoldOutcome::NotFolded => {}
         }
-        let hard = obs.is_hard_fire();
+        let hard = entry.is_hard_fire();
+        // Eviction can only ever take a non-hard-fire entry, and every one of
+        // those is a `System` entry (`QueueEntry::User` / `LegacyUser` report
+        // hard-fire unconditionally). So neither fold nor eviction can destroy
+        // an id a client has already been shown.
         if let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
             queue.remove(drop_idx);
-            envelope_ids.remove(drop_idx);
-            message_ids.remove(drop_idx);
         } else {
             tracing::warn!(
                 target: "planner.harness.backpressure",
                 queue_len = queue.len(),
                 hard,
-                variant = ?obs,
+                variant = ?entry,
                 "pending_queue full, incoming observation dropped"
             );
-            return false;
+            return EnqueueOutcome::Rejected;
         }
     }
-    queue.push_back(obs);
-    envelope_ids.push_back(envelope_id);
-    message_ids.push_back(minted);
-    true
+    let entry_id = entry.id().cloned();
+    queue.push_back(entry);
+    EnqueueOutcome::Accepted { entry_id }
 }
 
-fn try_fold_pending_tail(
-    queue: &mut VecDeque<Observation>,
-    envelope_ids: &mut VecDeque<Option<i64>>,
-    message_ids: &mut VecDeque<Vec<String>>,
-    obs: &Observation,
-    envelope_id: Option<i64>,
-    minted_message_ids: &[String],
-) -> bool {
-    let Some(last) = queue.back_mut() else {
+async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, entry: &QueueEntry) -> bool {
+    let Some(idempotency_key) = entry.hook_idempotency_key() else {
         return false;
     };
-    let folded = match (last, obs) {
-        (Observation::TrackGoal { text }, Observation::TrackGoal { text: new_text }) => {
-            *text = new_text.clone();
-            true
-        }
-        (
-            Observation::ReportEdited {
-                track_id,
-                body_sha256,
-                body,
-                author,
-            },
-            Observation::ReportEdited {
-                track_id: new_track_id,
-                body_sha256: new_body_sha256,
-                body: new_body,
-                author: new_author,
-            },
-        ) if track_id == new_track_id => {
-            *body_sha256 = new_body_sha256.clone();
-            *body = new_body.clone();
-            // The fold keeps the NEWEST edit's state, attribution included:
-            // the planner is told to treat the surviving body as ground truth,
-            // so it must be told who actually wrote that body (#1252 F2).
-            *author = *new_author;
-            true
-        }
-        // #615 F3: preserve both adjacent user intents under backpressure
-        // rather than evicting the older send. Capped at
-        // `MAX_FOLDED_USER_MESSAGE_CHARS` so the per-tail size cannot grow
-        // unboundedly under sustained backpressure; once the cap is reached the
-        // eviction fallback in `enqueue_pending_observation` drops a
-        // non-hard-fire entry and lets the new UserMessage take a fresh slot.
-        // Replacing would lose earlier intent, separate entries surface as
-        // separate `User says:` blocks at turn-issuance.
-        (Observation::UserMessage { text }, Observation::UserMessage { text: new_text }) => {
-            let current_chars = text.chars().count();
-            let new_chars = new_text.chars().count();
-            if current_chars.saturating_add(new_chars).saturating_add(2)
-                > MAX_FOLDED_USER_MESSAGE_CHARS
-            {
-                false
-            } else {
-                text.push_str("\n\n");
-                text.push_str(new_text);
-                true
-            }
-        }
-        _ => false,
-    };
-    if folded && let Some(last_envelope_id) = envelope_ids.back_mut() {
-        *last_envelope_id = envelope_id;
-    }
-    // #1449 — a fold turns two entries into one, so the surviving entry carries
-    // BOTH sets of ids. Overwriting instead of unioning would discard an
-    // instance the caller may later have to move back, which is exactly the
-    // loss of identity the ids exist to prevent; the ids are a set per entry
-    // rather than one id per entry for this reason alone.
-    if folded && let Some(last_message_ids) = message_ids.back_mut() {
-        last_message_ids.extend_from_slice(minted_message_ids);
-    }
-    folded
-}
-
-async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, obs: &Observation) -> bool {
-    let Observation::WorkerHookStop {
-        idempotency_key, ..
-    } = obs
-    else {
-        return false;
-    };
-    if idempotency_key.is_empty() {
-        return false;
-    }
     let mut set = inner.recent_hook_key_set.lock().await;
     if set.contains(idempotency_key) {
         tracing::warn!(
@@ -1096,9 +1032,9 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, obs: &Observation) -> 
         );
         return true;
     }
-    set.insert(idempotency_key.clone());
+    set.insert(idempotency_key.to_string());
     let mut keys = inner.recent_hook_keys.lock().await;
-    keys.push_back(idempotency_key.clone());
+    keys.push_back(idempotency_key.to_string());
     while keys.len() > RECENT_HOOK_KEY_CACHE_LEN {
         if let Some(evicted) = keys.pop_front() {
             set.remove(&evicted);
@@ -1897,15 +1833,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.issued_input_segments.lock().await = None;
     persist_snapshot(inner).await?;
 
-    let (drained, drained_envelope_ids, drained_message_ids) = {
+    let drained = {
         let mut queue = inner.pending_queue.lock().await;
-        let mut envelope_ids = inner.pending_envelope_ids.lock().await;
-        let mut message_ids = inner.pending_message_ids.lock().await;
-        (
-            queue.drain(..).collect::<Vec<_>>(),
-            envelope_ids.drain(..).collect::<Vec<_>>(),
-            message_ids.drain(..).collect::<Vec<_>>(),
-        )
+        queue.drain(..).collect::<Vec<_>>()
     };
     if drained.is_empty() {
         *inner.state.lock().await = prior_turn
@@ -1915,7 +1845,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
     *inner.debounce.lock().await = DebounceState::default();
-    let input_segments = Observation::input_segments_for(&drained);
+    let drained_observations = drained
+        .iter()
+        .map(QueueEntry::observation)
+        .collect::<Vec<_>>();
+    let input_segments = Observation::input_segments_for(&drained_observations);
 
     let joined_observation_text = input_segments
         .iter()
@@ -1923,7 +1857,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
+        rebuffer_head(inner, drained).await;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
@@ -1965,7 +1899,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             persist_issuance_outcome(inner).await?;
         }
         Err(e) => {
-            rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
+            rebuffer_head(inner, drained).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::TurnCompleted {
@@ -2163,25 +2097,14 @@ fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> S
     }
 }
 
-async fn rebuffer_head(
-    inner: &Arc<Inner>,
-    drained: Vec<Observation>,
-    drained_envelope_ids: Vec<Option<i64>>,
-    drained_message_ids: Vec<Vec<String>>,
-) {
+async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
     let mut queue = inner.pending_queue.lock().await;
-    let mut envelope_ids = inner.pending_envelope_ids.lock().await;
-    let mut message_ids = inner.pending_message_ids.lock().await;
-    for obs in drained.into_iter().rev() {
-        queue.push_front(obs);
-    }
-    for envelope_id in drained_envelope_ids.into_iter().rev() {
-        envelope_ids.push_front(envelope_id);
-    }
     // #1449 — a re-buffered batch keeps the ids it was drained with: it is the
-    // same instances going back, not new ones.
-    for ids in drained_message_ids.into_iter().rev() {
-        message_ids.push_front(ids);
+    // same instances going back, not new ones. #1505 PR1 makes that free —
+    // the ids ride inside the entry, so there is no second array a re-buffer
+    // could put back in a different order.
+    for entry in drained.into_iter().rev() {
+        queue.push_front(entry);
     }
     let now = Instant::now();
     *inner.debounce.lock().await = DebounceState {
@@ -2329,21 +2252,7 @@ async fn issue_interrupt_for_turn(
 
 async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let state = inner.state.lock().await.clone();
-    let queue = inner.pending_queue.lock().await.iter().cloned().collect();
-    let pending_envelope_ids = inner
-        .pending_envelope_ids
-        .lock()
-        .await
-        .iter()
-        .copied()
-        .collect();
-    let pending_message_ids = inner
-        .pending_message_ids
-        .lock()
-        .await
-        .iter()
-        .cloned()
-        .collect();
+    let entries = inner.pending_queue.lock().await.iter().cloned().collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
@@ -2355,11 +2264,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let mut snapshot = HarnessSnapshot::from_state(
         &state,
         push_watermark,
-        crate::harness::snapshot::PendingQueueState {
-            queue,
-            envelope_ids: pending_envelope_ids,
-            message_ids: pending_message_ids,
-        },
+        entries,
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
@@ -2651,13 +2556,14 @@ mod tests {
     };
     use crate::error::CalmError;
     use crate::harness::observation::Observation;
+    use crate::harness::queue::QueueEntry;
     use axum::http::StatusCode;
     use tokio::sync::mpsc;
 
     fn delivery(text: &str) -> HarnessObservationDelivery {
         HarnessObservationDelivery {
-            observation: Observation::TrackGoal { text: text.into() },
-            envelope_id: None,
+            entry: QueueEntry::system(Observation::TrackGoal { text: text.into() }, None)
+                .expect("a track goal is a system entry"),
         }
     }
 
@@ -2713,88 +2619,6 @@ mod tests {
             CalmError::Conflict(ref msg) if msg.contains("shutting down")
         ));
         assert_eq!(err.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn user_message_folds_with_paragraph_breaks() {
-        use super::try_fold_pending_tail;
-        use crate::harness::observation::Observation;
-        use std::collections::VecDeque;
-
-        let mut queue: VecDeque<Observation> = VecDeque::new();
-        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
-        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
-        queue.push_back(Observation::UserMessage {
-            text: "first message".into(),
-        });
-        env_ids.push_back(Some(1));
-        msg_ids.push_back(vec!["first-instance".to_string()]);
-
-        let folded = try_fold_pending_tail(
-            &mut queue,
-            &mut env_ids,
-            &mut msg_ids,
-            &Observation::UserMessage {
-                text: "second message".into(),
-            },
-            Some(2),
-            &["second-instance".to_string()],
-        );
-
-        assert!(folded);
-        assert_eq!(queue.len(), 1);
-        let Some(Observation::UserMessage { text }) = queue.back() else {
-            panic!("expected single folded UserMessage, got {:?}", queue);
-        };
-        assert_eq!(text, "first message\n\nsecond message");
-        assert_eq!(
-            env_ids.back().copied().flatten(),
-            Some(2),
-            "folded envelope id should advance to the newest send"
-        );
-        // #1449 — the envelope id ADVANCES to the newest send, but the message
-        // ids UNION. They answer different questions: one is "which push am I
-        // acknowledging", the other is "which instances am I still holding",
-        // and a fold is still holding both.
-        assert_eq!(
-            msg_ids.back().cloned().unwrap_or_default(),
-            vec!["first-instance".to_string(), "second-instance".to_string()],
-            "a fold must keep BOTH instances identifiable; dropping one is the loss of \
-             identity the ids exist to prevent"
-        );
-    }
-
-    #[test]
-    fn user_message_does_not_fold_with_other_kinds() {
-        use super::try_fold_pending_tail;
-        use crate::harness::observation::Observation;
-        use std::collections::VecDeque;
-
-        let mut queue: VecDeque<Observation> = VecDeque::new();
-        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
-        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
-        queue.push_back(Observation::TrackGoal {
-            text: "goal".into(),
-        });
-        env_ids.push_back(None);
-
-        let folded = try_fold_pending_tail(
-            &mut queue,
-            &mut env_ids,
-            &mut msg_ids,
-            &Observation::UserMessage {
-                text: "user".into(),
-            },
-            None,
-            &[],
-        );
-
-        assert!(!folded, "UserMessage must not fold into TrackGoal");
-        assert_eq!(
-            queue.len(),
-            1,
-            "non-folding path should not mutate the queue"
-        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2882,34 +2706,29 @@ mod tests {
     }
 
     #[test]
-    fn user_message_fold_refuses_beyond_cap() {
-        use super::{MAX_FOLDED_USER_MESSAGE_CHARS, try_fold_pending_tail};
-        use crate::harness::observation::Observation;
+    fn user_message_fold_refuses_beyond_the_production_cap() {
+        // The cap arithmetic itself lives in `harness::queue`; this keeps the
+        // constant the run loop actually passes in under test.
+        use crate::harness::queue::{FoldOutcome, try_fold_tail};
         use std::collections::VecDeque;
 
-        let mut queue: VecDeque<Observation> = VecDeque::new();
-        let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
-        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
-        let seed = "a".repeat(MAX_FOLDED_USER_MESSAGE_CHARS - 1);
-        queue.push_back(Observation::UserMessage { text: seed });
-        env_ids.push_back(Some(1));
+        let seed = "a".repeat(super::MAX_FOLDED_USER_MESSAGE_CHARS - 1);
+        let mut queue = VecDeque::from(vec![QueueEntry::user_message(seed.clone(), Some(1))]);
 
-        let folded = try_fold_pending_tail(
+        let outcome = try_fold_tail(
             &mut queue,
-            &mut env_ids,
-            &mut msg_ids,
-            &Observation::UserMessage {
-                text: "x".repeat(10),
-            },
-            Some(2),
-            &["second-instance".to_string()],
+            &QueueEntry::user_message("x".repeat(10), Some(2)),
+            super::MAX_FOLDED_USER_MESSAGE_CHARS,
         );
 
-        assert!(!folded, "fold must refuse when result would exceed cap");
-        let Some(Observation::UserMessage { text }) = queue.back() else {
-            panic!("expected UserMessage tail");
-        };
-        assert_eq!(text.chars().count(), MAX_FOLDED_USER_MESSAGE_CHARS - 1);
-        assert_eq!(env_ids.back().copied().flatten(), Some(1));
+        assert_eq!(
+            outcome,
+            FoldOutcome::NotFolded,
+            "fold must refuse when the result would exceed the cap"
+        );
+        let view = queue[0].user_view().expect("tail is still addressable");
+        assert_eq!(view.text.chars().count(), seed.chars().count());
+        assert_eq!(view.rev, 0, "a refused fold must not bump rev");
+        assert_eq!(queue[0].envelope_id(), Some(1));
     }
 }

@@ -85,7 +85,7 @@ use std::path::PathBuf;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
-use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot, Observation};
+use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot, Observation, QueueEntry};
 use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -156,9 +156,9 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         SNAPSHOT_WATERMARK,
-        vec![Observation::TrackGoal {
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
             text: "survive the reboot".into(),
-        }],
+        }]),
     );
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("thread-e1".into());
@@ -283,7 +283,7 @@ async fn read_final_state(db_url: &str, seeded: &Seeded) -> FinalState {
         released_events,
         worker_session_rows,
         snapshot_watermark: stored.push_watermark,
-        snapshot_pending_len: stored.pending_queue.len(),
+        snapshot_pending_len: stored.pending_observations().len(),
     }
 }
 

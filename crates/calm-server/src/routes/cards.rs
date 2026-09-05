@@ -17,7 +17,7 @@ use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
-use crate::harness::{HarnessPhaseTag, TokenUsage, is_harness_snapshot_value};
+use crate::harness::{HarnessPhaseTag, QueueEntry, TokenUsage, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     Card, CardPatch, CardRole, HarnessItem, NewCard, Track, TrackLifecycle, new_id,
@@ -771,6 +771,15 @@ pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
+    /// #1505 PR1 — stable id of the queue entry this text landed in, so the
+    /// client can match its optimistic echo against `GET /planner/run`'s
+    /// `pending` instead of against the text.
+    ///
+    /// Null in exactly one accepted case: the text folded into a queue entry
+    /// written before #1505 PR1, which has no id and never gains one. The other
+    /// ways a client sees no id are refusals with a non-200 status (dormant
+    /// harness, 503 saturated queue, 409 shutting down), not this field.
+    pub entry_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -816,6 +825,97 @@ pub struct GetPlannerRunResponse {
     /// that is acceptable or whether the dormant path should fall back to the
     /// persisted snapshot; the kernel slice does not pick for it.
     pub token_usage: Option<PlannerRunTokenUsage>,
+    /// #1505 PR1 — the addressable user entries still waiting for the next
+    /// turn, in queue order. Empty when the harness is dormant.
+    ///
+    /// Only entries minted at or after PR1 appear here. Dispatcher
+    /// observations never do (they are not the user's and cannot be edited),
+    /// and neither do user entries from pre-PR1 snapshots, which have no id to
+    /// address them by; both kinds of omission are counted in
+    /// `pending_overflow` only for the user-authored ones.
+    pub pending: Vec<PendingQueueEntry>,
+    /// User-authored entries that exist in the queue but are NOT in `pending`:
+    /// pre-PR1 entries with no id, plus anything past the page budget. The UI
+    /// can say "N more not shown" and be honest about not offering buttons.
+    pub pending_overflow: u32,
+}
+
+/// #1505 PR1 — one addressable user entry from the harness pending queue.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PendingQueueEntry {
+    /// Stable identity; never empty, because only entries that HAVE an id
+    /// reach this page.
+    pub entry_id: String,
+    /// The complete text. Never truncated — an entry that would not fit the
+    /// page budget is left out of the page entirely rather than shown in a
+    /// form the user cannot safely edit.
+    pub text: String,
+    /// CAS token for the edit/delete endpoints (#1505 PR2). Bumped whenever
+    /// the text is rewritten, folding under backpressure included.
+    pub rev: u32,
+    /// Wall-clock ms at which the entry entered the queue.
+    pub queued_at_ms: i64,
+}
+
+/// Hard cap on entries in one `pending` page.
+const PENDING_PAGE_MAX: usize = 64;
+
+/// Soft cap on the UTF-8 size of one `pending` page.
+///
+/// The whole response is re-fetched on every `harness.queue.changed`, and a
+/// single `/planner/input` body may be 32_768 *characters* — up to ~96 KiB of
+/// UTF-8 — so 64 unbounded entries could reach ~6 MiB. Entries are packed whole
+/// until the next one would cross this line.
+///
+/// This is a judgement about acceptable response size, not a measurement of any
+/// real queue.
+const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
+
+/// Split the queue into one page of addressable entries plus a count of the
+/// user-authored entries that did not make it.
+///
+/// The budget ALWAYS admits at least one entry. Today that rule is unreachable
+/// — the largest single entry the fold path can build is
+/// `4 * 32_768` characters, under 400 KiB, well below the budget — but it is
+/// written rather than argued, because the failure it prevents is severe and
+/// silent: a head entry over budget would make the whole queue unpageable, so
+/// the user could not even delete the thing that was blocking it, and the "the
+/// user can just delete it" answer that justifies the budget would be false.
+fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
+    let mut page = Vec::new();
+    let mut used_bytes = 0usize;
+    let mut overflow = 0u32;
+    let mut budget_exhausted = false;
+    for entry in entries {
+        let Some(view) = entry.user_view() else {
+            // Not addressable. A dispatcher observation is not the user's to
+            // begin with; a pre-PR1 user entry has no id, so it is counted.
+            if entry.is_user_authored() {
+                overflow = overflow.saturating_add(1);
+            }
+            continue;
+        };
+        // The page is a PREFIX of the queue, not a greedy pack: once one entry
+        // does not fit, every later one is overflow even if it would have.
+        // Packing around a hole would show the user a list whose order and
+        // adjacency lie, and "N more below" would no longer be where they are.
+        budget_exhausted = budget_exhausted
+            || page.len() >= PENDING_PAGE_MAX
+            || (!page.is_empty()
+                && used_bytes.saturating_add(view.text.len()) > PENDING_PAGE_BYTES);
+        if budget_exhausted {
+            overflow = overflow.saturating_add(1);
+            continue;
+        }
+        used_bytes = used_bytes.saturating_add(view.text.len());
+        page.push(PendingQueueEntry {
+            entry_id: view.id.as_str().to_string(),
+            text: view.text.to_string(),
+            rev: view.rev,
+            queued_at_ms: view.queued_at_ms,
+        });
+    }
+    (page, overflow)
 }
 
 /// #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
@@ -971,7 +1071,7 @@ pub(crate) async fn send_planner_input(
         _ => planner_input_audit_actor(&actor, &card.id),
     };
 
-    harness.observe_user_message_durable(text).await?;
+    let ack = harness.observe_user_message_durable(text).await?;
 
     tracing::info!(
         actor = %actor.as_str(),
@@ -1014,6 +1114,7 @@ pub(crate) async fn send_planner_input(
     Ok(Json(SendPlannerInputResponse {
         card_id: card.id,
         worker_session_id: runtime.id.clone(),
+        entry_id: ack.entry_id.map(|id| id.as_str().to_string()),
     }))
 }
 
@@ -1270,6 +1371,8 @@ pub(crate) async fn get_planner_run(
         worker_session_id: None,
         phase: None,
         token_usage: None,
+        pending: Vec::new(),
+        pending_overflow: 0,
     };
     let Some(runtime) = s
         .repo
@@ -1286,6 +1389,7 @@ pub(crate) async fn get_planner_run(
     // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
     // way round.
     let snapshot = harness.snapshot().await;
+    let (pending, pending_overflow) = page_pending_entries(&snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
         card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
@@ -1294,6 +1398,8 @@ pub(crate) async fn get_planner_run(
             .token_usage
             .as_ref()
             .map(PlannerRunTokenUsage::from),
+        pending,
+        pending_overflow,
     }))
 }
 
@@ -1742,4 +1848,105 @@ pub(crate) async fn delete_card(
         })
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod pending_page_tests {
+    use super::{PENDING_PAGE_BYTES, PENDING_PAGE_MAX, page_pending_entries};
+    use crate::harness::{HARNESS_MODE, HarnessSnapshot, Observation, QueueEntry};
+    use serde_json::json;
+
+    /// A legacy entry built the ONLY way production can produce one: by
+    /// deserializing a row whose `pending_entry_meta` slot is absent.
+    fn legacy(text: &str) -> QueueEntry {
+        let row = json!({
+            "schema_version": 1,
+            "mode": HARNESS_MODE,
+            "phase": "idle",
+            "pending_queue": [{"type": "user_message", "text": text}],
+        });
+        HarnessSnapshot::from_value_strict(row)
+            .pending_entries()
+            .remove(0)
+    }
+
+    fn user(text: &str) -> QueueEntry {
+        QueueEntry::user_message(text.to_string(), None)
+    }
+
+    fn system() -> QueueEntry {
+        QueueEntry::system(
+            Observation::TrackGoal {
+                text: "goal".into(),
+            },
+            None,
+        )
+        .expect("a track goal is a system entry")
+    }
+
+    #[test]
+    fn only_addressable_user_entries_reach_the_page() {
+        let entries = vec![system(), user("mine"), legacy("older")];
+        let (page, overflow) = page_pending_entries(&entries);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].text, "mine");
+        assert_eq!(
+            overflow, 1,
+            "the legacy entry is counted, the system entry is not"
+        );
+    }
+
+    #[test]
+    fn the_page_is_capped_by_entry_count() {
+        let entries = (0..PENDING_PAGE_MAX + 5)
+            .map(|i| user(&format!("m{i}")))
+            .collect::<Vec<_>>();
+        let (page, overflow) = page_pending_entries(&entries);
+        assert_eq!(page.len(), PENDING_PAGE_MAX);
+        assert_eq!(overflow, 5);
+        assert_eq!(page[0].text, "m0", "the page starts at the queue head");
+    }
+
+    #[test]
+    fn the_page_is_capped_by_byte_budget_and_entries_stay_whole() {
+        let big = "x".repeat(PENDING_PAGE_BYTES / 2 + 1);
+        let entries = vec![user(&big), user(&big), user("tiny")];
+        let (page, overflow) = page_pending_entries(&entries);
+        assert_eq!(page.len(), 1, "the second entry would cross the budget");
+        assert_eq!(
+            page[0].text.len(),
+            big.len(),
+            "an entry that IS returned is returned whole; nothing is truncated"
+        );
+        assert_eq!(
+            overflow, 2,
+            "`tiny` would have fitted, but the page is a prefix: packing around \
+             the entry that did not fit would put a hole in the middle of the \
+             queue the user is looking at"
+        );
+    }
+
+    /// The budget always admits the head entry, however large.
+    ///
+    /// Unreachable today — the largest entry the fold path can build is
+    /// `4 * 32_768` chars, comfortably under the budget — and written anyway,
+    /// because the failure it prevents is that an over-budget head entry makes
+    /// the whole queue unaddressable: the user could not delete the very thing
+    /// blocking the page, which is the answer this budget's design rests on.
+    #[test]
+    fn an_over_budget_head_entry_is_still_returned_whole() {
+        let huge = "y".repeat(PENDING_PAGE_BYTES + 4_096);
+        let entries = vec![user(&huge), user("behind it")];
+        let (page, overflow) = page_pending_entries(&entries);
+        assert_eq!(page.len(), 1, "the budget never returns an empty page");
+        assert_eq!(page[0].text.len(), huge.len());
+        assert_eq!(overflow, 1);
+    }
+
+    #[test]
+    fn an_empty_queue_pages_to_nothing() {
+        let (page, overflow) = page_pending_entries(&[]);
+        assert!(page.is_empty());
+        assert_eq!(overflow, 0);
+    }
 }

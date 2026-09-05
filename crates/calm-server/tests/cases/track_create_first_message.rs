@@ -4252,7 +4252,7 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     for attempt in 0..20 {
         let text = format!("after the retirement #{attempt}");
         match handle.observe_user_message_durable(text.clone()).await {
-            Ok(()) => {
+            Ok(_ack) => {
                 accepted += 1;
                 let persisted = b.persisted_queue(&runtime).await;
                 assert!(
