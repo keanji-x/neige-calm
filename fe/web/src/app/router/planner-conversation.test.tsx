@@ -527,6 +527,94 @@ describe('planner conversation regressions', () => {
     settle(ok({ card_id: CARD.id, runtime_id: 'runtime' }));
   });
 
+  /*
+   * ── The composer survives its own queued message ─────────────────────────
+   *
+   * `hasUnreconciledSend` used to count *every* standing echo, and a queued one
+   * can never be counted down: the pending queue writes no `harness_items` row
+   * (`should_persist_item_method` persists `item/started` / `item/completed`
+   * only, and both are Codex's, after the turn is issued), so the row that
+   * would clear it cannot exist until the turn ends. One message and the
+   * composer was dead for the rest of the turn — which is half the feature.
+   *
+   * Requests, not DOM: what is being claimed is that a second message actually
+   * *left*, and only the transport can say that.
+   */
+  it('keeps taking messages after one has been queued behind a running turn', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
+
+    const field = messageField();
+    await typeInto(field, 'first queued');
+    await sendWithEnter(field);
+    await waitFor(() => { expect(input()).toHaveLength(1); });
+
+    /* The composer is still a composer — the field takes text and Enter still
+       reaches the handler. Asserted through the send rather than through an
+       attribute: `disabled` is one of several ways the box could be dead. */
+    await typeInto(field, 'second queued');
+    await sendWithEnter(field);
+    await waitFor(() => { expect(input()).toHaveLength(2); });
+    expect(input().map((request) => (request.body as { text: string }).text))
+      .toEqual(['first queued', 'second queued']);
+  });
+
+  /*
+   * The other side of the split, and the reason it is a split rather than a
+   * removal: an echo minted from **idle** still closes the composer until the
+   * server hands it back. Its turn is issued at once, so the reconciling row is
+   * one round trip away — a moment, not a turn — and waiting for it is what
+   * keeps a second message from being sent into an account nobody has squared.
+   *
+   * Read off `contenteditable`, which is Astryx's own rendering of
+   * `isDisabled` (`ChatComposerInput`: `contentEditable={!isDisabled}`), rather
+   * than off a refused Enter: a settled send has already emptied the draft, so
+   * a second Enter would be refused for having no words in it and would prove
+   * nothing about the block.
+   *
+   * This and the queued test above are the same wait and the same transport,
+   * differing only in the phase the send was made in — which is what makes the
+   * pair discriminating rather than two separate observations.
+   */
+  it('still closes the composer after an idle send until the server hands it back', async () => {
+    const { requests } = setup();
+    await openConversation();
+    const field = messageField();
+    await typeInto(field, 'idle send');
+    await sendWithEnter(field);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+    });
+    /* Past the POST's own `finally`, so `sending` has been released and the
+       only thing that can still be holding the box shut is the echo. */
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    await waitFor(() => {
+      expect(messageField().getAttribute('contenteditable')).toBe('false');
+    });
+  });
+
+  /* And the same reading, in the state the split exists for: after a queued
+     send the box is still open. Same assertion, opposite answer. */
+  it('leaves the composer open after a queued send', async () => {
+    const { requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'queued send');
+    await sendWithEnter(field);
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+    });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
   /* And Stop is untouched by all of the above: the second control was added
      beside it, not in place of it. */
   it('keeps Stop working while the queue control is on screen', async () => {

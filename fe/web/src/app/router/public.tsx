@@ -687,8 +687,36 @@ export function useConversationStore(
   };
 
   const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
-  const hasUnreconciledSend = echoes.length > 0
-    || registry.turnsOf(cardId).some(isOptimisticConversationTurn);
+  /*
+   * ── An echo the server *can* still hand back, as against one it cannot ───
+   *
+   * This used to be `echoes.length > 0 || …some(isOptimisticConversationTurn)`,
+   * i.e. "any echo at all", and against a queued message that is a lock with no
+   * key. A message posted during a turn goes onto the harness pending queue and
+   * writes **no `harness_items` row**: `should_persist_item_method`
+   * (`harness/run_loop.rs`) persists `item/started` and `item/completed` only,
+   * and those are Codex's, emitted after the turn is issued. So the reconciling
+   * row a queued echo is waiting for cannot exist until the running turn ends
+   * and the queue drains. Counting it here did not mean "wait a moment"; it
+   * meant the composer went dead for the length of a turn after one message —
+   * which cancels the point of being able to send during a turn at all.
+   *
+   * An echo minted from idle is the opposite case and still counts: its turn is
+   * issued at once, so the row that clears it is one round trip away, and that
+   * *is* a moment worth waiting.
+   *
+   * **This is not the duplicate-submit guard and does not weaken it.** That is
+   * `sending` / `sendingAcrossMounts` above — "a POST is in flight" — set
+   * synchronously inside `send` and released by its own `finally`. Both are
+   * untouched, so a second press while a request is open is refused exactly as
+   * before, queued or not, and the `unconfirmedEchoId` invariant one screen up
+   * survives with it: at most one echo can be unanswered at a time, because at
+   * most one POST can be open at a time.
+   */
+  const awaitsReconciliation = (turn: TranscriptEntry) =>
+    isOptimisticConversationTurn(turn) && !turn.queued;
+  const hasUnreconciledSend = echoes.some(awaitsReconciliation)
+    || registry.turnsOf(cardId).some(awaitsReconciliation);
   const sendBlocked = sending || sendingAcrossMounts || hasUnreconciledSend;
   return {
     conversations,
