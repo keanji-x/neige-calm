@@ -2863,9 +2863,11 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
 /// **Why 500 and not 201.** A 201 would have to mint a *replacement* track
 /// under a key that already names a different one, i.e. answer byte-identical
 /// requests with two different tracks, which is the one thing the key exists to
-/// prevent. A 404 would be worse than a 500 in a second way: it reads as "your
-/// track is gone", when what happened is that the server refuses to reuse a
-/// spent key, and the actionable instruction is to retry under a new one.
+/// prevent. A 404 is wrong for a different reason: it reads as "your track is
+/// gone", when what happened is that the server refuses to reuse a spent key —
+/// and the actionable instruction is to retry under a new one, not to go
+/// looking for the track. The assertion is on the status class the branch
+/// promises, which is what the OpenAPI description says a caller may rely on.
 ///
 /// The premises are asserted rather than assumed. Without them a green run
 /// could mean "the delete never happened" or "the binding row went with it",
