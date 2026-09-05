@@ -79,72 +79,6 @@ describe('optimistic conversation provenance', () => {
     ).map((turn) => turn.id)).toEqual(['echo-2']);
   });
 
-  /*
-   * ── #1449 review round 2, BLOCKER construction 1 ───────────────────────────
-   *
-   * One persisted item can carry **more than one** user segment: the kernel
-   * drains the pending queue in a batch (`run_loop.rs`) and gives each
-   * observation its own segment (`observation.rs`), and `harnessItemToTurns`
-   * expands item 5 into `5:0` and `5:1`. A create's first sentence and a send
-   * that follows it closely are exactly that shape.
-   *
-   * The two rows share an item id, so nothing derived from that id may be used
-   * to exclude one of them: round 1's raised bar took the numeric 5 from the
-   * first segment and shut the second one out, stranding the send echo for the
-   * life of the tab — composer included, since `sendBlocked` reads it.
-   */
-  it('pairs two echoes with two user segments of one item', () => {
-    expect(reconcileOptimisticConversationTurns(
-      [serverTurn('5:0', 'A'), serverTurn('5:1', 'B')],
-      [{ ...echo('echo-a', 0), text: 'A' }, { ...echo('echo-b', 0), text: 'B' }],
-    )).toEqual([]);
-  });
-
-  /*
-   * ── #1449 review round 2, BLOCKER construction 2 ───────────────────────────
-   *
-   * The rows and the echoes need not pair in the same order. Both rows are
-   * already persisted and both echoes match one each; a mechanism that lets
-   * the row taken by one echo raise a floor under the other strands it against
-   * a row that is right there in the same input.
-   */
-  it('pairs echoes with matching rows whatever order the rows landed in', () => {
-    expect(reconcileOptimisticConversationTurns(
-      [serverTurn('5', 'B'), serverTurn('9', 'A')],
-      [{ ...echo('echo-a', 0), text: 'A' }, { ...echo('echo-b', 0), text: 'B' }],
-    )).toEqual([]);
-  });
-
-  /*
-   * ── #1449 review round 1, finding 1 ────────────────────────────────────────
-   *
-   * The caller re-runs reconciliation over the set the previous run returned
-   * (`useConversationStore`'s merge effect writes the result to state, and the
-   * registry write-through stores the survivors), so "one row confirms one
-   * echo" has to hold **across calls** and not only within one. It did not:
-   * the row that retired the create echo retired the send echo on the next
-   * pass, and the message the reader had just sent left the screen.
-   */
-  it('does not let one server row retire a second echo on a later pass', () => {
-    const rows = [serverTurn('5')];
-    const minted = [echo('echo-create', 0), echo('echo-send', 0)];
-    const first = reconcileOptimisticConversationTurns(rows, minted);
-    expect(first.map((turn) => turn.id)).toEqual(['echo-send']);
-    /* Called again on the **complete** list, which is the contract: the answer
-       does not move. Feeding the previous answer back in is what produced the
-       second retirement, and no caller does that any more. */
-    expect(reconcileOptimisticConversationTurns(rows, minted).map((turn) => turn.id))
-      .toEqual(['echo-send']);
-    expect(reconcileOptimisticConversationTurns(rows, minted).map((turn) => turn.id))
-      .toEqual(['echo-send']);
-  });
-
-  it('still retires a survivor once a row it has not consumed arrives', () => {
-    const minted = [echo('echo-create', 0), echo('echo-send', 0)];
-    expect(reconcileOptimisticConversationTurns([serverTurn('5'), serverTurn('6')], minted))
-      .toEqual([]);
-  });
-
   it('recognises only finite user turns carrying provenance', () => {
     const invalid = { ...echo('echo-2', 4), serverHighWaterBefore: Number.NaN };
     expect(isOptimisticConversationTurn(echo('echo-1', 4))).toBe(true);
@@ -842,11 +776,7 @@ describe('mergeTranscript', () => {
     id: 'thought', author: 'activity' as const, verb: 'Thought', target: null,
     state: 'done' as const, durationMs: null, detail: null, atMs: 1,
   };
-  /* Echoes carry the server-side lower bound they were minted at, and that —
-     not any reading of a clock — is what places them. */
-  const echo: OptimisticConversationTurn = {
-    id: 'echo', author: 'you', text: 'next', atMs: 2, serverHighWaterBefore: 9,
-  };
+  const echo: ConversationTurn = { id: 'echo', author: 'you', text: 'next', atMs: 2 };
 
   it('drops a completed tail thought when an echo follows it', () => {
     expect(mergeTranscript([thought], [echo])).toEqual([echo]);
@@ -854,99 +784,5 @@ describe('mergeTranscript', () => {
 
   it('keeps a completed tail thought until an echo exists', () => {
     expect(mergeTranscript([thought], [])).toEqual([thought]);
-  });
-
-  /*
-   * ── #1449 review round 1, finding 2 ────────────────────────────────────────
-   *
-   * An echo that is never coming back — the create's first sentence, stranded
-   * when its runtime was superseded — is not the newest thing in the
-   * conversation. Appended unconditionally it read `B → R → A`: the sentence
-   * that started the thread shown last, after the reply to the sentence that
-   * followed it, and counted as the newest exchange by everything downstream.
-   */
-  it('puts a stranded echo back where the server had got to when it was minted', () => {
-    const stranded: OptimisticConversationTurn = {
-      id: 'echo-a', author: 'you', text: 'A', atMs: 10, serverHighWaterBefore: 0,
-    };
-    const said: ConversationTurn = { id: '1', author: 'you', text: 'B', atMs: 20 };
-    const reply: ConversationTurn = { id: '2', author: 'agent', text: 'R', atMs: 30 };
-    expect(mergeTranscript([said, reply], [stranded]).map((entry) => entry.id))
-      .toEqual(['echo-a', '1', '2']);
-  });
-
-  it('leaves an echo of something just said at the tail', () => {
-    const said: ConversationTurn = { id: '1', author: 'you', text: 'B', atMs: 20 };
-    const reply: ConversationTurn = { id: '2', author: 'agent', text: 'R', atMs: 30 };
-    const fresh: OptimisticConversationTurn = {
-      id: 'echo-c', author: 'you', text: 'C', atMs: 40, serverHighWaterBefore: 2,
-    };
-    expect(mergeTranscript([said, reply], [fresh]).map((entry) => entry.id))
-      .toEqual(['1', '2', 'echo-c']);
-  });
-
-  /* `buildTranscript` pairs an action's start and end positionally, so a
-     completed action keeps the *started* row's place even when its end time is
-     later. Placing an echo must not re-sort the server's own account. */
-  it('does not reorder server entries whose times run backwards', () => {
-    const later: ConversationTurn = { id: '1', author: 'agent', text: 'first', atMs: 90 };
-    const earlier: ConversationTurn = { id: '2', author: 'agent', text: 'second', atMs: 20 };
-    const fresh: OptimisticConversationTurn = {
-      id: 'echo', author: 'you', text: 'C', atMs: 100, serverHighWaterBefore: 2,
-    };
-    expect(mergeTranscript([later, earlier], [fresh]).map((entry) => entry.id))
-      .toEqual(['1', '2', 'echo']);
-  });
-
-  /*
-   * ── #1449 review round 2, ACTIONABLE 1 — two clocks, on purpose ────────────
-   *
-   * An echo's `atMs` is the browser's `Date.now()`; a server entry's is the
-   * kernel's. Comparing them is comparing two clocks, and the two cases below
-   * are the two directions that comparison gets wrong. They are the reason
-   * placement is decided by `serverHighWaterBefore` — a server-side position
-   * the echo carries — and by nothing that is read off a clock.
-   */
-  it('keeps a just-sent echo at the tail when the browser clock runs slow', () => {
-    /* Kernel timestamps a second and a half ahead of the browser's. */
-    const first: ConversationTurn = { id: '1', author: 'agent', text: 'one', atMs: 1_000_000 };
-    const second: ConversationTurn = { id: '2', author: 'agent', text: 'two', atMs: 1_000_500 };
-    const fresh: OptimisticConversationTurn = {
-      id: 'echo-send', author: 'you', text: 'C', atMs: 999_000, serverHighWaterBefore: 2,
-    };
-    expect(mergeTranscript([first, second], [fresh]).map((entry) => entry.id))
-      .toEqual(['1', '2', 'echo-send']);
-  });
-
-  it('keeps a stranded echo before later rows when the browser clock runs fast', () => {
-    /* Browser a minute ahead: the stranded create echo would sort last. */
-    const said: ConversationTurn = { id: '1', author: 'you', text: 'B', atMs: 1_000_000 };
-    const reply: ConversationTurn = { id: '2', author: 'agent', text: 'R', atMs: 1_000_500 };
-    const stranded: OptimisticConversationTurn = {
-      id: 'echo-a', author: 'you', text: 'A', atMs: 1_060_000, serverHighWaterBefore: 0,
-    };
-    expect(mergeTranscript([said, reply], [stranded]).map((entry) => entry.id))
-      .toEqual(['echo-a', '1', '2']);
-  });
-
-  /*
-   * ── #1449 review round 2, ACTIONABLE 2 ────────────────────────────────────
-   *
-   * The tail thought is displaced only when an echo really ends up after it,
-   * and "after it" has to be read off the **final placement**. `buildTranscript`
-   * can leave a completed thought behind a later action (positional pairing),
-   * and an echo minted before that action belongs in front of both.
-   */
-  it('keeps the tail thought when the echo lands in front of it', () => {
-    const ran = {
-      id: '9', author: 'activity' as const, verb: 'Ran', target: null,
-      state: 'done' as const, durationMs: null, detail: null, atMs: 90,
-    };
-    const tailThought = { ...thought, id: '4', atMs: 20 };
-    const early: OptimisticConversationTurn = {
-      id: 'echo', author: 'you', text: 'A', atMs: 50, serverHighWaterBefore: 3,
-    };
-    expect(mergeTranscript([ran, tailThought], [early]).map((entry) => entry.id))
-      .toEqual(['echo', '9', '4']);
   });
 });

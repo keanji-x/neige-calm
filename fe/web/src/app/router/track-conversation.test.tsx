@@ -26,12 +26,8 @@ import { useEffect } from 'react';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import type {
-  Conversation, ConversationMessage, TranscriptEntry,
-} from '../../../../core/domain/conversation.ts';
-import {
-  isOptimisticConversationTurn, reconcileOptimisticConversationTurns, trackConversationCardId,
-} from '../../../../core/domain/conversation.ts';
+import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
@@ -489,12 +485,8 @@ describe('track conversations', () => {
     expect(post?.body).toEqual({ text: 'what is in this repo?' });
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* And the answer is adopted: the drawer moves off the draft onto the row
-       the derived id names, which is the one this key would have minted.
-       Named after the sentence, not `Assistant` — since #1449 the create path
-       mints the same optimistic echo the send path always did, so the row has
-       a first message the moment it is adopted rather than once codex echoes
-       it back. */
-    await screen.findByRole('complementary', { name: 'what is in this repo?' });
+       the derived id names, which is the one this key would have minted. */
+    await screen.findByRole('complementary', { name: 'Assistant' });
   });
 
   it('[G4] sends the first message once, to the track in the URL and no other', async () => {
@@ -615,8 +607,7 @@ describe('track conversations', () => {
       releaseFirst(created(landed));
       await firstCreate;
     });
-    /* Named from the words that made it, per #1449's create-path echo. */
-    await screen.findByRole('complementary', { name: 'words still in flight' });
+    await screen.findByRole('complementary', { name: 'Assistant' });
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
   });
 
@@ -837,20 +828,85 @@ describe('track conversations', () => {
   });
 
   /*
-   * ── #1449 review round 1, finding 1, through the real store ───────────────
+   * ── #1449 review round 3, B1 — a page window is not a fact ────────────────
    *
-   * The reported shape, driven end to end: the thread is started with `same`,
-   * the reader says `same` again, and only the first one has been persisted.
-   * Two echoes with the same text and the same `serverHighWaterBefore` of 0,
-   * one server row. It must retire exactly one of them, and it must still
-   * retire exactly one after the merge effect has run again over the set the
-   * previous pass returned — which is what put the second `same` back off the
-   * screen and unlocked the composer early.
+   * `harness_items` is read a page at a time: `harnessItemsQueryOptions` asks
+   * for the newest rows, and every send invalidates that query. So "my
+   * sentence is in the transcript" is true of the fetch that answered, not of
+   * the conversation — the agent works, the window slides past the first row,
+   * and a retirement recomputed from what is currently loaded flips back to
+   * "not shown". The line then reappears at the head of a thread that has
+   * moved on, and there is no later fetch that can ever bring it back.
    *
-   * On screen at the end: the persisted `same` and the echo of the one that is
-   * still on its way — two, not one and not three.
+   * The latch is what this pins: retired once, retired for the life of the tab.
    */
-  it('does not let the first persisted row retire a second identical message', async () => {
+  it('does not bring the create line back when the window moves past its row', async () => {
+    const minted: Row[] = [];
+    let persisted: ReturnType<typeof harnessMessage>[] = [];
+    const { client, requests } = setup((request) => {
+      if (request.method === 'POST' && request.path === CONVERSATIONS) {
+        const row = derivedRow('w1', request);
+        minted.push(row);
+        return created(row);
+      }
+      if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
+      if (request.path.includes(HISTORY_PATH)) return ok([...persisted]);
+      if (request.path.endsWith('/planner/run')) return runIdle();
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('hello');
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
+    const drawer = drawerElement();
+    /* The placeholder, alone, while the item read is still empty. */
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['hello']));
+
+    /* codex echoes the turn: the row lands, the placeholder retires, and what
+       is on screen is the server's own copy — one line, not two. */
+    persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'hello' }] })];
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: cachedHistoryKey(client, minted[0].id) });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['hello']));
+
+    /* The agent works on. The newest page no longer reaches back to item 1 —
+       the same shape as a `POST /api/cards/{id}/reset` emptying the first page
+       under another client. */
+    persisted = [harnessMessage(500, 'agentMessage', { text: 'still working' })];
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: cachedHistoryKey(client, minted[0].id) });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => expect(within(drawer).getByText('still working')).toBeTruthy());
+    /* Retired stays retired: nothing of the reader's is re-shown at the head of
+       a thread that has moved on. */
+    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
+  /*
+   * ── #1449 review round 3, B2 — the create line spends no server row ────────
+   *
+   * The first sentence is stranded (the create's message never drained, which
+   * #1449 does not fix), so the reader sees nothing come back and types it
+   * again — which they can, because the create line never shut the composer.
+   * codex echoes only the second one, and one row lands.
+   *
+   * That row belongs to the send. While the create's sentence was an
+   * optimistic turn it was paired first (it was older), took the row, and left
+   * the send's echo standing for ever — `hasUnreconciledSend` true, composer
+   * shut for the life of the tab, and a screen that looked exactly right. The
+   * placeholder is not in that pairing at all, so the row goes where it
+   * belongs.
+   */
+  it('leaves the composer open when the first sentence is retyped and one row lands', async () => {
     const minted: Row[] = [];
     let persisted: ReturnType<typeof harnessMessage>[] = [];
     const { requests } = setup((request) => {
@@ -867,26 +923,22 @@ describe('track conversations', () => {
     });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await openDraft();
-    await write('same');
+    await write('hi');
     await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
     const drawer = drawerElement();
     await waitFor(() => expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1));
 
-    /* The kernel echoes the first sentence back, and the reader says it again.
-       The composer is open because a create echo is already delivered. */
-    persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'same' }] })];
+    /* Nothing came back, so they say it again. The composer allows it. */
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    await write('same');
+    persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'hi' }] })];
+    await write('hi');
     await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
 
-    await waitFor(() => expect(
-      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
-    ).toEqual(['same', 'same']));
-    /* And it stays two: the merge effect runs again on every registry change,
-       and each of those passes reconciles the set the last one returned. */
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect([...drawer.querySelectorAll('[data-nc-turn="you"]')]).toHaveLength(2);
+    /* The row retires the send's echo, and the composer comes back. */
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect([...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent))
+      .toEqual(['hi']);
   });
 
   /*
@@ -1138,14 +1190,6 @@ describe('registry write-through', () => {
    * getting this wrong: a captured snapshot says `1` (the echo, on top of an
    * entry that knew nothing), and an atomic merge that appends its echo without
    * noticing the server already sent that message back says `3`.
-   *
-   * That number is read off the entry's **count**, not off the length of its
-   * stored turns. Since #1449 round 2 the entry keeps every echo it has ever
-   * held, retired ones included: it is the complete list the next mount
-   * reconciles from, and dropping a retired echo would drop the record that
-   * its server row is already spoken for. A retired echo reaches no reader —
-   * every transcript fallback filters optimistic turns out — so what it must
-   * not do is be counted, and that is what is asked here.
    */
   it('[G5] does not overwrite a refresh that landed while the send was still settling', async () => {
     let releaseInput!: () => void;
@@ -1174,17 +1218,8 @@ describe('registry write-through', () => {
     await store.closeDrawer();
     await act(async () => { releaseInput(); await Promise.resolve(); });
     await store.settle();
+    expect(store.turns()).toHaveLength(2);
     expect(store.entry()?.turns).toBe(2);
-    const stored = store.turns();
-    /* The server's own two. */
-    expect(stored.filter((turn) => !isOptimisticConversationTurn(turn))).toHaveLength(2);
-    /* And the echo beside them is retired, not waiting: reconciling the entry's
-       complete echo list against the entry's own server rows leaves nothing. */
-    expect(reconcileOptimisticConversationTurns(
-      stored.filter((turn): turn is ConversationMessage =>
-        turn.author !== 'activity' && !isOptimisticConversationTurn(turn)),
-      stored.filter(isOptimisticConversationTurn),
-    )).toEqual([]);
   });
 
   /*
@@ -1234,17 +1269,8 @@ describe('registry write-through', () => {
     await store.closeDrawer();
     await act(async () => { releaseInput(); await Promise.resolve(); });
     await store.settle();
+    expect(store.turns()).toHaveLength(2);
     expect(store.entry()?.turns).toBe(2);
-    const stored = store.turns();
-    /* One row from the server, and the second `ping` still waiting beside it —
-       the old row cannot answer for it, because it did not arrive after the
-       send. */
-    expect(stored.filter((turn) => !isOptimisticConversationTurn(turn))).toHaveLength(1);
-    expect(reconcileOptimisticConversationTurns(
-      stored.filter((turn): turn is ConversationMessage =>
-        turn.author !== 'activity' && !isOptimisticConversationTurn(turn)),
-      stored.filter(isOptimisticConversationTurn),
-    )).toHaveLength(1);
   });
 
   /* Two real store instances under one provider: the first request crosses the
@@ -1330,80 +1356,9 @@ describe('registry write-through', () => {
       holds[1]?.();
       await Promise.resolve();
     });
-    /* Three stored, two claimed: the persisted `ping`, the echo it confirmed
-       (retired but kept — see the block above), and the second send's echo
-       still waiting. The invariant is the *identities*, which is what a lost
-       second echo would take away. */
-    await waitFor(() => expect(latestTurns.filter(isOptimisticConversationTurn)).toHaveLength(2));
-    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : ''))
-      .toEqual(['ping', 'ping', 'ping']);
-    expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(3);
-  });
-});
-
-/*
- * ── The registry's two writes, and why the create echo needs the second ──────
- *
- * #1449 review round 1, NIT 5. `remember` replaces an entry's turns wholesale;
- * `rememberMerging` runs the merge inside the state updater against whatever
- * the entry holds at the write. `rememberCreateEcho` uses the second, and the
- * difference is not stylistic: the tab can already hold this conversation's
- * transcript — it opened it from the rail before Back landed it on an entry
- * whose planner-open intent was still armed — and a wholesale write leaves the
- * entry holding the echo alone. The next mount whose history read is still
- * unknown falls back to those very turns (`serverEntries`), so what the reader
- * would get is one sentence in place of the thread they had.
- */
-describe('registry merge semantics', () => {
-  const ROW: Conversation = {
-    id: 'card-x', trackId: 'w1', title: null, kind: 'track-assistant',
-    state: 'idle', updatedAt: 5,
-  };
-  const READ: TranscriptEntry = { id: '1', author: 'you', text: 'already read', atMs: 1 };
-  const ECHO: TranscriptEntry = {
-    id: 'echo-1', author: 'you', text: 'just created', atMs: 9, serverHighWaterBefore: 0,
-  } as TranscriptEntry;
-
-  function mount() {
-    let registry!: ReturnType<typeof useConversationRegistry>;
-    function Probe() {
-      registry = useConversationRegistry();
-      return null;
-    }
-    render(<ConversationProvider><Probe /></ConversationProvider>);
-    return {
-      act: async (run: () => void) => { await act(async () => { run(); await Promise.resolve(); }); },
-      turns: () => registry.turnsOf(ROW.id),
-      registry: () => registry,
-    };
-  }
-
-  it('replaces on remember and appends on rememberMerging', async () => {
-    const view = mount();
-    await view.act(() => { view.registry().remember(ROW, [READ]); });
-    expect(view.turns().map((turn) => turn.id)).toEqual(['1']);
-
-    /* What `rememberCreateEcho` used to do. */
-    await view.act(() => { view.registry().remember(ROW, [ECHO]); });
-    expect(view.turns().map((turn) => turn.id)).toEqual(['echo-1']);
-
-    /* And what it does now, from the transcript this tab had read. */
-    await view.act(() => { view.registry().remember(ROW, [READ]); });
-    await view.act(() => {
-      view.registry().rememberMerging(ROW.id, (entry) => ({
-        conversation: ROW, turns: [...(entry?.turns ?? []), ECHO],
-      }));
-    });
-    expect(view.turns().map((turn) => turn.id)).toEqual(['1', 'echo-1']);
-  });
-
-  it('creates the entry when rememberMerging finds nothing', async () => {
-    const view = mount();
-    await view.act(() => {
-      view.registry().rememberMerging(ROW.id, (entry) => ({
-        conversation: ROW, turns: [...(entry?.turns ?? []), ECHO],
-      }));
-    });
-    expect(view.turns().map((turn) => turn.id)).toEqual(['echo-1']);
+    await waitFor(() => expect(latestTurns).toHaveLength(2));
+    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['ping', 'ping']);
+    /* The assertion: two messages, two identities across the remount. */
+    expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
   });
 });

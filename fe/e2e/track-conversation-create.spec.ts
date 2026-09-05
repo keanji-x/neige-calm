@@ -171,11 +171,8 @@ test('starts a conversation from a track page and sends the first message to tha
   // (The drawer replaces the list while it is open, so the list is counted
   // after closing it — the count is the assertion, not the drawer.)
   /*
-   * The drawer is located by the control only it has — never by a name derived
-   * from the echo. A locator that says `{ name: message }` resolves only when
-   * the echo already exists, so the thread assertions under it could not fail:
-   * the drawer would simply never be found and the wait would time out
-   * *before* reaching them. Same rule as the sibling spec.
+   * The drawer is located by the control only it has — never by a name that
+   * depends on the thing under test. Same rule as the sibling spec.
    */
   const drawer = page.locator('[role="complementary"]')
     .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
@@ -186,8 +183,9 @@ test('starts a conversation from a track page and sends the first message to tha
    * moved off the draft and onto **this** conversation.
    *
    * `Untitled` is the draft drawer's literal title (`app/router/public.tsx`),
-   * so its absence says the draft is gone — and it stays independent of the
-   * echo, because an adoption with no echo names the drawer `Assistant`.
+   * so its absence says the draft is gone. An adopted assistant row is named
+   * `Assistant`: the create placeholder is not a turn, so it supplies no
+   * derived title, which is why the name is asserted separately from it.
    *
    * The second half is the identity, and it is asked of the browser rather
    * than of the server: an open drawer polls the card it is showing, so the
@@ -197,6 +195,7 @@ test('starts a conversation from a track page and sends the first message to tha
    * planner drawer having sprung open instead.
    */
   await expect(page.getByRole('complementary', { name: 'Untitled' })).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: 'Assistant' })).toBeVisible();
   await expect
     .poll(() => requests.some((pending) => pending.method() === 'GET'
       && new URL(pending.url()).pathname === `/api/cards/${conversation.id}/harness/items`))
