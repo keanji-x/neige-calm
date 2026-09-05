@@ -112,6 +112,7 @@ use calm_server::harness::run_loop::{
 use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -4354,6 +4355,110 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
         b.delivered_copies(LEGACY, 2).await,
         1,
         "and it reaches an agent exactly once"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 — the input to the accepted duplicate, pinned as intended rather than
+/// left for the next reader to rediscover as a bug.
+///
+/// `user_message_enqueued_on_active_runtime` asks whether the CURRENT runtime
+/// has been spoken to. A move carries the sentence to the successor but leaves
+/// the evidence row naming the runtime that was replaced, so the predicate
+/// answers `false` and `POST /api/today/summary` sends its bootstrap again —
+/// and the harvested copy is still on the queue. Two copies, and they do not
+/// fold: folding needs a full 256-entry queue.
+///
+/// This is #1314's residual with a larger membership, not a new defect. Writing
+/// an evidence row for the successor is not the fix: `harness.user_message.enqueued`
+/// records an act somebody performed, and a harvest is kernel-internal movement
+/// nobody performed. The duplicate is priced — the text says "stand by and
+/// touch nothing", so obeying it twice is obeying it once.
+///
+/// Asserted here, in #1449's own suite, rather than in `today_summary.rs`:
+/// carrying one issue's evidence in another issue's file is what makes a
+/// recorded property quietly stop being true.
+#[tokio::test]
+async fn a_repointed_card_leaves_its_enqueued_evidence_on_the_replaced_runtime() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (first, first_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        first,
+        StatusCode::CREATED,
+        "premise: the launchpad must be minted: body={first_body}"
+    );
+    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
+    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+
+    // A standing instruction that has not drained yet.
+    let (sent, sent_body) = b
+        .send_planner_input(&planner_card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
+        .await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the bootstrap must be queued: body={sent_body}"
+    );
+    entered.notified().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: it is on the row and has not drained"
+    );
+
+    // The replacement moves it forward; the evidence row keeps naming the
+    // runtime that was replaced.
+    b.retire_runtime_in_the_database(&runtime).await;
+    let (second, second_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        second,
+        StatusCode::OK,
+        "premise: the second ensure must resolve the existing launchpad: body={second_body}"
+    );
+    release.notify_one();
+
+    let successor = b.active_runtime_of_card(&planner_card_id).await;
+    assert_ne!(successor, runtime, "premise: a replacement really happened");
+    let carried = b
+        .persisted_queue(&successor)
+        .await
+        .iter()
+        .filter(|entry| entry.to_string().contains("Stand by and do nothing yet"))
+        .count();
+    assert_eq!(
+        carried, 1,
+        "premise: the harvest carried the undrained standing instruction to the successor"
+    );
+
+    // The mechanism behind the accepted duplicate, asserted directly: the
+    // message is on the successor, and the only evidence row names the runtime
+    // that was replaced. That divergence is exactly what
+    // `user_message_enqueued_on_active_runtime` reads, so the next summary
+    // trigger sends its bootstrap again and the queue carries two copies.
+    //
+    // The trigger itself is NOT driven here: it refuses a day with no activity,
+    // and building one is `today_summary.rs`'s fixture, not this file's. What
+    // this pins is the input to the predicate; the pricing of the extra copy is
+    // #1314's and is documented at the predicate.
+    let evidence_runtimes: Vec<String> = sqlx::query_scalar(
+        "SELECT json_extract(payload, '$.worker_session_id') FROM events \
+         WHERE kind = 'harness.user_message.enqueued'",
+    )
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        !evidence_runtimes.is_empty(),
+        "premise: the send wrote its evidence row"
+    );
+    assert!(
+        evidence_runtimes.iter().all(|id| *id == runtime),
+        "every evidence row still names the REPLACED runtime — that is why the predicate answers \
+         `false` for the successor and the bootstrap is sent again. Writing one for the successor \
+         is not the fix: the event records an act, and a harvest is movement nobody performed. \
+         Rows: {evidence_runtimes:?}, replaced: {runtime}, successor: {successor}"
     );
     b.shutdown_harnesses().await;
 }

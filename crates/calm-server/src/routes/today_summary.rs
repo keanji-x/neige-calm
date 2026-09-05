@@ -195,19 +195,45 @@ fn synthetic_actor() -> Actor {
 /// *per session*, because a new runtime is a new codex thread that holds none of
 /// the old one's context. A runtime replacement is precisely the moment the
 /// standing instruction has to be said again. The cost is the mirror case: a
-/// replacement that *inherited* the old queue re-sends an instruction that was
-/// still reachable, so the agent can see "stand by and do nothing yet" more than
-/// once.
+/// replacement that carried the old queue forward re-sends an instruction that
+/// was still reachable, so the agent can see "stand by and do nothing yet" more
+/// than once.
+///
+/// **Since #1449 that is every replacement, not only an inheriting one.** Every
+/// `prepare_tx` now moves a superseded predecessor's undelivered user messages
+/// to the successor, so the re-point fence, `POST /conversations`,
+/// `/planner/reset` and this launchpad path all land in the same family. The
+/// evidence row keeps naming the runtime that was replaced, so the predicate
+/// answers `false` and the bootstrap is sent again. That is the predicate
+/// working as specified: it asks whether the CURRENT runtime has been spoken
+/// to, and it is deliberately conservative in the direction of re-sending.
+///
+/// Writing an evidence row for the successor instead is not the fix, and not
+/// only because it collides with #1314's tests: `harness.user_message.enqueued`
+/// records an ACT — some actor enqueued N characters into runtime X — and a
+/// harvest is kernel-internal movement that nobody performed. Synthesising one
+/// would make the audit log assert a send that never happened.
 ///
 /// **How many copies, stated as what is actually true.** Not "at most two":
-/// nothing here caps the count. Each `reset → trigger` pair run before the
-/// inherited queue has drained carries the previous copies forward and appends
-/// one more, so repeating that pair repeats the copy, and every copy is a
-/// `UserMessage` that can hard-fire a turn of its own. What makes this the
-/// acceptable side to err on is not a bound on the number but the content: the
-/// text tells the agent to stand by and touch nothing, so obeying it an
-/// additional time is obeying it once — the wasted turns are empty. The
-/// alternative, the silent loss, is not recoverable at all.
+/// nothing here caps the count. Each replacement run before the moved queue has
+/// drained carries the previous copies forward and appends one more, and every
+/// copy is a `UserMessage` that can hard-fire a turn of its own. Two copies do
+/// not fold — folding needs a full 256-entry queue.
+///
+/// **Second-order, and new with the move**: the summary prompt below is itself
+/// an `Observation::UserMessage`, so a harvested STALE summary now arrives
+/// alongside the fresh one this call sends unconditionally. The later one is a
+/// superset and is what the agent should work from; the failure mode is a
+/// wasted paragraph, not a wrong report.
+///
+/// What makes this the acceptable side to err on is not a bound on the number
+/// but the content: the text tells the agent to stand by and touch nothing, so
+/// obeying it an additional time is obeying it once — the wasted turns are
+/// empty. The alternative, the silent loss, is not recoverable at all.
+///
+/// Only a `superseded` predecessor is harvested (`session_projection.rs`'s
+/// predicate), so a dormant or `exited` one contributes nothing to this: the
+/// residual is narrower than the path table in the design's §3 suggests.
 ///
 /// **What the bootstrap is for.** `UserMessage` is hard-fire, so if it reaches
 /// an issuable drain before the summary does, the agent takes a turn holding
