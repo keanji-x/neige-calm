@@ -962,7 +962,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     // source track's planner is unrelated to that contract, and leaving it
     // live lets the report edit below race the snapshots by asynchronously
     // persisting its observation queue.
-    let source_runtime_id: String = sqlx::query_scalar(
+    let source_worker_session_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
     )
     .bind(&source_id)
@@ -972,7 +972,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     let source_harness = boot
         .state
         .harness
-        .remove(&source_runtime_id)
+        .remove(&source_worker_session_id)
         .expect("source planner harness");
     source_harness
         .shutdown()
