@@ -30,6 +30,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0090_track_vcs_commit_prefix_index.sql",
     "0091_terminal_output_evidence.sql",
     "0092_track_create_message_less_binding.sql",
+    "0093_operations_keyed_rows_are_permanent.sql",
 ];
 
 #[test]

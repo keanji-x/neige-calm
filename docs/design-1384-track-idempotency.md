@@ -695,11 +695,33 @@ Mint` degradation the issue names is closed by construction.
 
 It still depends on the row for two narrower things: the `Replay`-vs-
 `GenuineRetry` `cwd` freeze (§5) and the `#N` exhaustion chain
-(`conversations_shared.rs:73-97`). If the row were reaped, a replay would be
-treated as `GenuineRetry` and re-derive `cwd` from the live track — safe (no
-second track, no double delivery), but a byte-identical replay of a repointed
-track would answer 201-with-a-new-op rather than replaying. A behaviour change,
-not a correctness hole.
+(`conversations_shared.rs:73-97`).
+
+> **CORRECTED by #1428.** This paragraph used to say that a reaped row makes a
+> replay "re-derive `cwd` from the live track — safe (no second track, no double
+> delivery)", and called the whole thing "a behaviour change, not a correctness
+> hole". **The double-delivery half is false**, and the error mattered: it is
+> what made this look like something a note could discharge.
+>
+> Reaping a *succeeded* keyed row makes the next byte-identical replay deliver
+> the user's first message a **second time**. `retryable_operation_key` returns
+> the now-absent base key, `select_arm(true, false)` is `GenuineRetry`, and
+> `resume_prior_attempt` resubmits `plan.text` — both resuming arms do. The
+> thing that would have stopped it is `submit`'s `find_by_idempotency_key`
+> short-circuit (`operation/driver.rs:135-142`), and that is precisely the row
+> that was reaped. `validate` then passes on the non-minting branch (the planner
+> card exists, which is what that branch requires) and `prepare_tx` pushes
+> `Observation::UserMessage` unconditionally — there is no "already enqueued"
+> predicate on this path (`planner_harness_start_adapter.rs:899-907`).
+>
+> So the operations row is the **double-delivery wall** for a keyed create, and
+> the obligation is a correctness one. #1428 closes it with a fence rather than
+> a note: migration `0093` refuses to delete any `operations` row carrying an
+> `idempotency_key`. See `docs/design-1428-idempotency-retention.md` §3.
+
+The `cwd` half of the old paragraph is accurate and survives: a byte-identical
+replay of a repointed track would answer 201-with-a-new-op rather than
+replaying. That one really is a behaviour change.
 
 Factually there is **no pruner on `operations` today**: `rg 'DELETE FROM
 operations'` over `crates/` returns nothing, and `routes/today_summary.rs:89`
@@ -916,10 +938,41 @@ test went red, not how many.
    binding-claim error there — the loser then commits, the run measures
    `tracks = 2`, and the 500 becomes the orphan-behind-a-409 failure class this
    design exists to abolish.
-4. **A deleted track poisons its key permanently.** No FK, no cascade (§3): the
-   binding row survives, `track_get` misses, and the key answers 500 forever.
-   Deliberate — fail-closed beats minting a different track for a byte-identical
-   request — but there is no operator affordance to clear it.
+4. ~~**A deleted track poisons its key permanently.**~~ **CLOSED by #1428.**
+   The gap as written was accurate on the mechanism and wrong about the remedy.
+   The mechanism stands and was not touched: no FK, no cascade (§3), the binding
+   row survives, `track_get` misses, and the key is poisoned for good —
+   fail-closed beats minting a different track for a byte-identical request.
+
+   **What was actually missing was not an affordance but an ANSWER.** The
+   escape already existed and was free: a new `Idempotency-Key` misses the
+   binding, takes `Mint`, and derives a managed path from a fresh id. Nothing
+   told the caller so. `adopt_prior_track` returned `CalmError::Internal`, and
+   `trackCreateKeyAction` (`fe/core/domain/track.ts:503-514`) returns
+   `'preserve'` for every 5xx — deliberately, since a 5xx may have committed and
+   rotating its key could mint a second track — and `'replace'` only for
+   `idempotency_key_exhausted`. The new-track route mints one key per draft
+   (`fe/web/src/app/router/public.tsx:1841-1861`) and replaces it in place on
+   exactly that code (#1435). So a reader whose track was deleted was pinned to
+   a dead key until they reloaded the page.
+
+   **The closing mechanism: 409 `idempotency_key_exhausted` instead of 500**,
+   naming the dead track. The fence does not move — the branch still mints
+   nothing — and it is now the same answer its sibling branch fifteen lines down
+   already gave for the un-materializable-workspace case, so this function's two
+   ways of being poisoned answer with one code and have one escape. **Zero
+   frontend lines**: the rotation the code triggers was already built.
+
+   A binding-row deleter was considered and rejected: it would introduce the
+   tree's first `DELETE FROM track_create_idempotency`, keyed on a
+   client-supplied string, to buy a recovery the client already gets for free.
+
+   The test that pinned the old boundary was **inverted, not deleted** —
+   `a_replay_whose_track_was_deleted_fails_closed` became
+   `a_replay_onto_a_deleted_track_is_key_exhausted`, keeping both premises and
+   both mints-nothing assertions — and
+   `a_new_idempotency_key_recovers_from_a_deleted_track` pins that the escape
+   the refusal advertises actually works.
 5. ~~**A crash inside `write_owner_marker` poisons one `Idempotency-Key`
    permanently.**~~ **CLOSED by #1427.** The gap as written was real and the
    §4.4 construction stood: death between `create_dir_all(<path>/.git)` and the
@@ -946,15 +999,58 @@ test went red, not how many.
    still binds `template_id` as the **caller's string**, not the admitted roster
    key, because deriving it from mutable admission state would reintroduce the
    replay-validation failure this design avoids.
-8. **Operations-row retention** (§6.4). No pruner exists today. If one is added,
-   the `Replay`/`GenuineRetry` `cwd` distinction and the `#N` exhaustion chain
-   degrade. Follow-up: *"operations retention must not silently degrade the
-   track-create replay arm"* — against the retention work, not here.
+8. ~~**Operations-row retention** (§6.4).~~ **CLOSED by #1428, and the gap as
+   written understated it.** This said a future pruner would make the
+   `Replay`/`GenuineRetry` `cwd` distinction and the `#N` chain "degrade" — a
+   behaviour change. Measured against the code, reaping a *succeeded* keyed row
+   also makes the next byte-identical replay **deliver the first message
+   twice**: the operations row is the double-delivery wall, and `submit`'s
+   `find_by_idempotency_key` short-circuit is the mechanism. The full chain is
+   in the corrected §6.4 above.
+
+   That correction is what turned "record an obligation" into "build a fence".
+   **The closing mechanism: migration `0093`**, a `BEFORE DELETE` trigger
+   refusing any `operations` row whose `idempotency_key` is non-NULL. The
+   criterion is co-extensive with the wall rather than a guess about which kinds
+   matter — `submit` consults `find_by_idempotency_key(kind, &key)` for every
+   kind and it matches on that column, so every non-NULL key is a live
+   short-circuit and a NULL one can never be found by that call. A retention
+   pass over *unkeyed* operations stays possible with no migration, which is the
+   shape retention would want anyway.
+
+   It is a fence and not a tripwire on a spelling: a row trigger disables
+   SQLite's truncate optimization, so a bare `DELETE FROM operations` fires it
+   per row and aborts too (executed, not assumed —
+   `a_bare_delete_from_operations_also_aborts`). Its one hole is stated rather
+   than hardened: `DROP TABLE` takes the trigger silently, so a future rebuild
+   of `operations` must recreate it, and
+   `head_schema_has_the_keyed_operations_fence` fails closed with a message
+   saying what was lost.
 9. **Multi-tenancy** (§6.5). `(area_id, idempotency_key)` carries no principal.
    The invariant to satisfy when principals arrive is stated there; not built.
-10. **Binding rows are never garbage-collected.** One row per keyed create.
-    Bounded by create volume, `WITHOUT ROWID` keeps it compact, unbounded in
-    time.
+10. ~~**Binding rows are never garbage-collected.**~~ **CLOSED by #1428 as a
+    deliberate decision: there will be no reaper**, and the reason is a
+    construction rather than a tolerance.
+
+    The row's *absence* is indistinguishable from "this key was never used", so
+    reaping one is this design's original bug on a timer. Reap the row for key
+    `K`, and a byte-identical retry lands in one of two cells of `select_arm`,
+    both wrong: with the operations row still present it is `BindingLost`, a
+    permanent 500 on a key that would have replayed; with it also absent — the
+    variant-4 shape — it is `Mint`, i.e. **a second track and a second
+    delivery**, the measured `tracks=2, cards=4, operations=0` failure this
+    document exists to abolish. No window length fixes that, because the
+    client's retry clock is not the server's.
+
+    The growth is quantified rather than asserted: **≈364 bytes/row**, measured
+    on a `WITHOUT ROWID` table with 0092's exact column list (100 000 rows =
+    36 356 096 bytes at `page_size` 4096). At 10 000 keyed creates/year that is
+    3.7 MB/year. The load-bearing property is what a row *costs to write*: it
+    commits inside the mint transaction, so every row is a committed track, two
+    cards, a folder claim and a materialized workspace. A client cannot inflate
+    this table cheaply, and the rows behind it dwarf it. Different growth class
+    from `events` (per interaction, 30-day horizon) and `track_vcs_commits` (per
+    interaction, keep-50), which is why those have reapers and this does not.
 11. **`routes/tracks.rs` is 4269 lines** and this slice adds to it. The bulk of
     the new code goes to `routes/tracks/create.rs` (the `tracks/` module
     directory already exists — `fork_guard.rs`), but the file stays far past the

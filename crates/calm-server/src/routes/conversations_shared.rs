@@ -87,6 +87,13 @@ pub(crate) fn first_message_digest(text: &str) -> String {
 /// sees under this key is the recorded `500 operation stuck, see DB`, until
 /// someone clears the row.
 pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Result<String> {
+    // #1428 REVERSE ANCHOR — this walk reads *absence* as "nothing has happened
+    // under this key yet", so it is only correct while keyed `operations` rows
+    // are permanent. Reap a succeeded row and the base key reads absent, this
+    // returns it, `select_arm` calls the request a `GenuineRetry`, and the
+    // first message is delivered a second time
+    // (`docs/design-1428-idempotency-retention.md` §3.1). Migration 0093 is the
+    // fence; this is the reader that depends on it.
     for attempt in 1..=MAX_OPERATION_KEY_ATTEMPTS {
         let key = if attempt == 1 {
             base.to_string()

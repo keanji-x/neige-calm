@@ -2969,18 +2969,32 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
     b.shutdown_harnesses().await;
 }
 
-/// #1299 F2 — the `Resume` arm's fail-closed answer when the track is gone.
+/// #1299 F2, **re-pinned by #1428** — the `Resume` arm's fail-closed answer
+/// when the track is gone, and what that answer now says.
 ///
 /// `adopt_prior_track` — which `resume_prior_attempt` calls, and which #1426
 /// factored out of it so the message-less resuming arm shares one copy of this
-/// decision — reads `track_get(prior.track_id)` and turns `None` into a 500.
-/// This case drives that branch through `resume_prior_attempt`; it does not
-/// drive the message-less arm. Both the code and the OpenAPI description call
-/// that branch
-/// fail-closed, and until this case nothing drove it: the module header's
-/// "Pinned by the branch" identified the code, which is not an assertion about
-/// behaviour. #1299's review wrote the gap up rather than closing it, so it is
-/// closed here.
+/// decision — reads `track_get(prior.track_id)` and turns `None` into a
+/// refusal. This case drives that branch through `resume_prior_attempt`; it
+/// does not drive the message-less arm. Until #1299 F2 nothing drove it: the
+/// module header's "Pinned by the branch" identified the code, which is not an
+/// assertion about behaviour.
+///
+/// **#1428 changed the code, not the fence, and this test was inverted rather
+/// than routed around.** It asserted `INTERNAL_SERVER_ERROR`; it now asserts
+/// 409 `idempotency_key_exhausted`. Everything the old case really protected is
+/// still asserted below — both premises, and that the refused replay mints
+/// neither a track nor a second binding row. What changed is only which of the
+/// two poisoned-key answers this branch gives, and it now gives the same one as
+/// its sibling branch fifteen lines down (T-BRICK-1).
+///
+/// **Why the code matters more than the status.** `trackCreateKeyAction`
+/// (`fe/core/domain/track.ts`) returns `'preserve'` for every 5xx — deliberately,
+/// since a 5xx may have committed and rotating its key could mint a second
+/// track — and `'replace'` only for `idempotency_key_exhausted`. Under the old
+/// 500 a reader whose track was deleted was pinned to a dead key until they
+/// reloaded the page. `a_new_idempotency_key_recovers_from_a_deleted_track` is
+/// the other half of that story.
 ///
 /// **Why the state is reachable.** The binding row is deliberately not
 /// `ON DELETE CASCADE` (see the comment on the branch), so deleting a track
@@ -2989,24 +3003,24 @@ async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
 /// original create — a retry the client believes is safe, because the key is
 /// what makes it safe — lands exactly here.
 ///
-/// **Why 500 and not 201.** A 201 would have to mint a *replacement* track
-/// under a key that already names a different one, i.e. answer byte-identical
-/// requests with two different tracks, which is the one thing the key exists to
-/// prevent. A 404 is wrong for a different reason: it reads as "your track is
-/// gone", when what happened is that the server refuses to reuse a spent key —
-/// and the actionable instruction is to retry under a new one, not to go
-/// looking for the track. The assertion is on the status class the branch
-/// promises, which is what the OpenAPI description says a caller may rely on.
+/// **Why not 201.** A 201 would have to mint a *replacement* track under a key
+/// that already names a different one, i.e. answer byte-identical requests with
+/// two different tracks, which is the one thing the key exists to prevent. That
+/// is unchanged by #1428: this branch still mints nothing.
+///
+/// **Why not 404.** It reads as "your track is gone", when what happened is
+/// that the server refuses to reuse a spent key — and the actionable
+/// instruction is to retry under a new one, not to go looking for the track.
 ///
 /// The premises are asserted rather than assumed. Without them a green run
 /// could mean "the delete never happened" or "the binding row went with it",
 /// neither of which exercises the branch — the request would simply be a fresh
 /// create that happens to fail.
 ///
-/// Mutation that must redden it: replace the `ok_or_else` on that `track_get`
-/// with a path that mints, or make the branch answer anything but 5xx.
+/// Mutation that must redden it: restore `CalmError::Internal` on that
+/// `track_get`'s `ok_or_else`, or replace it with a path that mints.
 #[tokio::test]
-async fn a_replay_whose_track_was_deleted_fails_closed() {
+async fn a_replay_onto_a_deleted_track_is_key_exhausted() {
     let b = boot().await;
     let key = "idem-deleted-track";
     let message = "the sentence whose track went away";
@@ -3039,19 +3053,107 @@ async fn a_replay_whose_track_was_deleted_fails_closed() {
     let (status, body) = b.create_track(Some(key), Some(message)).await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "a byte-identical replay under a key whose track was deleted must fail closed: body={body}"
+        StatusCode::CONFLICT,
+        "a byte-identical replay under a key whose track was deleted must fail closed, and must \
+         not read as a generic server fault: body={body}"
+    );
+    assert_eq!(
+        body["code"], "idempotency_key_exhausted",
+        "the status alone does not tell the caller what to do; the code does, and it is the code \
+         the frontend rotates the draft key on: body={body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&track_id),
+        "…and the refusal names the dead track, so an operator reading a log knows which one: \
+         body={body}"
     );
 
-    // And it minted nothing on the way out: a 500 that left a replacement track
-    // behind would be the exact outcome the branch exists to refuse, reported
-    // as an error.
+    // And it minted nothing on the way out: a refusal that left a replacement
+    // track behind would be the exact outcome the branch exists to refuse,
+    // reported as an error.
     assert_eq!(
         b.track_count().await,
         0,
         "the refused replay must not mint a replacement track"
     );
     assert_eq!(b.binding_count().await, 1, "nor a second binding row");
+}
+
+/// #1428 — the escape from a deleted track's poisoned key, and the reason
+/// making it a 409 was worth twenty production lines.
+///
+/// The poisoning is per key and permanent: the binding row deliberately has no
+/// `ON DELETE CASCADE`, so nothing will ever make the old key resolve again.
+/// The recovery is therefore not "repair the key" but "use another one" — a new
+/// `Idempotency-Key` misses the binding, takes `Mint`, and gets a working
+/// track. This asserts that the escape the refusal *advertises* actually works,
+/// which is the half a refusal-only test cannot show.
+///
+/// It is deliberately the twin of `a_new_idempotency_key_recovers_from_a_poisoned_workspace`:
+/// the two ways this branch can be poisoned now answer with one code and have
+/// one escape, and a reader comparing the pair sees that rather than inferring
+/// it.
+///
+/// Mutation that must redden it: make `adopt_prior_track`'s `track_get` miss
+/// mint a replacement instead of refusing — the fresh key then resolves the
+/// dead binding and `assert_ne!` on the two track ids fails.
+#[tokio::test]
+async fn a_new_idempotency_key_recovers_from_a_deleted_track() {
+    let b = boot().await;
+    let message = "the sentence whose track went away";
+    let (created, body) = b
+        .create_track(Some("idem-deleted-original"), Some(message))
+        .await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let dead_track = body["id"].as_str().unwrap().to_string();
+    b.shutdown_harnesses().await;
+    assert!(b.delete_track(&dead_track).await.is_success());
+
+    // Premise: the old key really is dead, and says so with the code the
+    // frontend rotates on.
+    let (poisoned, poisoned_body) = b
+        .create_track(Some("idem-deleted-original"), Some(message))
+        .await;
+    assert_eq!(
+        poisoned,
+        StatusCode::CONFLICT,
+        "premise: the old key is exhausted: body={poisoned_body}"
+    );
+    assert_eq!(poisoned_body["code"], "idempotency_key_exhausted");
+
+    // A distinct sentence, so the delivery assertion below is about THIS track
+    // and not a leftover copy of the deleted one's.
+    let (fresh, fresh_body) = b
+        .create_track(
+            Some("idem-deleted-fresh"),
+            Some("a wholly different sentence"),
+        )
+        .await;
+    assert_eq!(
+        fresh,
+        StatusCode::CREATED,
+        "a new Idempotency-Key must be a complete recovery — it misses the dead binding, mints a \
+         fresh id, and owes the deleted track nothing: body={fresh_body}"
+    );
+    let fresh_track = fresh_body["id"].as_str().unwrap().to_string();
+    assert_ne!(
+        fresh_track, dead_track,
+        "and it is a NEW track, not the dead id handed back"
+    );
+    assert_eq!(
+        b.track_count().await,
+        1,
+        "exactly one live track: the dead one stayed deleted and the refusal minted nothing"
+    );
+    assert_eq!(
+        b.copies_in_harness("a wholly different sentence", 1).await,
+        1,
+        "…and the recovered create delivered its message exactly once"
+    );
+    b.shutdown_harnesses().await;
 }
 
 /// T-HASH-1 — the same key with a different **create** is a conflict.
