@@ -183,16 +183,24 @@ test('starts a conversation from a track page and sends the first message to tha
 
   /*
    * The adoption itself, which is a fact independent of the echo: the drawer
-   * moved off the draft (`Untitled`) onto the row the derived id names. This
-   * used to be `{ name: 'Assistant' }` and stopped being an independent check
-   * the moment the name became a function of the echo, so it is asked of the
-   * identity instead.
+   * moved off the draft and onto **this** conversation.
+   *
+   * `Untitled` is the draft drawer's literal title (`app/router/public.tsx`),
+   * so its absence says the draft is gone — and it stays independent of the
+   * echo, because an adoption with no echo names the drawer `Assistant`.
+   *
+   * The second half is the identity, and it is asked of the browser rather
+   * than of the server: an open drawer polls the card it is showing, so the
+   * page's own traffic names it. A `GET /api/tracks/{id}/conversations` would
+   * not have said this — the server list contains the new conversation whether
+   * or not the drawer opened on it, which is satisfied just as well by the
+   * planner drawer having sprung open instead.
    */
   await expect(page.getByRole('complementary', { name: 'Untitled' })).toHaveCount(0);
-  await expect(drawer.getByRole('button', { name: 'Close conversation' })).toBeVisible();
-  const openedRow = await request.get(`/api/tracks/${track.id}/conversations`);
-  expect((await openedRow.json() as { id: string }[]).map((row) => row.id))
-    .toContain(conversation.id);
+  await expect
+    .poll(() => requests.some((pending) => pending.method() === 'GET'
+      && new URL(pending.url()).pathname === `/api/cards/${conversation.id}/harness/items`))
+    .toBe(true);
 
   /*
    * ── #1449 — and the sentence is *in* the thread, against a real kernel ─────

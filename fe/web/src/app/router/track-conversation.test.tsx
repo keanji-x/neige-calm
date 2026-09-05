@@ -26,8 +26,12 @@ import { useEffect } from 'react';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import type {
+  Conversation, ConversationMessage, TranscriptEntry,
+} from '../../../../core/domain/conversation.ts';
+import {
+  isOptimisticConversationTurn, reconcileOptimisticConversationTurns, trackConversationCardId,
+} from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
@@ -1134,6 +1138,14 @@ describe('registry write-through', () => {
    * getting this wrong: a captured snapshot says `1` (the echo, on top of an
    * entry that knew nothing), and an atomic merge that appends its echo without
    * noticing the server already sent that message back says `3`.
+   *
+   * That number is read off the entry's **count**, not off the length of its
+   * stored turns. Since #1449 round 2 the entry keeps every echo it has ever
+   * held, retired ones included: it is the complete list the next mount
+   * reconciles from, and dropping a retired echo would drop the record that
+   * its server row is already spoken for. A retired echo reaches no reader —
+   * every transcript fallback filters optimistic turns out — so what it must
+   * not do is be counted, and that is what is asked here.
    */
   it('[G5] does not overwrite a refresh that landed while the send was still settling', async () => {
     let releaseInput!: () => void;
@@ -1162,8 +1174,17 @@ describe('registry write-through', () => {
     await store.closeDrawer();
     await act(async () => { releaseInput(); await Promise.resolve(); });
     await store.settle();
-    expect(store.turns()).toHaveLength(2);
     expect(store.entry()?.turns).toBe(2);
+    const stored = store.turns();
+    /* The server's own two. */
+    expect(stored.filter((turn) => !isOptimisticConversationTurn(turn))).toHaveLength(2);
+    /* And the echo beside them is retired, not waiting: reconciling the entry's
+       complete echo list against the entry's own server rows leaves nothing. */
+    expect(reconcileOptimisticConversationTurns(
+      stored.filter((turn): turn is ConversationMessage =>
+        turn.author !== 'activity' && !isOptimisticConversationTurn(turn)),
+      stored.filter(isOptimisticConversationTurn),
+    )).toEqual([]);
   });
 
   /*
@@ -1213,8 +1234,17 @@ describe('registry write-through', () => {
     await store.closeDrawer();
     await act(async () => { releaseInput(); await Promise.resolve(); });
     await store.settle();
-    expect(store.turns()).toHaveLength(2);
     expect(store.entry()?.turns).toBe(2);
+    const stored = store.turns();
+    /* One row from the server, and the second `ping` still waiting beside it —
+       the old row cannot answer for it, because it did not arrive after the
+       send. */
+    expect(stored.filter((turn) => !isOptimisticConversationTurn(turn))).toHaveLength(1);
+    expect(reconcileOptimisticConversationTurns(
+      stored.filter((turn): turn is ConversationMessage =>
+        turn.author !== 'activity' && !isOptimisticConversationTurn(turn)),
+      stored.filter(isOptimisticConversationTurn),
+    )).toHaveLength(1);
   });
 
   /* Two real store instances under one provider: the first request crosses the
@@ -1300,10 +1330,14 @@ describe('registry write-through', () => {
       holds[1]?.();
       await Promise.resolve();
     });
-    await waitFor(() => expect(latestTurns).toHaveLength(2));
-    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['ping', 'ping']);
-    /* The assertion: two messages, two identities across the remount. */
-    expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
+    /* Three stored, two claimed: the persisted `ping`, the echo it confirmed
+       (retired but kept — see the block above), and the second send's echo
+       still waiting. The invariant is the *identities*, which is what a lost
+       second echo would take away. */
+    await waitFor(() => expect(latestTurns.filter(isOptimisticConversationTurn)).toHaveLength(2));
+    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : ''))
+      .toEqual(['ping', 'ping', 'ping']);
+    expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(3);
   });
 });
 

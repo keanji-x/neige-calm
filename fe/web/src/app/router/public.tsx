@@ -240,7 +240,17 @@ export function useConversationStore(
   });
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
-  const [echoes, setEchoes] = useState<readonly OptimisticConversationTurn[]>([]);
+  /**
+   * The echoes this store minted, every one of them, retired or not.
+   *
+   * Never shortened by reconciliation. What the reader sees is *derived* from
+   * this on every render (`pending` below), so the pairing is always computed
+   * over the complete set — which is what
+   * `reconcileOptimisticConversationTurns` requires and what round 1 got wrong
+   * by writing the answer back into the state it reads. The only thing removed
+   * from here is a send that failed, which was never delivered at all.
+   */
+  const [mintedHere, setMintedHere] = useState<readonly OptimisticConversationTurn[]>([]);
   /**
    * The echo whose `POST /planner/input` has not been answered yet, if any.
    *
@@ -288,7 +298,7 @@ export function useConversationStore(
     [history.data, items, serverEntries],
   );
   useEffect(() => {
-    setEchoes([]);
+    setMintedHere([]);
     setUnconfirmedEchoId(null);
     setActionError(null);
     /* The send in flight, if any, belongs to the conversation being left: it
@@ -299,23 +309,27 @@ export function useConversationStore(
     setSending(false);
     setInterruptPending(false);
   }, [cardId]);
-  /* A send can settle through an older store after this card is already open in
-     a new one. Merge its confirmed optimistic turn from the provider, then give
-     every newer server row to the oldest eligible echo exactly once. */
-  useEffect(() => {
+  /*
+   * Every echo this conversation has, wherever it was minted.
+   *
+   * A send can settle through an older store after this card is already open in
+   * a new one, so the registry's optimistic turns are unioned in — and this is
+   * a **derivation**, not a reduction written back to state. There is no effect
+   * here any more: the effect that used to live here reconciled and stored the
+   * survivors, so the next run reconciled the survivors again and the same
+   * server row confirmed a second echo. Deriving leaves nothing to feed back.
+   */
+  const minted = useMemo(() => {
     const remembered = registry.turnsOf(cardId).filter(isOptimisticConversationTurn);
-    setEchoes((current) => {
-      const present = new Set(current.map((turn) => turn.id));
-      const additions = remembered.filter((turn) => !present.has(turn.id));
-      const merged = additions.length === 0
-        ? current
-        : [...current, ...additions].toSorted((left, right) => left.atMs - right.atMs);
-      const next = reconcileOptimisticConversationTurns(serverTurns, merged);
-      return next.length === current.length && next.every((turn, index) => turn === current[index])
-        ? current
-        : next;
-    });
-  }, [cardId, registry, serverTurns]);
+    const present = new Set(mintedHere.map((turn) => turn.id));
+    return [...mintedHere, ...remembered.filter((turn) => !present.has(turn.id))]
+      .toSorted((left, right) => left.atMs - right.atMs);
+  }, [cardId, mintedHere, registry]);
+  /** The echoes no server row has confirmed yet — what the reader still sees. */
+  const echoes = useMemo(
+    () => reconcileOptimisticConversationTurns(serverTurns, minted),
+    [minted, serverTurns],
+  );
 
   const turns = useMemo(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
@@ -345,8 +359,25 @@ export function useConversationStore(
      is later than an interleaved message. A completed tail thought stops being
      the tail as soon as the user speaks again. */
   const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
+  /*
+   * What is written to the registry: the **complete** echo set minus the one
+   * nobody has agreed to yet.
+   *
+   * Not the rendered subset. The registry is this conversation's memory across
+   * mounts, and a retired echo dropped from it takes the record of which row
+   * confirmed it with it — the next mount would then hand that row to the next
+   * identical echo. Retired echoes never reach a reader: every transcript
+   * fallback filters optimistic turns out (`serverEntries`), and what is shown
+   * comes from `echoes`.
+   */
+  const durableEchoes = useMemo(
+    () => unconfirmedEchoId === null
+      ? minted
+      : minted.filter((turn) => turn.id !== unconfirmedEchoId),
+    [minted, unconfirmedEchoId],
+  );
   const confirmedTranscript = useMemo(
-    () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
+    () => mergeTranscript(serverEntries, durableEchoes), [durableEchoes, serverEntries],
   );
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
@@ -511,7 +542,7 @@ export function useConversationStore(
        another conversation (the `cardId` effect) or started a later send. */
     const stillActive = () => activeSend.current?.echoId === echo.id;
     let sendFailure: string | null = null;
-    setEchoes((current) => [...current, echo]);
+    setMintedHere((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
     void mutations.send(text).then(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
@@ -558,29 +589,24 @@ export function useConversationStore(
           : [...remembered, echo].toSorted((left, right) => left.atMs - right.atMs);
         const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
           turn.author !== 'activity' && !isOptimisticConversationTurn(turn));
-        const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
-        /* Written back **as reconciliation returned them**, not as they went
-           in. A survivor comes back with its high-water raised to the row an
-           earlier echo consumed, and that raise is the whole record of the
-           pairing: dropped here, the next mount reconciles this echo against
-           a row that is already spoken for and retires it
-           (`reconcileOptimisticConversationTurns`). */
-        const survivors = new Map(unresolved.map((turn) => [turn.id, turn]));
-        const recorded = !survivors.has(echo.id);
-        const nextTurns = knownTurns.flatMap((turn) => {
-          if (!isOptimisticConversationTurn(turn)) return [turn];
-          const survivor = survivors.get(turn.id);
-          return survivor === undefined ? [] : [survivor];
-        });
-        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) {
-          nextTurns.push(survivors.get(echo.id) ?? echo);
-        }
+        const unresolvedIds = new Set(
+          reconcileOptimisticConversationTurns(serverMessages, optimistic).map((turn) => turn.id),
+        );
+        /* Every echo is kept, retired ones included: this entry is the complete
+           list the next mount will reconcile from, and an echo dropped here
+           takes with it the fact that its row is already spoken for. Only the
+           **count** asks which ones are still waiting. */
+        const nextTurns = knownTurns.some((turn) => turn.id === echo.id)
+          ? [...knownTurns]
+          : [...knownTurns, echo];
+        const countable = nextTurns.filter((turn) => turn.author !== 'activity'
+          && (!isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id)));
         return {
           conversation: {
             ...known,
             title: known.title ?? conversationNameFrom(text),
             updatedAt: Math.max(known.updatedAt, echo.atMs),
-            turns: nextTurns.filter((turn) => turn.author !== 'activity').length,
+            turns: countable.length,
           },
           turns: nextTurns,
         };
@@ -592,7 +618,10 @@ export function useConversationStore(
          dropping the echo there would be dropping someone else's. The provider
          still records this failure below for a remount of the owning card. */
       if (!stillActive()) return;
-      setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
+      /* Removed from the minted set, not merely from what is rendered: this
+         message never left the browser, so there is no server row it could
+         ever pair with and nothing for the registry to remember. */
+      setMintedHere((current) => current.filter((turn) => turn.id !== echo.id));
       setActionError(sendFailure);
     }).finally(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
@@ -642,11 +671,9 @@ export function useConversationStore(
    * just landed in, for as long as the agent took to answer — and forever
    * while it is down.
    */
-  const standingEchoes = [
-    ...echoes,
-    ...registry.turnsOf(cardId).filter(isOptimisticConversationTurn),
-  ];
-  const hasUnreconciledSend = standingEchoes.some((turn) => turn.deliveredByCreate !== true);
+  /* `echoes` is already the union of this store's and the registry's, paired
+     against the server's account — the same set the reader is looking at. */
+  const hasUnreconciledSend = echoes.some((turn) => turn.deliveredByCreate !== true);
   const sendBlocked = sending || sendingAcrossMounts || hasUnreconciledSend;
   return {
     conversations,
@@ -758,18 +785,24 @@ type ConversationPanelSource = Readonly<{
  * from `GET /api/cards/{id}/harness/items` is a persistence-boundary change
  * with its own review surface and is deliberately not this change.
  *
- * **KNOWN GAP — a door this change opens, whose cause is in the kernel.**
- * While a create's first sentence is still queued, a second message sent on
- * the same card is coalesced by the kernel into one turn joined with `\n\n`
- * (`crates/calm-server/src/harness/run_loop.rs`). The single row that comes
- * back retires the *first* echo through `userTextMatchesEcho`'s
- * `startsWith(echo + "\n")` arm, and the second echo has nothing left to
- * match: the text stands twice and the composer never reopens. On
- * `origin/main` the window is unreachable — there was no create echo to
- * strand — so this change is what makes it reachable, but the cause is the
- * kernel's coalescing meeting a prefix match. Not fixed here: the honest fix
- * is either a message identity on the wire or a kernel that does not join
- * two user turns, and both are their own change.
+ * **KNOWN GAP — pre-existing, and reachable on `origin/main`.** While a
+ * first sentence is still queued, a second message on the same card is
+ * coalesced by the kernel into one turn joined with `\n\n`
+ * (`crates/calm-server/src/harness/run_loop.rs`). The row that comes back is
+ * `"A\n\nB"`, which `userTextMatchesEcho` matches against echo `A` (its
+ * `startsWith(echo + "\n")` arm) and not against echo `B` — neither equal
+ * nor prefixed. `B` is then never retired, its text stands twice, and
+ * `hasUnreconciledSend` keeps the composer shut for the life of the tab.
+ *
+ * The first attribution written here — "this change opens the door" — was
+ * wrong, and the chain that disproves it runs entirely on `origin/main`:
+ * create a conversation with sentence `A` against a slow or dead agent, so
+ * `A` sits in `pending_queue` and no echo exists to close the composer; send
+ * `B`, whose echo is minted at `serverItemHighWater([]) === 0`; the kernel
+ * coalesces; the joined row retires nothing that `B` owns. So the defect is
+ * this change's to describe, not to have caused. Not fixed here — the fix is
+ * a message identity on the wire or a kernel that does not join two user
+ * turns, and both are their own change.
  */
 function rememberCreateEcho(
   registry: ConversationRegistry, row: Conversation, text: string,

@@ -185,25 +185,14 @@ export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
   /**
    * Minted by a *create* — `POST /api/tracks` or
-   * `POST /api/tracks/{id}/conversations`, the two requests that mint the card
-   * and deliver the message at once (#1449).
+   * `POST /api/tracks/{id}/conversations` (#1449).
    *
-   * Its one reader is `sendBlocked` (`app/router/public.tsx`), which closes
-   * the composer while an echo stands. An echo is retired by the agent
-   * echoing the turn back into `harness_items`, so it can stand for a long
-   * time or forever — and closing the composer for that whole span on a
-   * conversation the reader was just *landed* in undoes the landing
-   * #1211/#1299 builds. So a create's echo is excluded there.
-   *
-   * The asymmetry with a send is real and is not claimed to be principled: a
-   * send's 200 is just as durable (`observe_user_message_durable` persists
-   * before answering), and a send does hold the composer for the whole agent
-   * round trip, permanently if the agent is down. That behaviour predates
-   * #1449 and is untouched by it. This flag is scoped to not *introducing*
-   * that harm on a path that had no echo at all.
-   *
-   * Not a reconciliation input: retiring an echo is one server row matching
-   * one echo above its high-water mark, and this flag changes nothing there.
+   * Read in two places, both in `app/router/public.tsx`: `hasUnreconciledSend`
+   * excludes these echoes, so landing in a brand-new conversation leaves the
+   * composer open; and `rememberCreateEcho` treats "same text, also from a
+   * create" as this create's sentence already being recorded, which is what
+   * makes minting idempotent when the redemption effect runs twice for one
+   * landing.
    */
   deliveredByCreate?: true;
 }>;
@@ -1004,52 +993,97 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
 }
 
 /**
- * Place optimistic user echoes in the server's transcript at their own time.
+ * The persisted item a transcript entry came from, or `null` when its id does
+ * not name one.
+ *
+ * Message ids are `String(item.id)` or `${item.id}:${segmentIndex}`; activity
+ * ids are `activity-${item_uuid ?? item.id}`, and the wire's uuid is not an
+ * item id. So this answers for messages and declines for activities, which is
+ * exactly the set `serverHighWaterBefore` can be compared against.
+ */
+function entryItemId(entry: TranscriptEntry): number | null {
+  const head = entry.id.split(':', 1)[0] ?? '';
+  if (!/^\d+$/.test(head)) return null;
+  const parsed = Number.parseInt(head, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Place optimistic user echoes in the server's transcript, by the server's own
+ * position and not by any clock.
  *
  * Appending them all was right for the only echo that used to exist — one you
- * just said, so newer than everything confirmed — and wrong for the one #1449
+ * just said, so after everything confirmed — and wrong for the one #1449
  * added. A create's first sentence can be stranded (its runtime superseded
  * before the turn was drained), and the reader goes on talking: appended, the
  * thread read `B → R → A`, with the sentence that *started* it shown after the
  * reply to the sentence that followed it, and treated as the newest exchange
  * by the rail, the follow-the-tail scroll and the live marker.
  *
- * The server's own entries are never re-sorted, and that is not caution: it is
- * `buildTranscript`'s positional pairing, where a completed action keeps the
- * *started* row's place even though it ended later. So each echo is inserted
- * after the last entry that does not postdate it, which leaves the entries
- * exactly as they came and still puts an echo of something just said at the
- * tail, where every server entry is older than it.
+ * **Why not by time.** An echo's `atMs` is the browser's `Date.now()` and a
+ * server entry's is the kernel's. Ordering one against the other is comparing
+ * two clocks: a browser running slow puts a message the reader just sent at the
+ * *top* of the thread, and a browser running fast puts a stranded first
+ * sentence back at the bottom — the very defect above, reintroduced on the path
+ * that never had it. Both directions are pinned in `conversation.test.ts`.
  *
- * The tail thought is dropped only when an echo actually lands at the tail —
- * the rule was always about what the reader sees last.
+ * So the position is one the echo already carries from the server:
+ * `serverHighWaterBefore`, the newest persisted item id known when it was
+ * minted. An echo goes immediately before the first entry the server persisted
+ * after that — the first entry whose item id is greater. A just-sent echo was
+ * minted at the current high-water, so nothing is greater and it stays at the
+ * tail; a stranded create echo was minted at 0, so everything is greater and it
+ * stays at the head. The server's own entries are never re-sorted, which is
+ * `buildTranscript`'s positional pairing: a completed action keeps the
+ * *started* row's place even though it ended later.
+ *
+ * KNOWN GAP: an activity line's id carries the wire's uuid rather than an item
+ * id (`entryItemId` declines it), so an activity cannot form the boundary and
+ * stays where the server put it. An activity that really was persisted after a
+ * stranded echo, and that sits before the first comparable message, therefore
+ * renders in front of that echo. Not defended against: there is nothing in the
+ * entry to decide it with, and what is misplaced is one activity line's
+ * position, not anybody's words.
+ *
+ * The tail thought is displaced only when an echo really ends up after it, and
+ * that is read off the final placement rather than guessed before it.
  */
 export function mergeTranscript(
   serverEntries: readonly TranscriptEntry[],
-  echoes: readonly ConversationTurn[],
+  echoes: readonly OptimisticConversationTurn[],
 ): readonly TranscriptEntry[] {
   if (echoes.length === 0) return serverEntries;
-  /* Oldest first, so two echoes sharing a slot keep their own order. */
-  const ordered = [...echoes].sort((left, right) => left.atMs - right.atMs);
-  const last = serverEntries.at(-1);
-  /* The original rule, plus the condition it always implied and never had to
-     state: an echo has to actually end up after the thought to displace it. */
-  const echoAtTail = last === undefined || ordered.some((echo) => last.atMs <= echo.atMs);
-  const confirmed = echoAtTail && last !== undefined
-    && last.author === 'activity' && last.verb === 'Thought'
-    ? serverEntries.slice(0, -1)
-    : serverEntries;
-  const placed = [...confirmed];
-  for (const echo of ordered) {
-    let at = placed.length;
-    while (at > 0) {
-      const before = placed[at - 1];
-      if (before !== undefined && before.atMs <= echo.atMs) break;
-      at -= 1;
+  const boundary = (echo: OptimisticConversationTurn): number => {
+    const at = serverEntries.findIndex((entry) => {
+      const item = entryItemId(entry);
+      return item !== null && item > echo.serverHighWaterBefore;
+    });
+    return at < 0 ? serverEntries.length : at;
+  };
+  /* Oldest bound first, and mint order within one boundary, so two echoes
+     sharing a slot keep the order they were said in. */
+  const ordered = echoes
+    .map((echo, index) => ({ echo, at: boundary(echo), index }))
+    .toSorted((left, right) => left.at - right.at || left.index - right.index);
+  const placed: TranscriptEntry[] = [];
+  let next = 0;
+  for (const { echo, at } of ordered) {
+    while (next < at) {
+      const entry = serverEntries[next];
+      if (entry !== undefined) placed.push(entry);
+      next += 1;
     }
-    placed.splice(at, 0, echo);
+    placed.push(echo);
   }
-  return placed;
+  placed.push(...serverEntries.slice(next));
+  /* Read off the result: the last thing the server said, and whether anything
+     ended up after it. */
+  const last = serverEntries.at(-1);
+  if (last === undefined || last.author !== 'activity' || last.verb !== 'Thought') return placed;
+  const tailIndex = placed.lastIndexOf(last);
+  return tailIndex >= 0 && tailIndex < placed.length - 1
+    ? [...placed.slice(0, tailIndex), ...placed.slice(tailIndex + 1)]
+    : placed;
 }
 
 const ECHO_RECONCILIATION_LOOKBACK = 50;
@@ -1090,68 +1124,65 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
   return items.reduce((highest, item) => Math.max(highest, item.id), 0);
 }
 
-/** The persisted item id a server user turn was built from. */
-function serverTurnSequence(turn: ConversationTurn): number {
+/**
+ * The persisted item a server user turn came from.
+ *
+ * One item can produce several user turns — the kernel drains its pending
+ * queue in a batch and gives each observation its own segment — so `5:0` and
+ * `5:1` share this number. That is why it is only ever compared against
+ * `serverHighWaterBefore`, which is the same quantity, and is never used to
+ * order or to exclude rows: two rows of one item are not ordered by it, and
+ * excluding by it excludes a sibling that is a legitimate match.
+ */
+function serverTurnItemId(turn: ConversationTurn): number {
   return Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
 }
 
 /**
- * Reconcile each optimistic echo only against server rows that did not exist
- * before that send. Echoes may come from older route instances, so matching is
- * one-to-one across the whole remembered set rather than local to one caller.
+ * Pair optimistic echoes with the server rows that confirm them, and return
+ * the echoes still waiting.
  *
- * ── Why the survivors come back changed ──────────────────────────────────────
+ * One row confirms at most one echo, and an echo is only confirmed by a row
+ * from an item that did not exist when it was minted
+ * (`serverHighWaterBefore`). Echoes may have been minted by older route
+ * instances, so the pairing is over the whole remembered set rather than local
+ * to one caller.
  *
- * "One row confirms one echo" has to hold **across calls**, and this is called
- * repeatedly on the set the previous call returned: `useConversationStore`'s
- * merge effect writes the result to state and re-runs whenever the registry
- * changes, and a remount starts from the survivors the registry kept. With the
- * consumed row still in `serverTurns` and the retired echo gone from the input,
- * a second pass paired that same row with the next echo — two identical
- * messages, one persisted row, and the second one silently left the screen.
- * Measured before the fix: consecutive calls returned `["echo-send"]` then
- * `[]`.
+ * ── The contract, because getting it wrong is silent ─────────────────────────
  *
- * The pairing is recorded where it survives the call: in the survivors' own
- * `serverHighWaterBefore`, raised to the newest row consumed by an echo before
- * them. There is deliberately no side table of consumed row ids — that is the
- * same read-modify-write hazard moved somewhere else, and a set held outside
- * the values it describes cannot cross a remount at all.
+ * **Callers pass every echo this conversation has minted — never the previous
+ * answer.** This is a pairing, and a pairing over a set that has already had
+ * its matched members removed re-matches the same rows: the row that confirmed
+ * the create's sentence went on to confirm the identical sentence the reader
+ * sent next, which left the screen without a trace. The store derives its
+ * pending set from the complete one on every render
+ * (`useConversationStore`) and the registry keeps the complete one, so no
+ * caller feeds this its own output.
  *
- * Raising is safe because a survivor is, by definition, an echo no *current*
- * row matches, and `harness_items` ids only grow: any row that can still
- * confirm it has yet to be written and will outrank the raised bar.
- *
- * KNOWN GAP: that argument assumes echoes and their rows pair in the same
- * order — which they do, because the kernel appends user rows in delivery order
- * and echoes are minted in that same order. If they ever paired out of order,
- * an earlier echo taking a later row would raise the bar past a lower row that
- * only a later echo matches, and that echo would stand forever. Left as
- * written rather than defended against: the failure it would replace is losing
- * the reader's sentence, and the guard would have to guess which pairing was
- * intended.
+ * There is deliberately no state carried between calls — no raised floor, no
+ * table of consumed rows. Round 1 raised each survivor's
+ * `serverHighWaterBefore` to the item consumed before it, and that is what a
+ * scalar over a key space that is not totally ordered does: it shut out `5:1`
+ * because a sibling `5:0` had been taken, and it shut out an already-persisted
+ * row 5 because a later row 9 had been taken. Both strand the echo for the
+ * life of the tab, composer included. `serverHighWaterBefore` is read-only
+ * here.
  */
 export function reconcileOptimisticConversationTurns(
   serverTurns: readonly ConversationMessage[],
   echoes: readonly OptimisticConversationTurn[],
 ): readonly OptimisticConversationTurn[] {
+  /* Consumed rows are removed from this copy and from nothing else, which is
+     the whole of "one row confirms one echo" — within the one pass this
+     function is. */
   const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
-  const surviving: OptimisticConversationTurn[] = [];
-  let consumed = Number.NEGATIVE_INFINITY;
-  for (const echo of echoes) {
-    const floor = Math.max(echo.serverHighWaterBefore, consumed);
-    const match = available.findIndex((turn) => serverTurnSequence(turn) > floor
+  return echoes.filter((echo) => {
+    const match = available.findIndex((turn) => serverTurnItemId(turn) > echo.serverHighWaterBefore
       && reconcileUserEchoes([turn], [echo]).length === 0);
-    if (match < 0) {
-      surviving.push(floor === echo.serverHighWaterBefore
-        ? echo
-        : { ...echo, serverHighWaterBefore: floor });
-      continue;
-    }
-    const [taken] = available.splice(match, 1);
-    if (taken !== undefined) consumed = Math.max(consumed, serverTurnSequence(taken));
-  }
-  return surviving;
+    if (match < 0) return true;
+    available.splice(match, 1);
+    return false;
+  });
 }
 
 /**
