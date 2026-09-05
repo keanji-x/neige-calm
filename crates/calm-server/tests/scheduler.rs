@@ -8971,7 +8971,9 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         let track = boot.track_id.clone();
         async move { scheduler.schedule_track(track).await }
     });
-    claimed.notified().await;
+    tokio::time::timeout(Duration::from_secs(5), claimed.notified())
+        .await
+        .expect("production claim must reach the post-claim hook");
     sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.docRev',2, \
          '$.blocks[0].rev',2,'$.blocks[0].payload.spawn','in-wave') WHERE id='live-route-report'",
@@ -10169,4 +10171,109 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].1["passed"], true);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn task_recovery_claim_uses_crdt_when_only_payload_cache_changed() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "cache-only", TaskKind::Terminal, &[]);
+    let expected_command = task.goal.clone();
+    let previous_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "cache-only")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &previous_id, 10, &closure.refs, false)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_fail_from_worker_tx(
+        &mut tx,
+        &previous_id,
+        boot.track_id.as_str(),
+        calm_server::db::sqlite::TaskReporter::Kernel,
+        "spawn-failed: controlled pre-spawn failure",
+        11,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let receipt = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({
+        "key":"cache-only", "expected_attempt_id":previous_id, "idempotency_key":"cache-only-recovery", "reason":"Recover task"
+    })).await.unwrap();
+    let attempt_id = receipt["attempt_id"].as_str().unwrap();
+    let (report_id, cached): (String, String) =
+        sqlx::query_as("SELECT id,payload FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(boot.track_id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut cached: Value = serde_json::from_str(&cached).unwrap();
+    let cached_root = cached["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "cache-only")
+        .unwrap();
+    assert_eq!(cached_root["payload"]["command"], expected_command);
+    cached_root["payload"]["command"] = json!("false");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(cached.to_string())
+        .bind(&report_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::track_report::tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let attempt = boot.repo.task_get(attempt_id).await.unwrap().unwrap();
+    assert_eq!(
+        attempt.status,
+        TaskStatus::Running,
+        "a stale derived cache must not strand an otherwise admissible recovery"
+    );
+    assert_eq!(attempt.goal, expected_command);
+    let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(
+        refs[0].hash, closure.refs[0].hash,
+        "claim freezes authoritative unchanged content"
+    );
+    monitor
+        .detect_track_edit(boot.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        boot.repo
+            .task_get(attempt_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_none(),
+        "a cache-only change is not a changed task contract"
+    );
 }

@@ -99,13 +99,17 @@ pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> 
 
 /// Call immediately before new provider/process effects, after checking whether
 /// a previously recorded terminal exit already makes the adapter a no-op.
+/// Existing initial attempts retain their already-prepared context semantics;
+/// recovered attempts additionally recheck their admitted frozen contract.
 pub(crate) async fn admit_task_side_effect(
     repo: &dyn crate::db::RepoEventWrite,
     task_id: &str,
 ) -> Result<()> {
     let task_id = task_id.to_string();
     crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { refuse_if_context_stale(tx, Some(&task_id)).await })
+        Box::pin(
+            async move { crate::task_recovery::require_attempt_startable_tx(tx, &task_id).await },
+        )
     })
     .await
 }

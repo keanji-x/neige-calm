@@ -664,8 +664,17 @@ async fn task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverg
         let mut changed = declaration("b", &[]);
         if replace_root {
             doc.delete_block(&block_id).unwrap();
-            doc.upsert_block(None, "task", &render_fence("task", &changed))
+            // IDs are minted from content and position. Move the recreated
+            // declaration to a distinct position to exercise a truly new ID.
+            doc.upsert_block(None, "prose", "replacement position")
                 .unwrap();
+            let (replacement_id, _) = doc
+                .upsert_block(None, "task", &render_fence("task", &changed))
+                .unwrap();
+            assert_ne!(
+                replacement_id, block_id,
+                "fixture must replace root identity"
+            );
         } else {
             changed["command"] = json!("false");
             doc.upsert_block(Some(&block_id), "task", &render_fence("task", &changed))
@@ -690,7 +699,7 @@ async fn task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverg
                 .await
                 .unwrap()
                 .is_none(),
-            "a changed authoritative command must not retain an executable recovery projection"
+            "a changed authoritative command or root identity must not retain an executable recovery projection"
         );
         let allocation = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
             let id = recovered.id.clone();

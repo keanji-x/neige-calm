@@ -1243,16 +1243,19 @@ impl Scheduler {
                             }
                         }
                         if let Some(root) = claim_refs.iter().find(|reference| reference.is_root) {
-                            let current_root = match crate::track_report::report_blocks_snapshot_tx(tx, root.track_id.as_str()).await {
-                                Ok((_, blocks)) => blocks.iter()
-                                    .find(|block| block.id == root.block_id)
-                                    .map(|block| context_ref(root.track_id.as_str(), block, true)),
-                                Err(error) => {
-                                    tracing::warn!(%error, "scheduler: authoritative claim root is unavailable");
-                                    context_metrics.record_claim_fence_race_lost();
-                                    return Err(race_lost_err());
-                                }
-                            };
+                            let snapshot: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
+                                "SELECT payload,body_crdt FROM cards WHERE track_id=?1 AND kind='track-report' LIMIT 1",
+                            ).bind(root.track_id.as_str()).fetch_optional(&mut **tx).await?;
+                            let current_root = snapshot.and_then(|(payload, crdt)| {
+                                let payload = serde_json::from_str::<Value>(&payload).ok()?;
+                                let blocks = crate::task_context::context_snapshot_values(
+                                    root.track_id.as_str(), &payload, crdt.as_deref(),
+                                ).ok()?;
+                                blocks.into_iter().find_map(|value| {
+                                    let block: calm_types::track_report::ReportBlock = serde_json::from_value(value).ok()?;
+                                    (block.id == root.block_id).then(|| context_ref(root.track_id.as_str(), &block, true))
+                                })
+                            });
                             if current_root
                                 .as_ref()
                                 .map(|current| (&current.block_id, &current.hash))

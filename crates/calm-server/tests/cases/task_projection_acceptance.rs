@@ -545,7 +545,7 @@ async fn fresh_reference_error_overrides_an_existing_pending_rows_old_queue_reas
 }
 
 #[tokio::test]
-async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
+async fn failed_dependency_reason_points_to_recovery_options() {
     let boot = new_boot().await;
     upsert(&boot, None, task("failed-first")).await;
     let mut blocked = task("blocked-next");
@@ -558,13 +558,35 @@ async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
         .unwrap();
 
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let failed = task_verdict(&response, "failed-first");
+        assert_eq!(failed["status"], "failed", "{surface}: {failed}");
+        let diagnostics = failed["diagnostics"].as_array().unwrap();
+        let recovery_hint = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic["action"] == "inspect_recovery_options")
+            .unwrap_or_else(|| {
+                panic!("{surface}: failed current attempt needs recovery guidance: {failed}")
+            });
+        assert!(
+            recovery_hint["message"]
+                .as_str()
+                .unwrap()
+                .contains("failed"),
+            "{surface}: {recovery_hint}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["action"] == "create_task_with_new_key"),
+            "{surface}: no mandatory key replacement"
+        );
         let reason = &task_verdict(&response, "blocked-next")["pendingReason"];
         assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
         assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
         let message = reason["message"].as_str().unwrap();
         assert!(message.contains("failed"), "{surface}: {message}");
         assert!(
-            message.contains("revise dependencies"),
+            message.contains("inspect recovery options"),
             "{surface}: {message}"
         );
         assert!(!message.starts_with("Waiting"), "{surface}: {message}");
