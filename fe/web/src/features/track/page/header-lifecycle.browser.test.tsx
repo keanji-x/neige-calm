@@ -75,6 +75,18 @@ describe('the track lifecycle status in the page header', () => {
     expect(paintedRgb(getComputedStyle(actions).color)).toEqual(paintedRgb(text2));
   });
 
+  it('makes a worker input request directly reviewable with a full row-height target', async () => {
+    await browserPage.viewport(1200, 800);
+    const onReviewNeedsInput = vi.fn();
+    renderPage({ track: track({ anyCardNeedsInput: true }), onReviewNeedsInput });
+
+    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review input request"]')!;
+    expect(review.innerText).toBe('Review');
+    expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
+    await userEvent.click(review);
+    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+  });
+
   it('returns focus to the Track actions button when Escape closes its menu', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });

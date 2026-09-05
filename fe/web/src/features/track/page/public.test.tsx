@@ -108,6 +108,17 @@ describe('TrackPage header', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(onCloseBoard).toHaveBeenCalledOnce();
   });
+
+  it('turns a card input request into a direct review action', async () => {
+    const onReviewNeedsInput = vi.fn();
+    renderPage({
+      track: track({ anyCardNeedsInput: true }),
+      onReviewNeedsInput,
+    });
+    expect(screen.getByText('Needs input')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Review input request' }));
+    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+  });
 });
 
 describe('TrackPage task inventory', () => {
@@ -225,6 +236,25 @@ describe('TrackPage task inventory', () => {
     const dot = screen.getByRole('img', { name: 'Status: running' });
     expect(dot.getAttribute('title')).toBe('running');
     expect(dot.dataset.ncStatus).toBe('running');
+  });
+
+  it('prints scannable desktop status text and a task summary without replacing the accessible dot', () => {
+    const queued: ReportTaskRow = {
+      ...running('beta', 'pending', null),
+      pendingReason: {
+        kind: 'budgetQueued', occupiedTaskBudget: 1, effectiveTaskBudget: 1,
+        message: 'Queued 1/1',
+      },
+    };
+    const { container } = renderPage({
+      tasks: [running('alpha', 'running', 'card-9', 'terminal'), queued],
+    });
+    const inventory = container.querySelector('[data-nc-task-inventory]');
+    expect(inventory).not.toBeNull();
+    expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
+      .toEqual(['running', 'pending — Queued 1/1']);
+    expect(screen.getByText('2 tasks · 1 active · 1 queued')).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Status: running' })).toBeTruthy();
   });
 
   /*

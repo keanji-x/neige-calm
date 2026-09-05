@@ -167,6 +167,38 @@ describe('BoardHost react-grid-layout wiring', () => {
 });
 
 describe('BoardHost lifecycle', () => {
+  it('scrolls the newly selected worker card into view', () => {
+    const registry = createCardRegistry();
+    registry.register(entry);
+    const host = createCardHost(registry);
+    const items = ['card-a', 'card-b'].map((id, originalIndex) => Object.freeze({
+      card: { type: 'board-host-term' as const, id, title: null, terminalId: `t-${id}` },
+      title: id,
+      originalIndex,
+    }));
+    const scrollIntoView = vi.fn();
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    try {
+      const board = render(
+        <BoardHost host={host} items={items} activeCardId="card-a" visible />,
+      );
+      scrollIntoView.mockClear();
+      board.rerender(
+        <BoardHost host={host} items={items} activeCardId="card-b" visible />,
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
+      expect(scrollIntoView.mock.instances[0])
+        .toBe(document.querySelector('[data-nc-card-id="card-b"]'));
+    } finally {
+      if (original === undefined) Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+      else Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    }
+  });
+
   it('replays the current visible and focused state when replacing the host', () => {
     const registry = createCardRegistry();
     registry.register(entry);

@@ -105,19 +105,24 @@ function controlAt(x: number, y: number): Element | null {
 }
 
 describe('a TASKS row, laid out', () => {
-  it('puts the status dot at the trailing edge, after the kind, inside the row', async () => {
+  it('puts readable status text before the kind and keeps the status dot at the trailing edge', async () => {
     await browserPage.viewport(1200, 800);
     const { row, dot, kind } = renderRow(vi.fn(), vi.fn());
 
     const rowBox = row.getBoundingClientRect();
     const dotBox = dot.getBoundingClientRect();
     const kindBox = kind.getBoundingClientRect();
+    const statusText = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
+    const statusBox = statusText.getBoundingClientRect();
 
     /* Premise: these boxes are real. A zero-size rect would make every
        comparison below vacuously true, which is exactly what jsdom returns. */
     expect(rowBox.width).toBeGreaterThan(100);
     expect(dotBox.width).toBeGreaterThan(0);
 
+    expect(statusText.innerText).toBe('running');
+    expect(statusBox.width).toBeGreaterThan(0);
+    expect(statusBox.right).toBeLessThanOrEqual(kindBox.left);
     expect(dotBox.left).toBeGreaterThan(kindBox.right);
     expect(dotBox.right).toBeLessThanOrEqual(Math.ceil(rowBox.right));
     /* Vertically centred on the row, within a pixel of rounding. */
@@ -125,7 +130,7 @@ describe('a TASKS row, laid out', () => {
       .toBeLessThanOrEqual(1);
   });
 
-  it('replaces the Show-task tooltip with one compact pending-reason tooltip', async () => {
+  it('prints the pending reason while retaining one compact pending-reason tooltip', async () => {
     await browserPage.viewport(1200, 800);
     const message = 'Queued 1/1';
     render(
@@ -155,7 +160,9 @@ describe('a TASKS row, laid out', () => {
     const key = row.querySelector<HTMLElement>('[data-nc-field="title"]')!;
     const reveal = row.querySelector<HTMLElement>('button[title="Queued 1/1"]')!;
 
-    expect(row.innerText).not.toContain(message);
+    expect(row.innerText).toContain(`pending — ${message}`);
+    expect(row.querySelector<HTMLElement>('[data-nc-task-status-text]')?.innerText)
+      .toBe(`pending — ${message}`);
     expect(key.innerText).toBe('bench-harness');
     expect(reveal.title).toBe(message);
     expect(reveal.getAttribute('aria-description')).toBe(`pending — ${message}`);

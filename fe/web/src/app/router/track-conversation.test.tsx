@@ -238,6 +238,22 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Conversation Assistant' });
   });
 
+  it('opens the planner conversation from the track input request', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [{
+            id: 'needs-input', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
+            kind: 'any_card_needs_input', payload: { value: true }, updated_at: 3,
+          }],
+        })
+      : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Review input request' }));
+    expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+  });
+
   it('keeps the name derived from confirmed turns after the drawer closes', async () => {
     let historyAvailable = true;
     const { client } = setup((request) => request.path.includes(HISTORY_PATH)

@@ -133,6 +133,31 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
     }
   }, []);
 
+  useLayoutEffect(() => {
+    if (!visible || !mounted || activeCardId === null) return;
+    const reveal = () => {
+      const active = Array.from(
+        containerRef.current?.querySelectorAll<HTMLElement>('[data-nc-card-id]') ?? [],
+      ).find((element) => element.dataset.ncCardId === activeCardId);
+      active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
+    if (
+      typeof requestAnimationFrame !== 'function'
+      || typeof cancelAnimationFrame !== 'function'
+    ) {
+      reveal();
+      return;
+    }
+    let secondFrame: number | null = null;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(reveal);
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+    };
+  }, [activeCardId, containerRef, mounted, visible]);
+
   return (
     <div ref={containerRef} className="track-grid-wrap" data-nc-card-board="">
       {mounted && (

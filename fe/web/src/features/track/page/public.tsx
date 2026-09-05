@@ -84,6 +84,8 @@ export type TrackPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
+  /** Opens the track's coordinating conversation when a worker requests input. */
+  onReviewNeedsInput?: () => void;
   /** Starts Chat from the mobile Report's dedicated floating action. */
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
@@ -148,11 +150,40 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
   return found;
 }
 
+function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
+  if (tasks.length === 0) return null;
+  let active = 0;
+  let queued = 0;
+  let waiting = 0;
+  let failed = 0;
+  let done = 0;
+  for (const task of tasks) {
+    if (task.status === 'dispatched' || task.status === 'running' || task.status === 'verifying') {
+      active += 1;
+    } else if (task.status === 'failed') {
+      failed += 1;
+    } else if (task.status === 'done') {
+      done += 1;
+    } else if (task.pendingReason?.kind === 'budgetQueued') {
+      queued += 1;
+    } else if (task.status === 'pending' || task.pendingReason !== null) {
+      waiting += 1;
+    }
+  }
+  const parts = [`${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`];
+  if (active > 0) parts.push(`${active} active`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (queued > 0) parts.push(`${queued} queued`);
+  if (waiting > 0) parts.push(`${waiting} waiting`);
+  if (done > 0) parts.push(`${done} done`);
+  return parts.join(' · ');
+}
+
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation,
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
-  panel = null, onOpenPanel, onClosePanel,
+  panel = null, onOpenPanel, onClosePanel, onReviewNeedsInput,
   mobileBackLabel = 'Pages', onMobileBack,
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
@@ -231,7 +262,13 @@ export function TrackPage({
    * let this page's navigation decide the view model's contents.
    */
   const panelView = deriveTrackPageView({ cards, tasks });
-  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
+  const desktopPainter = makeDesktopPainter({
+    onOpenCard,
+    onOpenTask,
+    onDeleteCard,
+    cardsAction,
+    taskSummary: taskInventorySummary(tasks),
+  });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
@@ -427,9 +464,19 @@ export function TrackPage({
           </>
         }
         meta={track.anyCardNeedsInput ? (
-          <span className={styles.needsInput}>
-            <span className={styles.needsInputDot} aria-hidden="true" />
-            Needs input
+          <span className={styles.needsInputCluster}>
+            <span className={styles.needsInput}>
+              <span className={styles.needsInputDot} aria-hidden="true" />
+              Needs input
+            </span>
+            {onReviewNeedsInput !== undefined && (
+              <button
+                type="button"
+                className={styles.needsInputAction}
+                aria-label="Review input request"
+                onClick={onReviewNeedsInput}
+              >Review</button>
+            )}
           </span>
         ) : undefined}
         actions={(

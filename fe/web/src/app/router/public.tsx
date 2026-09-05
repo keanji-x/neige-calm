@@ -2800,6 +2800,9 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
+      onReviewNeedsInput={plannerCard === undefined
+        ? undefined
+        : () => registry.requestOpen(plannerCard.id, { focusComposer: true })}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       onResumeTrack={() => trackMutations.patch(track.id, track.areaId, { lifecycle: 'working' }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {

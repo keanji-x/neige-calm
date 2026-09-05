@@ -88,9 +88,11 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, TrackPageView } from
  * status carrier prints `status.token`, the bare word. What the phrase reaches
  * on mobile is that carrier's `title` and, since S1b-4b's
  * accessible-description channel, the text the row's `aria-describedby` names;
- * on the desktop it is the dot's `title` and the `Status: ${phrase}` accessible
- * name. `mobile-projection.test.tsx` carries a source scan holding that the
- * mobile page words no task state of its own.
+ * on the desktop it is both the dot's `title` / `Status: ${phrase}` accessible
+ * name and a compact visible copy for scanning. The visible copy is
+ * `aria-hidden` so the button does not announce the same status twice.
+ * `mobile-projection.test.tsx` carries a source scan holding that the mobile
+ * page words no task state of its own.
  */
 export function taskStatusPhrase(status: string, detail: string | null): string {
   return detail === null ? status : `${status} — ${detail}`;

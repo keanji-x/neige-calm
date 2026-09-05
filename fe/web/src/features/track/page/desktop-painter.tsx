@@ -81,6 +81,8 @@ export type DesktopPainterDeps = Readonly<{
   /** The Cards module head's `+`, composed by `app/router`. A router-composed
    *  slot, not view-model content (§3.2), so it travels as an opaque node. */
   cardsAction?: ReactNode;
+  /** Compact, already-derived progress for the Tasks module head. */
+  taskSummary?: string | null;
 }>;
 
 /** One marker attribute, spelled from `MARKER` / `FIELD` so no name is retyped
@@ -257,6 +259,7 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
+  const statusText = row.status === null ? null : reveal?.description ?? row.status.phrase;
   const revealControl = (
     <button
       type="button"
@@ -283,6 +286,13 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   return (
     <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
       {revealControl}
+      {statusText !== null && (
+        <span
+          className={styles.taskStatusText}
+          data-nc-task-status-text=""
+          aria-hidden="true"
+        >{statusText}</span>
+      )}
       {/* The kind is a word either way — what changes is whether it is a
           control. `title` describes the destination without touching the
           accessible name, which stays the visible word (WCAG 2.5.3). */}
@@ -352,7 +362,11 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
           <PanelModule
             key={parts.key}
             title={parts.title}
-            action={parts.key === 'cards' ? deps.cardsAction : undefined}
+            action={parts.key === 'cards'
+              ? deps.cardsAction
+              : deps.taskSummary
+                ? <span className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</span>
+                : undefined}
             moduleMarker={parts.key}
             titleFieldMarker={FIELD.moduleTitle}
           >
