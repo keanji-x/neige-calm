@@ -197,9 +197,11 @@ describe('NewTrackForm asks only what the track starts from', () => {
    *
    * The composer's text is delivered to the planner agent by the create, and
    * the kernel enqueues it untrimmed — the same bytes are what the operation
-   * payload carries — so the whitespace around what the reader typed is part
-   * of what they said. This form trims to decide whether it may submit at all
-   * and for nothing else.
+   * payload carries — and hashes it untrimmed (`first_message_digest`) into
+   * the create's idempotency binding row, so the whitespace around what the
+   * reader typed is part of what they said *and* part of what identifies the
+   * request. This form trims to decide whether it may submit at all and for
+   * nothing else.
    *
    * The version of this case that shipped first asserted the *trimmed* string
    * and so certified the defect: the form trimmed, the route trimmed again,

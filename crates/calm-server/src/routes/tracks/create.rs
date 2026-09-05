@@ -546,7 +546,7 @@ fn ensure_replay_message_matches(
     // separate payload digest field: #1314 deleted that field because the text
     // it hashed is right here. Still fail-closed on absence — a track-create
     // operation always carries the sentence, so a payload without one is a
-    // corruption, not a replay to wave through.
+    // corruption, and refusing it beats letting it pass unchecked.
     let payload_text = payload.first_message.as_deref().ok_or_else(|| {
         CalmError::Internal(format!(
             "track-create operation {} has no first message",

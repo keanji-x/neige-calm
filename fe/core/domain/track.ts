@@ -165,8 +165,10 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
  * It answers only "is this blank". It never returns a *value*: the text the
  * kernel enqueues for the agent is the reader's own string, indentation and
  * trailing spaces included — the operation payload carries those bytes
- * verbatim — so trimming on the way to the wire would silently rewrite what
- * they typed.
+ * verbatim, and `first_message_digest` hashes them verbatim too (no trim) into
+ * the create's idempotency binding row — so trimming on the way to the wire
+ * would silently rewrite what they typed, and would change what identifies the
+ * request.
  */
 export function isBlankForKernel(text: string): boolean {
   return /^\p{White_Space}*$/u.test(text);
