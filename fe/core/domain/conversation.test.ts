@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HarnessItem } from '../api/generated/wire.js';
+import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
   PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_RENAME_TOOL,
   TRACK_TOOL_PREFIX,
@@ -118,17 +118,48 @@ describe('optimistic conversation provenance', () => {
  * projection maps it to `Idle`, but `can_issue_turn` does not accept it.
  */
 describe('kernelQueuesInput', () => {
-  it.each([
-    ['idle', false],
-    ['turn_completed', false],
-    ['pending_thread_start', true],
-    ['issuing_turn', true],
-    ['issuing_interrupt', true],
-    ['turn_running', true],
-    ['resumed', true],
-    ['wedged', true],
-  ] as const)('%s queues: %s', (phase, queues) => {
-    expect(kernelQueuesInput(phase)).toBe(queues);
+  /*
+   * ── The table is bound to the enum by the compiler, not by care ──────────
+   *
+   * `Record<HarnessPhaseTag, boolean>` is exhaustive in both directions: the
+   * annotation rejects a missing key, and the `satisfies` rejects an extra one.
+   * So a ninth phase cannot land quietly on either side of this table —
+   * `tsc -b` is a gate, and it fails until someone decides which column the new
+   * phase belongs in.
+   *
+   * **The `satisfies` is load-bearing and was not there at first.** Excess
+   * properties are only checked against a *fresh* literal, and `Object.freeze`
+   * is a function call, so with the annotation alone an unknown key passed
+   * silently — measured, by adding one. The first version of this note claimed
+   * both directions anyway. Both directions are now checked by mutation, one
+   * per direction.
+   *
+   * `HarnessPhaseTag` is the right authority for that and the only one
+   * available. `core/api/generated/wire.ts` is ts-rs output from the Rust enum,
+   * and CI re-runs the generator and `git diff --exit-code`s the result, so the
+   * type cannot drift from `HarnessState` without a second gate saying so. The
+   * two hand-written zod copies of this list (`core/api/schemas.ts`,
+   * and `harnessPhaseSchema` in the module under test) were *not* used: checking
+   * a hand-written table against a hand-written list would look like a machine
+   * check and be nothing of the kind.
+   *
+   * What it still cannot do, stated because the type gives no help here: it
+   * pins the shape of the table, not the truth of a cell. Both columns are
+   * `HarnessState::can_issue_turn()` read by a person.
+   */
+  const QUEUES: Readonly<Record<HarnessPhaseTag, boolean>> = Object.freeze({
+    idle: false,
+    turn_completed: false,
+    pending_thread_start: true,
+    issuing_turn: true,
+    issuing_interrupt: true,
+    turn_running: true,
+    resumed: true,
+    wedged: true,
+  } satisfies Record<HarnessPhaseTag, boolean>);
+
+  it.each(Object.entries(QUEUES))('%s queues: %s', (phase, queues) => {
+    expect(kernelQueuesInput(phase as HarnessPhaseTag)).toBe(queues);
   });
 
   /* Unknown, and read as queueing on purpose — the note on the function has the

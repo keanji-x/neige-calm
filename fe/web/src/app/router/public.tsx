@@ -560,8 +560,24 @@ export function useConversationStore(
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
       serverHighWaterBefore: serverItemHighWater(items),
       /*
-       * Read at the moment of the press, which is the only moment it is true of
-       * this message, and read against the **kernel's** whitelist.
+       * Read at the press, against the **kernel's** whitelist — and read from a
+       * *query snapshot*, which is the honest name for it.
+       *
+       * `phase` is `run.data?.phase ?? null`: what the last `GET /planner/run`
+       * answered, refreshed on the events that invalidate it. It is not the
+       * kernel's state at the instant of the press, and this line cannot make it
+       * one. A snapshot still reading `idle` while the kernel has already begun a
+       * turn mints `queued: false` for a message the kernel queued, which is the
+       * dead composer below reached by a different route. Narrower than an
+       * earlier version of this note, which said this was "the only moment it is
+       * true of this message" — true of the *press*, not of the value.
+       *
+       * Not closed here, and not closeable from this side: `SendPlannerInputResponse`
+       * returns `card_id` and the session id and says nothing about where the
+       * message went. Registered as a known gap on the PR and carried by the
+       * queue-design slice, whose response is gaining an entry id regardless.
+       * What this predicate does close is the far larger static gap — six phases
+       * that queue, of which a `working`-shaped test sees two.
        *
        * `POST /planner/input` does not look at the phase — `send_planner_input`
        * accepts unconditionally and `observe_user_message_durable` folds the

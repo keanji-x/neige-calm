@@ -1667,13 +1667,18 @@ describe('create placeholder lifetime', () => {
    *   `hasUnreconciledSend` is therefore strictly inside a set the placeholder
    *   was already outside.
    *
-   * What they *do* share is a text matcher, and that is registered rather than
-   * fixed here: the placeholder retires on `userTextMatchesEcho`, whose
-   * `startsWith(`${echo}\n`)` arm is #1449's own KNOWN GAP (see
-   * `createEchoLine`). A queued message whose first line repeats the create's
-   * sentence would retire the placeholder through that arm. That is the
-   * existing gap reached through a new door, not a new one, and narrowing the
-   * matcher is a change to the send path.
+   * What they *do* share is a text matcher, and the reach of that sharing is
+   * narrower than an earlier version of this note claimed. `createEchoShown`
+   * scans `serverTurns` **only**, so a client-side queued echo cannot retire the
+   * placeholder at all, however its text reads — measured: with the placeholder
+   * holding `the first sentence` and a queued send of `the first sentence\nand
+   * more`, both lines survive. `userTextMatchesEcho`'s `startsWith(`${echo}\n`)`
+   * arm — #1449's own KNOWN GAP, recorded at `createEchoLine` — can only fire
+   * once the queued message has become a persisted row, and by then the create's
+   * own sentence has usually landed with it, since the queue drains into one
+   * turn that keeps its `input_segments`. So: an existing gap, reachable only
+   * after persistence, and not opened wider by anything here. Narrowing the
+   * matcher would be a change to the send path and is not done.
    */
   it('shows the create placeholder and a queued echo as two lines, once each', async () => {
     const transport: ApiTransportPort = {

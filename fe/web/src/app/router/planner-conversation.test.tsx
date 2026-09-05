@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { HarnessPhaseTag } from '../../../../core/api/generated/wire.js';
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
@@ -183,16 +184,36 @@ async function settleOneSend(requests: ApiRequest[], expected = 1) {
  * is not fixed here; what this row pins is that the composer stays open and
  * says the message is queued rather than going dead with no explanation.
  */
-const PHASE_QUEUES = Object.freeze([
-  ['idle', false],
-  ['turn_completed', false],
-  ['pending_thread_start', true],
-  ['issuing_turn', true],
-  ['issuing_interrupt', true],
-  ['turn_running', true],
-  ['resumed', true],
-  ['wedged', true],
-] as const);
+const PHASE_QUEUES_TABLE: Readonly<Record<HarnessPhaseTag, boolean>> = Object.freeze({
+  idle: false,
+  turn_completed: false,
+  pending_thread_start: true,
+  issuing_turn: true,
+  issuing_interrupt: true,
+  turn_running: true,
+  resumed: true,
+  wedged: true,
+} satisfies Record<HarnessPhaseTag, boolean>);
+
+/*
+ * Exhaustive by the compiler rather than by care: the annotation rejects a
+ * missing key and the `satisfies` rejects an extra one, so a ninth phase cannot
+ * land quietly on either side of this table — `tsc -b` is a gate and it stays
+ * red until somebody chooses the column. The `satisfies` is not decoration:
+ * excess properties are checked only against a fresh literal and `Object.freeze`
+ * is a call, so the annotation alone let an unknown key through (measured).
+ *
+ * `HarnessPhaseTag` is ts-rs output from the Rust enum
+ * (`core/api/generated/wire.ts`) and CI re-runs the generator and
+ * `git diff --exit-code`s it, so the type cannot drift from `HarnessState`
+ * unnoticed either. The repository's two hand-written zod copies of this list
+ * were deliberately not used as the authority — a hand-written table checked
+ * against a hand-written list looks machine-checked and is not.
+ *
+ * It pins the table's *shape*. Which column a phase belongs in is
+ * `can_issue_turn()` read by a person, and no type can check that.
+ */
+const PHASE_QUEUES = Object.freeze(Object.entries(PHASE_QUEUES_TABLE));
 
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
