@@ -67,4 +67,5 @@ jobs:
           OWNERSHIP_EVENT_NAME: ${{ github.event_name }}
           OWNERSHIP_PR_BODY_BASE64: ${{ steps.pull_request.outputs.body_base64 }}
           OWNERSHIP_PUSH_FORCED: ${{ github.event.forced || false }}
+          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
         run: node --experimental-strip-types fe/tools/ownership/check-ownership-trailers.mjs

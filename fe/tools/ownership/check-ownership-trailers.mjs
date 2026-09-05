@@ -1,8 +1,10 @@
 import { fileURLToPath } from 'node:url';
 
+const githubPath = './github-squash.ts';
+const { githubOwnershipRequest, githubSquashCommits } = await import(githubPath);
 const validatorPath = './validator.ts';
 const {
-  gitOwnershipCommits, resolveOwnershipBase, validateOwnership, validateOwnershipPullRequestBody,
+  gitOwnershipCommits, ownershipCommitsForEvent, resolveOwnershipBase, validateOwnership, validateOwnershipPullRequestBody,
 } = await import(validatorPath);
 const { ownershipManifest } = await import('../../ownership-manifest.mjs');
 
@@ -20,7 +22,14 @@ const base = resolveOwnershipBase(
   eventName,
   process.env.OWNERSHIP_PUSH_FORCED === 'true',
 );
-const commits = gitOwnershipCommits(repositoryRoot, base, headSha);
+const commits = await ownershipCommitsForEvent(eventName,
+  () => gitOwnershipCommits(repositoryRoot, base, headSha), ownershipManifest,
+  /** @param {import('./validator.ts').OwnershipCommit} commit */ (commit) => {
+    const repository = process.env.GITHUB_REPOSITORY ?? '';
+    return githubSquashCommits(commit, repository, githubOwnershipRequest({
+      repository, token: process.env.GITHUB_TOKEN ?? '',
+    }));
+  });
 const encodedBody = process.env.OWNERSHIP_PR_BODY_BASE64;
 if (eventName === 'pull_request' && encodedBody === undefined) {
   throw new Error('ownership pull request audit requires the current pull request body');

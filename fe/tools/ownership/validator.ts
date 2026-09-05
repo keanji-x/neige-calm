@@ -160,11 +160,33 @@ export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef =
   }));
 }
 
-export function ownershipCommitsForEvent(
-  _eventName: string | undefined,
+export async function ownershipCommitsForEvent(
+  eventName: string | undefined,
   load: () => readonly OwnershipCommit[],
-): readonly OwnershipCommit[] {
-  return load();
+  entries: readonly OwnershipEntry[],
+  recover: (commit: OwnershipCommit) => Promise<readonly OwnershipCommit[]>,
+): Promise<readonly OwnershipCommit[]> {
+  const commits = load();
+  if (eventName !== 'push') return commits;
+  const result: OwnershipCommit[] = [];
+  for (const commit of commits) {
+    if (validateOwnership(entries, [], [commit]).length === 0) {
+      result.push(commit);
+      continue;
+    }
+    const source = await recover(commit);
+    const violations = validateOwnership(entries, [], source);
+    if (violations.length > 0) {
+      throw new Error(`cannot recover ownership for ${commit.sha}: original PR commits fail audit:\n${violations
+        .map(({ message }) => message).join('\n')}`);
+    }
+    const trailers = source.flatMap((original) => {
+      const changed = new Set(original.paths.map(clean));
+      return ownershipTrailers(original.message).filter(({ path }) => changed.has(path)).map(({ text }) => text);
+    });
+    result.push({ ...commit, message: [commit.message, ...trailers].join('\n\n') });
+  }
+  return result;
 }
 
 export function resolveOwnershipBase(

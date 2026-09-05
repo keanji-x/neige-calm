@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const githubPath = './github-squash.ts';
+const { githubOwnershipRequest, githubSquashCommits } = await import(githubPath);
 const validatorPath = './validator.ts';
 const { gitOwnershipCommits, ownershipCommitsForEvent, repositoryFiles, resolveOwnershipBase, validateOwnership } = await import(validatorPath);
 const { auditStyleRepository } = await import('../styles/repository-check.mjs');
@@ -25,8 +27,14 @@ try {
     process.env.OWNERSHIP_EVENT_NAME,
     process.env.OWNERSHIP_PUSH_FORCED === 'true',
   );
-  const commits = ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
-    () => gitOwnershipCommits(join(feRoot, '..'), base, head));
+  const commits = await ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
+    () => gitOwnershipCommits(join(feRoot, '..'), base, head), ownershipManifest,
+    /** @param {import('./validator.ts').OwnershipCommit} commit */ (commit) => {
+      const repository = process.env.GITHUB_REPOSITORY ?? '';
+      return githubSquashCommits(commit, repository, githubOwnershipRequest({
+        repository, token: process.env.GITHUB_TOKEN ?? '',
+      }));
+    });
   const repositoryViolations = validateOwnership(
     ownershipManifest, repositoryFiles(join(feRoot, '..')), commits,
   );
