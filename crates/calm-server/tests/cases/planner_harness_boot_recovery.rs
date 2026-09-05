@@ -1242,7 +1242,6 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             profile: Default::default(),
             create_card: None,
             opening_briefing: None,
-            first_message_sha256: None,
             first_message: None,
             create_request_sha256: None,
         })

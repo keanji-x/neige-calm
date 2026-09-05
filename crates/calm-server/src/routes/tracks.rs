@@ -2363,7 +2363,6 @@ async fn start_planner_harness(
         force_new_thread: false,
         profile: Default::default(),
         create_card: None,
-        first_message_sha256: None,
         // #1299 S1 — `None` here is not "no message", it is the pre-#1299 shape
         // verbatim: `skip_serializing_if` drops the key entirely, so a create
         // that typed nothing writes byte-identical payload JSON and therefore
@@ -3326,7 +3325,6 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         force_new_thread: true,
         profile: Default::default(),
         create_card: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
         // #1343 — not a conversation create; nothing to brief. `None` is

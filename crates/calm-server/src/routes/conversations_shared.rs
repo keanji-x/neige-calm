@@ -1,5 +1,7 @@
 //! Shared mechanics for lazily minting a Track assistant conversation on its
-//! first message: validation, retryable operation keys and first-message dedup.
+//! first message: validation, retryable operation keys, the first-message
+//! digest that the track-create binding row stores, and the read that says
+//! whether a card has ever had a user message enqueued.
 
 use sha2::{Digest, Sha256};
 
@@ -39,8 +41,21 @@ pub(crate) fn validate_first_message(text: &str) -> Result<()> {
 ///
 /// Verbatim on purpose: this is the value that decides whether "same key,
 /// different body" is a 409, so it has to change whenever the bytes the agent
-/// would receive change. `send_planner_input` also forwards the text untrimmed,
-/// so hashing the untrimmed string is what actually mirrors what is sent.
+/// would receive change. `prepare_tx` enqueues the payload's `first_message`
+/// untrimmed, so hashing the untrimmed string is what actually mirrors what is
+/// sent.
+///
+/// The one caller is `routes/tracks/create.rs`, and what it hashes *for* is
+/// the `track_create_idempotency` **binding row** (#1452): that row is written
+/// inside the mint transaction and outlives the operation row, but it stores
+/// no message text, so this digest is the message's only representation there
+/// and is not redundant with anything.
+///
+/// It is deliberately NOT a field of `PlannerHarnessStartOperationPayload`
+/// any more. #1314 deleted that field: the payload already carries
+/// `first_message` verbatim, so a digest beside it hashed bytes the payload
+/// held anyway, both for `stable_payload_hash` and for the replay comparison
+/// in `ensure_replay_message_matches`.
 pub(crate) fn first_message_digest(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
@@ -113,12 +128,18 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 ///   handed over — and survives a later compensation that deletes the card,
 ///   because `events` is append-only.
 ///
-/// The only caller left is `today_summary`, which asks a question the second
-/// writer answers correctly: "is the bootstrap text already on this card's
-/// queue?" — a seeded-but-not-started observation is inherited by the dormant
-/// restart, so it counts. A caller that instead needs "did a delivery *reach*
-/// the agent?" must not use this: see `routes/track_conversations.rs`, which
-/// deliberately reads nothing back, and #1384.
+/// The only caller left is `today_summary`, and what it gets is "was the
+/// bootstrap ever enqueued", which is **not** "is the bootstrap still
+/// reachable". Measured: when a mint's compensation fails at `delete_card`, the
+/// card survives with the seeded observation on a `failed` session, this read
+/// answers true, and the dormant restart does **not** inherit that queue —
+/// `session_projection_active_for_card_tx` inherits from an ACTIVE row only —
+/// so the message is stranded and no later trigger re-sends it. Tracked as its
+/// own defect; do not read this function as evidence of reachability.
+///
+/// A caller that needs "did a delivery *reach* the agent?" must not use this
+/// either: see `routes/track_conversations.rs`, which deliberately reads
+/// nothing back, and #1384.
 ///
 /// There is deliberately no separate "first message sent" flag: a write-only
 /// marker would have to be set before or after the send and would be wrong in
@@ -131,9 +152,10 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// `harness.user_message.enqueued` is **not** in `EVENTS_PRUNE_KINDS`
 /// (`calm-truth/src/events_prune.rs`). That allowlist is exact-kind and
 /// fails safe — a kind absent from it is permanent by construction — so this
-/// row outlives every retention pass and the dedup answer never decays.
-/// Adding this kind to the allowlist would silently re-open first-message
-/// double-send after the horizon; `first_message_dedup_kind_is_never_prunable`
+/// row outlives every retention pass and this answer never decays.
+/// Adding this kind to the allowlist would silently make every Today trigger
+/// against an aged conversation re-send the standing bootstrap instruction;
+/// `first_message_dedup_kind_is_never_prunable`
 /// (in `events_prune.rs`) fails closed if anyone tries. If that ever has to
 /// change, this read must move to a marker that cannot be pruned.
 pub(crate) async fn user_message_already_enqueued(

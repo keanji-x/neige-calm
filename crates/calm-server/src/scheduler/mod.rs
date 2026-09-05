@@ -1532,7 +1532,6 @@ impl Scheduler {
             force_new_thread: false,
             profile: Default::default(),
             create_card: None,
-            first_message_sha256: None,
             first_message: None,
             create_request_sha256: None,
             // #1343 — not a conversation create; nothing to brief. `None` is

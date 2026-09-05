@@ -418,12 +418,15 @@ pub(crate) async fn write_today_summary(
     //   first compensation error and never re-drives it, leaving the card
     //   behind (`deletable: false`, so the user cannot clear it) with no
     //   runtime. Since #1314 the bootstrap text is enqueued by that operation's
-    //   own transaction, so what survives is a card whose message is already on
-    //   the dormant session's pending queue, with its
+    //   own transaction, so what survives is a card whose message sits on a
+    //   `failed` session's pending queue with its
     //   `harness.user_message.enqueued` row committed alongside it. The
-    //   predicate therefore reads true here and declines to send a second copy,
-    //   which is the right answer: the dormant restart inherits the pending
-    //   queue.
+    //   predicate therefore reads true and declines to send a second copy —
+    //   and **that is a live defect, not the right answer**: measured, the
+    //   dormant restart does NOT inherit that queue
+    //   (`session_projection_active_for_card_tx` inherits from an ACTIVE row
+    //   only), so the standing instruction is stranded and never re-sent.
+    //   Tracked separately; nothing here works around it.
     // * The create operation *succeeds* and `create_track_conversation`'s own
     //   post-operation `send_planner_input` then fails (a 503 from a shared
     //   app-server that went down in between). **This entrance no longer
@@ -739,7 +742,6 @@ async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
         // said `assistant`.
         profile: HarnessProfile::Assistant,
         create_card: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
         // #1343 — not a conversation create; nothing to brief. `None` is

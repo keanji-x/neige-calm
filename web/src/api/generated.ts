@@ -7087,7 +7087,7 @@ export interface operations {
             };
             /**
              * @description Distinguished by the body's `code`:
-             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares). A key whose operation row was written by a pre-#1314 build also lands here on retry, because folding the message into the payload moved that hash; retry under a new key.
+             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares).
              *     * `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.
              */
             409: {

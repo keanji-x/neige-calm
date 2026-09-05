@@ -465,65 +465,6 @@ impl Boot {
         }
     }
 
-    /// [`Boot::delivered`], widened to **every** persisted queue on this card
-    /// instead of only the newest row.
-    ///
-    /// #1314 is why this exists. The bootstrap now ships inside the mint
-    /// transaction, so the harness spawns with it already in
-    /// `pending_queue` and hard-fires it as its own first turn — which is
-    /// precisely what [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] is for. The same
-    /// trigger's summary therefore lands *behind* that pending turn instead of
-    /// folding into it, and `new_fake_running_with_pending` never completes a
-    /// turn, so it stays queued. A dormant restart then supersedes that session
-    /// **without inheriting its queue** — `session_projection_active_for_card_tx`
-    /// inherits from an ACTIVE row only — leaving the message on a row
-    /// [`Boot::queued_texts`] does not read. Pre-existing restart semantics; all
-    /// #1314 changed is that the two messages no longer share a turn.
-    ///
-    /// Reading every row is what makes the total independent of that fold,
-    /// which is a scheduling accident rather than a behaviour: folded, both
-    /// messages are in the turns; unfolded, one is in a superseded queue.
-    /// Either way the needles account for the same number, so the assertion is
-    /// about what was sent rather than about when the run loop woke up.
-    ///
-    /// Everything else — the retry-until-settled, the printed texts on the
-    /// deadline, occurrences rather than messages — is [`Boot::delivered`]'s,
-    /// and its doc is the one that explains it.
-    async fn delivered_anywhere(
-        &self,
-        card_id: &str,
-        needles: &[&str],
-        expected_total: usize,
-    ) -> Vec<usize> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let queued: Vec<String> = self
-                .pending_observations(card_id)
-                .await
-                .into_iter()
-                .filter(|(_, obs)| obs["type"] == json!("user_message"))
-                .map(|(_, obs)| obs["text"].as_str().unwrap_or_default().to_string())
-                .collect();
-            let turns = self.turn_texts();
-            let mut texts = queued.clone();
-            texts.extend(turns.clone());
-            let counts = count_needles(&texts, needles);
-            if counts.iter().sum::<usize>() == expected_total {
-                return counts;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "delivered messages never settled at {expected_total}: saw \
-                     {counts:?} for {needles:?}\nqueued across every persisted \
-                     snapshot ({}): {queued:#?}\nturn texts ({}): {turns:#?}",
-                    queued.len(),
-                    turns.len(),
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    }
-
     /// Block until `needle` has reached this server's fake app-server, and
     /// answer how many times it occurs there.
     ///
@@ -1164,9 +1105,9 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
 /// enqueue, which is the layer that can actually be proved.
 ///
 /// The regression it exists for is the silent no-op: a second press that sends
-/// nothing at all, because `create_track_conversation` skips its send once the
-/// card has ever had a message. That is why the summary is sent *outside* the
-/// create branch, and it is what the third and fourth rows below assert.
+/// nothing at all, because the bootstrap arm declines once the card has ever
+/// had a message. That is why the summary is sent *outside* both the create
+/// arm and that arm, and it is what the third and fourth rows below assert.
 ///
 /// The assertions are on the delivered **texts**, not on row counts or lengths.
 /// That is what pins the first trigger's second message as a summary rather
@@ -1476,20 +1417,30 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
      * no other case covers it.
      */
     /*
-     * `delivered_anywhere`, not `delivered`: since #1314 the first trigger's
-     * summary is queued behind the bootstrap's own hard-fired turn rather than
-     * folded into it, and the dormancy staged above supersedes that session
-     * without inheriting its queue. The message is still there — on a row the
-     * newest-row read skips — so the wider read is what keeps this count about
-     * the two summaries rather than about which turn they happened to share.
+     * Two messages, not three, and the missing one is the point. Since #1314
+     * the bootstrap ships inside the mint transaction and hard-fires as the
+     * session's own first turn, so the SAME trigger's summary lands behind it
+     * on that session's queue instead of folding into its turn. The dormancy
+     * staged above then supersedes that session, and the restart inherits
+     * nothing from it — `session_projection_active_for_card_tx` reads ACTIVE
+     * rows only — so the first trigger's summary is stranded on a queue no
+     * harness will ever drain again.
+     *
+     * `delivered` is deliberately the narrow read (every turn plus the card's
+     * NEWEST session queue), because that is exactly the reachable set: a
+     * stranded message must not be counted as delivered. A read widened to
+     * every persisted queue would total 3 here and would go on totalling 3 if
+     * the summary were stranded for any other reason, which is the dimension
+     * this assertion exists to hold.
      */
     assert_eq!(
-        b.delivered_anywhere(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
             .await,
-        vec![1, 2],
-        "the recovery must deliver the SUMMARY the trigger was for — one \
-         bootstrap in total (from the mint) and two summaries, not a second \
-         bootstrap"
+        vec![1, 1],
+        "the recovery must deliver the SUMMARY the trigger was for, and not a \
+         second bootstrap: one bootstrap (from the mint) and one reachable \
+         summary — the first trigger's summary was stranded on the superseded \
+         session's queue"
     );
     /*
      * The restart is the kernel's, and it is the one place in this module that
@@ -1535,29 +1486,20 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 /// A derived card that exists with an **empty transcript** still gets the
 /// bootstrap. Both review channels found this from opposite ends.
 ///
-/// Two production routes reach that state, and neither is drivable in-process:
+/// **No production route is known to reach that state since #1314.** The
+/// bootstrap now ships inside the mint transaction, so a create that succeeds
+/// has already enqueued it and a create that does not succeed either leaves no
+/// card or leaves one whose enqueued row committed alongside it. The
+/// post-operation `send_planner_input` that used to be able to fail on its own,
+/// leaving a minted card with an empty transcript, no longer exists.
 ///
-/// * the create operation lands `Stuck` — `plan_compensation` marks it on the
-///   first compensation error and never re-drives it, leaving the card behind
-///   (`deletable: false`) with no first message **and no runtime**;
-/// * the create operation *succeeds* and `create_track_conversation`'s own first
-///   `send_planner_input` then fails — a 503 from a shared app-server that went
-///   down in between. It returns `Err`, so the summary is not sent either. Here
-///   the runtime DOES exist.
-///
-/// **What this fixture stands in for, and what it does not.** It stages the
-/// second shape only: the card is minted through the production endpoint under
-/// the production key, and then the two audit rows that mint wrote are removed,
-/// leaving a live runtime and an empty transcript. That is the pair the
-/// predicate reads — `card_get` says yes, `user_message_already_enqueued` says
-/// no.
-///
-/// It is **not** the `Stuck` shape, which additionally has no runtime, so
-/// recovery there must first go through the dormant restart. That combination
-/// is covered by neither this case nor
-/// `a_dormant_harness_is_restarted_without_erasing_the_conversation` (which
-/// starts from a delivered transcript), and saying so is the point: the two
-/// halves are each pinned, their composition is not.
+/// **What this fixture is, then.** It stages the state by hand: the card is
+/// minted through the production endpoint under the production key, and then
+/// the audit rows that mint wrote are removed, leaving a live runtime and an
+/// empty transcript. That is the pair the predicate reads — `card_get` says
+/// yes, `user_message_already_enqueued` says no. It pins the predicate, not a
+/// reachable production sequence, and it must not be read as evidence that one
+/// exists.
 ///
 /// What must NOT happen is what a card-only predicate does: skip the bootstrap
 /// and send only the summary. The trigger would then deliver ONE message where
@@ -1783,13 +1725,12 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
 
 /// The per-card first-message claim, which the recovery send must hold.
 ///
-/// **This is a race the fix itself opened.** Moving "send the first message" out
-/// of `create_track_conversation` and into this handler moved it out from under
-/// `conversation_first_message_locks`; two concurrent triggers against a card
-/// with an empty transcript then both read "nothing enqueued" and both send,
-/// and the agent gets the same standing instruction twice —
-/// `create_track_conversation`'s own comment names that outcome as the reason the
-/// lock exists.
+/// **This is a race this handler owns.** The bootstrap arm is a read
+/// (`user_message_already_enqueued`) followed by a send, and nothing else
+/// serializes it: two concurrent triggers against a card with an empty
+/// transcript both read "nothing enqueued" and both send, and the agent gets
+/// the same standing instruction twice. Measured — the case below is that
+/// measurement.
 ///
 /// The window is open **only** in the empty-transcript state, which is what
 /// makes it worth a case rather than a comment: an ordinary double-click on a

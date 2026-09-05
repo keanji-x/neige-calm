@@ -879,7 +879,6 @@ pub(crate) async fn ensure_today_launchpad(
         force_new_thread: out.created || out.adopted_legacy || out.repointed,
         profile: Default::default(),
         create_card: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
         // #1343 — not a conversation create; nothing to brief. `None` is

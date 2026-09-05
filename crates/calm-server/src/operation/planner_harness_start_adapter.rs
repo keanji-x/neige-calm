@@ -325,27 +325,6 @@ pub struct PlannerHarnessStartOperationPayload {
     /// older binaries.
     #[serde(default)]
     pub create_card: Option<LazyMintCardSeed>,
-    /// SHA-256 (lower-case hex) of a lazily minted conversation's first
-    /// message, set by `POST /api/tracks/{track_id}/conversations`.
-    ///
-    /// This field is **never read** by this adapter. It exists so the first
-    /// message body reaches `stable_payload_hash`, which is what makes
-    /// `OperationRuntime::submit` answer 409 when one `Idempotency-Key` is
-    /// replayed with a different body instead of silently replaying the
-    /// earlier conversation (see `driver.rs::submit`, which compares
-    /// `payload_hash` before anything else runs).
-    ///
-    /// A hash, not the text: this payload is persisted verbatim in
-    /// `operations.payload_json`, and storing the body would copy every user
-    /// message into a second table with a different retention story.
-    ///
-    /// `skip_serializing_if` keeps every non-area caller's payload bytes
-    /// byte-identical to what older binaries wrote, so adding this field
-    /// cannot move their `payload_hash` and turn an in-flight retry into a
-    /// spurious 409. `#[serde(default)]` because
-    /// `abandoned_running_operations_on_boot` re-drives old payloads.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_message_sha256: Option<String>,
     /// #1343 — whether this create opens with the launchpad activity briefing.
     ///
     /// **The RULING travels here, never the briefing TEXT.** `prepare_tx`
@@ -372,15 +351,14 @@ pub struct PlannerHarnessStartOperationPayload {
     /// #1299 S1 — the track's first user message, delivered **inside this
     /// operation's transaction**.
     ///
-    /// Unlike [`Self::first_message_sha256`] (which exists only to move the
-    /// body into `payload_hash`) this field IS read: `prepare_tx` pushes an
-    /// `Observation::UserMessage { text }` onto the harness snapshot's
-    /// `pending_queue` and writes `harness.user_message.enqueued` in the same
-    /// transaction, so the mint and the delivery commit together. That is the
-    /// structural fix `routes/track_conversations.rs` documented as the way out
-    /// of its two known gaps; #1299 S1 put `POST /api/tracks` on it and #1314
-    /// moved `POST /api/tracks/{id}/conversations` onto it too, retiring the
-    /// gaps with the code that had them.
+    /// Read by `prepare_tx`, which pushes an `Observation::UserMessage { text }`
+    /// onto the harness snapshot's `pending_queue` and writes
+    /// `harness.user_message.enqueued` in the same transaction, so the mint and
+    /// the delivery commit together. That is the structural fix
+    /// `routes/track_conversations.rs` documented as the way out of its two
+    /// known gaps; #1299 S1 put `POST /api/tracks` on it and #1314 moved
+    /// `POST /api/tracks/{id}/conversations` onto it too, retiring the gaps
+    /// with the code that had them.
     ///
     /// It is `Observation::UserMessage`, never `TrackGoal`: the two are
     /// different semantic slots (`TrackGoal` renders bare and does not
@@ -393,17 +371,18 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `operations.payload_json`; it is the price of an atomic delivery, and
     /// it is bounded by `validate_first_message`'s 32768-character ceiling.
     ///
-    /// `skip_serializing_if` keeps every caller that does not set it writing
-    /// byte-identical payload JSON, so adding the field cannot move an
-    /// existing `payload_hash`. `#[serde(default)]` because
-    /// `abandoned_running_operations_on_boot` re-drives old payloads.
+    /// `skip_serializing_if` keeps the key out of the payload JSON of every
+    /// caller that does not set one, so a message-less start hashes to the
+    /// same `payload_hash` whether or not this field exists.
+    /// `#[serde(default)]` because `abandoned_running_operations_on_boot`
+    /// deserializes and re-drives operation rows written before a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_message: Option<String>,
     /// #1384 / #1434 — SHA-256 (lower-case hex) of the track create request's
     /// mint inputs.
     ///
-    /// Never read by this adapter, exactly like
-    /// [`Self::first_message_sha256`]. It keeps the operation's local collision
+    /// Never read by this adapter — unlike [`Self::first_message`], which
+    /// `prepare_tx` does read. It keeps the operation's local collision
     /// check aligned with the durable binding-level fingerprint. The binding
     /// is authoritative because it survives the pre-operation failure window;
     /// this copy preserves operation replay compatibility.
@@ -1839,7 +1818,6 @@ mod tests {
             profile: HarnessProfile::Planner,
             create_card: None,
             opening_briefing: None,
-            first_message_sha256: None,
             first_message: None,
             create_request_sha256: None,
         };
@@ -2541,7 +2519,6 @@ mod tests {
             profile: HarnessProfile::PlainChat,
             create_card: create_card.then(LazyMintCardSeed::default),
             opening_briefing: None,
-            first_message_sha256: None,
             first_message: None,
             create_request_sha256: None,
         })

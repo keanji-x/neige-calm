@@ -286,7 +286,6 @@ fn legacy_start_payload_defaults_to_planner_profile() {
         profile: HarnessProfile::PlainChat,
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -398,7 +397,6 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -570,7 +568,6 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -625,7 +622,6 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -715,7 +711,6 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -802,7 +797,6 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         profile: HarnessProfile::PlainChat,
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -887,7 +881,6 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
         profile: HarnessProfile::Assistant,
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -970,7 +963,6 @@ async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
         profile: HarnessProfile::PlainChat,
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1059,7 +1051,6 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1194,7 +1185,6 @@ async fn force_new_thread_kills_old_pty_immediately() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1294,7 +1284,6 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1368,7 +1357,6 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1451,7 +1439,6 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1557,7 +1544,6 @@ async fn reusable_thread_without_token_fails_op() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1720,7 +1706,6 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         profile: Default::default(),
         create_card: None,
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })
@@ -1831,7 +1816,6 @@ fn lazy_mint_payload(track: &Track, card_id: &str, profile: HarnessProfile) -> V
         profile,
         create_card: Some(Default::default()),
         opening_briefing: None,
-        first_message_sha256: None,
         first_message: None,
         create_request_sha256: None,
     })

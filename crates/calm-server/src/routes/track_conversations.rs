@@ -45,7 +45,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::conversations_shared::{
-    PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
+    PLANNER_HARNESS_START, retryable_operation_key, validate_first_message,
 };
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
@@ -109,7 +109,7 @@ pub(crate) async fn list_track_conversations(
         (status = 400, description = "Missing/blank `Idempotency-Key`, or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
         (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
-        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares). A key whose operation row was written by a pre-#1314 build also lands here on retry, because folding the message into the payload moved that hash; retry under a new key.\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
+        (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
         (status = 500, description = "Internal error. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.", body = ErrorBody),
         (status = 503, description = "Shared codex app-server not running — retry shortly", body = ErrorBody),
     ),
@@ -228,13 +228,6 @@ pub(crate) async fn create_track_conversation_inner(
             // with itself would prove nothing.
             idempotency_key: Some(idempotency_key.clone()),
         }),
-        // Binds the body into `payload_hash` so "same key, different text" is
-        // a 409 instead of a silent replay. Since #1314 `first_message` binds
-        // the same bytes verbatim one line below, so this digest is redundant
-        // for that purpose and is kept only because removing it is a payload
-        // change of its own — the field would then have no setter left at all,
-        // and retiring it belongs in the change that deletes it.
-        first_message_sha256: Some(first_message_digest(&text)),
         // #1343's ruling, carried into the transaction that acts on it. The
         // caller decides; `prepare_tx` renders. `None` is not spelled out for
         // any caller here — both arms are explicit — but it is what every
@@ -246,15 +239,9 @@ pub(crate) async fn create_track_conversation_inner(
         // message was sent by a second, non-transactional call after the
         // operation had already committed.
         //
-        // **One upgrade edge, stated rather than hidden.** Adding a key to this
-        // payload moves its `payload_hash`, and `submit` compares that hash
-        // before anything else. So an operation row an OLDER binary wrote under
-        // some `Idempotency-Key`, in any phase `retryable_operation_key` does
-        // not step over, answers 409 `conflict` to a retry under that key after
-        // the deploy instead of replaying. It is narrow — the key is per draft,
-        // so only a draft whose retry straddles the restart is affected, and
-        // the answer is a new key — and it is not avoidable by keeping the
-        // digest: any payload edit in either direction moves the hash.
+        // It also binds the body into `payload_hash`, which is what makes "same
+        // key, different text" a 409 instead of a silent replay: `submit`
+        // compares that hash before anything else runs.
         first_message: Some(text),
         // #1384 — bound only by `POST /api/tracks`; this route mints no track,
         // so it has no create request to hash.
