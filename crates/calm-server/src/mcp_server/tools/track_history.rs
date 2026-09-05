@@ -80,13 +80,15 @@ fn log_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LOG.into(),
         description: "Hidden drill-in: list recent track-vcs commits for the current \
-             MCP-bound track. Arguments: `{ path?, limit? }`."
+             MCP-bound track. Commits without file changes are hidden by default. \
+             Arguments: `{ path?, limit?, include_empty? }`."
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                "include_empty": { "type": "boolean", "default": false }
             }
         }),
         annotations: Some(read_only_annotations()),
@@ -106,12 +108,9 @@ async fn track_diff(
     let from = required_string(obj, "from", TOOL_TRACK_DIFF)?;
     let to = optional_string(obj, "to", TOOL_TRACK_DIFF)?;
     let path = optional_string(obj, "path", TOOL_TRACK_DIFF)?;
-    ensure_commit_in_track(vcs, &track.id, from).await?;
+    let from = resolve_commit_in_track(vcs, &track.id, from).await?;
     let to = match to {
-        Some(to) => {
-            ensure_commit_in_track(vcs, &track.id, to).await?;
-            to.to_string()
-        }
+        Some(to) => resolve_commit_in_track(vcs, &track.id, to).await?,
         None => vcs
             .head(&track.id)
             .await
@@ -121,7 +120,7 @@ async fn track_diff(
             })?,
     };
     let files = vcs
-        .diff_with_patches(from, &to, path, track_vcs::DEFAULT_PATCH_MAX_LINES)
+        .diff_with_patches(&from, &to, path, track_vcs::DEFAULT_PATCH_MAX_LINES)
         .await
         .map_err(vcs_error_to_rpc)?;
     Ok(json!({
@@ -143,8 +142,8 @@ async fn track_cat_at(
     let obj = object_args(&args, TOOL_TRACK_CAT_AT)?;
     let commit = required_string(obj, "commit", TOOL_TRACK_CAT_AT)?;
     let path = required_string(obj, "path", TOOL_TRACK_CAT_AT)?;
-    ensure_commit_in_track(vcs, &track.id, commit).await?;
-    let blob = vcs.cat_at(commit, path).await.map_err(vcs_error_to_rpc)?;
+    let commit = resolve_commit_in_track(vcs, &track.id, commit).await?;
+    let blob = vcs.cat_at(&commit, path).await.map_err(vcs_error_to_rpc)?;
     Ok(json!({
         "commit": blob.commit,
         "path": blob.path,
@@ -164,8 +163,9 @@ async fn track_log(
     let obj = object_args(&args, TOOL_TRACK_LOG)?;
     let path = optional_string(obj, "path", TOOL_TRACK_LOG)?;
     let limit = optional_limit(obj, TOOL_TRACK_LOG)?;
+    let include_empty = optional_bool(obj, "include_empty", TOOL_TRACK_LOG)?.unwrap_or(false);
     let log = vcs
-        .log(&track.id, path, limit)
+        .log(&track.id, path, limit, include_empty)
         .await
         .map_err(vcs_error_to_rpc)?;
     Ok(json!({
@@ -180,23 +180,28 @@ fn track_vcs_repo(ctx: &AppContext) -> Result<&dyn TrackVcsRepo, RpcError> {
         .ok_or_else(|| RpcError::internal("calm.track history requires sqlite-backed track-vcs"))
 }
 
-async fn ensure_commit_in_track(
+async fn resolve_commit_in_track(
     vcs: &dyn TrackVcsRepo,
     track_id: &TrackId,
     commit_hash: &str,
-) -> Result<(), RpcError> {
+) -> Result<String, RpcError> {
     match vcs
         .commit_record(commit_hash)
         .await
         .map_err(vcs_error_to_rpc)?
     {
-        Some(record) if record.track_id == *track_id => Ok(()),
+        Some(record) if record.track_id == *track_id => Ok(record.hash),
         Some(_) => Err(RpcError::invalid_params(format!(
             "calm.track: commit {commit_hash} is outside the bound track"
         ))),
-        None => Err(RpcError::invalid_params(format!(
-            "calm.track: unknown commit {commit_hash}"
-        ))),
+        None => vcs
+            .resolve_commit_prefix(track_id, commit_hash)
+            .await
+            .map_err(vcs_error_to_rpc)?
+            .map(|record| record.hash)
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!("calm.track: unknown commit {commit_hash}"))
+            }),
     }
 }
 
@@ -244,6 +249,20 @@ fn optional_limit(obj: &Map<String, Value>, tool: &str) -> Result<usize, RpcErro
         }
         Some(_) => Err(RpcError::invalid_params(format!(
             "{tool}: `limit` must be an integer if provided"
+        ))),
+    }
+}
+
+fn optional_bool(
+    obj: &Map<String, Value>,
+    key: &str,
+    tool: &str,
+) -> Result<Option<bool>, RpcError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "{tool}: `{key}` must be a boolean if provided"
         ))),
     }
 }

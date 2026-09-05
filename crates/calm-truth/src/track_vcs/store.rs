@@ -10,6 +10,15 @@ use std::collections::BTreeMap;
 use super::types::BlobContent;
 use super::{CommitHash, CommitRecord, ManifestEntry, ObjectHash, TreeManifest, TreeSnapshot};
 
+pub(super) const COMMIT_PREFIX_QUERY: &str = r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+              lifecycle, event_id, created_at, message, author
+       FROM track_vcs_commits
+       WHERE track_id = ?1
+         AND hash >= ?2
+         AND hash < ?3
+       ORDER BY hash
+       LIMIT 2"#;
+
 pub async fn put_blob(
     tx: &mut Transaction<'_, Sqlite>,
     kind: &str,
@@ -280,6 +289,21 @@ pub(super) async fn load_commit_record_pool(
     row.map(commit_record_from_row).transpose()
 }
 
+pub(super) async fn commit_records_for_track_prefix_pool(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    prefix: &str,
+    upper_bound: &str,
+) -> Result<Vec<CommitRecord>> {
+    let rows = sqlx::query(COMMIT_PREFIX_QUERY)
+        .bind(track_id.as_str())
+        .bind(prefix)
+        .bind(upper_bound)
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(commit_record_from_row).collect()
+}
+
 pub(super) async fn load_commit_record_for_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
@@ -303,17 +327,54 @@ pub(super) async fn commit_records_for_track_pool(
     pool: &SqlitePool,
     track_id: &TrackId,
     limit: usize,
+    changes_only: bool,
+    before: Option<&CommitRecord>,
 ) -> Result<Vec<CommitRecord>> {
     let rows = sqlx::query(
-        r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
-                  lifecycle, event_id, created_at, message, author
-           FROM track_vcs_commits
-           WHERE track_id = ?1
-           ORDER BY created_at DESC, COALESCE(event_id, -1) DESC, hash DESC
+        r#"SELECT commit_row.hash AS hash,
+                  commit_row.track_id AS track_id,
+                  commit_row.parent_hash AS parent_hash,
+                  commit_row.tree_hash AS tree_hash,
+                  commit_row.manifest_schema_version AS manifest_schema_version,
+                  commit_row.lifecycle AS lifecycle,
+                  commit_row.event_id AS event_id,
+                  commit_row.created_at AS created_at,
+                  commit_row.message AS message,
+                  commit_row.author AS author
+           FROM track_vcs_commits AS commit_row
+           LEFT JOIN track_vcs_commits AS parent
+             ON parent.hash = commit_row.parent_hash
+           WHERE commit_row.track_id = ?1
+             AND (
+                 ?6 = 0
+                 OR commit_row.parent_hash IS NULL
+                 OR parent.hash IS NULL
+                 OR commit_row.tree_hash <> parent.tree_hash
+             )
+             AND (
+                 ?3 IS NULL
+                 OR commit_row.created_at < ?3
+                 OR (
+                     commit_row.created_at = ?3
+                     AND COALESCE(commit_row.event_id, -1) < ?4
+                 )
+                 OR (
+                     commit_row.created_at = ?3
+                     AND COALESCE(commit_row.event_id, -1) = ?4
+                     AND commit_row.hash < ?5
+                 )
+             )
+           ORDER BY commit_row.created_at DESC,
+                    COALESCE(commit_row.event_id, -1) DESC,
+                    commit_row.hash DESC
            LIMIT ?2"#,
     )
     .bind(track_id.as_str())
     .bind(limit as i64)
+    .bind(before.map(|record| record.created_at))
+    .bind(before.map(|record| record.event_id.unwrap_or(-1)))
+    .bind(before.map(|record| record.hash.as_str()))
+    .bind(i64::from(changes_only))
     .fetch_all(pool)
     .await?;
     rows.into_iter().map(commit_record_from_row).collect()

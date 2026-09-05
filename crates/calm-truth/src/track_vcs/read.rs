@@ -5,8 +5,8 @@ use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::store::{
-    commit_records_for_track_pool, load_blob_bytes_pool, load_commit_record_pool,
-    load_tree_object_pool, normalize_path,
+    commit_records_for_track_pool, commit_records_for_track_prefix_pool, load_blob_bytes_pool,
+    load_commit_record_pool, load_tree_object_pool, normalize_path,
 };
 use super::{
     CommitHash, CommitLog, CommitLogEntry, CommitRecord, DEFAULT_PATCH_MAX_LINES, DiffEntry,
@@ -14,7 +14,7 @@ use super::{
     tree_at,
 };
 
-const LOG_FILTER_SCAN_LIMIT: usize = 1000;
+const LOG_PAGE_SIZE: usize = 200;
 
 const ATTRIBUTION_COMMIT_BOUND: usize = 50;
 
@@ -80,6 +80,34 @@ pub async fn commit_record(pool: &SqlitePool, commit_hash: &str) -> Result<Optio
     load_commit_record_pool(pool, commit_hash).await
 }
 
+pub async fn resolve_commit_prefix(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    prefix: &str,
+) -> Result<Option<CommitRecord>> {
+    if prefix.is_empty() {
+        return Err(CalmError::BadRequest(
+            "track-vcs commit prefix must not be empty",
+        ));
+    }
+    if prefix.len() > 64
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Ok(None);
+    }
+    let upper_bound = format!("{prefix}g");
+    let mut matches =
+        commit_records_for_track_prefix_pool(pool, track_id, prefix, &upper_bound).await?;
+    if matches.len() > 1 {
+        return Err(CalmError::BadRequest(format!(
+            "track-vcs commit prefix {prefix} is ambiguous"
+        )));
+    }
+    Ok(matches.pop())
+}
+
 pub async fn commit_belongs_to_track(
     pool: &SqlitePool,
     track_id: &TrackId,
@@ -96,45 +124,62 @@ pub async fn log(
     track_id: &TrackId,
     path: Option<&str>,
     limit: usize,
+    include_empty: bool,
 ) -> Result<CommitLog> {
     let limit = limit.clamp(1, 200);
     let normalized = path.map(normalize_path).filter(|path| !path.is_empty());
-    let scan_limit = if normalized.is_some() {
-        LOG_FILTER_SCAN_LIMIT
+    let changes_only = normalized.is_some() || !include_empty;
+    let page_size = if normalized.is_some() {
+        LOG_PAGE_SIZE
     } else {
-        limit
+        limit.saturating_add(1)
     };
-    let records =
-        commit_records_for_track_pool(pool, track_id, scan_limit.saturating_add(1)).await?;
-    let fetched = records.len();
     let mut out = Vec::new();
-    let mut examined = 0;
-    for record in records.into_iter().take(scan_limit) {
-        examined += 1;
-        let changed_paths = changed_paths_for_commit(pool, &record).await?;
-        if let Some(path) = normalized.as_deref()
-            && !changed_paths
-                .iter()
-                .any(|changed| path_matches(changed, path))
-        {
-            continue;
+    let mut before = None::<CommitRecord>;
+    let mut truncated = false;
+    'pages: loop {
+        let records =
+            commit_records_for_track_pool(pool, track_id, page_size, changes_only, before.as_ref())
+                .await?;
+        let fetched = records.len();
+        let next_before = records.last().cloned();
+        for record in records {
+            let Some(changed_paths) = changed_paths_for_commit(pool, &record).await? else {
+                continue;
+            };
+            if changed_paths.is_empty() && !include_empty {
+                continue;
+            }
+            if let Some(path) = normalized.as_deref()
+                && !changed_paths
+                    .iter()
+                    .any(|changed| path_matches(changed, path))
+            {
+                continue;
+            }
+            out.push(CommitLogEntry {
+                hash: record.hash,
+                parent_hash: record.parent_hash,
+                lifecycle: record.lifecycle,
+                event_id: record.event_id,
+                created_at: record.created_at,
+                message: record.message,
+                changed_paths,
+            });
+            if out.len() > limit {
+                truncated = true;
+                break 'pages;
+            }
         }
-        out.push(CommitLogEntry {
-            hash: record.hash,
-            parent_hash: record.parent_hash,
-            lifecycle: record.lifecycle,
-            event_id: record.event_id,
-            created_at: record.created_at,
-            message: record.message,
-            changed_paths,
-        });
-        if out.len() >= limit {
+        if fetched < page_size {
             break;
         }
+        before = next_before;
     }
+    out.truncate(limit);
     Ok(CommitLog {
         commits: out,
-        truncated: examined < fetched,
+        truncated,
     })
 }
 
@@ -474,22 +519,49 @@ fn path_matches(changed: &str, requested: &str) -> bool {
     changed == requested || changed.starts_with(&format!("{requested}/"))
 }
 
-async fn changed_paths_for_commit(pool: &SqlitePool, record: &CommitRecord) -> Result<Vec<String>> {
+async fn changed_paths_for_commit(
+    pool: &SqlitePool,
+    record: &CommitRecord,
+) -> Result<Option<Vec<String>>> {
     let Some(tree) = load_tree_object_pool(pool, &record.tree_hash).await? else {
-        return Ok(Vec::new());
+        if load_commit_record_pool(pool, &record.hash).await?.is_none() {
+            return Ok(None);
+        }
+        return Err(missing_commit_tree_error(record));
     };
     let entries = if let Some(parent_hash) = record.parent_hash.as_deref() {
-        let Some(parent) = tree_at(pool, parent_hash).await? else {
-            return Ok(Vec::new());
-        };
-        diff_manifests(&parent, &tree, None)
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect()
+        match load_commit_record_pool(pool, parent_hash).await? {
+            Some(parent_record) => {
+                if parent_record.track_id != record.track_id {
+                    return Err(CalmError::Internal(format!(
+                        "track-vcs: commit {} has parent {} from another track",
+                        record.hash, parent_record.hash
+                    )));
+                }
+                match load_tree_object_pool(pool, &parent_record.tree_hash).await? {
+                    Some(parent) => diff_manifests(&parent, &tree, None)
+                        .into_iter()
+                        .map(|entry| entry.path)
+                        .collect(),
+                    None => match load_commit_record_pool(pool, parent_hash).await? {
+                        None => tree.entries.keys().cloned().collect(),
+                        Some(_) => return Err(missing_commit_tree_error(&parent_record)),
+                    },
+                }
+            }
+            None => tree.entries.keys().cloned().collect(),
+        }
     } else {
         tree.entries.keys().cloned().collect()
     };
-    Ok(entries)
+    Ok(Some(entries))
+}
+
+fn missing_commit_tree_error(record: &CommitRecord) -> CalmError {
+    CalmError::Internal(format!(
+        "track-vcs: tree {} for commit {} is missing",
+        record.tree_hash, record.hash
+    ))
 }
 
 fn is_internal_observation_diff_path(path: &str, planner_card_id: Option<&CardId>) -> bool {

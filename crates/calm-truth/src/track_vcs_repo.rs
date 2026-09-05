@@ -20,9 +20,21 @@ pub trait TrackVcsRepo: Send + Sync + 'static {
 
     async fn cat_at(&self, commit_hash: &str, path: &str) -> Result<HistoricalBlob>;
 
-    async fn log(&self, track_id: &TrackId, path: Option<&str>, limit: usize) -> Result<CommitLog>;
+    async fn log(
+        &self,
+        track_id: &TrackId,
+        path: Option<&str>,
+        limit: usize,
+        include_empty: bool,
+    ) -> Result<CommitLog>;
 
     async fn commit_record(&self, commit_hash: &str) -> Result<Option<CommitRecord>>;
+
+    async fn resolve_commit_prefix(
+        &self,
+        track_id: &TrackId,
+        prefix: &str,
+    ) -> Result<Option<CommitRecord>>;
 
     async fn prune_track_history(
         &self,
@@ -71,12 +83,26 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         track_vcs::cat_at(&self.pool, commit_hash, path).await
     }
 
-    async fn log(&self, track_id: &TrackId, path: Option<&str>, limit: usize) -> Result<CommitLog> {
-        track_vcs::log(&self.pool, track_id, path, limit).await
+    async fn log(
+        &self,
+        track_id: &TrackId,
+        path: Option<&str>,
+        limit: usize,
+        include_empty: bool,
+    ) -> Result<CommitLog> {
+        track_vcs::log(&self.pool, track_id, path, limit, include_empty).await
     }
 
     async fn commit_record(&self, commit_hash: &str) -> Result<Option<CommitRecord>> {
         track_vcs::commit_record(&self.pool, commit_hash).await
+    }
+
+    async fn resolve_commit_prefix(
+        &self,
+        track_id: &TrackId,
+        prefix: &str,
+    ) -> Result<Option<CommitRecord>> {
+        track_vcs::resolve_commit_prefix(&self.pool, track_id, prefix).await
     }
 
     async fn prune_track_history(

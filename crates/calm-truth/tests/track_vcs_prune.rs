@@ -429,6 +429,93 @@ async fn prune_keep_one_preserves_head_and_ref() {
 }
 
 #[tokio::test]
+async fn default_log_treats_oldest_retained_commit_as_visible_history_root() {
+    let fixture = fixture_with_commits(4).await;
+    let head = fixture.commits.last().expect("head");
+
+    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    assert_eq!(deleted, 3);
+
+    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+        .await
+        .expect("default log after prune");
+    assert_eq!(log.commits.len(), 1, "log = {log:?}");
+    assert_eq!(log.commits[0].hash, head.hash);
+    assert_eq!(log.commits[0].changed_paths, vec!["file-3.txt"]);
+    assert!(!log.truncated);
+}
+
+#[tokio::test]
+async fn log_reports_a_missing_parent_tree_as_corruption() {
+    let fixture = fixture_with_commits(2).await;
+    let parent = &fixture.commits[0];
+
+    sqlx::query("DELETE FROM track_vcs_objects WHERE hash = ?1")
+        .bind(&parent.tree_hash)
+        .execute(fixture.pool())
+        .await
+        .expect("delete parent tree object");
+
+    let err = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+        .await
+        .expect_err("missing tree for a retained parent must fail loudly");
+    let message = err.to_string();
+    assert!(message.contains(&parent.hash), "err = {message}");
+    assert!(message.contains(&parent.tree_hash), "err = {message}");
+    assert!(message.contains("missing"), "err = {message}");
+}
+
+#[tokio::test]
+async fn default_log_finds_changes_beyond_one_thousand_empty_commits() {
+    const EMPTY_COMMITS: usize = 1_001;
+
+    let fixture = fixture_with_commits(2).await;
+    let changed = fixture.commits.last().expect("latest changed commit");
+    let mut parent_hash = changed.hash.clone();
+    let mut tx = fixture.pool().begin().await.expect("begin empty commits");
+    for index in 0..EMPTY_COMMITS {
+        let hash = format!("{}-empty-{index:04}", fixture.track_id.as_str());
+        sqlx::query(
+            r#"INSERT INTO track_vcs_commits (
+                   hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+                   author, message, lifecycle, event_id, created_at
+               )
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'harness.item.added',
+                       'active', ?6, ?7)"#,
+        )
+        .bind(&hash)
+        .bind(fixture.track_id.as_str())
+        .bind(&parent_hash)
+        .bind(&changed.tree_hash)
+        .bind(MANIFEST_SCHEMA_VERSION)
+        .bind(3 + index as i64)
+        .bind(changed.created_at + 1 + index as i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert empty commit");
+        parent_hash = hash;
+    }
+    sqlx::query(
+        "UPDATE track_vcs_refs SET head_hash = ?1, updated_event_id = ?2 WHERE track_id = ?3",
+    )
+    .bind(&parent_hash)
+    .bind(2 + EMPTY_COMMITS as i64)
+    .bind(fixture.track_id.as_str())
+    .execute(&mut *tx)
+    .await
+    .expect("advance head across empty commits");
+    tx.commit().await.expect("commit empty history");
+
+    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+        .await
+        .expect("default log beyond empty commits");
+    assert_eq!(log.commits.len(), 1, "log = {log:?}");
+    assert_eq!(log.commits[0].hash, changed.hash);
+    assert!(!log.commits[0].changed_paths.is_empty());
+    assert!(log.truncated);
+}
+
+#[tokio::test]
 async fn active_session_last_seen_diff_still_works_after_prune() {
     let fixture = fixture_with_commits(6).await;
     let last_seen = &fixture.commits[1];

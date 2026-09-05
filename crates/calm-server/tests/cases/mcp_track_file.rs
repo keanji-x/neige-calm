@@ -2173,15 +2173,19 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
         .unwrap()
         .unwrap();
     assert_ne!(before, after);
+    let short_before = &before[..8];
+    let short_after = &after[..8];
 
     let diff = call_tool(
         &boot,
         TOOL_TRACK_DIFF,
         planner_identity(&boot),
-        json!({ "from": before.clone(), "to": after.clone(), "path": "report.md" }),
+        json!({ "from": short_before, "to": short_after, "path": "report.md" }),
     )
     .await
-    .expect("hidden diff is callable");
+    .expect("hidden diff accepts displayed short commit hashes");
+    assert_eq!(diff["from"], json!(before));
+    assert_eq!(diff["to"], json!(after));
     let files = diff["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1, "diff = {diff:#?}");
     assert_eq!(files[0]["path"], json!("report.md"));
@@ -2196,22 +2200,41 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
         &boot,
         TOOL_TRACK_CAT_AT,
         planner_identity(&boot),
-        json!({ "commit": after.clone(), "path": "report.md" }),
+        json!({ "commit": short_after, "path": "report.md" }),
     )
     .await
-    .expect("hidden cat_at is callable");
+    .expect("hidden cat_at accepts a displayed short commit hash");
+    assert_eq!(cat["commit"], json!(after));
     assert_eq!(cat["content_type"], json!("text/markdown"));
     assert_eq!(cat["content"], json!("# Report\n\n- visible change\n"));
+
+    let worker_card_id = boot.worker_card_id.clone();
+    log_card_hook_event(
+        &boot,
+        &worker_card_id,
+        Event::CodexHook {
+            card_id: worker_card_id.clone(),
+            kind: "hook.codex.stop".into(),
+            hook_idempotency_key: "history-no-file-change".into(),
+            payload: json!({ "last_assistant_message": "no rendered file change" }),
+        },
+    )
+    .await;
+    let no_change_head = track_vcs::head(boot.sqlx_repo.pool(), &boot.track_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(no_change_head, after);
 
     let log = call_tool(
         &boot,
         TOOL_TRACK_LOG,
         planner_identity(&boot),
-        json!({ "path": "report.md", "limit": 5 }),
+        json!({ "limit": 1 }),
     )
     .await
     .expect("hidden log is callable");
-    assert_eq!(log["truncated"], json!(false));
+    assert_eq!(log["truncated"], json!(true));
     let commits = log["commits"].as_array().expect("commits array");
     assert!(
         commits.iter().any(|commit| commit["changed_paths"]
@@ -2221,6 +2244,72 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
             .any(|path| path == "report.md")),
         "log should include report.md changes: {log:#?}"
     );
+    assert!(
+        commits
+            .iter()
+            .all(|commit| !commit["changed_paths"].as_array().unwrap().is_empty()),
+        "default log should hide commits without file changes: {log:#?}"
+    );
+
+    let complete_log = call_tool(
+        &boot,
+        TOOL_TRACK_LOG,
+        planner_identity(&boot),
+        json!({ "limit": 1, "include_empty": true }),
+    )
+    .await
+    .expect("hidden log can include commits without file changes on request");
+    assert!(
+        complete_log["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|commit| commit["hash"] == no_change_head),
+        "include_empty log should retain the no-file-change commit: {complete_log:#?}"
+    );
+}
+
+#[tokio::test]
+async fn track_history_rejects_ambiguous_commit_prefixes() {
+    let boot = boot().await;
+    track_vcs::backfill_existing_tracks(boot.sqlx_repo.pool())
+        .await
+        .expect("backfill VCS baseline");
+    let head = track_vcs::head(boot.sqlx_repo.pool(), &boot.track_id)
+        .await
+        .unwrap()
+        .unwrap();
+    for hash in [
+        format!("deadbeef{}", "0".repeat(56)),
+        format!("deadbeef{}", "1".repeat(56)),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO track_vcs_commits (
+                   hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+                   author, message, lifecycle, event_id, created_at
+               )
+               SELECT ?1, track_id, parent_hash, tree_hash, manifest_schema_version,
+                      author, message, lifecycle, event_id, created_at
+               FROM track_vcs_commits
+               WHERE hash = ?2"#,
+        )
+        .bind(hash)
+        .bind(&head)
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .expect("seed colliding commit prefix");
+    }
+
+    let err = call_tool(
+        &boot,
+        TOOL_TRACK_CAT_AT,
+        planner_identity(&boot),
+        json!({ "commit": "deadbeef", "path": "report.md" }),
+    )
+    .await
+    .expect_err("ambiguous prefixes must not resolve arbitrarily");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("ambiguous"), "err = {err:?}");
 }
 
 #[tokio::test]
