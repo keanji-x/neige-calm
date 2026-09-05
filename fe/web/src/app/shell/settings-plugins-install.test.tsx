@@ -99,6 +99,7 @@ describe('Settings › Plugins › add, end to end', () => {
     await type('Name', 'Zhibao');
     await type('Id', 'com.example.zhibao');
     await type('Server URL', 'https://mcp.wisburg.com/mcp');
+    await type('Tools', 'list-articles, get-article-detail');
     await type('API key', 'sk-live-credential');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
@@ -113,6 +114,7 @@ describe('Settings › Plugins › add, end to end', () => {
         id: 'com.example.zhibao',
         display_name: 'Zhibao',
         url: 'https://mcp.wisburg.com/mcp',
+        tools_allow: ['list-articles', 'get-article-detail'],
         api_key: 'sk-live-credential',
         api_key_in: 'bearer',
       },
@@ -135,6 +137,7 @@ describe('Settings › Plugins › add, end to end', () => {
     await type('Name', 'Open server');
     await type('Id', 'com.example.open');
     await type('Server URL', 'https://open.example.com/mcp');
+    await type('Tools', 'list-articles');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
     await waitFor(() => {
@@ -194,6 +197,7 @@ describe('Settings › Plugins › add, end to end', () => {
     await type('Name', 'Todo');
     await type('Id', 'todo');
     await type('Server URL', 'https://mcp.example.com/mcp');
+    await type('Tools', 'list-articles');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
     const alert = await screen.findByRole('alert');

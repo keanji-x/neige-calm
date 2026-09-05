@@ -8,7 +8,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ConnectorInstallDraft } from '../../../../core/domain/plugins.ts';
 import { PluginAddPane, type PluginAddPaneProps } from './plugin-add.tsx';
 
 beforeEach(() => {
@@ -47,27 +46,46 @@ async function choose(label: string, option: string) {
 
 describe('Add a plugin', () => {
   it('installs a bearer-authenticated connector from what was typed', async () => {
-    const onInstallConnector = vi.fn(() => Promise.resolve(null));
+    // Typed through the prop, so `mock.calls[0][0]` is the draft rather than
+    // `never` — the argument is what this test is about.
+    const onInstallConnector: PluginAddPaneProps['onInstallConnector'] = vi.fn(
+      () => Promise.resolve(null),
+    );
     const onInstalled = vi.fn();
     render(<PluginAddPane {...props({ onInstallConnector, onInstalled })} />);
 
     await fill('Name', 'Zhibao');
     await fill('Id', 'com.example.zhibao');
     await fill('Server URL', 'https://mcp.wisburg.com/mcp');
+    await fill('Tools', 'list-articles, list-feed');
     await fill('API key', 'sk-secret');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
-    const draft = onInstallConnector.mock.calls[0]?.[0] as unknown as ConnectorInstallDraft;
+    const draft = vi.mocked(onInstallConnector).mock.calls[0]?.[0];
+    if (draft === undefined) throw new Error('the form did not install anything');
     expect(draft.id).toBe('com.example.zhibao');
     expect(draft.display_name).toBe('Zhibao');
     expect(draft.url).toBe('https://mcp.wisburg.com/mcp');
     expect(draft.api_key).toBe('sk-secret');
     expect(draft.placement).toBe('bearer');
+    expect(draft.tools).toBe('list-articles, list-feed');
     expect(onInstalled.mock.calls.length).toBe(1);
   });
 
   /* The credential is typed once and never shown again — including while it is
      being typed, on a screen somebody may be presenting. */
+  /* The one refusal that guards a failure indistinguishable from success. */
+  it('refuses a connector that would expose no tools', async () => {
+    const onInstallConnector = vi.fn(() => Promise.resolve(null));
+    render(<PluginAddPane {...props({ onInstallConnector })} />);
+    await fill('Name', 'Zhibao');
+    await fill('Id', 'com.example.zhibao');
+    await fill('Server URL', 'https://mcp.example.com/mcp');
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    expect(onInstallConnector.mock.calls).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toMatch(/at least one tool/i);
+  });
+
   it('masks the API key field', () => {
     render(<PluginAddPane {...props()} />);
     expect(screen.getByLabelText<HTMLInputElement>('API key').type).toBe('password');
@@ -90,6 +108,7 @@ describe('Add a plugin', () => {
     await fill('Name', 'Zhibao');
     await fill('Id', 'com.example.zhibao');
     await fill('Server URL', 'https://mcp.example.com/mcp');
+    await fill('Tools', 'list-articles');
     await fill('API key', 'sk-secret');
     await choose('Key placement', 'Custom header');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
@@ -117,6 +136,7 @@ describe('Add a plugin', () => {
     await fill('Name', 'Zhibao');
     await fill('Id', 'com.example.zhibao');
     await fill('Server URL', 'https://mcp.example.com/mcp');
+    await fill('Tools', 'list-articles');
     await fill('API key', 'sk-secret');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 

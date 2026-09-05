@@ -187,6 +187,23 @@ export function PluginAddPane({
               )}
             />
             <SettingRow
+              title="Tools"
+              /* The sentence has to carry the fact the screen cannot show: the
+                 kernel exposes exactly the names listed here, so a connector
+                 installed with none runs and contributes nothing. */
+              description="Which of the server’s tools to expose, separated by commas. A connector exposes only what is named here."
+              control={(
+                <AstryxTextInput
+                  label="Tools"
+                  isLabelHidden
+                  value={draft.tools}
+                  placeholder="list-articles, get-article-detail"
+                  onChange={(value) => edit({ ...draft, tools: value })}
+                  width={CONTROL_WIDTH}
+                />
+              )}
+            />
+            <SettingRow
               title="API key"
               /* Two facts the operator needs before they paste a credential:
                  where it goes, and that this is their last look at it. */

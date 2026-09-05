@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EMPTY_CONNECTOR_DRAFT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
-  connectorDraftError, installConnectorOperation, installLocalPathOperation,
+  connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
   patchPluginConfigOperation, pluginDetailSchema, pluginListItemSchema, reloadOutcome,
   reloadPluginOperation, storedConfigOf, uninstallPluginOperation,
   type ConnectorInstallDraft,
@@ -466,6 +466,7 @@ describe('connector install', () => {
     display_name: 'Zhibao',
     url: 'https://mcp.wisburg.com/mcp',
     api_key: 'sk-credential',
+    tools: 'list-articles, get-article-detail',
   };
 
   it('sends a bearer credential as the kernel spells it', () => {
@@ -478,6 +479,7 @@ describe('connector install', () => {
         id: 'com.example.zhibao',
         display_name: 'Zhibao',
         url: 'https://mcp.wisburg.com/mcp',
+        tools_allow: ['list-articles', 'get-article-detail'],
         api_key: 'sk-credential',
         api_key_in: 'bearer',
       },
@@ -517,6 +519,16 @@ describe('connector install', () => {
    * unreachable URL — is the kernel's judgement to make and its sentence to
    * write.
    */
+  /*
+   * The refusal that exists because the failure it prevents looks like success:
+   * `tools_allow` is a strict allowlist, so a connector installed with no names
+   * comes up running and exposes nothing at all.
+   */
+  it('refuses a connector that would expose no tools, and splits the list the operator typed', () => {
+    expect(connectorDraftError({ ...draft, tools: '   ' })).toMatch(/at least one tool/i);
+    expect(toolsAllowOf({ ...draft, tools: 'a, b\nc  d,,a' })).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('refuses an empty required field and a placement it cannot spell', () => {
     expect(connectorDraftError({ ...draft, id: '' })).toMatch(/id/i);
     expect(connectorDraftError({ ...draft, display_name: '' })).toMatch(/name/i);

@@ -159,6 +159,14 @@ the workspace runs on — the only way to install a plugin that runs code — wh
 is why it asks for a path and not for a file: a picker would read the operator's
 own computer, which is not where the plugin has to be.
 
+The form asks which **tools** to expose, and refuses an empty list.
+`mcp_http.tools_allow` is a strict allowlist — the kernel materializes exactly
+the names it holds — so a connector installed with none comes up `running` and
+contributes nothing to any conversation, which is the one failure on this screen
+that looks like success. "Empty means all" is deliberately *not* invented here:
+the allowlist exists so an upstream cannot add a tool behind the operator's
+back.
+
 The **API key is typed once**. It is a password field, it goes out with the
 install request, and nothing here can show it again — so this screen offers no
 way to *edit* a stored key; re-adding the plugin is how a key is replaced.

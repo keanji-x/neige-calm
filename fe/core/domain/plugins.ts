@@ -119,12 +119,37 @@ export type ConnectorInstallDraft = Readonly<{
   api_key: string;
   placement: ApiKeyPlacement;
   header_name: string;
+  /**
+   * The upstream tools to expose, as the operator typed them — separated by
+   * commas, spaces or newlines, and split by [`toolsAllowOf`].
+   *
+   * **A connector with an empty list exposes nothing.** `mcp_http.tools_allow`
+   * is a strict allowlist (`plugin_host::connector::materialize_http_tools`
+   * iterates *it*, not the upstream's answer), so a connector installed with no
+   * names comes up `running` and contributes no tool to any conversation — the
+   * one failure on this screen that looks exactly like success. That is why
+   * [`connectorDraftError`] refuses an empty list rather than treating it as
+   * "all of them": the kernel's allowlist is deliberate — an upstream must not
+   * be able to add a tool behind the operator's back — and inventing
+   * "empty means all" here would quietly undo that.
+   */
+  tools: string;
 }>;
 
 export const EMPTY_CONNECTOR_DRAFT: ConnectorInstallDraft = Object.freeze({
   id: '', display_name: '', description: '', url: '', api_key: '',
-  placement: 'bearer', header_name: '',
+  placement: 'bearer', header_name: '', tools: '',
 });
+
+/**
+ * The tool names in a draft, in the order they were typed, deduplicated.
+ *
+ * Commas, spaces and newlines all separate, because all three are how a list
+ * pasted out of a server's documentation actually arrives.
+ */
+export function toolsAllowOf(draft: ConnectorInstallDraft): string[] {
+  return [...new Set(draft.tools.split(/[\s,]+/).filter((name) => name !== ''))];
+}
 
 /**
  * The `api_key_in` wire string for a draft, or `null` when the draft cannot
@@ -154,6 +179,11 @@ export function connectorDraftError(draft: ConnectorInstallDraft): string | null
   if (draft.url.trim() === '') return 'A server URL is required.';
   if (draft.api_key.trim() !== '' && apiKeyInOf(draft) === null) {
     return 'A header name is required when the key rides in a custom header.';
+  }
+  /* Not a matter of taste: see `tools` on the draft. A connector installed with
+     no names is a plugin that runs and does nothing. */
+  if (toolsAllowOf(draft).length === 0) {
+    return 'Name at least one tool to expose — a connector with none exposes nothing.';
   }
   return null;
 }
@@ -193,6 +223,7 @@ export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOper
         display_name: draft.display_name.trim(),
         ...(description === '' ? {} : { description }),
         url: draft.url.trim(),
+        tools_allow: toolsAllowOf(draft),
         ...(key === '' ? {} : { api_key: key, api_key_in: apiKeyInOf(draft) }),
       },
     },
