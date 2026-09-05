@@ -1342,22 +1342,32 @@ async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga(
     assert!(request_task.await.unwrap_err().is_cancelled());
     hook.release.notify_one();
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let track_id = calm_server::ids::TrackId::from(track_id);
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if b.repo.area_get(&area_id).await.unwrap().is_none() {
+            let area_is_gone = b.repo.area_get(&area_id).await.unwrap().is_none();
+            let track_is_gone = b.repo.track_get(track_id.as_str()).await.unwrap().is_none();
+            let cache_is_clear = b.tracks.area_of(&track_id).is_none();
+            if area_is_gone && track_is_gone && cache_is_clear && !path.exists() {
                 break;
             }
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .expect("detached area deletion must finish after request cancellation");
-    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    .await;
+    if finished.is_err() {
+        panic!(
+            "detached area deletion did not converge after request cancellation: \
+             area_present={}, track_present={}, cached_area={:?}, workspace_exists={}",
+            b.repo.area_get(&area_id).await.unwrap().is_some(),
+            b.repo.track_get(track_id.as_str()).await.unwrap().is_some(),
+            b.tracks.area_of(&track_id),
+            path.exists(),
+        );
+    }
+    assert!(b.repo.track_get(track_id.as_str()).await.unwrap().is_none());
     assert!(!path.exists());
-    assert_eq!(
-        b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
-        None
-    );
+    assert_eq!(b.tracks.area_of(&track_id), None);
 }
 
 /// The area guard covers the complete direct-create unit: row, workspace and

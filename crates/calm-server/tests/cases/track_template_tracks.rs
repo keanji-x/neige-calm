@@ -958,6 +958,26 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={source}");
     let source_id = source["id"].as_str().unwrap().to_string();
+    // This case compares every user table around the rejected request. The
+    // source track's planner is unrelated to that contract, and leaving it
+    // live lets the report edit below race the snapshots by asynchronously
+    // persisting its observation queue.
+    let source_worker_session_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
+    )
+    .bind(&source_id)
+    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .await
+    .expect("source planner runtime");
+    let source_harness = boot
+        .state
+        .harness
+        .remove(&source_worker_session_id)
+        .expect("source planner harness");
+    source_harness
+        .shutdown()
+        .await
+        .expect("shutdown source planner harness");
     let (source_track, report_card, current) =
         resolve_report_for_track(boot.repo.as_ref(), &source_id)
             .await

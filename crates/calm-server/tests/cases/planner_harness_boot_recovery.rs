@@ -1787,7 +1787,11 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     .unwrap();
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
+    // The persisted session says a turn was pending when the kernel stopped.
+    // Keep the snapshot in the matching non-issuable phase too: an Idle
+    // harness may legitimately drain the replayed planner queue on its first
+    // run-loop tick before the assertions below can observe the catch-up.
+    snapshot.phase = HarnessPhaseTag::TurnRunning;
     let planner_runtime_id = new_id();
     let assistant_runtime_id = new_id();
     let worker_runtime_id = new_id();
@@ -1816,6 +1820,7 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
     ] {
         let mut snapshot = snapshot.clone();
         snapshot.last_thread_id = Some(format!("thread-{card_id}"));
+        snapshot.last_turn_id = Some(format!("turn-{card_id}"));
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
