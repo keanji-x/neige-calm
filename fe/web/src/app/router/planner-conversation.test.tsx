@@ -567,7 +567,29 @@ describe('planner conversation regressions', () => {
     await typeInto(field, 'second');
     await sendWithEnter(field);
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
-    settle(ok({ card_id: CARD.id, runtime_id: 'runtime' }));
+
+    /*
+     * ── The settle is asserted, not merely performed ─────────────────────────
+     *
+     * The count above is read *before* `settle`, so for as long as nothing
+     * looked at the release this line could hand back a body the response
+     * schema rejects and the test would stay green — the send would take the
+     * failure path instead of the success path it was written for, silently.
+     * `worker_session_id` is exactly that hazard: #1423 renamed the wire field,
+     * and this literal said `runtime_id` until the rebase.
+     *
+     * So the release is followed through: no error strip, and — the fact only
+     * the success path can produce — the queued send has freed the composer for
+     * a second message.
+     */
+    settle(ok({ card_id: CARD.id, worker_session_id: 'runtime' }));
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+    await typeInto(messageField(), 'second, after the release');
+    await sendWithEnter(messageField());
+    await settleOneSend(requests, 2);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   /*
@@ -656,7 +678,7 @@ describe('planner conversation regressions', () => {
     'phase %s queues the message: %s — marker, open composer and a second send all follow it',
     async (phase, queues) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, runtime_id: 'runtime', phase })
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase })
         : undefined);
       await openConversation();
       /*
@@ -668,7 +690,7 @@ describe('planner conversation regressions', () => {
        */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
-          { card_id: CARD.id, runtime_id: 'runtime', phase });
+          { card_id: CARD.id, worker_session_id: 'runtime', phase });
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
