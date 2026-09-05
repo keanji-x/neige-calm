@@ -3,8 +3,8 @@
 
 use calm_types::ids::ActorId;
 use calm_types::task_recovery::{
-    TaskAttemptAllocation, TaskAttemptOrigin, TaskRecoveryConstraint, TaskRecoveryManifest,
-    TaskRecoveryReceipt, TaskRecoveryRequest,
+    TaskAttemptAllocation, TaskAttemptOrigin, TaskRecoveryConstraint, TaskRecoveryReceipt,
+    TaskRecoveryRequest,
 };
 use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 
@@ -123,7 +123,7 @@ pub async fn task_recovery_allocate_tx(
     key: &str,
     request: &TaskRecoveryRequest,
     request_fingerprint: &str,
-    manifest: &TaskRecoveryManifest,
+    constraint: &TaskRecoveryConstraint,
     actor: &ActorId,
 ) -> Result<TaskRecoveryReceipt> {
     if request.expected_attempt_id.is_empty()
@@ -146,8 +146,7 @@ pub async fn task_recovery_allocate_tx(
     {
         return Ok(receipt);
     }
-    manifest
-        .constraint()
+    constraint
         .validate(track_id)
         .map_err(CalmError::BadRequest)?;
     let current = task_attempt_current_tx(tx, track_id, key)
@@ -181,7 +180,7 @@ pub async fn task_recovery_allocate_tx(
             request_fingerprint: request_fingerprint.into(),
             reason: request.reason.clone(),
             actor: actor.clone(),
-            manifest: manifest.clone(),
+            constraint: constraint.clone(),
         },
         created_at_ms: now_ms(),
     };
@@ -210,7 +209,7 @@ pub async fn task_recovery_constraint_tx(
         .ok_or_else(|| CalmError::NotFound(format!("task attempt {attempt_id}")))?;
     Ok(match allocation.origin {
         TaskAttemptOrigin::Initial => None,
-        TaskAttemptOrigin::Recovery { manifest, .. } => Some(manifest.constraint().clone()),
+        TaskAttemptOrigin::Recovery { constraint, .. } => Some(constraint),
     })
 }
 

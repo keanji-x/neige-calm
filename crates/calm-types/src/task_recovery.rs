@@ -76,34 +76,6 @@ impl TaskRecoveryConstraint {
     }
 }
 
-/// The supported recovery procedure is explicit. Implementation repair must
-/// gain its own typed source/evidence fields before it becomes a supported mode.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskRecoveryMode {
-    RetryUnchangedContract,
-}
-
-/// A frozen recovery instruction, never an untyped bag of future input claims.
-/// V1 admits unchanged-contract retry only; it does not claim candidate reuse or
-/// immutable delivery, which require a subsequent source/evidence protocol.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "version", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TaskRecoveryManifest {
-    V1 {
-        mode: TaskRecoveryMode,
-        constraint: TaskRecoveryConstraint,
-    },
-}
-
-impl TaskRecoveryManifest {
-    pub fn constraint(&self) -> &TaskRecoveryConstraint {
-        match self {
-            Self::V1 { constraint, .. } => constraint,
-        }
-    }
-}
-
 /// Initial allocations have no recovery metadata. Every recovery field is
 /// required for the recovery variant, including its frozen constraint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,7 +88,7 @@ pub enum TaskAttemptOrigin {
         request_fingerprint: String,
         reason: String,
         actor: ActorId,
-        manifest: TaskRecoveryManifest,
+        constraint: TaskRecoveryConstraint,
     },
 }
 
