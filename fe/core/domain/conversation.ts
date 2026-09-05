@@ -260,7 +260,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
  *
  * - `delivered` — the server answered 2xx. It has the text.
  * - `refused` — the server answered that it stored nothing. Only a refusal the
- *   server *names* qualifies; see `SEND_REFUSAL_CODES`.
+ *   server *names* qualifies; see `isSendRefusalCode`.
  * - `unresolved` — the request left the browser and its fate is unknown: a 5xx,
  *   a dropped connection, a body that did not decode. `POST /planner/input`
  *   carries no `Idempotency-Key`, so re-sending here can deliver the message
@@ -277,14 +277,14 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
 export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
 
 /**
- * The `ErrorBody.code` values that mean the server stored nothing.
+ * Whether an `ErrorBody.code` means the server stored nothing.
  *
  * A refusal has to say so in a code, because a status alone does not: a 409 is
  * also how a conflicting write that *did* land is reported elsewhere.
  */
-export const SEND_REFUSAL_CODES: ReadonlySet<string> = new Set([
-  'planner_harness_runtime_superseded',
-]);
+export function isSendRefusalCode(code: string | null): boolean {
+  return code === 'planner_harness_runtime_superseded';
+}
 
 export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
   return {

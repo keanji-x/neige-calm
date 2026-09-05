@@ -53,7 +53,7 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, SEND_REFUSAL_CODES,
+  isSendRefusalCode, mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes,
   serverItemHighWater, trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ConversationTurn, type OptimisticConversationTurn, type SendOutcome,
@@ -641,7 +641,7 @@ export function useConversationStore(
       });
     }).catch((error: unknown) => {
       sendFailure = errorMessage(error, 'Could not send the message.');
-      settled = SEND_REFUSAL_CODES.has(apiFailureCodeOf(error) ?? '') ? 'refused' : 'unresolved';
+      settled = isSendRefusalCode(apiFailureCodeOf(error)) ? 'refused' : 'unresolved';
       /* A failure belongs to the conversation that failed. Reported on another
          one it is a sentence under a composer the reader never sent from, and
          dropping the echo there would be dropping someone else's. The provider
