@@ -133,8 +133,6 @@ export type RememberedConversation = Readonly<{
  * not a fact about the conversation, it is a fact about the last fetch, and
  * the fetch moves. Once written it is written, for the life of the tab,
  * whatever any later window contains.
- *
- * It is written in `useConversationStore`.
  */
 type CreateEchoSlot = Readonly<{ text: string; retired: boolean }>;
 
