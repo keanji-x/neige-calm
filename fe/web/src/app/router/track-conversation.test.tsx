@@ -192,6 +192,15 @@ const derivedRow = (trackId: string, request: ApiRequest): Row => ({
   trackId, title: null, kind: 'track-assistant', state: null, updatedAt: 99,
 });
 
+/* The open drawer, whatever it is called — the name is derived from the first
+   thing said in it, which is precisely what the #1449 cases are about. */
+function drawerElement(): HTMLElement {
+  const closer = screen.getByRole('button', { name: 'Close conversation' });
+  const drawer = closer.closest('[role="complementary"]');
+  if (drawer === null) throw new Error('the drawer is not open');
+  return drawer as HTMLElement;
+}
+
 async function openDraft() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
   /* The draft drawer's title, since #1191 renamed it off the action's label:
@@ -774,6 +783,84 @@ describe('track conversations', () => {
     /* The row reads its title and then its kernel kind. The assistant card is
        absent entirely — not listed under some other name. */
     expect(labels).toEqual(['Workercodex']);
+  });
+
+  /*
+   * ── #1449 缺陷 B — the sentence that started the thread ────────────────────
+   *
+   * The create POST both mints the card and delivers the message, and for a
+   * long time this route said in a comment that this was enough: "by the time
+   * it answers the message is already persisted and the first item fetch on the
+   * new card carries it". It is not. A transcript is `harness_items`
+   * (`crates/calm-truth/src/db/sqlite/read.rs`), and rows land in that table
+   * only when codex echoes the turn back
+   * (`crates/calm-server/src/harness/run_loop.rs`). Between Enter and that echo
+   * — seconds, or forever if the agent is down — the drawer mounted on a card
+   * with zero turns, so the reader's own sentence was nowhere and the empty
+   * state painted "Nothing said yet." beside the live `Working` dot.
+   *
+   * The fixture is that window, stated exactly: the item read answers `[]`, as
+   * the real kernel does.
+   */
+  it('shows the sentence that started the conversation before the server echoes it', async () => {
+    const minted: Row[] = [];
+    const { requests } = setup((request) => {
+      if (request.method === 'POST' && request.path === CONVERSATIONS) {
+        const row = derivedRow('w1', request);
+        minted.push(row);
+        return created(row);
+      }
+      if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('start this thread');
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+    /* The draft is gone — this is the mounted thread, not the composer's
+       show-back of unsent words, which carries the same attribute. */
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
+    const drawer = drawerElement();
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['start this thread']));
+    expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
+  });
+
+  /*
+   * The other half of the same paint: an unknown transcript is not an empty
+   * one. `Loading conversation…` and "Nothing said yet." used to render
+   * together, because the thread was mounted unconditionally beside the notice.
+   */
+  it('does not paint the empty state while the first page is still loading', async () => {
+    setup((request) => request.path.includes(HISTORY_PATH)
+      ? new Promise(() => undefined)
+      : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    const drawer = await screen.findByRole('complementary', { name: 'Assistant' });
+    expect(within(drawer).getByText('Loading conversation…')).toBeTruthy();
+    expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
+  });
+
+  /*
+   * The echo is minted from the answer, so a refused create has none to leave
+   * behind — the send path's rule (`useConversationStore`'s `catch` drops the
+   * echo) stated for this path as a fence rather than as a repair. An
+   * implementation that echoed at the press instead of at the adoption would
+   * leave a sentence standing in a conversation that was never created.
+   */
+  it('leaves no echo behind when the create is refused', async () => {
+    setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
+      ? failure(400, 'invalid_request', 'That message was refused.')
+      : undefined);
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('refused words');
+    expect((await screen.findByRole('alert')).textContent).toContain('That message was refused.');
+    /* Still the draft, still holding the words back for another attempt. */
+    expect(screen.getByRole('complementary', { name: 'Untitled' })).toBeTruthy();
+    /* And nothing was recorded: no row anywhere is named after them. */
+    expect(screen.queryByRole('button', { name: /Conversation refused words/ })).toBeNull();
   });
 });
 
