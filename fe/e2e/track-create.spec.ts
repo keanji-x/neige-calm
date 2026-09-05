@@ -207,17 +207,19 @@ test('creates a track from an Area group with no title, and persists it', async 
    *
    * The landing opens the planner conversation (#1211 S2), and until this
    * change it opened onto an empty thread: the create delivered the message,
-   * but a transcript is `harness_items` and rows land there only when the
-   * app-server echoes the turn back. The paragraph above says why this tier
+   * but a transcript is read from one persisted table
+   * (`crates/calm-truth/src/db/sqlite/read.rs`) and rows land there only when
+   * the app-server echoes the turn back. The paragraph above says why this tier
    * cannot see that echo at all — the `osc-probe-child` fixture emits no items
    * — which makes this the exact window the echo covers, with the real read
    * answering the real nothing.
    *
-   * The drawer is located by the control only it has rather than by its name:
-   * on a real kernel the planner card is minted with no title, so the name is
-   * derived from the first thing said in the conversation — which is the very
-   * thing under test. Naming it would make the locator assert the fix in order
-   * to find the element it is asserting the fix on.
+   * The drawer is located by the control only it has rather than by its name.
+   * On a real kernel the planner card is minted with no title, so the name is
+   * whatever the conversation derives from its **turns** — and the placeholder
+   * under test is not a turn, so it contributes nothing to it. The locator
+   * therefore has to reach the drawer by something that is true whether or not
+   * this feature works.
    */
   const drawer = page.locator('[role="complementary"]')
     .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });

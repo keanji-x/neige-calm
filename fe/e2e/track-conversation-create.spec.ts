@@ -205,9 +205,10 @@ test('starts a conversation from a track page and sends the first message to tha
    * ── #1449 — and the sentence is *in* the thread, against a real kernel ─────
    *
    * This is the acceptance the jsdom cases cannot claim: the transcript here
-   * is the real `GET /api/cards/{id}/harness/items`, and it is genuinely
-   * empty. `harness_items` is written only when the app-server echoes the turn
-   * back (`crates/calm-server/src/harness/run_loop.rs`), and CI's
+   * is the real transcript endpoint, and it is genuinely empty: the table it
+   * reads (`crates/calm-truth/src/db/sqlite/read.rs`) is written only when the
+   * app-server echoes the turn back
+   * (`crates/calm-server/src/harness/run_loop.rs`), and CI's
    * `osc-probe-child` fixture emits no items at all (`e2e/README.md`). So the
    * item read below returning `[]` is not a stub standing in for the kernel —
    * it is what the kernel answers in the window this feature exists for.

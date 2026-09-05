@@ -1000,8 +1000,8 @@ describe('the sentence is delivered by the create, and the track opens on it', (
    * And the sentence is *on* that conversation when the reader arrives.
    *
    * The create delivered it, but delivered is not readable: a transcript is
-   * `harness_items` (`crates/calm-truth/src/db/sqlite/read.rs`) and rows land
-   * there only when codex echoes the turn back
+   * read from one persisted table (`crates/calm-truth/src/db/sqlite/read.rs`)
+   * and rows land there only when codex echoes the turn back
    * (`crates/calm-server/src/harness/run_loop.rs`). This harness serves `[]`
    * for the item read, which is what the kernel really answers in that window,
    * so the only thing that can put the words on screen is the optimistic echo

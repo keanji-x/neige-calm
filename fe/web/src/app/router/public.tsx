@@ -349,24 +349,51 @@ export function useConversationStore(
    * ── The create placeholder (#1449) ────────────────────────────────────────
    *
    * Read, retired, and rendered — and nothing else touches it. It is not in
-   * `echoes`, `turns`, `confirmedTurns` or `confirmedTranscript`, so it is
-   * counted by nothing, paired with nothing, never written to the registry's
-   * turn list, and cannot reach `hasUnreconciledSend`.
+   * `echoes`, `turns`, `confirmedTurns` or `confirmedTranscript`, so no send
+   * reconciliation can spend a server row on it, no conversation metadata
+   * counts it, it is never written to the registry's turn list, and it cannot
+   * reach `hasUnreconciledSend`.
    */
   const createEcho = registry.createEchoOf(cardId);
+  /*
+   * Whether the server has this sentence *now*, decided at render.
+   *
+   * At render and not in the effect below, because an effect runs after the
+   * commit: the page that brings the sentence back would paint once with the
+   * placeholder and the persisted row side by side — the reader's words
+   * twice — and only then settle. This decides what is shown; the effect only
+   * writes the fact down.
+   */
+  const createEchoShown = useMemo(
+    () => createEcho !== null && serverTurns.some((turn) => turn.author === 'you'
+      && reconcileUserEchoes([turn], [createEchoLine(createEcho)]).length === 0),
+    [createEcho, serverTurns],
+  );
+  /*
+   * A card whose transcript has an *earlier* page cannot be waiting for this.
+   *
+   * A create's sentence is the first thing on its card. A window that reports
+   * more history behind it is therefore looking at a card that either has the
+   * sentence somewhere further back or never will — and the signal is already
+   * computed, by `getNextPageParam` in `app/providers/queries.ts`. Without
+   * this a placeholder minted against a card with a long history (a landing
+   * that failed, re-armed from its history entry, redeemed on a planner card
+   * that has been talking for days) pins a brand-new sentence above messages
+   * that are genuinely older than it.
+   */
+  const hasEarlierPage = history.hasNextPage;
   const retireCreateEcho = registry.retireCreateEcho;
   useEffect(() => {
     if (createEcho === null) return;
     /*
-     * Retired the first time this card's transcript shows the sentence back,
-     * and retired **for good**.
+     * Written down once, and never asked again.
      *
      * One way, and that is the point rather than an optimisation. A transcript
-     * page is a window — `harnessItemsQueryOptions` asks for the newest 300
-     * rows and every send invalidates it — so "is my sentence in what is
-     * loaded?" is a fact about the last fetch, not about the conversation.
-     * Recomputed per render it answers yes, then no once the agent has written
-     * 300 rows past it, and no again the moment another client resets the card
+     * page is a window — the reader's query asks for the newest rows and every
+     * send invalidates it — so "is my sentence in what is loaded?" is a fact
+     * about the last fetch, not about the conversation. Recomputed as the
+     * standing answer it says yes, then no once the agent has written a
+     * pageful past it, and no again the moment another client resets the card
      * and the first page comes back empty. A line that un-retires reappears at
      * the head of a thread that has long moved on.
      *
@@ -377,18 +404,45 @@ export function useConversationStore(
      * `reconcileUserEchoes` is the matcher the send path already uses, called
      * with one echo, so this is a scan and not a pairing.
      */
-    const shown = serverTurns.some((turn) => turn.author === 'you'
-      && reconcileUserEchoes([turn], [createEchoLine(createEcho)]).length === 0);
-    if (shown) retireCreateEcho(cardId);
-  }, [cardId, createEcho, retireCreateEcho, serverTurns]);
+    if (createEchoShown || hasEarlierPage) retireCreateEcho(cardId);
+  }, [cardId, createEcho, createEchoShown, hasEarlierPage, retireCreateEcho]);
+  /*
+   * Leaving the conversation ends the landing.
+   *
+   * The placeholder answers one question — "the conversation I just started has
+   * not shown my sentence yet" — and that question belongs to the visit that
+   * asked it. Held past it, a slot that never saw its row comes back on a later
+   * visit and prints the sentence over a conversation that has since been
+   * emptied by `POST /api/cards/{id}/planner/reset` from somewhere else: the
+   * reader opens an empty thread and is shown words from a session that no
+   * longer exists. Nothing on the client can tell that empty transcript from
+   * the empty one a brand-new card has, so the bound is the visit rather than
+   * a reading of the rows.
+   *
+   * Written from a ref rather than from an effect cleanup: StrictMode invokes
+   * mount → cleanup → mount on the same instance, and a cleanup-based version
+   * would retire the slot the moment it was minted.
+   */
+  const showedCreateEchoFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (createEcho !== null && cardId !== '') showedCreateEchoFor.current = cardId;
+  }, [cardId, createEcho]);
+  useEffect(() => {
+    const shownFor = showedCreateEchoFor.current;
+    if (shownFor === null || shownFor === cardId) return;
+    showedCreateEchoFor.current = null;
+    retireCreateEcho(shownFor);
+  }, [cardId, retireCreateEcho]);
   /* At the head, always: a create's sentence is by construction the oldest
      thing on the card, so its position is a fact rather than a comparison. */
   const transcript = useMemo(
     () => {
       const merged = mergeTranscript(serverEntries, echoes);
-      return createEcho === null ? merged : [createEchoLine(createEcho), ...merged];
+      if (createEcho === null || createEchoShown) return merged;
+      /* Borrowing the time of the entry it precedes — see `createEchoLine`. */
+      return [createEchoLine(createEcho, merged[0]?.atMs ?? 0), ...merged];
     },
-    [createEcho, echoes, serverEntries],
+    [createEcho, createEchoShown, echoes, serverEntries],
   );
   const confirmedTranscript = useMemo(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
@@ -721,15 +775,16 @@ type ConversationPanelSource = Readonly<{
 /**
  * The identity of a create's placeholder line in the transcript.
  *
- * Fixed, because there is at most one per card and it is never paired with
- * anything: nothing keys off it but React's list reconciliation.
+ * Fixed, because there is at most one per card. It is read by React's list
+ * reconciliation and by `exchangesOf`, which makes it the identity and the
+ * label of the exchange the rail draws for this line.
  */
 const CREATE_ECHO_ID = 'create-echo';
 
 /**
  * The sentence a create delivered, as one transcript line pinned at the head.
  *
- * Why it exists: a transcript is `harness_items`
+ * Why it exists: a transcript is read from one persisted table
  * (`crates/calm-truth/src/db/sqlite/read.rs`), and a row lands in that table
  * only when codex echoes the turn back
  * (`crates/calm-server/src/harness/run_loop.rs`). The create POST delivering
@@ -741,8 +796,18 @@ const CREATE_ECHO_ID = 'create-echo';
  *
  * Why it is a plain line and not an `OptimisticConversationTurn`: see
  * `CreateEchoSlot` in `app/conversations`. It carries no provenance because it
- * is never reconciled, and `atMs: 0` is not a time anyone reads — it is the
- * head of the list, which is where a create's sentence belongs by construction.
+ * is never reconciled.
+ *
+ * **`atMs` is borrowed, not invented.** It is read: the thread stamps a time
+ * wherever two consecutive entries are `CONVERSATION_GAP_MS` apart
+ * (`opensAfterGap`), so a made-up `0` put a ten-minute separator between this
+ * line and the very next thing on screen — a gap the reader never took. The
+ * placeholder takes the time of the entry it sits in front of, so the distance
+ * it introduces is zero and the separator it introduces is none. That is a
+ * server timestamp copied, not a clock read: nothing here compares the
+ * browser's clock with the kernel's, which is the mistake that produced a
+ * different misordering two rounds ago. With nothing to sit in front of there
+ * is nothing to be apart from, and the value is unobservable.
  *
  * **The hole this leaves, stated rather than papered over** (#1475): the slot
  * lives in this tab's memory. Reload before codex echoes and the thread is
@@ -750,47 +815,25 @@ const CREATE_ECHO_ID = 'create-echo';
  * from `GET /api/cards/{id}/harness/items` is a persistence-boundary change
  * with its own review surface and is deliberately not this change.
  *
- * **KNOWN GAP — retirement is by text.** A later message with the same words
- * retires this slot, because a transcript row carries nothing that says which
- * of two identical sentences it is. The reader then sees the server's copy in
- * place of the placeholder, which is one line either way; what is lost is the
- * distinction, not the words.
+ * **KNOWN GAP — the retirement criterion is `userTextMatchesEcho`, which is
+ * wider than equality.** It also matches a persisted row that *starts with*
+ * this sentence followed by a newline. So a later, longer, genuinely different
+ * message whose first line happens to repeat these words retires the slot —
+ * and when the create's own sentence was stranded and never delivered, that is
+ * the reader's words disappearing from the head of the thread for good. Not
+ * narrowed here: the matcher is the send path's, shared on purpose, and
+ * changing it is a change to the send path.
  *
- * **KNOWN GAP — a window that never contained the row.** Retirement waits for
- * this sentence to appear in a loaded page. If the card is busy enough that
- * the first page the drawer ever reads has already scrolled past it, the
- * placeholder stands until the tab ends. It shuts nothing and blocks nothing —
- * it is a line at the head of the thread that has been superseded.
+ * **KNOWN GAP — a window that has not been asked to go back far enough.**
+ * Retirement waits for this sentence to appear in a *loaded* page. If the
+ * first page the drawer reads has already scrolled past it, the placeholder
+ * stands. It is not stuck: pressing `Load earlier` until the page holding the
+ * row arrives retires it there and then. What it means is that a placeholder
+ * can outlive its own row on a busy card until somebody pages back.
  *
- * **KNOWN GAP — pre-existing, and not this change's, though #1449 is where it
- * is written down.** It concerns the *send* path's echoes, which this
- * placeholder is not part of. Two mechanisms in the kernel are easy to
- * conflate, and conflating them is what made the first reading of this note
- * wrong, so both are named:
- *
- *  - **Batch drain.** `maybe_issue_turn` drains several pending observations
- *    into one turn and each keeps its own segment
- *    (`crates/calm-server/src/harness/observation.rs`), so item 5 comes back
- *    as `5:0` and `5:1` — two rows, one per message, and reconciliation pairs
- *    them one each. Nothing is wrong here.
- *  - **Queue folding.** `try_fold_pending_tail` merges a `UserMessage` into a
- *    `UserMessage` already at the tail of the queue, producing **one**
- *    observation whose body is the two texts joined by `\n\n`
- *    (`crates/calm-server/src/harness/run_loop.rs`). One segment, one row,
- *    text `"A\n\nB"`.
- *
- * The folded row is what has no answer: `userTextMatchesEcho` matches it
- * against echo `A` through its `startsWith(echo + "\n")` arm and against
- * echo `B` not at all, so `B` is never retired and `hasUnreconciledSend`
- * keeps the composer shut for the life of the tab. Reachable on `origin/main`:
- * a first sentence `A` stranded in `pending_queue` against a slow or dead
- * agent leaves the composer open (main mints no create echo to shut it), the
- * reader sends `B`, and the kernel folds. Fixing it needs a message identity
- * on the wire or a kernel that does not join two user turns; both are their
- * own change.
  */
-function createEchoLine(text: string): ConversationTurn {
-  return { id: CREATE_ECHO_ID, author: 'you', text, atMs: 0 };
+function createEchoLine(text: string, atMs = 0): ConversationTurn {
+  return { id: CREATE_ECHO_ID, author: 'you', text, atMs };
 }
 
 /** Which row is open, or the draft that has not become a row yet. */
@@ -2176,7 +2219,7 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
        * The card that holds this message does not exist as far as this route
        * is concerned — `POST /api/tracks` answers with a `Track` — and the
        * kernel's transcript will not carry the message either until codex
-       * echoes the turn back (`harness_items` is written only there). So the
+       * echoes the turn back (the transcript table is written only there). So the
        * words travel on the entry this navigation creates, and the track route
        * mints the optimistic echo once it knows its planner card. Same
        * one-landing scope as `openPlanner` itself, and struck off by the same
@@ -2579,14 +2622,13 @@ function TrackRouteBody({
        is struck off the entry with the marker. */
     const firstMessage = plannerOpenIntent.message;
     plannerOpenIntent.disarm();
-    if (plannerCard === undefined || plannerRow === null) return;
+    if (plannerCard === undefined) return;
     registry.requestOpen(plannerCard.id, { focusComposer: true });
     /* And this is where the sentence that made the track finally has a card to
-       be shown on (#1449). Same echo the conversation-create path mints, for
-       the same window: `POST /api/tracks` delivered the message, and the
-       transcript will not show it until codex answers. */
+       put it on (#1449): `POST /api/tracks` answers with a Track, so this is
+       the first moment the planner card has an id to key the slot by. */
     if (firstMessage !== null) registry.noteCreateEcho(plannerCard.id, firstMessage);
-  }, [registry, plannerCard, plannerOpenIntent, plannerRow]);
+  }, [registry, plannerCard, plannerOpenIntent]);
   /* Every row carries the track's title, so a row that reaches Today can say
      where it is. On this page `showTrack: false` hides it again.
      *

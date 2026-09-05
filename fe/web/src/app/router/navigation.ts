@@ -296,9 +296,10 @@ export type PlannerOpenIntent = Readonly<{
    * The sentence that created this track, when the entry carries one.
    *
    * It rides here rather than in a registry slot for the reason the intent
-   * itself does: `POST /api/tracks` answers with a `Track` and the planner
-   * card's id does not exist until a route later, so there is no card to
-   * record an echo against at the moment the words are posted. Reading it off
+   * itself does: `POST /api/tracks` answers with a `Track`, so the browser
+   * does not learn the planner card's id until the track detail lands a route
+   * later, and there is no card id to key a slot by at the moment the words
+   * are posted. Reading it off
    * the entry means only the body rendering *that* landing can echo it, and
    * `disarm()` strikes it off with the intent — one landing, one echo.
    */

@@ -192,8 +192,10 @@ const derivedRow = (trackId: string, request: ApiRequest): Row => ({
   trackId, title: null, kind: 'track-assistant', state: null, updatedAt: 99,
 });
 
-/* The open drawer, whatever it is called — the name is derived from the first
-   thing said in it, which is precisely what the #1449 cases are about. */
+/* The open drawer, reached by the control only it has rather than by its name.
+   A conversation is named from its turns, and the #1449 placeholder is not a
+   turn, so an adopted assistant row is `Assistant` whether or not the sentence
+   is on screen — the name cannot stand in for the thing these cases assert. */
 function drawerElement(): HTMLElement {
   const closer = screen.getByRole('button', { name: 'Close conversation' });
   const drawer = closer.closest('[role="complementary"]');
@@ -791,8 +793,8 @@ describe('track conversations', () => {
    * The create POST both mints the card and delivers the message, and for a
    * long time this route said in a comment that this was enough: "by the time
    * it answers the message is already persisted and the first item fetch on the
-   * new card carries it". It is not. A transcript is `harness_items`
-   * (`crates/calm-truth/src/db/sqlite/read.rs`), and rows land in that table
+   * new card carries it". It is not. A transcript is read from one persisted
+   * table (`crates/calm-truth/src/db/sqlite/read.rs`), and rows land in it
    * only when codex echoes the turn back
    * (`crates/calm-server/src/harness/run_loop.rs`). Between Enter and that echo
    * — seconds, or forever if the agent is down — the drawer mounted on a card
@@ -830,8 +832,9 @@ describe('track conversations', () => {
   /*
    * ── #1449 review round 3, B1 — a page window is not a fact ────────────────
    *
-   * `harness_items` is read a page at a time: `harnessItemsQueryOptions` asks
-   * for the newest rows, and every send invalidates that query. So "my
+   * The transcript is read a page at a time: the query in
+   * `app/providers/queries.ts` asks for the newest rows, and every send
+   * invalidates it. So "my
    * sentence is in the transcript" is true of the fetch that answered, not of
    * the conversation — the agent works, the window slides past the first row,
    * and a retirement recomputed from what is currently loaded flips back to
@@ -939,6 +942,49 @@ describe('track conversations', () => {
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     expect([...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent))
       .toEqual(['hi']);
+  });
+
+  /*
+   * ── #1449 review round 4, ACTIONABLE 1 — no invented time ─────────────────
+   *
+   * The thread stamps a wall clock wherever two consecutive entries are ten
+   * minutes apart (`opensAfterGap`), because a separator is how it says the
+   * conversation stopped and restarted. A placeholder carrying a made-up
+   * `atMs: 0` therefore printed a separator between itself and the very next
+   * thing said — a break the reader never took, on the create path where the
+   * two lines are seconds apart.
+   */
+  it('draws no time separator between the create line and what follows it', async () => {
+    const minted: Row[] = [];
+    const { requests } = setup((request) => {
+      if (request.method === 'POST' && request.path === CONVERSATIONS) {
+        const row = derivedRow('w1', request);
+        minted.push(row);
+        return created(row);
+      }
+      if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
+      if (request.path.endsWith('/planner/input')) return inputAccepted();
+      if (request.path.endsWith('/planner/run')) return runIdle();
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Planner chat' });
+    await openDraft();
+    await write('what does this repo do?');
+    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
+    const drawer = drawerElement();
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('and who wrote it?');
+    await waitFor(() => expect(
+      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['what does this repo do?', 'and who wrote it?']));
+
+    /* The separator is a wall clock on its own line; nothing else in the
+       transcript is one, so its shape is the assertion. */
+    const stamps = [...drawer.querySelectorAll('p')]
+      .map((line) => line.textContent ?? '')
+      .filter((text) => /^\d{1,2}:\d{2}\s?(AM|PM)$/.test(text));
+    expect(stamps).toEqual([]);
   });
 
   /*
@@ -1360,5 +1406,147 @@ describe('registry write-through', () => {
     expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['ping', 'ping']);
     /* The assertion: two messages, two identities across the remount. */
     expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
+  });
+});
+
+/*
+ * ── The create placeholder's own lifetime (#1449 review round 4) ─────────────
+ *
+ * Driven through the real store, the real provider and the real QueryClient,
+ * with the route absent — the same rig the registry block above uses, for the
+ * same reason: what is under test is the slot's lifetime, and a router around
+ * it would only make the sequencing harder to state.
+ */
+describe('create placeholder lifetime', () => {
+  const SCOPE = {
+    id: 'w1', title: 'Test track', cardId: ASSISTANT_CARD.id, cardTitle: null,
+    updatedAt: 30, kind: 'track-assistant' as const, state: 'idle' as const,
+  };
+
+  /** Every transcript any render ever showed, in order. */
+  function mountSlotStore(transport: ApiTransportPort) {
+    const seen: (readonly TranscriptEntry[])[] = [];
+    let note: (text: string) => void = () => undefined;
+
+    function Probe({ scope }: { scope: typeof SCOPE | null }) {
+      const registry = useConversationRegistry();
+      const store = useConversationStore(transport, unauthorized, scope, {
+        rows: [], rememberOn: 'w1',
+      });
+      note = (text) => { registry.noteCreateEcho(ASSISTANT_CARD.id, text); };
+      seen.push(store.turnsOf(ASSISTANT_CARD.id));
+      return null;
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    const view = (scope: typeof SCOPE | null) => (
+      <QueryClientProvider client={client}>
+        <ConversationProvider><Probe scope={scope} /></ConversationProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view(null));
+    const settle = async () => {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    };
+    return {
+      seen,
+      note: async (text: string) => { await act(async () => { note(text); await Promise.resolve(); }); },
+      open: async () => { await act(async () => { rerender(view(SCOPE)); await Promise.resolve(); }); await settle(); },
+      close: async () => { await act(async () => { rerender(view(null)); await Promise.resolve(); }); await settle(); },
+      settle,
+      /** The `you` lines of the newest render. */
+      said: () => (seen.at(-1) ?? []).filter((entry) => entry.author === 'you')
+        .map((entry) => 'text' in entry ? entry.text : ''),
+    };
+  }
+
+  /*
+   * ── ACTIONABLE 2 ──────────────────────────────────────────────────────────
+   *
+   * The page carrying the sentence lands. Deciding whether the placeholder is
+   * still owed in an effect means one committed frame in which both it and the
+   * server's copy are on screen: the reader's words, twice. Every render is
+   * inspected rather than the last one, because the last one is right either
+   * way.
+   */
+  it('never paints the placeholder beside the sentence it is waiting for', async () => {
+    const transport: ApiTransportPort = {
+      send(request) {
+        if (request.path.includes(HISTORY_PATH)) {
+          return Promise.resolve(ok([harnessMessage(1, 'userMessage', { content: [{ text: 'hello' }] })]));
+        }
+        return Promise.resolve(request.path.endsWith('/planner/run') ? runIdle() : ok([]));
+      },
+    };
+    const store = mountSlotStore(transport);
+    await store.note('hello');
+    await store.open();
+    await store.settle();
+    expect(store.said()).toEqual(['hello']);
+    const doubled = store.seen.filter((entries) =>
+      entries.filter((entry) => entry.author === 'you').length > 1);
+    expect(doubled).toEqual([]);
+  });
+
+  /*
+   * ── ACTIONABLE 3 ──────────────────────────────────────────────────────────
+   *
+   * A slot that never saw its row must not outlive the visit that minted it.
+   * The reader starts a conversation and closes the drawer before the agent
+   * echoes anything; the server does record the sentence, this tab never reads
+   * it, and another client empties the card with
+   * `POST /api/cards/{id}/planner/reset`. Reopening then reads `[]` — which is
+   * indistinguishable, from here, from the empty transcript of a brand-new
+   * card, so the bound has to be the visit and not a reading of the rows.
+   */
+  it('does not print a placeholder from an earlier visit over a reset conversation', async () => {
+    let transcriptRows: readonly unknown[] = [];
+    const transport: ApiTransportPort = {
+      send(request) {
+        if (request.path.includes(HISTORY_PATH)) return Promise.resolve(ok([...transcriptRows]));
+        return Promise.resolve(request.path.endsWith('/planner/run') ? runIdle() : ok([]));
+      },
+    };
+    const store = mountSlotStore(transport);
+    await store.note('old session A');
+    await store.open();
+    expect(store.said()).toEqual(['old session A']);
+
+    /* The reader leaves before anything comes back. */
+    await store.close();
+    /* Elsewhere: the sentence is recorded, then the card is reset. The tab read
+       neither, and comes back to an emptied conversation. */
+    transcriptRows = [];
+    await store.open();
+    await store.settle();
+    expect(store.said()).toEqual([]);
+  });
+
+  /*
+   * ── ACTIONABLE 7 ──────────────────────────────────────────────────────────
+   *
+   * A landing that failed leaves its sentence on the history entry, and Back or
+   * a reload arms it again — on a planner card that may have been talking for
+   * days. Pinned at the head with no guard, a sentence typed a minute ago
+   * prints above messages genuinely older than it. A transcript that reports an
+   * earlier page is the signal that this card is not waiting for its own first
+   * line.
+   */
+  it('does not pin a new sentence above a card that has history behind it', async () => {
+    const transport: ApiTransportPort = {
+      send(request) {
+        if (request.path.includes(HISTORY_PATH)) {
+          /* A full page, so `getNextPageParam` reports more behind it. */
+          return Promise.resolve(ok(Array.from({ length: 300 }, (_, index) =>
+            harnessMessage(index + 1, 'agentMessage', { text: `line ${index + 1}` }))));
+        }
+        return Promise.resolve(request.path.endsWith('/planner/run') ? runIdle() : ok([]));
+      },
+    };
+    const store = mountSlotStore(transport);
+    await store.note('brand new sentence');
+    await store.open();
+    await store.settle();
+    expect(store.said()).toEqual([]);
   });
 });

@@ -107,9 +107,10 @@ export type RememberedConversation = Readonly<{
  * ── Why this is a slot of its own and not an optimistic turn ────────────────
  *
  * A create's first message is not a send. It is delivered by the request that
- * mints the card, it is answered before the card has a transcript at all, and
- * the only thing it owes the reader is to be *on screen* until the agent
- * echoes it back. Three rounds of review found the same class of defect —
+ * mints the card, its answer does **not** promise the transcript already
+ * carries it — an idempotent replay, a late answer, and `adoptIfItLanded` can
+ * all reach a card that already has rows — and the only thing it owes the
+ * reader is to be *on screen* until the agent echoes it back. Three rounds of review found the same class of defect —
  * an echo resurrected by a page window that had moved past its row, an echo
  * eating the row that belonged to a later identical send, a pairing cost that
  * grew with the square — and every one of them came from putting this sentence
@@ -118,18 +119,27 @@ export type RememberedConversation = Readonly<{
  * counted by the composer lock.
  *
  * So it is none of those. **One per card, at most.** It is not in the turn
- * list, so nothing counts it, orders it or pairs it; it is not in
- * `reconcileOptimisticConversationTurns`, so no server row can be spent on it;
- * it is not in `hasUnreconciledSend`, so it can never shut the composer. It
- * renders pinned at the head of the thread, which is the whole of what
- * `serverHighWaterBefore: 0` used to be asked to express: this sentence is by
- * construction the oldest thing the card has.
+ * list, so no send reconciliation can spend a server row on it and no
+ * conversation metadata counts it; it is not in `hasUnreconciledSend`, so it
+ * can never shut the composer. What does read it is the drawer that renders
+ * it — including `exchangesOf`, which makes its id and text the identity and
+ * the label of one dot on the exchange rail. It renders pinned at the head of
+ * the thread, which is the whole of what `serverHighWaterBefore: 0` used to be
+ * asked to express: this sentence is by construction the oldest thing the card
+ * has.
  *
  * `retired` is a one-way latch. That is the direct lesson of the page-window
  * defect: retirement computed per render from "the rows currently loaded" is
  * not a fact about the conversation, it is a fact about the last fetch, and
- * the fetch moves. Once this slot has seen its sentence come back it is done,
- * for the life of the tab, whatever any later window contains.
+ * the fetch moves. Once written it is written, for the life of the tab,
+ * whatever any later window contains.
+ *
+ * Three things write it, all in `useConversationStore`: the sentence appearing
+ * in a loaded page, the transcript reporting an earlier page (a card with
+ * history behind it is not waiting for its own first line), and the reader
+ * leaving the conversation — which ends the landing this slot exists for, and
+ * is what stops a slot that never saw its row from printing over a
+ * conversation someone else has since reset.
  */
 type CreateEchoSlot = Readonly<{ text: string; retired: boolean }>;
 
