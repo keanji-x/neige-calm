@@ -29,6 +29,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0089_track_create_request_fingerprint.sql",
     "0090_track_vcs_commit_prefix_index.sql",
     "0091_terminal_output_evidence.sql",
+    "0092_track_create_message_less_binding.sql",
 ];
 
 #[test]

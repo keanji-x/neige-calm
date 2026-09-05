@@ -217,6 +217,67 @@ CREATE TABLE track_create_idempotency (
 
 ### 4.0 What carries it — read this before §4.3
 
+*(Amended by #1426. The original text is kept below the rule, because §4.3's
+scoping still depends on it and because the reason it gave for the boundary is
+what #1426 had to answer.)*
+
+**As of #1426 the mechanism carries two create shapes, and the discriminator is
+the `Idempotency-Key` header, not the `first_message` field.**
+
+| body | `Idempotency-Key` | plan | binds? |
+|---|---|---|---|
+| `first_message` | absent | 400 | no |
+| `first_message` | present | `Mint` / `Resume` (§4.2's four-arm table) | yes, version 1 |
+| no `first_message` | **absent** | `Legacy` — pre-#1299 verbatim, **not idempotent** | no |
+| no `first_message` | present | `MessageLessMint` / `MessageLessResume` | yes, version 2 |
+
+**Pinned: the binding row is written on a *minting* arm only** — `Mint` or
+`MessageLessMint` — **never on `Legacy`.** `Legacy` is now exactly "the caller
+sent no key", which is the shape #1384's original sentence was really
+protecting: it has nothing to bind, and every message-less caller alive today
+is one of these (the #1426 caller sweep enumerated them by directory —
+`fe/web/src/app/router/public.tsx`'s blank-message branch, all four `web/` call
+sites, whose HTTP helper `web/src/api/calm.ts` takes no headers argument and so
+*cannot* send a key, plus every shell/Playwright/Rust test). Header-**required**
+was rejected for exactly that reason: it would 400 all of them at once.
+
+**Why the old objection does not survive.** #1384 argued that writing the row on
+`Legacy` "is actively wrong" because `Legacy` has already returned from the
+dispatch, leaving no `Resume` arm for a primary-key collision to map onto.
+#1426 answers it by *building* the arm rather than by relaxing anything: a keyed
+message-less create no longer returns from the first statement, it selects
+between `MessageLessMint` and `MessageLessResume` on the binding row. Nothing
+about the `Mint`-only rule as it applies to the `first_message` path changed:
+`create_track_with_first_message` is still the sole writer of the claim on that
+path, and the fail-closed `miss + occupied` arm, the `#N` chain and the 409
+`idempotency_key_exhausted` answer are all untouched.
+
+**Why the message-less arms are a two-cell table, not §4.2's four.** §4.2's
+second input is "what sits on the chosen operation key", and this shape has no
+such key: `start_planner_harness` submits under a fresh `operation_key` with
+`idempotency_key: None`, so there is no attempt to join, no `#N` chain to step
+along and — because no user text rides on it — no delivery to deduplicate and
+no `Stuck` verdict to replay. `binding hit ⇒ resume, miss ⇒ mint` is the whole
+table. Two consequences follow and are stated rather than left to be
+discovered: a keyed message-less create consumes no retry slot and so can never
+answer 409 `idempotency_key_exhausted` *for exhaustion* (only for §4.4's
+un-materializable workspace, which its resume shares); and its resume re-runs
+`start_planner_harness`, whose failure is a `warn!` + 201 on the minting path
+and stays one here, so the arm's total answer set is 201-with-the-same-track,
+500 when the track was deleted from under the binding, or that one 409.
+
+**One key names one create *shape*, both ways.** `create_request_sha256` covers
+the mint inputs and `first_message` is not one of them, so the same body with
+and without a sentence hashes identically. The binding row's fingerprint
+**variant** carries that fact instead (`V1` vs `V2MessageLess`, migration
+`0092`), and a request whose shape does not match its binding's is 409
+`conflict`. Without that check a `first_message` create could resume onto a
+message-less binding and answer 201 for a delivery nobody made.
+
+---
+
+*Original §4.0, as written for #1384:*
+
 The whole mechanism lives on the **`first_message` path only**, because that is
 the only path that reads an `Idempotency-Key`: `plan_first_message` returns
 `CreatePlan::Legacy` from its first statement when `first_message` is absent,
@@ -289,6 +350,19 @@ point between the request arriving at `create_track` and the response leaving
 it, a same-key retry resolves to exactly one of: the same track, or no track at
 all. Never a second track.*
 
+**#1426 widens the carrier, and only the carrier: the same sentence now also
+holds for a create that carries an `Idempotency-Key` and no `first_message`.**
+The enumeration below is unchanged for it, because the partition it rests on is
+the create transaction's commit and the binding is written inside that same
+transaction on `MessageLessMint` exactly as on `Mint`. What differs is only
+which failure points are *reachable*: FP1's message validation, FP7-FP9's
+operation phases and FP10's replay-of-a-delivery have no analogue on a shape
+that submits no keyed operation, so a message-less retry past the commit always
+lands on the FP4/FP5 reading — lookup 1 hits, the workspace is re-materialized,
+the same track comes back. The carrier that is still *excluded* is a create that
+sends no key at all: it binds nothing and a retry mints a second track, which is
+what every message-less caller alive today gets and asked for.
+
 The proof is a partition of `create_track`'s statements by the create
 transaction's commit, because the binding row is written **inside** it.
 
@@ -330,6 +404,12 @@ look at `cwd` either (`planner_harness_start_adapter.rs:451-618`).
 
 **Pinned: option (a). `resume_prior_attempt` calls `materialize_workspace`
 before submitting**, with the same `map_err` treatment as the mint arm.
+
+*(#1426: it now calls it indirectly. The track read, the materialization and its
+`IdempotencyKeyExhausted` mapping moved into `adopt_prior_track`, which both
+resuming arms call — two copies of these two fail-closed decisions would have
+been two chances to drift on what a poisoned key answers. Nothing about the
+decisions themselves changed.)*
 
 It is safe because that function is *designed* to be re-run:
 
@@ -692,8 +772,11 @@ parameter.
 | T-V3 | `a_replay_survives_the_attached_directory_being_deleted` | variant 3 (arm decided before validation) | move `validate_attached_workspace` (`routes/tracks.rs:782-787`) ahead of the `CreatePlan` dispatch | same |
 | **T-V4** | `a_daemon_outage_adopts_the_track_it_already_minted_under_one_key` | **variant 4**: daemon down, same key twice ⇒ `tracks == 1`, `cards == 2`, two 500s, no second delivery | delete the `track_create_idempotency` INSERT from the create closure (`routes/tracks.rs:1464` block) — the retry then mints and `track_count` reads 2 | same; fixture `boot_without_daemon()` via `SharedCodexAppServer::new_stub_with_pending` (`shared_codex_appserver.rs:832`), because `is_running()` short-circuits to `true` with a fake installed (`:1286-1289`) |
 | T-V4b | `a_create_without_a_first_message_still_succeeds_during_a_daemon_outage` | control: the message-less path keeps `warn!` + 201 | make any daemon check reachable from the `Legacy` arm | same |
-| T-LEGACY-1 | `a_message_less_create_writes_no_binding_row` | §4.0: the binding is written on the `Mint` arm only. Asserts `SELECT count(*) FROM track_create_idempotency == 0` after a message-less create sent **with** an `Idempotency-Key` header | remove the `Mint`-arm condition on the binding write in `create_track_structure`'s closure, so it also fires for `Legacy` — the count then reads 1 | same |
-| T-MAT-1 | `a_resume_after_a_materialize_failure_materializes_the_workspace` | §4.4 / FP5: `Resume` re-materializes; the returned track's managed directory has a resolvable `HEAD` | delete the `materialize_workspace` call from `resume_prior_attempt` | same. **Construction:** create successfully with key K, then `std::fs::remove_dir_all` the managed directory (available in-process; `InitCommit::Skip` is private to `workspace_materialize` and unreachable from `tests/`), then replay K. Without the fix the replay 201s onto a directory that does not exist |
+| ~~T-LEGACY-1~~ | ~~`a_message_less_create_writes_no_binding_row`~~ | **Inverted by #1426** into `a_message_less_create_with_a_key_binds_and_replays`: the same request — a key, no `first_message` — now asserts one binding row and **one** track where it asserted zero and two. See §9 gap 1 | remove the message-less binding write (the second create mints again, `track_count` reads 2) or the `MessageLessResume` arm | `track_create_first_message.rs` |
+| T-LEGACY-2 | `a_message_less_create_without_a_key_is_unchanged` (#1426; the narrowed remainder of `a_create_without_a_first_message_is_unchanged`) | §4.0's third row: no key ⇒ `CreatePlan::Legacy`, two creates are two tracks, no binding row, payload bytes unchanged | make the message-less fork bind a synthesised key when the header is absent | same |
+| T-SHAPE-1 | `a_key_bound_by_one_create_shape_refuses_the_other` (#1426) | §4.0's last paragraph: the fingerprint *variant* is request identity the digest cannot carry. Both directions are 409 `conflict`, and every refusal mints nothing | delete the create-shape comparison from `ensure_binding_create_matches` — a `first_message` create then replays a message-less binding and answers 201 for a delivery nobody made | same |
+| T-BIND-3 | `a_message_less_claim_round_trips_as_its_own_fingerprint_variant` (#1426) | migration `0092`'s CHECK admits version 2, and the read side decodes it as `V2MessageLess` rather than folding it into `V1` | make `track_create_idempotency_claim_tx` write version 1 unconditionally — the INSERT then violates the CHECK inside the mint transaction | `calm-truth/src/db/sqlite/track_create_idempotency_tests.rs` |
+| T-MAT-1 | `a_resume_after_a_materialize_failure_materializes_the_workspace` | §4.4 / FP5: `Resume` re-materializes; the returned track's managed directory has a resolvable `HEAD` | delete the `materialize_workspace` call from `adopt_prior_track` (#1426 moved it there out of `resume_prior_attempt`, so both resuming arms share one copy) | same. **Construction:** create successfully with key K, then `std::fs::remove_dir_all` the managed directory (available in-process; `InitCommit::Skip` is private to `workspace_materialize` and unreachable from `tests/`), then replay K. Without the fix the replay 201s onto a directory that does not exist |
 | T-MAT-2 | `a_resume_on_a_healthy_managed_workspace_is_a_no_op` | §4.4's idempotence premise: a replay leaves the owner marker byte-identical and the `HEAD` commit id unchanged | in `materialize_managed_workspace_inner`, drop the `if !git_head_resolves(path)` guard (`workspace_materialize.rs:384`) so `git init` + the initial commit re-run on every call — every other `Resume` test still passes (the directory stays valid) while this one sees a moved `HEAD` | same |
 | T-BRICK-1 | `a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted` | §4.4: the fence is not relaxed, and the answer is 409 `idempotency_key_exhausted`, not a generic 500 and not a 201 | map the materialization failure back to `CalmError::Internal` — the test's status/code assertion then fires | `track_create_first_message.rs`. **Construction:** create with key K, then `remove_dir_all` the managed directory and recreate it containing only an empty `.git/` (the exact residue of the `:547-561` window), then replay K |
 | T-BRICK-2 | `a_new_idempotency_key_recovers_from_a_poisoned_workspace` | §4.4's escape: the poisoning is per-key. After T-BRICK-1's state, a create under a **new** key 201s with a working track at a different path | derive the managed path from `(area_id, idempotency_key)` instead of the minted track id (`track.rs:256-264`) — the new key then lands on the poisoned directory and this test 409s | same |
@@ -702,7 +785,7 @@ parameter.
 | T-ARM-1 | `the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key` | §4.2's table, as a pure unit test | swap any row of the table | `#[cfg(test)]` in `routes/tracks/create.rs` |
 | T-ARM-2 | `a_binding_miss_with_an_occupied_key_mints_nothing` | §4.2's last row: `Internal`, never `Mint` | make the `(miss, occupied)` cell resolve to `Mint` — the test then observes `track_count == 1` behind the 409 instead of `0` | `track_create_first_message.rs`, **not** the pure unit module: the claim is about what is written, so it is constructed by inserting an occupied operation row under the derived key with no binding row, then POSTing that key |
 | T-HASH-1 | `the_same_key_with_a_different_title_is_a_conflict` | the durable binding's complete create-request digest | omit `title` from the binding digest assembled in `plan_first_message` | `track_create_first_message.rs` |
-| T-HASH-2 | `a_message_less_create_writes_byte_identical_payload_json` | `skip_serializing_if` keeps old callers' `payload_hash` stable | remove `skip_serializing_if` from `create_request_sha256` | same (companion of `a_create_without_a_first_message_is_unchanged`, `:437`) |
+| T-HASH-2 | `a_message_less_create_writes_byte_identical_payload_json` | `skip_serializing_if` keeps old callers' `payload_hash` stable | remove `skip_serializing_if` from `create_request_sha256` | same (companion of `a_message_less_create_without_a_key_is_unchanged`) |
 | T-COLL-1 | `a_collision_outcome_is_a_success_only_on_a_resume_arm` | §6.1's split | fold `SucceededViaCollision` back into `Succeeded` in `response_for` | `#[cfg(test)]` in `routes/tracks/create.rs`; constructs the `OperationOutcome` directly — §9.2 says why there is no integration construction |
 | T-500-1 | `a_stuck_start_after_spawn_has_already_delivered_the_first_message` (amended) | §6.3 | assert non-delivery in the 500 text (existing negatives fire), or drop the two proven properties (new positive fires) | `track_create_first_message.rs:891` |
 | T-EXH-1 | `a_key_exhausted_by_64_failed_attempts_answers_409` | `MAX_OPERATION_KEY_ATTEMPTS` (`conversations_shared.rs:17`) still governs | raise the cap without updating the assertion | same |
@@ -714,12 +797,48 @@ test went red, not how many.
 
 ## 9. KNOWN GAPS
 
-1. **A message-less `POST /api/tracks` is still not idempotent** (§4.0). The
-   header is not read on the `Legacy` path and no binding is written; a retry
-   mints a second track, as it always has. Extending the mechanism there means
-   dispatching on the header for every create, which changes the pre-#1299
-   ordering for every existing caller — none of which sends the header today.
-   Follow-up: *"make message-less track creates idempotent"*.
+1. ~~**A message-less `POST /api/tracks` is still not idempotent** (§4.0).~~
+   **CLOSED by #1426.** The gap as written was real: the header was not read on
+   the `Legacy` path, no binding was written, and a retry minted a second track.
+
+   **The closing mechanism: the header, not the field, is the discriminator.**
+   `plan_first_message` now parses `Idempotency-Key` *before* the
+   `first_message` fork; a message-less create that sends one takes
+   `CreatePlan::MessageLessMint` or `CreatePlan::MessageLessResume`, deciding on
+   the binding row alone, and its mint writes the binding inside the same
+   transaction that mints the id — the pre-#1299 entry
+   `create_track_with_planner_harness` is otherwise untouched, so the operation
+   payload, the best-effort start and the 201 are byte-identical. The binding
+   row's fingerprint gains version 2 (migration `0092`), which is what tells a
+   message-less binding from a message-carrying one; the create digest cannot,
+   because it does not cover `first_message`.
+
+   **The gap's own objection — that this "changes the pre-#1299 ordering for
+   every existing caller, none of which sends the header" — is what pinned the
+   fork to header-optional rather than header-required.** A create that sends no
+   key still returns `CreatePlan::Legacy` from the first statement, so no caller
+   alive today observes the reordering at all. The #1426 caller sweep enumerated
+   them by directory rather than by concept: `fe/`'s new-track route sends a key
+   only on its `first_message` branch; all four `web/` call sites send none and
+   *cannot*, because `web/src/api/calm.ts`'s `request` helper has no headers
+   parameter; `crates/neige-cli/` never creates tracks and the MCP tool registry
+   has no create tool; and every shell/Playwright/Rust caller is key-less.
+
+   **One narrow behaviour change is not covered by that sentence and is stated
+   rather than hidden**: a *malformed* `Idempotency-Key` (empty or non-ASCII) on
+   a message-less create is now a 400 instead of being silently ignored, because
+   the header is parsed on every create. No caller in the sweep sends one.
+
+   The two tests that pinned the old boundary were changed, not routed around —
+   `a_message_less_create_writes_no_binding_row` inverted into
+   `a_message_less_create_with_a_key_binds_and_replays`, and
+   `a_create_without_a_first_message_is_unchanged` narrowed to
+   `a_message_less_create_without_a_key_is_unchanged`, which is the half that
+   really is unchanged. See §8's T-LEGACY-1/T-LEGACY-2/T-SHAPE-1/T-BIND-3 rows.
+
+   **What is still open, and is not a gap so much as a fact**: a create that
+   sends no `Idempotency-Key` is not idempotent and cannot be made so — there is
+   nothing to key it on.
 2. **The in-flight and `Stuck` arms are not covered.** The claim spans the
    whole submit-and-wait (`driver.rs:267-300`) and `planner-harness-start`
    never parks, so a second request cannot observe a first one mid-flight

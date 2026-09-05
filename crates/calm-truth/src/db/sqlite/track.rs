@@ -567,13 +567,23 @@ async fn track_delete_leaf_tx(
 /// Version 0 is not represented by missing optional fields. It is a named
 /// migration state for rows written before request fingerprints existed; the
 /// route fails those rows closed because their original request cannot be
-/// reconstructed reliably. Every new claim is [`Self::V1`].
+/// reconstructed reliably.
+///
+/// #1426 added [`Self::V2MessageLess`] for a create that bound a key while
+/// carrying no `first_message`. It is a distinct variant rather than a `V1`
+/// with an absent message digest because the *presence* of a message is part
+/// of request identity and `create_request_sha256` does not cover it: the two
+/// create shapes hash the same value, so only the variant can tell them apart.
+/// The route refuses a shape mismatch in both directions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrackCreateRequestFingerprint {
     LegacyUnknown,
     V1 {
         create_request_sha256: String,
         first_message_sha256: String,
+    },
+    V2MessageLess {
+        create_request_sha256: String,
     },
 }
 
@@ -595,15 +605,21 @@ pub struct TrackCreateBinding {
     pub request_fingerprint: TrackCreateRequestFingerprint,
 }
 
-/// A new binding claim. Unlike the versioned read model, both request digests
-/// are required fields: production code cannot construct a legacy-unknown row.
+/// A new binding claim. Unlike the versioned read model, the create-request
+/// digest is a required field: production code cannot construct a
+/// legacy-unknown row.
+///
+/// `first_message_sha256` is `Option` for exactly one reason — a #1426
+/// message-less create has no message to digest — and that `None` is what
+/// selects fingerprint version 2 on write. It is not "the digest was not
+/// computed"; it is "there was no message", which is a fact about the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackCreateBindingClaim {
     pub track_id: String,
     pub planner_card_id: String,
     pub report_card_id: String,
     pub create_request_sha256: String,
-    pub first_message_sha256: String,
+    pub first_message_sha256: Option<String>,
 }
 
 /// Claim `(area_id, idempotency_key)` for a track, **inside the transaction
@@ -627,11 +643,20 @@ pub async fn track_create_idempotency_claim_tx(
     idempotency_key: &str,
     binding: &TrackCreateBindingClaim,
 ) -> Result<()> {
+    // #1426 — the version is derived from the claim, not passed in: a caller
+    // that could choose the version separately from the digests could write a
+    // version 1 row with no message digest, which the CHECK constraint refuses
+    // anyway but only after the transaction is already open.
+    let version: i64 = if binding.first_message_sha256.is_some() {
+        1
+    } else {
+        2
+    };
     sqlx::query(
         "INSERT INTO track_create_idempotency \
          (area_id, idempotency_key, track_id, planner_card_id, report_card_id, created_at_ms, \
           request_fingerprint_version, create_request_sha256, first_message_sha256) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(area_id)
     .bind(idempotency_key)
@@ -639,6 +664,7 @@ pub async fn track_create_idempotency_claim_tx(
     .bind(&binding.planner_card_id)
     .bind(&binding.report_card_id)
     .bind(now_ms())
+    .bind(version)
     .bind(&binding.create_request_sha256)
     .bind(&binding.first_message_sha256)
     .execute(&mut **tx)
@@ -684,6 +710,14 @@ pub async fn track_create_idempotency_get_pool(
                     TrackCreateRequestFingerprint::V1 {
                         create_request_sha256,
                         first_message_sha256,
+                    }
+                }
+                // #1426 — a keyed create that carried no `first_message`. The
+                // absent digest is the shape, so it is decoded as its own
+                // variant and never as "V1 with something missing".
+                (2, Some(create_request_sha256), None) => {
+                    TrackCreateRequestFingerprint::V2MessageLess {
+                        create_request_sha256,
                     }
                 }
                 (version, create_hash, message_hash) => {

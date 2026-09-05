@@ -450,9 +450,9 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
  * `POST /api/tracks`.
  *
  * `idempotencyKey` is **required by the kernel whenever `body.first_message` is
- * present** (#1384) and ignored entirely otherwise. The overloads make that
- * relationship structural: the body variant with a message requires the
- * separate header value, while the message-less variant accepts no key.
+ * present** (#1384). The overloads make that relationship structural: the body
+ * variant with a message requires the separate header value, while the
+ * message-less variant accepts no key.
  *
  * What the key buys, and it is the reason it must be minted **per draft and not
  * per call**: the kernel binds it to the track it creates, inside the same
@@ -461,8 +461,14 @@ export function trackDetailOperation(trackId: string): ApiOperation<TrackDetailW
  * is a different key on the retry, and a different key mints a second track
  * holding the same message — the exact failure the header exists to stop.
  *
- * Not sent when `first_message` is absent: the kernel does not read it there,
- * and a message-less create is deliberately still not idempotent.
+ * Not sent when `first_message` is absent. That is now a **client** choice, not
+ * a kernel limitation: since #1426 the kernel honours the key on a message-less
+ * create too (binding the track, so a retry returns it instead of minting a
+ * second), it merely does not require one. This overload keeps the pre-#1426
+ * behaviour — a message-less create here is not idempotent — because the
+ * message-less branch has no per-draft key to mint one from. Opting in means
+ * giving that branch a key with the same per-draft lifetime `mintIdempotencyKey`
+ * gives the message-carrying one; it is deliberately not done here.
  */
 export function createTrackOperation(body: NewTrackBodyWithoutFirstMessage): ApiOperation<TrackWire>;
 export function createTrackOperation(

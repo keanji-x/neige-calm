@@ -37,7 +37,20 @@ fn claim(track_id: impl Into<String>, planner: &str, report: &str) -> TrackCreat
         planner_card_id: planner.into(),
         report_card_id: report.into(),
         create_request_sha256: "a".repeat(64),
-        first_message_sha256: "b".repeat(64),
+        first_message_sha256: Some("b".repeat(64)),
+    }
+}
+
+/// #1426 — the same claim for a create that carried no `first_message`. The
+/// `None` is the whole difference and it is what selects fingerprint version 2.
+fn message_less_claim(
+    track_id: impl Into<String>,
+    planner: &str,
+    report: &str,
+) -> TrackCreateBindingClaim {
+    TrackCreateBindingClaim {
+        first_message_sha256: None,
+        ..claim(track_id, planner, report)
     }
 }
 
@@ -244,5 +257,98 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
             .await
             .expect("read back"),
         None,
+    );
+}
+
+/// T-BIND-3 (#1426) — a message-less claim round-trips as its **own** variant,
+/// and the CHECK constraint admits it.
+///
+/// Both halves matter. If the read side folded version 2 into `V1` with an
+/// empty digest, the route could no longer tell a message-less binding from a
+/// message-carrying one, and `ensure_binding_create_matches`'s shape check —
+/// the thing that stops a `first_message` create from replaying a message-less
+/// binding — would compare a fabricated value. If the migration's CHECK did not
+/// admit version 2, the INSERT below would fail inside the mint transaction and
+/// take the track with it.
+///
+/// Mutation that must redden it: make `track_create_idempotency_claim_tx` write
+/// version 1 unconditionally. The INSERT then violates the CHECK (version 1
+/// requires a message digest) and the `expect` below fires.
+#[tokio::test]
+async fn a_message_less_claim_round_trips_as_its_own_fingerprint_variant() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+    let mut tx = repo.pool().begin().await.expect("begin tx");
+    let area = area_create_tx(
+        &mut tx,
+        NewArea {
+            name: "message-less binding".into(),
+            color: "#202020".into(),
+            sort: None,
+        },
+    )
+    .await
+    .expect("create area");
+    let track = track_create_tx(
+        &mut tx,
+        new_track(&area.id, "message-less"),
+        None,
+        &super::TrackWorkspacePlan::AttachedFromCwd,
+        None,
+        repo.track_area_cache(),
+    )
+    .await
+    .expect("mint the track");
+    track_create_idempotency_claim_tx(
+        &mut tx,
+        area.id.as_str(),
+        "key-message-less",
+        &message_less_claim(track.id.to_string(), "planner-m", "report-m"),
+    )
+    .await
+    .expect("a claim with no message digest must be accepted by the CHECK constraint");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(
+        track_create_idempotency_get_pool(repo.pool(), area.id.as_str(), "key-message-less")
+            .await
+            .expect("read back"),
+        Some(TrackCreateBinding {
+            track_id: track.id.to_string(),
+            planner_card_id: "planner-m".into(),
+            report_card_id: "report-m".into(),
+            request_fingerprint: TrackCreateRequestFingerprint::V2MessageLess {
+                create_request_sha256: "a".repeat(64),
+            },
+        }),
+        "a message-less binding must read back as V2MessageLess, never as a V1 with a \
+         fabricated message digest — the route's create-shape check compares exactly this"
+    );
+
+    // And the primary key does not care which shape wrote the row: one
+    // (area, key) still names one track, so a `first_message` create cannot
+    // claim a key a message-less create already bound.
+    let mut tx = repo.pool().begin().await.expect("begin tx");
+    let second = track_create_tx(
+        &mut tx,
+        new_track(&area.id, "second"),
+        None,
+        &super::TrackWorkspacePlan::AttachedFromCwd,
+        None,
+        repo.track_area_cache(),
+    )
+    .await
+    .expect("mint");
+    let refused = track_create_idempotency_claim_tx(
+        &mut tx,
+        area.id.as_str(),
+        "key-message-less",
+        &claim(second.id.to_string(), "planner-2", "report-2"),
+    )
+    .await;
+    assert!(
+        refused
+            .expect_err("one (area, key) names one track, whatever shape claimed it")
+            .to_string()
+            .contains("UNIQUE constraint failed"),
     );
 }
