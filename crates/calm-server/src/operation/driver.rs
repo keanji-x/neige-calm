@@ -524,9 +524,11 @@ impl OperationRuntime {
                     }
                     return Ok(());
                 }
+                let mut output = required_output(&op)?.clone();
+                super::terminal_launch::initialize_prestart(&op.kind, &mut output)?;
                 if self
                     .repo
-                    .set_phase(&op, Phase::SpawnStarted)
+                    .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)
                     .await?
                     .is_none()
                 {
@@ -541,6 +543,7 @@ impl OperationRuntime {
                     .await
                 {
                     Ok(AppServerInteractOutcome::NotApplicable) => {
+                        super::terminal_launch::initialize_prestart(&op.kind, &mut output)?;
                         if self
                             .repo
                             .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)
@@ -554,6 +557,7 @@ impl OperationRuntime {
                         AppServerInteractOutcome::MintedAndAwaited { .. }
                         | AppServerInteractOutcome::RegisteredPendingForLaterAttribution { .. },
                     ) => {
+                        super::terminal_launch::initialize_prestart(&op.kind, &mut output)?;
                         if self
                             .repo
                             .set_phase_and_tx_output(&op, Phase::SpawnStarted, &output)

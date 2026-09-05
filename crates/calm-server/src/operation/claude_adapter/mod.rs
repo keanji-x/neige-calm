@@ -877,6 +877,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "track_id": card.track_id,
             "terminal_id": term.id,
             "settings_path": settings_path,
+            "terminal_launch": super::terminal_launch::fresh_state(),
             "settings_dir": settings_dir,
             "claude_session_id": claude_session_id,
             "command_line": command_line,
@@ -1196,13 +1197,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         match step.op.as_str() {
             "remove_workspace_artifact" => {
                 let lease_id = step_arg_string(step, "lease_id")?;

@@ -277,3 +277,6 @@ mod recovery_tests;
 
 #[path = "gate_recovery_tests.rs"]
 mod gate_recovery_tests;
+
+#[path = "launch_cleanup_tests.rs"]
+mod launch_cleanup_tests;

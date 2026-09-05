@@ -697,6 +697,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             "cwd": cwd,
             "env": env,
             "scope": scope,
+            "terminal_launch": super::terminal_launch::fresh_state(),
         });
         Ok(output)
     }
@@ -872,13 +873,14 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         if step.op != "cleanup_terminal_worker" {
             return Err(CalmError::Internal(format!(
                 "unknown terminal worker compensation op {}",

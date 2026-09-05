@@ -1,4 +1,7 @@
 #[cfg(test)]
+pub(crate) mod launch_cleanup_test_support;
+
+#[cfg(test)]
 mod parked_fence_model;
 
 mod driver;
@@ -16,6 +19,7 @@ pub mod planner_harness_start_adapter;
 pub(crate) mod task_launch;
 pub mod task_verify_adapter;
 pub mod terminal_adapter;
+pub(crate) mod terminal_launch;
 pub(crate) mod worker_cleanup;
 
 pub use driver::{OperationCompletionBus, OperationRuntime};

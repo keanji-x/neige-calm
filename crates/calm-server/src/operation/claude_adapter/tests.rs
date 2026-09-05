@@ -656,3 +656,6 @@ async fn claude_worker_prompt_includes_completion_task_id() {
 
 #[path = "recovery_tests.rs"]
 mod recovery_tests;
+
+#[path = "launch_cleanup_tests.rs"]
+mod launch_cleanup_tests;

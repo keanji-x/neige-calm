@@ -47,12 +47,33 @@ impl RecoveryFixture {
     }
 }
 
+pub(crate) async fn initial_claimed_task(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    write: WriteContext,
+    track_id: &str,
+    declaration: Value,
+) -> RecoveryFixture {
+    claimed_task(repo, events, write, track_id, declaration, false).await
+}
+
 pub(crate) async fn recovered_claimed_task(
     repo: Arc<dyn Repo>,
     events: EventBus,
     write: WriteContext,
     track_id: &str,
     declaration: Value,
+) -> RecoveryFixture {
+    claimed_task(repo, events, write, track_id, declaration, true).await
+}
+
+async fn claimed_task(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    write: WriteContext,
+    track_id: &str,
+    declaration: Value,
+    recover: bool,
 ) -> RecoveryFixture {
     repo.track_update(
         track_id,
@@ -102,6 +123,19 @@ pub(crate) async fn recovered_claimed_task(
     task_claim_pending_tx(&mut tx, &previous.id, 1, &closure.refs, false)
         .await
         .unwrap();
+    if !recover {
+        tx.commit().await.unwrap();
+        let task = repo.task_get(&previous.id).await.unwrap().unwrap();
+        return RecoveryFixture {
+            task,
+            repo,
+            events,
+            write,
+            block_id: block.id,
+            block_revision: block.rev,
+            declaration,
+        };
+    }
     task_fail_from_worker_tx(
         &mut tx,
         &previous.id,

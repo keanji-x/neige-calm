@@ -158,22 +158,59 @@ done
             events.clone(),
             write.clone(),
         ));
-        let _entry = registry
-            .ensure(RendererConfig {
-                terminal_id: terminal.id.clone(),
-                cols: 80,
-                rows: 24,
-                buffer_bytes: 1 << 20,
-                terminal_fg: (255, 255, 255),
-                terminal_bg: (0, 0, 0),
-                program: "/bin/sh".into(),
-                args: vec!["-c".into(), command],
-                envs: vec![("PATH".into(), "/usr/bin:/bin".into())],
-                cwd: temp.path().display().to_string(),
-                supervisor_sock: control_sock,
-            })
+        let cfg = RendererConfig {
+            terminal_id: terminal.id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (255, 255, 255),
+            terminal_bg: (0, 0, 0),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), command],
+            envs: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            cwd: temp.path().display().to_string(),
+            supervisor_sock: control_sock,
+        };
+
+        // This witness represents an already-started legacy execution. Create
+        // it through the real supervisor, then exercise the renderer's read
+        // side; opening a task-owned renderer is no longer launch permission.
+        let mut control = tokio::net::UnixStream::connect(&cfg.supervisor_sock)
             .await
             .unwrap();
+        calm_session::write_frame(
+            &mut control,
+            &calm_session::control::ControlMsg::EnsureProc(
+                calm_session::control::EnsureProcRequest {
+                    proc_id: format!("term:{}", cfg.terminal_id),
+                    program: cfg.program.clone(),
+                    args: cfg.args.clone(),
+                    envs: cfg.envs.clone(),
+                    cwd: cfg.cwd.clone(),
+                    ready_timeout_ms: 0,
+                    io_mode: calm_session::control::IoMode::Pty {
+                        cols: cfg.cols,
+                        rows: cfg.rows,
+                    },
+                    replay_bytes: cfg.buffer_bytes,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            calm_session::read_frame::<calm_session::control::ControlReply, _>(&mut control)
+                .await
+                .unwrap(),
+            calm_session::control::ControlReply::Spawned { .. }
+        ));
+        assert!(matches!(
+            calm_session::read_frame::<calm_session::control::ControlReply, _>(&mut control)
+                .await
+                .unwrap(),
+            calm_session::control::ControlReply::Ready
+        ));
+        let _entry = registry.ensure(cfg).await.unwrap();
         let child_pid = tokio::time::timeout(
             Duration::from_secs(10),
             wait_for_pid_file(&temp.path().join("descendant.pid")),
