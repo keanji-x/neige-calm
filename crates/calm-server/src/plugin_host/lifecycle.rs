@@ -209,6 +209,12 @@ impl PluginHost {
         let guard = self
             .try_lock_lifecycle(&manifest.id)
             .map_err(spawn_error_to_calm)?;
+        // Taken from the **manifest**, which is the id `install_under` will
+        // join, rather than from the spec: the two agree today only because
+        // `Manifest::parse` refuses an id with anything else in it, and a
+        // cleanup aimed at a path the install never wrote is the one mistake
+        // this function must not make.
+        let install_dir = self.plugins_dir.join(&manifest.id);
         let credential = spec.credential().map(str::to_owned);
         // **Whether this call wrote the tree**, not whether a tree exists. The
         // difference is a live plugin's credential: a duplicate-id refusal
@@ -218,9 +224,8 @@ impl PluginHost {
         // case left for this flag is a failure *after* a successful write.
         let wrote_tree = std::sync::atomic::AtomicBool::new(false);
         let outcome = self
-            .install_under(&guard, manifest, |install_dir| {
-                let written =
-                    managed::write_connector_tree(install_dir, &text, credential.as_deref());
+            .install_under(&guard, manifest, |dir| {
+                let written = managed::write_connector_tree(dir, &text, credential.as_deref());
                 if written.is_ok() {
                     wrote_tree.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -234,11 +239,11 @@ impl PluginHost {
         // A failure after the tree was written must not leave a `secrets.json`
         // behind: the credential would outlive the install that was refused,
         // and the next install of this id would inherit it.
-        if outcome.is_err() && wrote_tree.load(std::sync::atomic::Ordering::Relaxed) {
-            let dir = self.plugins_dir.join(&spec.id);
-            if let Err(msg) = managed::remove_managed_tree(&dir) {
-                tracing::warn!(target: "plugin_host", "{msg}");
-            }
+        if outcome.is_err()
+            && wrote_tree.load(std::sync::atomic::Ordering::Relaxed)
+            && let Err(msg) = managed::remove_managed_tree(&install_dir)
+        {
+            tracing::warn!(target: "plugin_host", "{msg}");
         }
         outcome
     }

@@ -307,3 +307,143 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), WriteError> {
     // writes on that platform.
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(api_key: Option<&str>) -> ConnectorSpec {
+        ConnectorSpec {
+            id: "com.example.zhibao".into(),
+            display_name: "Zhibao".into(),
+            description: None,
+            url: "https://mcp.example.test/mcp".into(),
+            api_key: api_key.map(str::to_owned),
+            api_key_in: Some("bearer".into()),
+            tools_allow: Vec::new(),
+            request_timeout_ms: None,
+            bringup_timeout_ms: None,
+        }
+    }
+
+    /// The manifest names the secrets **key**, never the secret. Asserted on
+    /// the serialized document, because that is the artifact that goes to disk
+    /// and into the plugins row.
+    #[test]
+    fn a_synthesized_manifest_never_carries_the_credential() {
+        let doc = spec(Some("sk-credential")).manifest_json().to_string();
+        assert!(!doc.contains("sk-credential"), "manifest must not hold the key: {doc}");
+        assert!(doc.contains("\"api_key_secret\":\"api_key\""), "{doc}");
+        assert!(doc.contains("\"api_key_in\":\"bearer\""), "{doc}");
+    }
+
+    /// A keyless connector claims no secret. The opposite — a manifest naming
+    /// `api_key_secret` with no `secrets.json` beside it — is a bring-up that
+    /// fails at the first request with a confusing reason.
+    #[test]
+    fn a_keyless_spec_claims_no_secret_and_no_placement() {
+        let doc = spec(None).manifest_json();
+        let block = &doc["mcp_http"];
+        assert!(block.get("api_key_secret").is_none(), "{doc}");
+        assert!(block.get("api_key_in").is_none(), "{doc}");
+    }
+
+    /// An empty box is the unauthenticated connector the operator asked for,
+    /// not a credential that happens to be empty.
+    #[test]
+    fn an_empty_credential_is_no_credential() {
+        assert_eq!(spec(Some("")).credential(), None);
+        assert_eq!(spec(Some("sk-x")).credential(), Some("sk-x"));
+    }
+
+    #[test]
+    fn a_written_tree_is_recognisable_as_the_kernels_and_carries_0600_secrets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plug");
+        write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap();
+
+        assert!(is_managed_tree(&dir));
+        let secrets = dir.join(SECRETS_FILENAME);
+        assert_eq!(
+            std::fs::read_to_string(&secrets).unwrap().contains("sk-credential"),
+            true
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&secrets), 0o600);
+            assert_eq!(mode(&dir), 0o700);
+        }
+    }
+
+    /// The ownership gate. A directory the kernel did not write is refused with
+    /// its contents untouched — this is the operator's plugin checkout.
+    #[test]
+    fn an_unmanaged_directory_is_refused_rather_than_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plug");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), "operator's manifest").unwrap();
+
+        let err = write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap_err();
+        assert!(matches!(err, WriteError::Occupied(_)), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("manifest.json")).unwrap(),
+            "operator's manifest"
+        );
+    }
+
+    /// A rewrite is a rebuild: the previous install's `secrets.json` must not
+    /// survive into a keyless one.
+    #[test]
+    fn rewriting_a_managed_tree_drops_the_previous_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plug");
+        write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap();
+        write_connector_tree(&dir, "{}", None).unwrap();
+        assert!(!dir.join(SECRETS_FILENAME).exists());
+        assert!(is_managed_tree(&dir), "and it is still ours");
+    }
+
+    #[test]
+    fn removal_is_refused_for_anything_the_kernel_did_not_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plug");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("work.txt"), "operator's file").unwrap();
+
+        assert_eq!(remove_managed_tree(&dir), Ok(false));
+        assert!(dir.join("work.txt").is_file(), "the tree survives");
+        // And a path that is not there at all is not an error: uninstall runs
+        // this after the row is already gone.
+        assert_eq!(remove_managed_tree(&tmp.path().join("absent")), Ok(false));
+    }
+
+    /// **The symlink case, stated as behaviour rather than as an assumption.**
+    ///
+    /// `install` materializes a `local_path` plugin as a symlink at
+    /// `plugins_dir/<id>`, so an uninstall can be handed a symlink whose target
+    /// is an operator's own directory. If somebody plants the marker in that
+    /// target, `is_managed_tree` — which follows links to read the file — says
+    /// yes. What must still hold is that the operator's files survive, and this
+    /// pins whichever way `remove_dir_all` decides: it refuses a symlink rather
+    /// than deleting through it.
+    #[cfg(unix)]
+    #[test]
+    fn removal_through_a_symlink_never_reaches_the_operators_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("checkout");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("work.txt"), "operator's file").unwrap();
+        std::fs::write(real.join(MARKER_FILENAME), "{}").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let outcome = remove_managed_tree(&link);
+        assert!(
+            real.join("work.txt").is_file(),
+            "the operator's directory must survive whatever the removal did: {outcome:?}"
+        );
+    }
+}
