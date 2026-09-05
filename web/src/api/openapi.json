@@ -5460,7 +5460,7 @@
           }
         }
       },
-      "ConnectorSpec": {
+      "ConnectorInstall": {
         "type": "object",
         "description": "The operator-supplied half of an `mcp-http` connector install.\n\nMirrors the request body of `POST /api/plugins/install` with\n`source.kind = \"mcp_http\"`. Everything the *kernel* decides — the secrets\nkey name, the manifest version, `min_kernel_version` — is a constant above,\nnot a field here.",
         "required": [
@@ -6141,7 +6141,7 @@
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/ConnectorSpec",
+                "$ref": "#/components/schemas/ConnectorInstall",
                 "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis is the only install source that does not require a directory to\nexist on the server beforehand, which is what makes \"add a connector\"\nexpressible from the UI at all."
               },
               {

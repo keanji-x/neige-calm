@@ -75,7 +75,7 @@ pub const REJECT_MARKED_SOURCE_HINT: &str = "this directory is a kernel-managed 
 /// key name, the manifest version, `min_kernel_version` — is a constant above,
 /// not a field here.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
-pub struct ConnectorSpec {
+pub struct ConnectorInstall {
     /// Plugin id. Validated by `Manifest::parse`, not here — the manifest is
     /// the single source of truth for what a legal id is.
     pub id: String,
@@ -105,7 +105,7 @@ pub struct ConnectorSpec {
     pub bringup_timeout_ms: Option<u64>,
 }
 
-impl ConnectorSpec {
+impl ConnectorInstall {
     /// The credential, or `None` when the operator supplied an empty one.
     ///
     /// An empty string is treated as "no credential" rather than as a
@@ -116,7 +116,7 @@ impl ConnectorSpec {
         self.api_key.as_deref().filter(|k| !k.is_empty())
     }
 
-    /// The manifest document this spec describes.
+    /// The manifest document this connector describes.
     ///
     /// **Validation is not done here on purpose.** Every field this writes is
     /// checked by `Manifest::parse` + `McpHttpBlock::validate` on the way back
@@ -213,7 +213,7 @@ impl std::fmt::Display for WriteError {
 ///
 /// Ordering is deliberate: the directory is emptied and rebuilt rather than
 /// written over, so a reinstall cannot inherit the previous install's
-/// `secrets.json` when the new spec carries no credential.
+/// `secrets.json` when the new connector carries no credential.
 ///
 /// `secrets.json` is written `0600` and the directory `0700`; the manifest and
 /// the marker are `0644`. On a failure part-way through, the caller is expected
@@ -312,8 +312,8 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), WriteError> {
 mod tests {
     use super::*;
 
-    fn spec(api_key: Option<&str>) -> ConnectorSpec {
-        ConnectorSpec {
+    fn connector(api_key: Option<&str>) -> ConnectorInstall {
+        ConnectorInstall {
             id: "com.example.zhibao".into(),
             display_name: "Zhibao".into(),
             description: None,
@@ -331,7 +331,7 @@ mod tests {
     /// and into the plugins row.
     #[test]
     fn a_synthesized_manifest_never_carries_the_credential() {
-        let doc = spec(Some("sk-credential")).manifest_json().to_string();
+        let doc = connector(Some("sk-credential")).manifest_json().to_string();
         assert!(
             !doc.contains("sk-credential"),
             "manifest must not hold the key: {doc}"
@@ -344,8 +344,8 @@ mod tests {
     /// `api_key_secret` with no `secrets.json` beside it — is a bring-up that
     /// fails at the first request with a confusing reason.
     #[test]
-    fn a_keyless_spec_claims_no_secret_and_no_placement() {
-        let doc = spec(None).manifest_json();
+    fn a_keyless_connector_claims_no_secret_and_no_placement() {
+        let doc = connector(None).manifest_json();
         let block = &doc["mcp_http"];
         assert!(block.get("api_key_secret").is_none(), "{doc}");
         assert!(block.get("api_key_in").is_none(), "{doc}");
@@ -355,8 +355,8 @@ mod tests {
     /// not a credential that happens to be empty.
     #[test]
     fn an_empty_credential_is_no_credential() {
-        assert_eq!(spec(Some("")).credential(), None);
-        assert_eq!(spec(Some("sk-x")).credential(), Some("sk-x"));
+        assert_eq!(connector(Some("")).credential(), None);
+        assert_eq!(connector(Some("sk-x")).credential(), Some("sk-x"));
     }
 
     #[test]

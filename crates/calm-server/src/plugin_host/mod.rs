@@ -36,7 +36,7 @@ pub use config::{effective_config, missing_required};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::{HttpCredential, HttpMcpClient};
-pub use managed::ConnectorSpec;
+pub use managed::ConnectorInstall;
 pub use manifest::{CONFIG_SCHEMA_KEY, ConnectorKind, Manifest};
 pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, InitializeMeta, McpClient,

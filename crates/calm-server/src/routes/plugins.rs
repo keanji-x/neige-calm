@@ -2,7 +2,7 @@
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::Plugin;
-use crate::plugin_host::managed::{self, ConnectorSpec};
+use crate::plugin_host::managed::{self, ConnectorInstall};
 use crate::plugin_host::template_input::{
     TEMPLATE_INPUT_MAX_BYTES, declares_key, reject_undeclared_keys, validate_instance,
 };
@@ -240,7 +240,7 @@ pub enum InstallSource {
     /// This is the only install source that does not require a directory to
     /// exist on the server beforehand, which is what makes "add a connector"
     /// expressible from the UI at all.
-    McpHttp(ConnectorSpec),
+    McpHttp(ConnectorInstall),
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
     /// of a serde deserialize error.
     #[serde(other)]
@@ -409,12 +409,12 @@ pub(crate) async fn install_plugin(
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
         InstallSource::LocalPath { path } => path,
-        InstallSource::McpHttp(spec) => {
+        InstallSource::McpHttp(connector) => {
             // The whole operation — manifest synthesis, validation, writing the
             // tree, the row — belongs to the host, which is where the per-id
             // lifecycle guard lives. See `install_managed_connector` for why
             // the tree may not be written out here.
-            let plug = cs.plugin.install_managed_connector(&spec).await?;
+            let plug = cs.plugin.install_managed_connector(&connector).await?;
             return Ok((StatusCode::CREATED, Json(build_detail(&cs, plug).await)));
         }
         InstallSource::Other => {

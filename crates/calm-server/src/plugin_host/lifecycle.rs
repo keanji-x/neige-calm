@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::managed::{self, ConnectorSpec};
+use super::managed::{self, ConnectorInstall};
 use super::{
     HostError, KERNEL_VERSION, LifecycleGuard, Manifest, PluginHost, check_min_kernel_version,
 };
@@ -198,9 +198,9 @@ impl PluginHost {
     /// the running plugin's `secrets.json` to answer "already installed".
     ///
     /// Validation runs through `Manifest::parse`, the same door a hand-written
-    /// manifest comes through; see [`ConnectorSpec::manifest_json`].
-    pub async fn install_managed_connector(&self, spec: &ConnectorSpec) -> Result<Plugin> {
-        let text = serde_json::to_string_pretty(&spec.manifest_json())
+    /// manifest comes through; see [`ConnectorInstall::manifest_json`].
+    pub async fn install_managed_connector(&self, connector: &ConnectorInstall) -> Result<Plugin> {
+        let text = serde_json::to_string_pretty(&connector.manifest_json())
             .map_err(|e| CalmError::PluginInstall(format!("serializing manifest: {e}")))?;
         let manifest =
             Manifest::parse(&text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
@@ -210,12 +210,12 @@ impl PluginHost {
             .try_lock_lifecycle(&manifest.id)
             .map_err(spawn_error_to_calm)?;
         // Taken from the **manifest**, which is the id `install_under` will
-        // join, rather than from the spec: the two agree today only because
+        // join, rather than from the request: the two agree today only because
         // `Manifest::parse` refuses an id with anything else in it, and a
         // cleanup aimed at a path the install never wrote is the one mistake
         // this function must not make.
         let install_dir = self.plugins_dir.join(&manifest.id);
-        let credential = spec.credential().map(str::to_owned);
+        let credential = connector.credential().map(str::to_owned);
         // **Whether this call wrote the tree**, not whether a tree exists. The
         // difference is a live plugin's credential: a duplicate-id refusal
         // happens with the previous install's tree sitting at exactly this

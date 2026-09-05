@@ -1516,7 +1516,7 @@ export interface components {
          *     key name, the manifest version, `min_kernel_version` — is a constant above,
          *     not a field here.
          */
-        ConnectorSpec: {
+        ConnectorInstall: {
             /**
              * @description The credential. Absent or empty ⇒ an unauthenticated connector, and the
              *     synthesized manifest then names no `api_key_secret` and no
@@ -1884,7 +1884,7 @@ export interface components {
             /** @enum {string} */
             kind: "local_path";
             path: string;
-        } | (components["schemas"]["ConnectorSpec"] & {
+        } | (components["schemas"]["ConnectorInstall"] & {
             /** @enum {string} */
             kind: "mcp_http";
         }) | {
