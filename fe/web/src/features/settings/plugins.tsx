@@ -78,6 +78,12 @@ export type PluginsPaneProps = Readonly<{
   errors: ReadonlyMap<string, string>;
   onSetEnabled: (id: string, enabled: boolean) => void;
   /**
+   * The plugins whose last enable/disable succeeded — the rows that get the
+   * effect-boundary line. See `EFFECT_BOUNDARY` for what the line says and why
+   * it says that.
+   */
+  effectBoundaryIds: ReadonlySet<string>;
+  /**
    * Walk into a plugin's configuration.
    *
    * Offered **only** where `has_config` is true (#1284 §2.5). "This plugin has
@@ -145,8 +151,61 @@ function stateBadge(state: PluginState): ReactNode {
   );
 }
 
+/**
+ * What a successful enable or disable did **not** reach (#1242).
+ *
+ * ## The sentence is about *this change*, not about tools
+ *
+ * It would read better as "New tools will appear in a new conversation", and
+ * that sentence would be a lie on any plugin that contributes no tools.
+ *
+ * The list row cannot tell them apart: `pluginListItemSchema` has no
+ * `exposes_tools`, and the row carries no manifest. The *write's response*
+ * can — `setPluginEnabledOperation` decodes `.loose()`, so the `PluginDetail`
+ * that `enable`/`disable` answer with keeps its `manifest`, and
+ * `manifest.exposes_tools` is sitting in the argument `usePluginMutations`
+ * currently discards. No route, schema or specification change would be needed
+ * to read it.
+ *
+ * It is still not read, and the reason is not cost. Copy derived from it would
+ * be true only of whichever write last answered: the row would say "new tools"
+ * or not depending on a response, while the list beside it refreshes from a
+ * different read, and a row that had not been written this visit would have no
+ * answer at all. That is a per-row sentence whose truth depends on history the
+ * row does not display. "This change doesn't affect conversations already in
+ * progress" needs no such history — it is true of every plugin on every render,
+ * because the subject is the write the operator just made and not the plugin's
+ * contents — and it buys the same behaviour, which is none. The word *tools*
+ * does not appear in the line at all, and the test holds it to that.
+ *
+ * ## And it is true of both directions
+ *
+ * Not a note attached to enabling. A conversation that is already running holds
+ * the tool list it started with, so a *disable* leaves it holding tools the
+ * kernel no longer offers exactly as an enable leaves it missing ones it does.
+ * The pane's caller sets the flag on either write's success; nothing here
+ * branches on `enabled`.
+ *
+ * ## Why it is a statement of fact and not a warning
+ *
+ * The boundary is not a failure and there is nothing for the operator to fix —
+ * measured against codex 0.144.1 there is no mechanism that would refresh a
+ * running conversation's tool list, so this is simply where the change stops.
+ * `.error`'s and `.notice`'s boxes both say "something wants attention"; this
+ * line takes the row's own quiet meta tone instead, and sits with the other
+ * per-row facts rather than in the trailing controls cluster, which the header
+ * note keeps to two controls.
+ *
+ * Two clauses on a semicolon, which is this pane's own register: its lede is
+ * built the same way — "Disabling one keeps its configuration; nothing it
+ * created is removed."
+ */
+const EFFECT_BOUNDARY
+  = 'This change doesn’t affect conversations already in progress; it takes effect in a new conversation.';
+
 export function PluginsPane({
   plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled, onOpenConfig,
+  effectBoundaryIds,
 }: PluginsPaneProps) {
   return (
     <SettingsPane
@@ -192,6 +251,67 @@ export function PluginsPane({
                       {errors.get(plugin.id) !== undefined && (
                         <span className={styles.error} role="alert">{errors.get(plugin.id)}</span>
                       )}
+                      {/*
+                       * Where this plugin's own successful write stopped — see
+                       * `EFFECT_BOUNDARY`. `status`, not `alert`: it follows a
+                       * write that worked, and it interrupts nothing.
+                       *
+                       * ## Always mounted, text swapped
+                       *
+                       * A live region that arrives in the same mutation as its
+                       * text is commonly not announced at all, so the region is
+                       * here on every row from first paint and only its text
+                       * changes. `NetworkPane` one file over does the same for
+                       * the same reason (`public.tsx`'s per-field `status`
+                       * region, pinned by its "mounts the live region before it
+                       * has anything to say" test); `plugin-config.tsx` uses
+                       * the weaker conditional form, which is a precedent worth
+                       * not following twice.
+                       *
+                       * The empty region is removed from the flow by
+                       * `.pluginEffectBoundary:empty` rather than by `hidden`
+                       * or `display: none` — see the CSS. Hiding it would put
+                       * it back outside the accessibility tree until the text
+                       * arrives, which is the failure this shape exists to
+                       * avoid; leaving it a flex item would add
+                       * `.pluginMeta`'s gap under every row in the list. That
+                       * it costs nothing is measured, not reasoned:
+                       * `plugins-live-region.browser.test.tsx` puts the row's
+                       * meta column at the same height with the empty region
+                       * present and with it deleted, and one `row-gap` taller
+                       * with the rule overridden.
+                       *
+                       * ## Silent on a row that is reporting a failure
+                       *
+                       * Two `role="alert"` lines sit above this one and they
+                       * are not the same kind of thing.
+                       *
+                       * The *write* error is disjoint from this line by
+                       * construction: `usePluginMutations` clears the boundary
+                       * flag in `onMutate` and sets it only in `onSuccess`, so
+                       * a row can carry one or the other and never both.
+                       *
+                       * `last_error` is **server state** and nothing in this
+                       * screen's write path clears it. It also arrives *after*
+                       * the flag on the ordinary path: enable answers 200 as
+                       * soon as the row flips, the supervisor is still bringing
+                       * the process up, and a crash comes back on the next
+                       * poll. So the flag is already set when the failure
+                       * lands, and no set-time check could have caught it —
+                       * which is why this is a render-time test. A plugin that
+                       * crashed will not take effect in a new conversation
+                       * either, and saying it will, directly under the evidence
+                       * that it did not start, is the one reading of this line
+                       * that is simply false.
+                       */}
+                      <span
+                        className={styles.pluginEffectBoundary}
+                        role="status"
+                      >
+                        {effectBoundaryIds.has(plugin.id) && plugin.last_error === undefined
+                          ? EFFECT_BOUNDARY
+                          : ''}
+                      </span>
                       {/* The id last, and quietest. It is not a description of
                           the plugin — it is the key the operator carries to a
                           manifest, a log line or the CLI, which is a lookup and
