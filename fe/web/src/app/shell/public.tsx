@@ -106,8 +106,15 @@ export function AppShell({
   // The report's panel is a history *destination* (§1.1), so the shell leaves
   // it the same way the report does — see `clearReportPanel`.
   const { closePanel } = useTrackPanelNavigation();
-  const readError = workspace.areasError
-    ?? workspace.trackErrorsByArea.values().next().value ?? null;
+  const readError = workspace.areasError !== null
+    ? `Areas ${workspace.areas.length > 0 ? 'could not be refreshed' : 'are unavailable'}: ${workspace.areasError.message}`
+    : workspace.trackErrorsByArea.values().next().value?.message ?? null;
+  const readLoading = workspace.areasLoading
+    || [...workspace.tracksLoadingByArea.values()].some(Boolean);
+  const retryRead = () => {
+    workspace.retryAreas(); workspace.retryOverlays();
+    for (const area of workspace.areas) workspace.retryTracks(area.id);
+  };
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -309,6 +316,9 @@ export function AppShell({
               <MobilePages
                 areas={workspace.areas}
                 tracks={workspace.tracks}
+                readError={readError}
+                readLoading={readLoading}
+                onRetryRead={retryRead}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
                   // The sheets are the only writers of `?from=` (#1191 §1.3):
@@ -320,6 +330,9 @@ export function AppShell({
               <MobileAreas
                 areas={workspace.areas}
                 tracksByArea={workspace.tracksByArea}
+                readError={readError}
+                readLoading={readLoading}
+                onRetryRead={retryRead}
                 selectedAreaId={areaSelection.areaId}
                 motion={areaSelection.motion}
                 onSelectArea={(areaId) => setAreaSelection({ areaId, motion: 'forward' })}
@@ -342,14 +355,10 @@ export function AppShell({
             tracksByArea={workspace.tracksByArea}
             tracks={workspace.tracks}
             currentPath={currentPath}
-            readError={readError?.message ?? null}
-            readLoading={workspace.areasLoading || workspace.overlaysLoading
-              || [...workspace.tracksLoadingByArea.values()].some(Boolean)}
+            readError={readError}
+            readLoading={readLoading || workspace.overlaysLoading}
             activityError={workspace.overlaysError?.message ?? null}
-            onRetryRead={() => {
-              workspace.retryAreas(); workspace.retryOverlays();
-              for (const area of workspace.areas) workspace.retryTracks(area.id);
-            }}
+            onRetryRead={retryRead}
             onGo={navigateFromRail}
             onRequestCreateArea={requestCreateArea}
             onRequestEditArea={requestEditArea}

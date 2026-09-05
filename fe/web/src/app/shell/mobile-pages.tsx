@@ -11,14 +11,18 @@ import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
 import styles from './mobile-pages.module.css';
 
 const RECENT_PAGE_LIMIT = 24;
 
-export function MobilePages({ areas, tracks, onOpenTrack }: Readonly<{
+export function MobilePages({ areas, tracks, onOpenTrack, readError = null, readLoading = false, onRetryRead = () => undefined }: Readonly<{
   areas: readonly Area[];
   tracks: readonly Track[];
   onOpenTrack: (trackId: string) => void;
+  readError?: string | null;
+  readLoading?: boolean;
+  onRetryRead?: () => void;
 }>) {
   /*
    * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
@@ -41,6 +45,8 @@ export function MobilePages({ areas, tracks, onOpenTrack }: Readonly<{
 
   return (
     <MobileListPage title="Pages">
+      {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
+      {readLoading && <p role="status">Loading workspace…</p>}
       <AstryxSegmentedControl
         className={styles.groups}
         value={group}
@@ -74,7 +80,7 @@ export function MobilePages({ areas, tracks, onOpenTrack }: Readonly<{
             />
           );
         })}
-        {shown.length === 0 && (
+        {readError === null && !readLoading && shown.length === 0 && (
           <MobileListEmpty>{group === 'pinned' ? 'No pinned Pages.' : 'No recent Pages.'}</MobileListEmpty>
         )}
       </MobileList>

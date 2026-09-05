@@ -8,7 +8,7 @@
 // and callbacks as props — `features/**` must not import `app/**`.
 
 import {
-  useMutation, useQueries, useQuery, useQueryClient, type QueryClient,
+  onlineManager, useMutation, useQueries, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
 import { z } from 'zod';
 
@@ -66,6 +66,23 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.failure = failure;
   }
+}
+
+/** A local refusal: the transport has not seen this interactive submission. */
+export class OfflineSubmissionError extends ApiError {
+  constructor() {
+    super({ kind: 'transport', message: 'You’re offline. Reconnect and try again; nothing was sent.' });
+    this.name = 'OfflineSubmissionError';
+  }
+}
+
+// Forms keep their drafts; reconnect must never submit a cancelled form later.
+// `always` reaches the guard even if connectivity changes after the click.
+const INTERACTIVE_WRITE_OPTIONS = Object.freeze({ networkMode: 'always' as const, retry: false });
+
+function runInteractiveWrite<T>(transport: ApiTransportPort, operation: ApiOperation<T>, unauthorized: UnauthorizedChannel): Promise<T> {
+  if (!onlineManager.isOnline()) return Promise.reject(new OfflineSubmissionError());
+  return runOperation(transport, operation, unauthorized);
 }
 
 /**
@@ -288,8 +305,9 @@ export function useTrackConversationMutations(
 ): ConversationMutations {
   const client = useQueryClient();
   const create = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
-      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey), unauthorized),
+      runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row
          in the same tick and a list that does not hold it yet renders with no
@@ -533,8 +551,9 @@ export function useTodayLaunchpadEnsureMutation(
 ): TodayLaunchpadEnsureMutation {
   const client = useQueryClient();
   const mutation = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: (): Promise<TodayLaunchpadEnsureWire> =>
-      runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized),
+      runInteractiveWrite(transport, todayLaunchpadEnsureOperation(), unauthorized),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
     },
@@ -713,14 +732,16 @@ export function useTrackRecipeMutations(
   const client = useQueryClient();
   const invalidate = () => { void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() }); };
   const create = useMutation({
-    mutationFn: (body: { title: string; body: string }) => runOperation(
+    ...INTERACTIVE_WRITE_OPTIONS,
+    mutationFn: (body: { title: string; body: string }) => runInteractiveWrite(
       transport, createTrackRecipeOperation(body), unauthorized,
     ),
     onSuccess: invalidate,
   });
   const save = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }) =>
-      runOperation(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
+      runInteractiveWrite(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
     /* Invalidate but do **not** write the response through to the cache here.
        The response is also the editor's next rendered state, and it reaches
        the editor as the promise's value; writing it into the list as well
@@ -790,7 +811,7 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
   const tracks: Track[] = [];
   for (const [index, area] of areas.entries()) {
     const query = trackQueries[index];
-    tracksLoadingByArea.set(area.id, query?.isLoading ?? false);
+    tracksLoadingByArea.set(area.id, query?.isPending ?? false);
     if (query?.error instanceof Error) trackErrorsByArea.set(area.id, query.error);
     if (query?.data !== undefined) {
       const rows = query.data.map((track) => ({ ...track, ...trackActivityFrom(track.id, overlays) }));
@@ -799,7 +820,7 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
     }
   }
   return {
-    areas, tracksByArea, tracks, areasLoading: areasQuery.isLoading,
+    areas, tracksByArea, tracks, areasLoading: areasQuery.isPending,
     overlaysLoading: overlaysQuery.isLoading,
     areasError: areasQuery.error instanceof Error ? areasQuery.error : null,
     overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
@@ -815,8 +836,12 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
 }
 
 /** Route loaders prime only this one list; see INV-APP-084 above. */
-export function prefetchAreaList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<Area[]> {
-  return client.ensureQueryData(areaListQueryOptions(transport, unauthorized));
+export function prefetchAreaList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<void> {
+  // Prefetch failures belong to the Areas query. The shell and its retry action
+  // must still mount; rejecting a loader here replaces the entire app.
+  void client.prefetchQuery(areaListQueryOptions(transport, unauthorized));
+  // A paused offline query must not hold the route commit either.
+  return Promise.resolve();
 }
 
 // ---------- mutations ----------
@@ -837,7 +862,8 @@ export type AreaMutations = Readonly<{
 export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewAreaBody) => runOperation(transport, createAreaOperation(body), unauthorized),
+    ...INTERACTIVE_WRITE_OPTIONS,
+    mutationFn: (body: NewAreaBody) => runInteractiveWrite(transport, createAreaOperation(body), unauthorized),
     onSuccess: (wire) => {
       const created = toArea(wire);
       client.setQueryData<Area[]>(queryKeys.areas(), (current) => {
@@ -856,8 +882,9 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const update = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>
-      runOperation(transport, updateAreaOperation(areaId, body), unauthorized),
+      runInteractiveWrite(transport, updateAreaOperation(areaId, body), unauthorized),
     onSuccess: (wire) => {
       const updated = toArea(wire);
       // The Area editor closes as soon as mutateAsync resolves, and its row's
@@ -922,7 +949,8 @@ export type TrackMutations = Readonly<{
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (variables: TrackCreateVariables) => runOperation(
+    ...INTERACTIVE_WRITE_OPTIONS,
+    mutationFn: (variables: TrackCreateVariables) => runInteractiveWrite(
       transport,
       'idempotencyKey' in variables
         ? createTrackOperation(variables.body, variables.idempotencyKey)
@@ -991,18 +1019,21 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     void client.invalidateQueries({ queryKey: queryKeys.trackDetail(card.track_id) });
   };
   const createTerminal = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: ({ trackId, body }: { trackId: string; body: NewTerminalCardBody }) =>
-      runOperation(transport, createTerminalCardOperation(trackId, body), unauthorized),
+      runInteractiveWrite(transport, createTerminalCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCodex = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: ({ trackId, body }: { trackId: string; body: NewCodexCardBody }) =>
-      runOperation(transport, createCodexCardOperation(trackId, body), unauthorized),
+      runInteractiveWrite(transport, createCodexCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   const createCard = useMutation({
+    ...INTERACTIVE_WRITE_OPTIONS,
     mutationFn: ({ trackId, body }: { trackId: string; body: NewCardBody }) =>
-      runOperation(transport, createCardOperation(trackId, body), unauthorized),
+      runInteractiveWrite(transport, createCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
   /*

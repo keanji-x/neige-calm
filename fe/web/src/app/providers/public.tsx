@@ -5,6 +5,7 @@ import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import styles from './preflight-status.module.css';
 
 /**
  * This bundle's view of the negotiated wire contract.
@@ -77,7 +78,17 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
   if (busted) return null;
   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;
-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;
+  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}
+    {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (
+      <div className={styles.status} role="status">
+        <span>{query.fetchStatus === 'paused' ? 'Offline · Live updates paused'
+          : query.isFetching ? 'Reconnecting live updates…' : 'Live updates unavailable'}</span>
+        <button type="button" className={styles.retry} aria-label="Retry live updates"
+          title={query.error instanceof Error ? query.error.message : 'Reconnect to restore live updates'}
+          disabled={query.isFetching} onClick={() => { void query.refetch(); }}>Retry</button>
+      </div>
+    )}
+  </>;
 }
 
 export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {

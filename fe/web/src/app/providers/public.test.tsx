@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DB_INSTANCE_ID_KEY, SYNC_CURSOR_KEY } from '../../../../core/keys/storage.ts';
 import { AppProviders, ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntime } from './public.tsx';
@@ -15,6 +16,33 @@ function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('provider behavior', () => {
+  it('shows unavailable live updates and retries version preflight into an active bridge', async () => {
+    const fetchVersion = vi.fn().mockRejectedValueOnce(new Error('Version service unavailable'))
+      .mockRejectedValueOnce(new Error('Version service unavailable')).mockResolvedValue(compatible);
+    const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+    render(<AppProviders client={client} runtime={runtime({ fetchVersion })} cursorStore={noopCursorStore}
+      renderEventBridge={() => <i>bridge</i>}><b>route</b></AppProviders>);
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Live updates unavailable');
+    expect(screen.getByText('route')).toBeTruthy();
+    expect(screen.queryByText('bridge')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry live updates' }));
+    await screen.findByText('bridge');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(fetchVersion).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a compatible bridge active when a background version recheck fails', async () => {
+    const fetchVersion = vi.fn().mockResolvedValueOnce(compatible).mockRejectedValue(new Error('Version unavailable'));
+    const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+    render(<AppProviders client={client} runtime={runtime({ fetchVersion })} cursorStore={noopCursorStore}
+      renderEventBridge={() => <i>bridge</i>}>route</AppProviders>);
+    await screen.findByText('bridge');
+    await act(() => client.invalidateQueries({ queryKey: ['server-version'] }));
+    expect(screen.getByText('bridge')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('INV-APP-003 places one ThemeProvider above the complete children tree', () => {
     function ThemeConsumer() {
       const { resolved } = requireTheme();

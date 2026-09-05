@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,9 +51,121 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
   return { ...view, client };
 }
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.restoreAllMocks(); });
 
 describe('degraded workspace reads stay usable', () => {
+  it('mounts navigation while an offline startup Areas query is paused', async () => {
+    onlineManager.setOnline(false);
+    renderRoute('/', () => ok([]));
+    const rail = await screen.findByRole('navigation', { name: 'Workspace' });
+    expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
+    expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
+  });
+
+  it.each(['Areas', 'Pages'])('provides recovery inside the mobile %s sheet without claiming it is empty', async (section) => {
+    const media = window.matchMedia('');
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ ...media, matches: query.includes('width'), media: query }));
+    let broken = true;
+    renderRoute('/', (request) => {
+      if (request.path === '/api/areas') return broken ? fail('Area storage unavailable') : ok(areas);
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: section }));
+    const sheet = screen.getByRole('dialog', { name: section });
+    const alert = await within(sheet).findByRole('alert');
+    expect(alert.textContent).toContain('Areas are unavailable');
+    expect(within(sheet).queryByText('No recent Pages.')).toBeNull();
+    broken = false;
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await within(sheet).findByRole('button', { name: section === 'Areas' ? /One/ : /Reliable/ });
+    await waitFor(() => expect(within(sheet).queryByRole('alert')).toBeNull());
+  });
+
+  it.each(['unavailable', 'malformed'] as const)('keeps navigation and retries an %s Areas startup read', async (failure) => {
+    let broken = true;
+    renderRoute('/', (request) => {
+      if (request.path === '/api/areas') return broken
+        ? failure === 'unavailable' ? fail('Area storage temporarily unavailable') : ok({})
+        : ok(areas);
+      return ok([]);
+    });
+    const rail = await screen.findByRole('navigation', { name: 'Workspace' });
+    const alert = await within(rail).findByRole('alert');
+    expect(alert.textContent).toContain('Areas');
+    expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
+    expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
+    broken = false;
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await within(rail).findByRole('button', { name: 'Collapse area One' });
+    await waitFor(() => expect(within(rail).queryByRole('alert')).toBeNull());
+  });
+
+  it('keeps cached Areas while a refresh fails and recovers locally', async () => {
+    let broken = false;
+    const { client } = renderRoute('/', (request) => {
+      if (request.path === '/api/areas') return broken ? fail('Area refresh unavailable') : ok(areas);
+      return ok([]);
+    });
+    const rail = await screen.findByRole('navigation', { name: 'Workspace' });
+    await within(rail).findByRole('button', { name: 'Collapse area One' });
+    broken = true;
+    await act(() => client.invalidateQueries({ queryKey: ['areas'] }));
+    const alert = await within(rail).findByRole('alert');
+    expect(within(rail).getByRole('button', { name: 'Collapse area One' })).toBeTruthy();
+    broken = false;
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(within(rail).queryByRole('alert')).toBeNull());
+  });
+
+  it('lets an offline Area draft be cancelled without creating it on reconnect', async () => {
+    const creates: ApiRequest[] = [];
+    const { client } = renderRoute('/', (request) => {
+      if (request.path === '/api/areas') {
+        if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
+        return ok(areas);
+      }
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), 'Offline draft');
+    act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    const dialog = screen.getByRole('dialog', { name: 'New area' });
+    expect((await within(dialog).findByRole('alert')).textContent).toMatch(/offline.*reconnect/i);
+    expect(within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'Name' }).value).toBe('Offline draft');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull();
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(creates).toEqual([]);
+  });
+
+  it('keeps an offline Area draft editable and creates it once after an explicit online retry', async () => {
+    const creates: ApiRequest[] = [];
+    const { client } = renderRoute('/', (request) => {
+      if (request.path === '/api/areas') {
+        if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
+        return ok(areas);
+      }
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), 'Offline draft');
+    act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    const dialog = screen.getByRole('dialog', { name: 'New area' });
+    await within(dialog).findByRole('alert');
+    const name = within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'Name' });
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Revised draft');
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(creates).toEqual([]);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+    expect(creates).toHaveLength(1);
+    expect(creates[0]?.body).toMatchObject({ name: 'Revised draft' });
+  });
+
   it('warns on Today when activity is unavailable', async () => {
     renderRoute('/', (request) => {
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));

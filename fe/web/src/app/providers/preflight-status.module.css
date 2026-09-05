@@ -1,0 +1,44 @@
+@layer features {
+  .status {
+    position: fixed;
+    inset-block-start: max(var(--space-3), env(safe-area-inset-top));
+    inset-inline-start: 50%;
+    transform: translateX(-50%);
+    z-index: var(--z-overlay);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    inline-size: max-content;
+    max-inline-size: calc(100% - var(--space-6));
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    background: var(--paper);
+    color: var(--text-2);
+    box-shadow: var(--shadow-float);
+    font-size: var(--text-base);
+  }
+
+  .retry {
+    flex-shrink: 0;
+    border: 0;
+    padding: var(--space-1);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+  }
+
+  .retry:disabled {
+    color: var(--text-3);
+    cursor: wait;
+  }
+
+  @media (width >= 60rem) {
+    .status {
+      inset-block-start: calc(var(--space-12) + var(--space-8));
+    }
+  }
+}

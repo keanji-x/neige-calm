@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 import { z } from 'zod';
 
@@ -16,6 +16,7 @@ import { NEUTRAL_ACTIVITY, type TrackDetailWire } from '../../../../core/domain/
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
+  useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -40,6 +41,49 @@ const baseTrackWire = {
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
+
+afterEach(() => { cleanup(); onlineManager.setOnline(true); });
+
+describe('interactive writes never queue an offline submission', () => {
+  function useWrites(transport: ApiTransportPort) {
+    return {
+      area: useAreaMutations(transport, unauthorized),
+      track: useTrackMutations(transport, unauthorized),
+      recipe: useTrackRecipeMutations(transport, unauthorized),
+      conversation: useTrackConversationMutations(transport, 'w1', unauthorized),
+      today: useTodayLaunchpadEnsureMutation(transport, unauthorized),
+    };
+  }
+  const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
+    ['area create', ({ area }) => area.create({ name: 'Offline area', color: '#123456' })],
+    ['area update', ({ area }) => area.update('c1', { name: 'Offline rename' })],
+    ['track create', ({ track }) => track.create({ area_id: 'c1', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
+    ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' })],
+    ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
+    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key')],
+    ['Today ensure', ({ today }) => today.ensure()],
+  ];
+  it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {
+    const send = vi.fn(() => Promise.resolve(ok({})));
+    const transport: ApiTransportPort = { send };
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useWrites(transport), { wrapper });
+    act(() => onlineManager.setOnline(false));
+    const rejected = vi.fn<(error: unknown) => void>();
+    act(() => { void submit(result.current).catch(rejected); });
+    await waitFor(() => expect(rejected).toHaveBeenCalledOnce());
+    const failure = rejected.mock.calls[0]?.[0];
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure instanceof ApiError ? failure.message : '').toMatch(/offline.*reconnect/i);
+    expect(client.getMutationCache().getAll().some((mutation) => mutation.state.isPaused)).toBe(false);
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
 
 describe('E2E-INV-SHELL-003 the system area never reaches the workspace surface', () => {
   it('filters a system area out of the list the shell renders', async () => {

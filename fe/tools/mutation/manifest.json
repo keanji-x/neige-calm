@@ -37,7 +37,7 @@
       "oracle:INV-LOGIN-003"
     ],
     "target": "web/src/features/auth/login-page/public.tsx",
-    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..3fc9d56b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -33,7 +33,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       {error !== null && <p role=\"alert\" className={styles.error}>{error}</p>}\n       <label htmlFor={`${prefix}-username`}>Username</label>\n       {/* eslint-disable-next-line jsx-a11y/no-autofocus -- Single-purpose login screen intentionally starts at its first field. */}\n-      <input id={`${prefix}-username`} name=\"username\" autoFocus autoComplete=\"username\" value={username} onChange={(event) => setUsername(event.target.value)} />\n+      <input id={`${prefix}-username`} name=\"username\" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />\n       <label htmlFor={`${prefix}-password`}>Password</label>\n       <input id={`${prefix}-password`} name=\"password\" type=\"password\" autoComplete=\"current-password\" value={password} onChange={(event) => setPassword(event.target.value)} />\n       <button type=\"submit\" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>\n",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..3fc9d56b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -33,7 +33,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       {error !== null && <p role=\"alert\" className={styles.error}>{error}</p>}\n       <label htmlFor={`${prefix}-username`}>Username</label>\n       {/* eslint-disable-next-line jsx-a11y/no-autofocus -- Single-purpose login screen intentionally starts at its first field. */}\n-      <input id={`${prefix}-username`} name=\"username\" autoFocus autoComplete=\"username\" value={username} onChange={(event) => setUsername(event.target.value)} />\n+      <input id={`${prefix}-username`} name=\"username\" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />\n       <label htmlFor={`${prefix}-password`}>Password</label>\n       <input id={`${prefix}-password`} name=\"password\" type=\"password\" autoComplete=\"current-password\" value={password} onChange={(event) => setPassword(event.target.value)} />\n       <button type=\"submit\" disabled={submitting}>{submitting ? 'Signing in\u2026' : 'Sign in'}</button>\n",
     "expected_red": [
       "login page browser contract INV-LOGIN-003 focuses username and declares both credential autocomplete tokens"
     ],
@@ -114,7 +114,7 @@
       "tools/test-tier/checker.ts",
       "tools/test-tier/checker.test.ts"
     ],
-    "why_more_than_one": "The edit strips the jsdom row's browser escape hatch, and there are now two browser projects in it, so both higher-capability jsdom-to-browser cases turn red — dropping only one of them would leave a jsdom-tier oracle landing in browser-coarse still accepted, which is the acceptance this mutation exists to remove. Any third red indicates unrelated tier behavior changed."
+    "why_more_than_one": "The edit strips the jsdom row's browser escape hatch, and there are now two browser projects in it, so both higher-capability jsdom-to-browser cases turn red \u2014 dropping only one of them would leave a jsdom-tier oracle landing in browser-coarse still accepted, which is the acceptance this mutation exists to remove. Any third red indicates unrelated tier behavior changed."
   },
   {
     "mutation_id": "test-tier-allow-browser-overlap",
@@ -157,7 +157,7 @@
       "tools/test-tier/vitest-projects.test.ts",
       "tools/vitest/dom-diagnostics.browser.test.ts"
     ],
-    "why_more_than_one": "Four entries exist for their own sake: the positive browser fixture, the layout-engine probe, and the representative partition case — which now reds twice, once per representative, because `browser` and `browser-coarse` each have one and dropping the browser-suffix exclude lands both in a second project at once. Those detect the overlap from inside the checker and are what would stay red if every collected browser test happened to survive node. The rest are the overlap being felt: the node project's `tools/**/*.test.ts` include collects browser tests that then run without a `document`. Not every `tools/**` browser test qualifies — `tools/architecture/fixtures/**` stays out under its own exclude, and a `.tsx` browser test never matched the `.ts` include. Three files are collected: `layout.browser.test.ts` and, since #1161, `tools/vitest/dom-diagnostics.browser.test.ts` both reach `document` and so crash, every case for the same single reason, while `tools/test-tier/fixtures/positive/browser.browser.test.ts` is collected too and stays green only because it never touches `document` — not because any exclude keeps it out, which is worth saying so a future edit to that fixture is not mistaken for an unrelated regression. Anything red beyond this set would mean the overlap reached a file that does not need a DOM at all."
+    "why_more_than_one": "Four entries exist for their own sake: the positive browser fixture, the layout-engine probe, and the representative partition case \u2014 which now reds twice, once per representative, because `browser` and `browser-coarse` each have one and dropping the browser-suffix exclude lands both in a second project at once. Those detect the overlap from inside the checker and are what would stay red if every collected browser test happened to survive node. The rest are the overlap being felt: the node project's `tools/**/*.test.ts` include collects browser tests that then run without a `document`. Not every `tools/**` browser test qualifies \u2014 `tools/architecture/fixtures/**` stays out under its own exclude, and a `.tsx` browser test never matched the `.ts` include. Three files are collected: `layout.browser.test.ts` and, since #1161, `tools/vitest/dom-diagnostics.browser.test.ts` both reach `document` and so crash, every case for the same single reason, while `tools/test-tier/fixtures/positive/browser.browser.test.ts` is collected too and stays green only because it never touches `document` \u2014 not because any exclude keeps it out, which is worth saying so a future edit to that fixture is not mistaken for an unrelated regression. Anything red beyond this set would mean the overlap reached a file that does not need a DOM at all."
   },
   {
     "mutation_id": "test-tier-ignore-migrated",
@@ -376,17 +376,20 @@
       "oracle:INV-APP-013"
     ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -49,7 +49,7 @@\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = previousInstanceId;\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); cursorStore.clear(); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -66,7 +66,7 @@\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = previousInstanceId;\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); cursorStore.clear(); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
     "selection_paths": [
       "web/src/app/providers/public.test.tsx"
     ],
     "expected_red": [
+      "EventBridge contracts restores actual event-driven query refresh after retrying a failed preflight",
       "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
-      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
+      "provider behavior shows unavailable live updates and retries version preflight into an active bridge",
+      "provider behavior keeps a compatible bridge active when a background version recheck fails",
       "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
-      "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"
+      "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id",
+      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree"
     ],
-    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it. Re-measured after this PR added web/src/app/events/event-bridge.contract.test.tsx: a gate that returns null never mounts the bridge either, so the bridge-side statement of INV-APP-001 fails on its positive half. Four tests, one cause — the gate rendering nothing."
+    "why_more_than_one": "Measured in the registered witness selection: first-visit cache busting prevents compatible recovery, so the three new preflight recovery witnesses fail alongside the original four contracts."
   },
   {
     "mutation_id": "app-providers-drop-bridge-data-guard",
@@ -395,16 +398,18 @@
       "oracle:INV-APP-002"
     ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -61,7 +61,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;\n+  return <>{renderEventBridge?.(query.data!)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -78,7 +78,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}\n+  return <>{renderEventBridge?.(query.data!)}{children}\n     {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (\n       <div className={styles.status} role=\"status\">\n         <span>{query.fetchStatus === 'paused' ? 'Offline \u00b7 Live updates paused'\n",
     "selection_paths": [
       "web/src/app/providers/public.test.tsx"
     ],
     "expected_red": [
+      "EventBridge contracts restores actual event-driven query refresh after retrying a failed preflight",
       "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
+      "provider behavior shows unavailable live updates and retries version preflight into an active bridge",
       "provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain",
       "provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"
     ],
-    "why_more_than_one": "Measured, twice. The first measurement predated web/src/app/events/event-bridge.contract.test.tsx, so the red set was a single test. That file now states the same invariant from the bridge's side and renders the pending verdict, so dropping the guard dereferences an absent query.data there too — two tests, one invariant, approached from either end. Nothing else in the suite renders ServerCompatGate before its data arrives."
+    "why_more_than_one": "Measured in the registered witness selection: the bridge starts before any verdict, violating the three existing gate contracts and both new failed-preflight recovery witnesses."
   },
   {
     "mutation_id": "app-cursor-read-from-storage",
@@ -521,7 +526,7 @@
       "oracle:INV-APP-107"
     ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -61,7 +61,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;\n+  return <>{query.data && renderEventBridge?.(query.data)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -78,7 +78,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}\n+  return <>{query.data && renderEventBridge?.(query.data)}{children}\n     {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (\n       <div className={styles.status} role=\"status\">\n         <span>{query.fetchStatus === 'paused' ? 'Offline \u00b7 Live updates paused'\n",
     "expected_red": [
       "provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"
     ],
@@ -791,7 +796,7 @@
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n-  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n+  if (head === 'track' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n",
     "expected_red": [
-      "#1253 §6 the report-edit refresh chain redraws a report that was already written when it is rewritten",
+      "#1253 \u00a76 the report-edit refresh chain redraws a report that was already written when it is rewritten",
       "EventBridge contracts resolves a runtime card through cached track detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into track invalidation",
       "query invalidation adapter drives the conversation-list keys all the way onto the query client",
@@ -1000,7 +1005,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -805,7 +805,7 @@\n     // before the caller exposes retry UI, so that UI first observes the latest\n     // Area list. This narrows the uncertainty window; POST itself is not an\n     // idempotent API and this client-side reconciliation does not pretend it is.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -867,7 +867,7 @@\n     // before the caller exposes retry UI, so that UI first observes the latest\n     // Area list. This narrows the uncertainty window; POST itself is not an\n     // idempotent API and this client-side reconciliation does not pretend it is.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
     ],
@@ -1015,7 +1020,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -825,7 +825,7 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -888,7 +888,7 @@\n     // Success and failure both reconcile with the server. A transport failure\n     // may still follow a committed write, so failure cannot leave cached Area\n     // defaults authoritative.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const remove = useMutation({\n     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed PATCH"
     ],
@@ -1045,7 +1050,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only \u2014 a hook writes no `tasks` row, and it fires per tool call.\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
@@ -1093,14 +1098,14 @@
       "oracle:E2E-CAP-AXE-005"
     ],
     "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 50426622..749202ec 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -195,7 +195,7 @@\n      * sheet is made of the same stuff as the page under it. 99.4/0.004 keeps\n      * the card in the ground's hue family and is what ships.\n      */\n-    --bg: oklch(96% 0.005 90);\n+    --bg: oklch(24.5% 0.015 250);\n     --paper: oklch(99.4% 0.004 90);\n     --hairline: oklch(84% 0.006 87);\n     --hairline-strong: oklch(74% 0.006 86);\n@@ -494,7 +494,7 @@\n        exception at 6.9 here against light's 3.4 — the dark ground was already\n        lifted to 24.5% while the card stayed at the shipped 31.4%, and this pass\n        moved neither. See the note on `:root` for both. */\n-    --bg: oklch(24.5% 0.015 250);\n+    --bg: oklch(96% 0.005 90);\n     --paper: oklch(31.4% 0.013 251);\n     --hairline: oklch(42% 0.01 253);\n     --hairline-strong: oklch(50% 0.008 254);\n",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 50426622..749202ec 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -195,7 +195,7 @@\n      * sheet is made of the same stuff as the page under it. 99.4/0.004 keeps\n      * the card in the ground's hue family and is what ships.\n      */\n-    --bg: oklch(96% 0.005 90);\n+    --bg: oklch(24.5% 0.015 250);\n     --paper: oklch(99.4% 0.004 90);\n     --hairline: oklch(84% 0.006 87);\n     --hairline-strong: oklch(74% 0.006 86);\n@@ -494,7 +494,7 @@\n        exception at 6.9 here against light's 3.4 \u2014 the dark ground was already\n        lifted to 24.5% while the card stayed at the shipped 31.4%, and this pass\n        moved neither. See the note on `:root` for both. */\n-    --bg: oklch(24.5% 0.015 250);\n+    --bg: oklch(96% 0.005 90);\n     --paper: oklch(31.4% 0.013 251);\n     --hairline: oklch(42% 0.01 253);\n     --hairline-strong: oklch(50% 0.008 254);\n",
     "expected_red": [
       "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
       "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers",
       "the exchange rail, as the engine lays it out paints the resting dot between 3:1 and the text ladder, against the page",
       "the track lifecycle status in the page header keeps the subdued running colour readable in both themes",
       "dark theme contrast matrix --accent on --bg clears the non-text floor",
-      "dark theme contrast matrix --bg → --surface-card is at least 3.0 L apart",
+      "dark theme contrast matrix --bg \u2192 --surface-card is at least 3.0 L apart",
       "dark theme contrast matrix --error on --bg clears the non-text floor",
       "dark theme contrast matrix --error-text on --bg clears the AA body floor",
       "dark theme contrast matrix --success on --bg clears the non-text floor",
@@ -1110,19 +1115,19 @@
       "dark theme contrast matrix --text-3 on --bg clears the AA body floor",
       "dark theme contrast matrix --warn on --bg clears the non-text floor",
       "dark theme contrast matrix --warn-text on --bg clears the AA body floor",
-      "dark theme contrast matrix ground and card stay in one hue family (|ΔC| ≤ 0.005)",
+      "dark theme contrast matrix ground and card stay in one hue family (|\u0394C| \u2264 0.005)",
       "dark theme contrast matrix the ladder runs the same direction in both themes",
       "light theme contrast matrix --accent on --bg clears the non-text floor",
       "light theme contrast matrix --error on --bg clears the non-text floor",
       "light theme contrast matrix --error-text on --bg clears the AA body floor",
       "light theme contrast matrix --success-text on --bg clears the AA body floor",
-      "light theme contrast matrix --surface-chip → --bg is at least 3.0 L apart",
+      "light theme contrast matrix --surface-chip \u2192 --bg is at least 3.0 L apart",
       "light theme contrast matrix --text on --bg clears the AA body floor",
       "light theme contrast matrix --text-2 on --bg clears the AA body floor",
       "light theme contrast matrix --text-3 on --bg clears the AA body floor",
       "light theme contrast matrix --warn on --bg clears the non-text floor",
       "light theme contrast matrix --warn-text on --bg clears the AA body floor",
-      "light theme contrast matrix ground and card stay in one hue family (|ΔC| ≤ 0.005)",
+      "light theme contrast matrix ground and card stay in one hue family (|\u0394C| \u2264 0.005)",
       "light theme contrast matrix the ladder runs the same direction in both themes"
     ],
     "selection_paths": [
@@ -1132,7 +1137,7 @@
       "web/src/features/chat/thread/thread.browser.test.tsx",
       "web/src/features/track/page/header-lifecycle.browser.test.tsx"
     ],
-    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and lifecycle status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction \u2014 there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and lifecycle status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",
@@ -1230,6 +1235,6 @@
       "web/src/systems/cards/builtins/register.ts",
       "web/src/systems/cards/registry.ts"
     ],
-    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list — that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
+    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list \u2014 that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
   }
 ]
