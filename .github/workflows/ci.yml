@@ -1008,7 +1008,11 @@ jobs:
     # repository runner slot; witness mode currently produces at most six shards for 66 entries.
     timeout-minutes: 25
     needs: fe-mutation-plan
-    if: needs.fe-mutation-plan.outputs.selected != '0'
+    # `changes` is intentionally skipped for scheduled and manually dispatched
+    # runs. The plan overrides that skipped ancestor with `always()`; this job
+    # must do the same or GitHub's implicit success() suppresses the entire
+    # full-sweep matrix even after the plan succeeds and selects entries.
+    if: ${{ always() && needs.fe-mutation-plan.result == 'success' && needs.fe-mutation-plan.outputs.selected != '0' }}
     strategy:
       fail-fast: false
       max-parallel: 8
