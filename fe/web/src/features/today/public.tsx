@@ -37,9 +37,6 @@ import styles from './today.module.css';
 // feature's entry. See that file's header for why the ledger cannot live here.
 export type { ScheduledEvent, TodayPageProps, TrackRowRenderer } from './page-props.ts';
 
-/** The copy for "the day has no document yet". */
-const NO_PROGRESS_YET = 'Nothing written today yet.';
-
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
 
 /**
@@ -325,26 +322,21 @@ function TodayDocument({ launchpad, document, error, action }: {
    * Owner call, 2026-09-03.
    */
   if (!written) {
-    /*
-     * The empty day is one sentence, centred and set in the report's own face.
-     *
-     * Not a box and not a top-left line of hint text: this sentence stands
-     * where the document will stand, so it is the document's typography — serif,
-     * one rank up — placed in the middle of the space the document would fill.
-     * A dashed frame used to be here; it drew a container around a sentence
-     * whose entire content is that there is no container yet.
-     *
-     * Nothing else is in this branch. A `Write today's progress` /
-     * `Rewrite today's progress` button used to be, and it was removed on owner
-     * call (#1343): the day's activity now reaches an agent when a
-     * conversation is started on the launchpad, injected server-side, so the
-     * button was no longer the only route to anything. The action slot is not
-     * offered here either — there is nothing to reset when the report is
-     * already canonical.
-     */
+    // Quiet onboarding belongs only to a confirmed empty desktop day. Keep
+    // creation in the existing sidebar and do not show a reset/report-write
+    // control for a document that has not been written yet.
     return (
       <div className={`${styles.document} ${styles.documentVacant}`}>
-        <p className={styles.documentEmpty}>{NO_PROGRESS_YET}</p>
+        <section className={styles.documentGuide} aria-label="Getting started">
+          <dl className={styles.guideConcepts}>
+            <dt>Area</dt>
+            <dd>Keep a project’s context and related work together.</dd>
+            <dt>Track</dt>
+            <dd>Give an agent a goal and keep its result in a report.</dd>
+          </dl>
+          <p>Use + beside Areas to create one, then + beside its name to start a Track.</p>
+          <p>Start a conversation with Today to gather your progress here.</p>
+        </section>
       </div>
     );
   }

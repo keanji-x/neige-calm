@@ -180,13 +180,13 @@
    * gutter that the outer container's `100cqi` cannot see.
    *
    * `inline-size: 100%` makes the region own the full main column explicitly:
-   * the empty sentence is centred in the same space the report will occupy,
+   * the empty guide is centred in the same space the report will occupy,
    * and the document gutter variables below are resolved against that space.
    *
    * The type rank stays. `--text-lg` is the prose rank and `--measure-prose` is
    * measured for it (tokens.css); `ReportDocument` already reads at that rank,
-   * so this sets the region *around* it and sizes the empty line
-   * (`.documentEmpty`) against a document rather than against a label. It does
+   * so this sets the region *around* it. The empty guide below uses the
+   * smaller interface rank within the same region. It does
    * not resize the action — `[data-nc-action]` declares its own size, and a
    * declaration beats an inherited value.
    */
@@ -225,11 +225,11 @@
      things, and gave both a dashed frame: the calendar agenda's now uses
      `ui/panel-card`'s `PanelEmpty` — the same carrier as the conversation
      module directly beside it in the same card — and the document's is
-     `.documentEmpty` below. Neither is framed any more. */
+     `.documentGuide` below. Neither is framed any more. */
 
   /*
-   * The empty day: the document region with nothing in it yet, so the sentence
-   * that says so sits in the middle of the space the document would have
+   * The empty day: the getting-started guide sits in the middle of the space
+   * the document would have
    * filled. `flex: 1` is what claims that space vertically — the main column
    * stopped having anything below this region when the terminal placeholder
    * went, so there is room to be in the middle of.
@@ -240,7 +240,7 @@
    * and start-aligned, so the sentence was centred *inside a 504px box pinned
    * to the left margin*. With the cap gone the box is the column, and the
    * column's centre is also where the document's own measure column is centred
-   * (`--document-start` is the leftover halved), so the empty sentence and the
+   * (`--document-start` is the leftover halved), so the empty guide and the
    * report it is standing in for share one axis.
    *
    */
@@ -252,16 +252,38 @@
     min-block-size: var(--slot-h);
   }
 
-  /* The document's own empty line. It is a sentence standing where the document
-     will stand, not a widget reporting that it has nothing — so it is set in
-     the report's face (`.calm-prose` is serif at `--text-lg`) and one rank
-     larger, with only the colour stepped back. No frame. */
-  .documentEmpty {
-    font-family: var(--font-serif);
-    font-size: var(--text-xl);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+  /* A quiet guide on the empty canvas, using the existing readable muted
+     text rank rather than reducing opacity or introducing another card. */
+  .documentGuide {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    inline-size: min(100%, var(--measure-prose));
+    padding-inline: var(--space-8);
     color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+    text-align: start;
+  }
+
+  .documentGuide p {
+    margin: 0;
+  }
+
+  .guideConcepts {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--space-6) var(--space-8);
+    margin: 0;
+  }
+
+  .guideConcepts dt {
+    font-weight: var(--weight-medium);
+  }
+
+  .guideConcepts dd {
+    margin: 0;
   }
 
   /*

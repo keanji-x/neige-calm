@@ -276,7 +276,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
 
   it('offers an explicit Today-assistant entry before a launchpad exists', async () => {
     const { requests } = renderNoLaunchpad();
-    await screen.findByText('Nothing written today yet.');
+    await screen.findByRole('region', { name: 'Getting started' });
     expect(screen.getByText('Start a conversation with Today.')).toBeTruthy();
     const start = screen.getByRole('button', { name: 'Start a conversation with Today' });
     // Merely rendering the entry must remain a pure read; launchpad creation is

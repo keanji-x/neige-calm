@@ -91,12 +91,11 @@ function Main({ children, inlineSize = '1080px' }: { children: ReactNode; inline
   );
 }
 
-/** The document region: the box the empty line or written report lives in. */
+/** The document region: the box the empty guide or written report lives in. */
 function regionOf(container: Element): HTMLElement {
-  const line = [...container.querySelectorAll('p')]
-    .find((node) => node.textContent === 'Nothing written today yet.');
-  expect(line).toBeTruthy();
-  return (line as HTMLElement).parentElement as HTMLElement;
+  const guide = container.querySelector('[aria-label="Getting started"]');
+  expect(guide).toBeTruthy();
+  return (guide as HTMLElement).parentElement as HTMLElement;
 }
 
 describe('the document’s action answers a control, not the document', () => {
@@ -193,17 +192,16 @@ describe('the document region owns the column the report will stand in', () => {
     expect(leading).toBeGreaterThan(0);
   });
 
-  it('centres the empty day in the main column, not inside a 504px box', async () => {
+  it('centres the empty guide in the main column, not inside a start-aligned box', async () => {
     await page.viewport(1280, 800);
     const { container } = renderVacant();
     const region = regionOf(container);
-    const line = [...container.querySelectorAll('p')]
-      .find((node) => node.textContent === 'Nothing written today yet.') as HTMLElement;
+    const guide = container.querySelector('[aria-label="Getting started"]') as HTMLElement;
     const column = region.parentElement as HTMLElement;
-    const lineBox = line.getBoundingClientRect();
+    const guideBox = guide.getBoundingClientRect();
     const columnBox = column.getBoundingClientRect();
     /*
-     * The sentence's centre against the MAIN COLUMN's, not against its own
+     * The guide's centre against the MAIN COLUMN's, not against its own
      * region's. With the old cap the region was 504 wide and start-aligned, and
      * the sentence was perfectly centred inside it — so a region-relative
      * assertion passes on the exact layout owner reported. The column is what
@@ -211,7 +209,7 @@ describe('the document region owns the column the report will stand in', () => {
      * too (`--document-start` is the leftover halved), so this is one axis for
      * the empty day and the report that replaces it.
      */
-    expect(Math.abs((lineBox.left + lineBox.right) / 2 - (columnBox.left + columnBox.right) / 2))
+    expect(Math.abs((guideBox.left + guideBox.right) / 2 - (columnBox.left + columnBox.right) / 2))
       .toBeLessThanOrEqual(1);
     // And the region really did stop being 504 wide, so the centring above is
     // not being satisfied by a box that happens to sit mid-column.

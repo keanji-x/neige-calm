@@ -108,7 +108,7 @@ describe('INV-A11Y-061 navigation shape', () => {
  * composition layer in `app/router/today-document.test.tsx`.
  */
 const DOCUMENT = <p>the day&apos;s report</p>;
-const EMPTY_COPY = 'Nothing written today yet.';
+const GUIDE_LABEL = 'Getting started';
 
 describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
   it('renders the empty state for a report nobody has written', () => {
@@ -117,7 +117,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       launchpadDocument={DOCUMENT}
     />);
-    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+    expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     // The negative half: the canonical initial report is a well-formed
     // document — four empty H1s — so a page that decided this by looking at
     // the document instead of at the server field would render those headings
@@ -132,7 +132,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
       launchpadDocument={DOCUMENT}
     />);
     expect(screen.getByText("the day's report")).toBeTruthy();
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 
   it('treats a 404 as the empty state rather than an error', () => {
@@ -140,7 +140,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={null} launchpadDocument={DOCUMENT}
     />);
-    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+    expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
   });
 
   it('says nothing at all while the resolve is still in flight', () => {
@@ -151,15 +151,15 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpadDocument={DOCUMENT}
     />);
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
     expect(screen.queryByText("the day's report")).toBeNull();
   });
 
   it('offers no button anywhere in the main column', () => {
     /*
-     * The empty state is one sentence (#1343, owner call). Nothing else stands
-     * in this column while the day has no report — no caption, and since #1343
-     * no `Rewrite today’s progress` button or Waiting-on-you controls either.
+     * The empty day offers Area/Track guidance, but creation remains in the
+     * sidebar. The retired report-writing button and Waiting-on-you controls
+     * must not return to this reading column.
      * The column is identified as the non-panel child of `.content`, so the
      * assertion covers the whole reading column rather than one known wrapper.
      */
@@ -176,7 +176,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     const mainColumn = [...(content?.children ?? [])].find((child) => child !== panel);
     expect(mainColumn).toBeDefined();
     // It is the column: it holds the document region and nothing actionable.
-    expect(mainColumn?.contains(screen.getByText(EMPTY_COPY))).toBe(true);
+    expect(mainColumn?.contains(screen.getByRole('region', { name: GUIDE_LABEL }))).toBe(true);
     expect(mainColumn?.querySelectorAll('button').length).toBe(0);
   });
 });
@@ -190,7 +190,8 @@ describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state'
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
     />);
     expect(screen.getByRole('alert').textContent).toContain('boom');
-    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Getting started' })).toBeNull();
+    expect(screen.queryByRole('region', { name: GUIDE_LABEL })).toBeNull();
   });
 });
 
@@ -222,7 +223,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       conversationList={<p>No conversations yet.</p>}
     />);
     expect(screen.getByRole('heading', { name: 'Calendar' })).toBeTruthy();
-    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
     expect(screen.queryByText('Nothing here yet.')).toBeNull();
   });
 
@@ -247,6 +248,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
     />);
     expect(screen.getByRole('alert').textContent).toContain('boom');
+    expect(screen.queryByRole('region', { name: 'Getting started' })).toBeNull();
   });
 });
 
@@ -258,7 +260,7 @@ describe('#1343 the document’s action slot', () => {
   const ACTION = <button type="button">Reset</button>;
 
   /*
-   * #1343 — the empty state is ONE sentence and nothing else.
+   * #1343 — the empty state still has no document action.
    *
    * A `Write` / `Rewrite today’s progress` button used to stand here. It was
    * removed on owner call: the day’s activity now reaches an agent when a
@@ -269,13 +271,16 @@ describe('#1343 the document’s action slot', () => {
    * ruling rather than an omission: there is nothing to reset when the report
    * is already canonical.
    */
-  it('shows one sentence and no controls when the report is empty', () => {
+  it('shows getting-started guidance without document controls when the report is empty', () => {
     render(<TodayPage
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       documentAction={ACTION}
     />);
-    expect(screen.getByText('Nothing written today yet.')).toBeTruthy();
+    expect(screen.getByRole('region', { name: GUIDE_LABEL })).toBeTruthy();
+    expect(screen.queryByText('Nothing written today yet.')).toBeNull();
+    expect(screen.getByText('Area')).toBeTruthy();
+    expect(screen.getByText('Track')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
     // The deleted control, pinned by absence so it cannot drift back in
     // without this suite noticing. A label regex, not an exact string: "Write",
@@ -296,6 +301,7 @@ describe('#1343 the document’s action slot', () => {
     />);
     expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
     expect(screen.getByText("the day's report")).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Getting started' })).toBeNull();
   });
 
   /* No slot, no control — not a disabled one. A disabled button is a promise
@@ -321,5 +327,6 @@ describe('#1343 the document’s action slot', () => {
     />);
     expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
     expect(screen.getByRole('alert').textContent).toContain('boom');
+    expect(screen.queryByRole('region', { name: 'Getting started' })).toBeNull();
   });
 });
