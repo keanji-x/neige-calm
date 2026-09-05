@@ -4379,7 +4379,7 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
 /// carrying one issue's evidence in another issue's file is what makes a
 /// recorded property quietly stop being true.
 #[tokio::test]
-async fn a_repointed_card_leaves_its_enqueued_evidence_on_the_replaced_runtime() {
+async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     let b = boot().await;
     let (entered, release) = b.hold_the_next_drain();
 

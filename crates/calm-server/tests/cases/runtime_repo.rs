@@ -2978,8 +2978,8 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
 ///   under the same id with a fresh `handle_state_json` (boot recovery and the
 ///   deferred mint both do this);
 /// * `session_restore_from_superseded_tx` puts an inherited predecessor back
-///   into the active set when a start compensates, and its snapshot was never
-///   edited in place, so it owes its own queue again.
+///   into the active set when a start compensates, and the give-back writes a
+///   queue onto it in the same transaction.
 ///
 /// If the stamp survived either one, the row's NEW queue would be permanently
 /// unharvestable — the marker would say "already taken" about sentences nobody

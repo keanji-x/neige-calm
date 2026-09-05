@@ -314,13 +314,13 @@ pub async fn session_fail_if_active_runtime_tx(
 /// the undelivered set, either because a successor inherited its whole queue or
 /// because [`harvest_pending_user_messages_tx`] took them.
 ///
-/// Idempotent by construction: the `IS NULL` conjunct means the first stamp
-/// wins and a second one is a no-op, so the timestamp answers *when the queue
-/// stopped being deliverable* and never drifts to a later restart.
+/// The `IS NULL` conjunct means the first stamp wins and a second one is a
+/// no-op, so the timestamp answers *when the queue stopped being deliverable*.
 ///
-/// The snapshot itself is left untouched. `session_restore_from_superseded_tx`
-/// exists, and editing a predecessor's persisted queue in place would make that
-/// restore lossy; the marker is purely additive.
+/// This function writes the marker only. `harvest_pending_user_messages_tx`
+/// edits the predecessor's snapshot in the same transaction, and
+/// `session_restore_from_superseded_tx` clears the marker so a restored row can
+/// be harvested again.
 pub async fn session_mark_queue_harvested_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
@@ -349,10 +349,18 @@ pub async fn session_mark_queue_harvested_tx(
 /// `user_message_enqueued_on_active_runtime` has a smaller membership than
 /// "every replacement".
 ///
-/// The exclusion of `'failed'` is
-/// deliberate rather than incidental: the caller of a failed attempt gets a
-/// non-2xx and re-sends the same text under a `#N` retry key, so harvesting a
-/// failed row would deliver it twice.
+/// The exclusion of `'failed'` is deliberate. It covers the message a failed
+/// mint carried: that caller got a non-2xx and re-sends the same text under a
+/// `#N` retry key, so harvesting the row would deliver it twice.
+///
+/// KNOWN GAP (#1449): the argument above is about the mint's own first
+/// message, and a `failed` row can hold sentences it does not cover. A
+/// `POST /planner/input` that answered 200 is persisted on the row, and its
+/// caller has been told the send succeeded; if that runtime later goes
+/// `failed`, this predicate skips the row and nothing re-sends the sentence.
+/// `routes/today_summary.rs` records a bootstrap case of the same shape, where
+/// a predicate re-derives the missing work; a human sentence has no such
+/// re-derivation.
 ///
 /// Every row the read touched is stamped, including the ones that yielded
 /// nothing — the stamp records "this queue has left the undelivered set", not
@@ -400,22 +408,14 @@ where
     .await?;
 
     let mut harvested = HarvestedQueues::default();
-    let mut seen_rows: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
         let id: String = row.try_get("id")?;
         let state: Option<String> = row.try_get("handle_state_json")?;
         if let Some(state) = state.as_deref() {
-            // #1449 — once per row, and the decoder MINTS ids for entries that
-            // have none, so calling it twice on one row would mint twice and
-            // the second set would name instances nothing else knows about. The
-            // loop visits each row once by construction (the query returns
-            // distinct primary keys); this asserts it rather than leaving the
-            // decoder's only caller to be read for it.
-            assert!(
-                seen_rows.insert(id.clone()),
-                "harvest read runtime {id} twice in one pass; the decoder mints ids and must \
-                 not run twice on a row"
-            );
+            // #1449 — the decoder mints ids for entries that have none, so it
+            // must see each row once. `worker_sessions.id` is the table's
+            // `TEXT PRIMARY KEY` and this is a single `SELECT` over it, so the
+            // ids this loop walks are distinct.
             let outcome = extract(id.as_str(), state);
             // #1449 S2 — a MOVE, not a copy. The source row keeps whatever the
             // caller did not take and loses what it did, in this transaction.

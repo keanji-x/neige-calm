@@ -1035,9 +1035,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_queue.push(Observation::UserMessage {
                 text: text.to_string(),
             });
-            // #1449 — the SECOND and last minting site for a message id (the
-            // other is `enqueue_pending_observation`). Everything downstream
-            // carries this id; nothing re-mints it.
+            // #1449 — the `first_message` this mint seeds gets an id here.
             snapshot.pending_message_ids.push(vec![new_id()]);
             seeded = true;
         }

@@ -20,17 +20,23 @@ use utoipa::ToSchema;
 pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
-    /// Stable machine-readable code — one of `not_found`, `conflict`,
-    /// `idempotency_collision`, `idempotency_key_exhausted`,
-    /// `bad_request`, `unauthorized`,
-    /// `forbidden`, `plugin_install`, `plugin_permission`,
-    /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
+    /// Stable machine-readable code.
+    ///
+    /// Every variant of `CalmError` maps to one, in `CalmError::code`:
+    /// `not_found`, `conflict`, `idempotency_collision`,
+    /// `idempotency_key_exhausted`, `today_summary_no_activity`,
+    /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
+    /// `plugin_permission`, `plugin_conflict`, `plugin_busy`,
     /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
-    /// `plugin_config_too_large`,
-    /// `planner_harness_dormant`, `today_summary_no_activity`,
-    /// `db_error`, `io_error`, `serde_error`,
-    /// `codex_app_server`, `service_unavailable`, `internal`,
-    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    /// `plugin_config_too_large`, `plugin_kernel_too_old`,
+    /// `planner_reset_unsupported_in_shared_mode`, `planner_harness_dormant`,
+    /// `planner_harness_runtime_superseded`, `db_error`, `io_error`,
+    /// `serde_error`, `codex_app_server`, `service_unavailable`, `internal`.
+    ///
+    /// Three more are written by routes that build the body directly rather
+    /// than through a `CalmError`: `forbidden_tool` (`routes/plugins.rs`),
+    /// `not_a_card_tool` and `tool_call_failed` (`routes/cards.rs`). A client
+    /// reading this list as closed has to include those.
     pub code: String,
 }
 

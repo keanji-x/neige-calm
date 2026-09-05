@@ -910,6 +910,14 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     true
 }
 
+/// KNOWN GAP (#1449): the harvest appends to the successor's queue without
+/// consulting `MAX_PENDING_QUEUE_LEN` — the constant is private to this module
+/// — and the cap is applied here afterwards, from the OLD end. The harvested
+/// human sentences are the oldest entries, so they are the ones dropped, and
+/// the source row is stamped and emptied by then: the only trace is the warn
+/// below. It needs a predecessor holding more than `MAX_PENDING_QUEUE_LEN`
+/// undelivered entries, and it became reachable when the transfer became a
+/// move.
 fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
     let len = snapshot.pending_queue.len();
     if len <= MAX_PENDING_QUEUE_LEN {
@@ -940,12 +948,7 @@ async fn enqueue_pending_observation(
     let mut queue = inner.pending_queue.lock().await;
     let mut envelope_ids = inner.pending_envelope_ids.lock().await;
     let mut message_ids = inner.pending_message_ids.lock().await;
-    // #1449 — ONE of the two minting sites for a message id (the other is the
-    // `first_message` seed in `PlannerHarnessStartAdapter::prepare_tx`). Every
-    // observation that reaches a queue in this process reaches it here, so an
-    // id minted here is minted once. Every other path that moves a
-    // `UserMessage` between queues — the harvest, the inherit — CARRIES the id
-    // it finds; none of them may mint.
+    // #1449 — a `UserMessage` entering this queue gets an id here.
     let minted: Vec<String> = match &obs {
         Observation::UserMessage { .. } => vec![crate::model::new_id()],
         _ => Vec::new(),
