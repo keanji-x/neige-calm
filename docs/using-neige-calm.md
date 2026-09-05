@@ -58,14 +58,20 @@ Select **Recover task** when the current failed attempt is eligible. Recovery
 starts a new execution under the same task key and unchanged requirements;
 completed sibling tasks and downstream dependency declarations stay in place.
 
+The initial recovery entry supports preparation failures where no Worker or
+verifier was prepared or started. An exited terminal or completed provider session
+does not prove its background processes stopped. Attempts that reached execution
+remain unavailable through this entry until a supported stop boundary is available;
+the task explains this prerequisite.
+
 The accepted request first waits for preparation and scheduling. A prepared or
 queued attempt has not necessarily begun business execution. If the request's
 response is lost, retry the request through the displayed recovery control; it
 keeps the original request identity so that one action cannot create two attempts.
 
 When recovery is unavailable, the task explains the prerequisite: for example,
-its requirements changed, execution permission was withdrawn, the previous process
-has not been reconciled, or its historical contract is missing. A terminal Track
+its requirements changed, execution permission was withdrawn, the previous execution
+has no supported write-stop proof, or its historical contract is missing. A terminal Track
 must first use the existing **Resume work** action. An ordinary Blocked Track can
 return to Working as part of an admitted recovery.
 

@@ -2699,9 +2699,13 @@ export interface components {
                 [key: string]: string | null;
             };
         };
-        /** @description Execution summary. Status includes awaiting_projection when admission capacity removed a pending row. */
+        /**
+         * @description Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+         *     Blocking reason applies only to the selected current attempt; historical attempts carry null.
+         */
         TaskAttemptView: {
             attempt_id: string;
+            blocking_reason: string | null;
             /** Format: int64 */
             created_at_ms: number;
             /** Format: int64 */

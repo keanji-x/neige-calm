@@ -380,8 +380,9 @@ export type ReviewSubject = { phase: string, slice_id: string, pr_number: number
 
 /**
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+ * Blocking reason applies only to the selected current attempt; historical attempts carry null.
  */
-export type TaskAttemptView = { attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, };
+export type TaskAttemptView = { attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
 
 /**
  * One changed frozen reference carried by a context-advance verdict.

@@ -7698,7 +7698,7 @@
       },
       "TaskAttemptView": {
         "type": "object",
-        "description": "Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.",
+        "description": "Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.\nBlocking reason applies only to the selected current attempt; historical attempts carry null.",
         "required": [
           "attempt_id",
           "generation",
@@ -7706,11 +7706,18 @@
           "status_detail",
           "worker_card_id",
           "created_at_ms",
-          "finished_at_ms"
+          "finished_at_ms",
+          "blocking_reason"
         ],
         "properties": {
           "attempt_id": {
             "type": "string"
+          },
+          "blocking_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at_ms": {
             "type": "integer",
