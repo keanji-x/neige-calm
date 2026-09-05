@@ -35,7 +35,7 @@
 // one of them was stale by the next edit; they name functions and components
 // now.
 
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
@@ -82,6 +82,8 @@ export type DesktopPainterDeps = Readonly<{
   cardsAction?: ReactNode;
   /** Compact, already-derived progress for the Tasks module head. */
   taskSummary?: string | null;
+  /** An app-composed, non-projection module placed beside the Cards module. */
+  afterCards?: ReactNode;
 }>;
 
 /** One marker attribute, spelled from `MARKER` / `FIELD` so no name is retyped
@@ -321,26 +323,29 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
     module: (parts) => {
       const children = parts.children.map((leaf) => finish(leaf, parts.key));
       const rows = parts.children.every((leaf) => leaf.slot === 'row');
+      const module = (
+        <PanelModule
+          key={parts.key}
+          title={parts.title}
+          action={parts.key === 'cards'
+            ? deps.cardsAction
+            : deps.taskSummary
+              ? <span className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</span>
+              : undefined}
+          moduleMarker={parts.key}
+          titleFieldMarker={FIELD.moduleTitle}
+        >
+          {!rows ? children
+            : parts.key === 'cards'
+              ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul>
+              : <ul className={styles.tasks} data-nc-task-inventory="">{children}</ul>}
+        </PanelModule>
+      );
       return {
         slot: 'module',
-        node: (
-          <PanelModule
-            key={parts.key}
-            title={parts.title}
-            action={parts.key === 'cards'
-              ? deps.cardsAction
-              : deps.taskSummary
-                ? <span className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</span>
-                : undefined}
-            moduleMarker={parts.key}
-            titleFieldMarker={FIELD.moduleTitle}
-          >
-            {!rows ? children
-              : parts.key === 'cards'
-                ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul>
-                : <ul className={styles.tasks} data-nc-task-inventory="">{children}</ul>}
-          </PanelModule>
-        ),
+        node: parts.key === 'cards' && deps.afterCards !== undefined
+          ? <Fragment key={parts.key}>{module}{deps.afterCards}</Fragment>
+          : module,
       };
     },
   };

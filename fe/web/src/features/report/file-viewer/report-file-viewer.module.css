@@ -1,0 +1,141 @@
+@layer features {
+  .layer {
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-overlay);
+    min-block-size: 0;
+    min-inline-size: 0;
+    overflow: auto;
+    background: var(--bg);
+  }
+
+  .body {
+    display: grid;
+    grid-template-columns:
+      var(--document-start, 0px)
+      minmax(0, var(--document-measure, var(--measure-prose)))
+      minmax(0, 1fr);
+    row-gap: var(--space-6);
+    inline-size: 100%;
+    min-block-size: 100%;
+    padding-block: var(--space-3) var(--space-12);
+  }
+
+  /* With no drawable card, the panel column is free. Replace the asymmetric
+     document/panel tracks with one centered wide measure and equal gutters. */
+  .bodyWide {
+    grid-template-columns:
+      minmax(var(--space-8), 1fr)
+      minmax(0, 64rem)
+      minmax(var(--space-8), 1fr);
+  }
+
+  .fileName,
+  .state,
+  .error,
+  .sourceWrap,
+  .imageWrap {
+    grid-column: 2;
+    min-inline-size: 0;
+  }
+
+  .fileName {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .state,
+  .error,
+  .notice {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-3);
+  }
+
+  .error {
+    color: var(--error-text);
+  }
+
+  .markdown {
+    grid-column: 1 / -1;
+    min-inline-size: 0;
+  }
+
+  .markdown > .notice {
+    margin-inline-start: var(--document-start, 0px);
+  }
+
+  .bodyWide .markdown {
+    grid-column: 2;
+    --document-start: 0px;
+    --document-measure: 100%;
+  }
+
+  .bodyWide .markdown > .notice {
+    margin-inline-start: 0;
+  }
+
+  .sourceWrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .source {
+    min-inline-size: 0;
+    padding: var(--space-6);
+    margin: 0;
+    overflow: auto;
+    border-radius: var(--radius-md);
+    background: var(--surface-code);
+    font-family: var(--font-code);
+    font-size: var(--text-sm);
+    line-height: var(--leading-loose);
+    color: var(--text);
+    tab-size: 2;
+  }
+
+  .imageWrap {
+    display: grid;
+    place-items: start center;
+    margin: 0;
+  }
+
+  .image {
+    max-inline-size: 100%;
+    max-block-size: calc(100dvh - var(--header-band, 0px) - var(--space-12));
+    object-fit: contain;
+  }
+
+  @media (width < 60rem) {
+    .body {
+      grid-template-columns: minmax(0, 1fr);
+      padding-block-start: var(--space-2);
+    }
+
+    .fileName,
+    .state,
+    .error,
+    .sourceWrap,
+    .imageWrap {
+      grid-column: 1;
+    }
+
+    .markdown {
+      grid-column: 1;
+    }
+
+    .bodyWide .markdown {
+      grid-column: 1;
+    }
+
+    .markdown > .notice {
+      margin-inline-start: 0;
+    }
+  }
+}

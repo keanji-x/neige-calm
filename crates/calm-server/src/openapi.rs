@@ -133,6 +133,8 @@ use utoipa::OpenApi;
         crate::routes::fs::listdir,
         crate::routes::fs::readfile,
         crate::routes::fs::readfile_raw,
+        crate::routes::fs::read_track_workspace_file,
+        crate::routes::fs::read_track_workspace_file_raw,
         crate::routes::fs::gitstatus,
         crate::routes::fs::gitdiff,
         // ---- settings ----

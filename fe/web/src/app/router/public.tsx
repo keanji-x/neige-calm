@@ -40,11 +40,16 @@ import {
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
+import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
+import { RecentFiles } from '../../features/report/recent-files/public.tsx';
 import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
   backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readTrackReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
+import {
+  parseWorkspaceRelativeFilePath, type ReportFileLinkTarget,
+} from '../../../../core/domain/report-file.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
@@ -53,7 +58,7 @@ import {
   type OptimisticConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
-import { createDirectoryLister } from '../providers/directory.ts';
+import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
 import { DELETE_CARD_COPY, DELETE_TRACK_COPY, RESET_TODAY_REPORT_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
@@ -81,9 +86,13 @@ import {
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
-  useGo, useGoSameTrack, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
+  useGo, useGoSameTrack, useRouteCardId, useRouteFilePath, useRouteFrom, useRouteHash,
+  useRoutePanel, useRouteParam, useTrackFileNavigation,
   usePlannerOpenIntent, useTrackPanelNavigation, validateTrackSearch, type TrackSearch,
 } from './navigation.ts';
+import {
+  createRecentFileHistory, type RecentFileHistory,
+} from '../providers/recent-files.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
@@ -685,12 +694,15 @@ export type AppRouterDeps = Readonly<{
   client: QueryClient;
   onSignOut: () => void;
   cards: CardRuntime;
+  recentFiles?: RecentFileHistory;
 }>;
 
 /** The component every settings route uses; see `settingsRoute` below. */
 function renderNothing(): null { return null; }
 
-export function createRouteTree({ transport, unauthorized, client, onSignOut, cards }: AppRouterDeps): AnyRoute {
+export function createRouteTree(deps: AppRouterDeps): AnyRoute {
+  const { transport, unauthorized, client, onSignOut, cards } = deps;
+  const recentFiles = deps.recentFiles ?? createRecentFileHistory();
   const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
 
   const indexRoute = createRoute({
@@ -716,7 +728,12 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     getParentRoute: () => rootRoute,
     path: '/track/$trackId',
     validateSearch: (search: Record<string, unknown>): TrackSearch => validateTrackSearch(search),
-    component: () => <TrackRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
+    component: () => <TrackRoute
+      transport={transport}
+      unauthorized={unauthorized}
+      cardRuntime={cards}
+      recentFiles={recentFiles}
+    />,
   });
 
   const recipesRoute = createRoute({
@@ -2152,8 +2169,11 @@ function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort
  * the fetching and the returns, and the half below owns the hooks that need a
  * track.
  */
-function TrackRoute({ transport, unauthorized, cardRuntime }: {
-  transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRuntime: CardRuntime;
+function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
+  transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
+  cardRuntime: CardRuntime;
+  recentFiles: RecentFileHistory;
 }) {
   const trackId = useRouteParam('/track/');
   const registry = useConversationRegistry();
@@ -2217,6 +2237,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
       cards={detail.data.cards}
       overlays={detail.data.overlays}
       cardRuntime={cardRuntime}
+      recentFiles={recentFiles}
     />
   );
 }
@@ -2252,7 +2273,9 @@ function cardInputNotifications(
   return [...statusByCard.values()].sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
-function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards, overlays, cardRuntime }: {
+function TrackRouteBody({
+  transport, unauthorized, track, canResumeTrack, cards, overlays, cardRuntime, recentFiles,
+}: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
@@ -2260,14 +2283,36 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
   cards: TrackDetailWire['cards'];
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
+  recentFiles: RecentFileHistory;
 }) {
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
   const go = useGo();
   const goSameTrack = useGoSameTrack();
+  const fileNavigation = useTrackFileNavigation();
   const { openPanel, closePanel } = useTrackPanelNavigation();
   const requestedCardId = useRouteCardId();
+  const rawRequestedFilePath = useRouteFilePath();
+  const requestedFilePath = requestedCardId === null ? rawRequestedFilePath : null;
+  const [recentFilePaths, setRecentFilePaths] = useState<readonly string[]>(
+    () => recentFiles.read(track.id),
+  );
+  const fileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const previousFilePathRef = useRef(requestedFilePath);
+  useEffect(() => {
+    const previous = previousFilePathRef.current;
+    previousFilePathRef.current = requestedFilePath;
+    if (previous === null || requestedFilePath !== null) return;
+    requestAnimationFrame(() => {
+      const opener = fileReturnFocusRef.current;
+      fileReturnFocusRef.current = null;
+      const target = opener?.isConnected === true
+        ? opener
+        : document.querySelector<HTMLElement>('[data-nc-report]');
+      target?.focus({ preventScroll: true });
+    });
+  }, [requestedFilePath]);
   /*
    * The URL is read, validated and turned into props **here**, in `app/**`:
    * `features-no-app` is an error-level dependency-cruiser rule, so `TrackPage`
@@ -2624,6 +2669,10 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
     () => createDirectoryLister(transport, unauthorized),
     [transport, unauthorized],
   );
+  const reportFiles = useMemo(
+    () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id),
+    [track.id, transport, unauthorized],
+  );
   const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
   /*
@@ -2755,6 +2804,32 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
     go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined });
   };
 
+  const rememberReportFile = (target: ReportFileLinkTarget) => {
+    const relativePath = parseWorkspaceRelativeFilePath(target.path)?.path ?? null;
+    if (relativePath === null) return null;
+    setRecentFilePaths(recentFiles.record(track.id, relativePath));
+    return relativePath;
+  };
+
+  const openReportFile = (target: ReportFileLinkTarget) => {
+    const relativePath = parseWorkspaceRelativeFilePath(target.path)?.path ?? null;
+    if (relativePath === null) return;
+    if (requestedFilePath === null && document.activeElement instanceof HTMLElement) {
+      fileReturnFocusRef.current = document.activeElement;
+    }
+    fileNavigation.openFile(track.id, relativePath);
+  };
+
+  const closeBoard = () => {
+    if (requestedFilePath !== null) {
+      fileNavigation.closeFile(track.id);
+      return;
+    }
+    go({ name: 'track', trackId: track.id, from: routeFrom }, { replace: true });
+  };
+
+  const boardOpen = knownCard || requestedFilePath !== null;
+
   const openReportAnchor = (blockId: string) => {
     revealReportAnchor(blockId);
     go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
@@ -2776,27 +2851,42 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
       cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
+      recentFiles={<RecentFiles
+        paths={recentFilePaths}
+        onOpen={(path) => openReportFile({ path })}
+      />}
       onOpenCard={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
       onDeleteCard={cardDeletion.request}
-      board={
+      board={<>
         <CardGridOverlay
           open={knownCard}
           items={gridItems}
           host={cardRuntime.host}
           activeCardId={requestedCardId}
           onRemoveCard={cardDeletion.request}
-          onClose={knownCard
-            ? () => { go({ name: 'track', trackId: track.id, from: routeFrom }, { replace: true }); }
-            : undefined}
+          onClose={knownCard ? closeBoard : undefined}
         />
-      }
-      onCloseBoard={knownCard
-        ? () => { go({ name: 'track', trackId: track.id, from: routeFrom }, { replace: true }); }
-        : undefined}
+        {requestedFilePath !== null && (
+          <ReportFileViewer
+            key={requestedFilePath}
+            path={requestedFilePath}
+            files={reportFiles}
+            fileRoot={track.cwd}
+            wide={gridItems.length === 0}
+            onClose={closeBoard}
+            onFileOpened={(path) => { rememberReportFile({ path }); }}
+            onOpenFileLink={openReportFile}
+          />
+        )}
+      </>}
+      onCloseBoard={boardOpen ? closeBoard : undefined}
       /* Gated on the viewport, not only on the card: the effect above cannot
          have run yet on a desktop cold start, and one render with the panel
          "open" is one render with the desktop panel `inert`. */
-      panel={renderedMobilePanel(routePanel, { compact: compactViewport, cardOpen: requestedCardId !== null })}
+      panel={renderedMobilePanel(routePanel, {
+        compact: compactViewport,
+        overlayOpen: requestedCardId !== null || rawRequestedFilePath !== null,
+      })}
       onOpenPanel={(kind) => { openPanel(track.id, kind); }}
       onClosePanel={() => { closePanel(track.id); }}
       /* `?from=` is the whole memory of how the reader got here; absent means
@@ -2812,6 +2902,8 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
         rail={<ReportOutline items={outline} />}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
+        onOpenFileLink={openReportFile}
+        fileRoot={track.cwd}
         arrivalAnchorId={arrivalAnchorId}
         /*
           #1211 S2 — "Nothing written here yet." described a missing artefact,

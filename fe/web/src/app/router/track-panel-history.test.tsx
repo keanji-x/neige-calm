@@ -20,27 +20,34 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  useGoSameTrack, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
-  useTrackPanelNavigation, validateTrackSearch, type TrackSearch,
+  useGoSameTrack, useRouteCardId, useRouteFilePath, useRouteFrom, useRouteHash, useRoutePanel,
+  useRouteParam, useTrackFileNavigation, useTrackPanelNavigation, validateTrackSearch,
+  type TrackSearch,
 } from './navigation.ts';
 
 function Probe() {
   const trackId = useRouteParam('/track/') ?? '';
   const { openPanel, closePanel } = useTrackPanelNavigation();
+  const { openFile, closeFile } = useTrackFileNavigation();
   const goSameTrack = useGoSameTrack();
   const panel = useRoutePanel();
   const from = useRouteFrom();
   const card = useRouteCardId();
+  const file = useRouteFilePath();
   const hash = useRouteHash();
   return (
     <div>
       <span>{`panel:${panel ?? 'none'}`}</span>
       <span>{`from:${from ?? 'none'}`}</span>
       <span>{`card:${card ?? 'none'}`}</span>
+      <span>{`file:${file ?? 'none'}`}</span>
       <span>{`hash:${hash ?? 'none'}`}</span>
       <button type="button" onClick={() => { openPanel(trackId, 'cards'); }}>open cards</button>
       <button type="button" onClick={() => { openPanel(trackId, 'tasks'); }}>open tasks</button>
       <button type="button" onClick={() => { closePanel(trackId); }}>close panel</button>
+      <button type="button" onClick={() => { openFile(trackId, 'docs/a.md'); }}>open file a</button>
+      <button type="button" onClick={() => { openFile(trackId, 'docs/b.md'); }}>open file b</button>
+      <button type="button" onClick={() => { closeFile(trackId); }}>close file</button>
       <button type="button" onClick={() => { goSameTrack(trackId, { card: undefined }, { replace: true }); }}>drop card</button>
       <button type="button" onClick={() => { goSameTrack('w9', { card: undefined }); }}>drop card on w9</button>
       <button type="button" onClick={() => { goSameTrack(trackId, { from: undefined }); }}>drop from</button>
@@ -167,6 +174,37 @@ describe('closing the mobile panel', () => {
     expect(back).not.toHaveBeenCalled();
     expect(router.history.length).toBe(1);
     expect(router.state.location.pathname).toBe('/track/w1');
+  });
+});
+
+describe('file history', () => {
+  it('uses one marked entry across file switches and pops back to the Report', async () => {
+    const router = setup(['/', '/track/w1']);
+    await userEvent.click(await screen.findByText('open file a'));
+    await waitFor(() => { probe('file', 'docs/a.md'); });
+    expect(router.history.length).toBe(3);
+    expect(router.history.location.state.ncFilePushed).toBe(true);
+
+    await userEvent.click(screen.getByText('open file b'));
+    await waitFor(() => { probe('file', 'docs/b.md'); });
+    expect(router.history.length).toBe(3);
+    expect(router.history.location.state.ncFilePushed).toBe(true);
+
+    await userEvent.click(screen.getByText('close file'));
+    await waitFor(() => { probe('file', 'none'); });
+    router.history.back();
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/'); });
+  });
+
+  it('closes a cold-start file deep link with replace instead of leaving the app', async () => {
+    const router = setup(['/track/w1?file=README.md&from=pages']);
+    await waitFor(() => { probe('file', 'README.md'); });
+    const back = vi.spyOn(router.history, 'back');
+
+    await userEvent.click(screen.getByText('close file'));
+    await waitFor(() => { expect(href(router)).toBe('/track/w1?from=pages'); });
+    expect(back).not.toHaveBeenCalled();
+    expect(router.history.length).toBe(1);
   });
 });
 

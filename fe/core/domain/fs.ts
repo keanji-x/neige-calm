@@ -82,6 +82,29 @@ export function rawFileUrl(path: string): string {
   return `/api/fs/readfile-raw?path=${encodeURIComponent(path)}`;
 }
 
+/** A Track-scoped read: the kernel, not the browser, owns the workspace root. */
+export function readTrackWorkspaceFileOperation(
+  trackId: string,
+  path: string,
+): ApiOperation<ReadFileWire> {
+  return {
+    method: 'GET',
+    path: `/api/tracks/${encodeURIComponent(trackId)}/workspace/readfile?path=${encodeURIComponent(path)}`,
+    responseSchema: readFileWireSchema,
+  };
+}
+
+/** Raw image counterpart to {@link readTrackWorkspaceFileOperation}. */
+export function trackWorkspaceRawFileUrl(trackId: string, path: string): string {
+  return `/api/tracks/${encodeURIComponent(trackId)}/workspace/readfile-raw?path=${encodeURIComponent(path)}`;
+}
+
+/** The only filesystem capabilities an agent-authored Report file may use. */
+export type WorkspaceFilePort = Readonly<{
+  readFile: (path: string) => Promise<ReadFileWire>;
+  rawUrl: (path: string) => string;
+}>;
+
 /** `status` is the kernel's word: modified / added / deleted / untracked / renamed. */
 export const gitChangedFileWireSchema = z.object({
   path: z.string(),

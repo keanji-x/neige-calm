@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  directoryListingWireSchema, listDirectoryOperation, toDirectoryListing,
+  directoryListingWireSchema, listDirectoryOperation, readTrackWorkspaceFileOperation,
+  toDirectoryListing, trackWorkspaceRawFileUrl,
 } from './fs.js';
 
 const WIRE = Object.freeze({
@@ -60,5 +61,16 @@ describe('the listdir operation', () => {
 
   it('carries no body, so the client sends no content-type on this read', () => {
     expect(listDirectoryOperation('/home')).not.toHaveProperty('body');
+  });
+});
+
+describe('Track-scoped workspace file operations', () => {
+  it('keeps the Track identity in the path and sends only a relative file query', () => {
+    expect(readTrackWorkspaceFileOperation('track/1', 'docs/a b.md')).toMatchObject({
+      method: 'GET',
+      path: '/api/tracks/track%2F1/workspace/readfile?path=docs%2Fa%20b.md',
+    });
+    expect(trackWorkspaceRawFileUrl('track/1', 'img/a&b.png'))
+      .toBe('/api/tracks/track%2F1/workspace/readfile-raw?path=img%2Fa%26b.png');
   });
 });
