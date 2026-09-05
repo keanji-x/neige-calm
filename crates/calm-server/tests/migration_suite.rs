@@ -14,3 +14,5 @@ mod migration_0094_worker_session_id;
 mod migration_0095_queue_harvested_backfill;
 #[path = "cases/migration_replay_harness.rs"]
 mod migration_replay_harness;
+#[path = "cases/worker_sessions_row_disappearance.rs"]
+mod worker_sessions_row_disappearance;
