@@ -309,6 +309,101 @@ pub async fn session_fail_if_active_runtime_tx(
     Ok(())
 }
 
+/// #1449 — record that this runtime's still-pending human sentences have left
+/// the undelivered set, either because a successor inherited its whole queue or
+/// because [`harvest_pending_user_messages_tx`] took them.
+///
+/// Idempotent by construction: the `IS NULL` conjunct means the first stamp
+/// wins and a second one is a no-op, so the timestamp answers *when the queue
+/// stopped being deliverable* and never drifts to a later restart.
+///
+/// The snapshot itself is left untouched. `session_restore_from_superseded_tx`
+/// exists, and editing a predecessor's persisted queue in place would make that
+/// restore lossy; the marker is purely additive.
+pub async fn session_mark_queue_harvested_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET queue_harvested_at_ms = ?1
+            WHERE id = ?2
+              AND queue_harvested_at_ms IS NULL"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// #1449 — the human sentences that never reached an agent, taken off this
+/// card's superseded runtimes and handed to the successor being minted in THIS
+/// transaction.
+///
+/// The predicate is `state = 'superseded'`, and the exclusion of `'failed'` is
+/// deliberate rather than incidental: the caller of a failed attempt gets a
+/// non-2xx and re-sends the same text under a `#N` retry key, so harvesting a
+/// failed row would deliver it twice.
+///
+/// Every row the read touched is stamped, including the ones that yielded
+/// nothing — the stamp records "this queue has left the undelivered set", not
+/// "this queue had something in it". Read, harvest and stamp share the caller's
+/// transaction with the successor's insert, so they commit or roll back
+/// together and a second restart can only ever see the stamp.
+///
+/// # Why the decoder is a parameter
+///
+/// `handle_state_json` holds a `HarnessSnapshot`, which is a `calm-server`
+/// type; this crate cannot name it. Passing the decoder in keeps the read and
+/// the stamp atomic *here* rather than handing the caller a row list it could
+/// forget to stamp. `extract` receives the runtime id (for its own warn line)
+/// and the raw snapshot text, and answers with the sentences to carry forward.
+///
+/// # Why the successor excludes itself
+///
+/// A deferred mint's placeholder row can be superseded by a runtime that raced
+/// in during the deferred window, and the insert that follows this call revives
+/// it under the SAME id. At this instant it is therefore `superseded` and
+/// unstamped while the successor already holds its queue in memory — harvesting
+/// it would hand the successor a second copy of its own sentences.
+pub async fn harvest_pending_user_messages_tx<F>(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    card_id: &str,
+    successor_id: &str,
+    extract: F,
+) -> WorkerSessionProjectionResult<Vec<String>>
+where
+    F: Fn(&str, &str) -> Vec<String>,
+{
+    let rows = sqlx::query(
+        r#"SELECT id, handle_state_json
+             FROM worker_sessions
+            WHERE card_id = ?1
+              AND state = 'superseded'
+              AND queue_harvested_at_ms IS NULL
+              AND id != ?2
+            ORDER BY created_at_ms ASC, id ASC"#,
+    )
+    .bind(card_id)
+    .bind(successor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let now = now_ms();
+    let mut harvested = Vec::new();
+    for row in &rows {
+        let id: String = row.try_get("id")?;
+        let state: Option<String> = row.try_get("handle_state_json")?;
+        if let Some(state) = state.as_deref() {
+            harvested.extend(extract(id.as_str(), state));
+        }
+        session_mark_queue_harvested_tx(tx, &id, now).await?;
+    }
+    Ok(harvested)
+}
+
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
 /// runtime status matrix and emits no event.
 pub async fn session_mark_superseded_runtime_tx(

@@ -9,10 +9,11 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     HarnessTranscriptMeasure, append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx,
     card_update_tx, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
-    session_bind_attribution_tx, session_delete_tx, session_fail_if_active_runtime_tx,
+    harvest_pending_user_messages_tx, session_bind_attribution_tx, session_delete_tx,
+    session_fail_if_active_runtime_tx, session_mark_queue_harvested_tx,
     session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
     session_restore_from_superseded_runtime_tx, session_set_handle_state_tx,
-    session_start_runtime_tx, session_supersede_and_start_tx,
+    session_start_runtime_tx, session_supersede_active_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -851,6 +852,54 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
             snapshot.align_pending_envelope_ids();
         }
+        // One clock for the whole mint: the supersede below, the harvest stamp,
+        // and the new row's `now_ms` all read the same instant, so the
+        // predecessor's `queue_harvested_at_ms` can never be newer than the
+        // successor that took the queue.
+        let now = now_ms();
+        // #1449 — the NON-deferred arm supersedes its predecessor without
+        // inheriting anything from it, so the supersede is hoisted here, ahead
+        // of the harvest, and the row it retires becomes harvestable inside
+        // this same transaction. Left where it was — at the bottom, after the
+        // snapshot has already been serialized — the predecessor would still be
+        // `active` when the harvest runs and its queue would be dropped exactly
+        // as it is today. `session_supersede_active_tx` here plus
+        // `session_start_runtime_tx` below are the same two statements, in the
+        // same order, that `session_supersede_and_start_tx` used to issue as
+        // one call.
+        //
+        // The deferred arm is deliberately NOT hoisted: it *inherits* the
+        // predecessor's whole queue a few lines above, and its supersede lives
+        // inside `session_prepare_deferred_planner_tx`.
+        let superseded_predecessor = if defer_runtime_start {
+            None
+        } else {
+            match session_projection_active_for_card_tx(tx, card.id.as_str()).await? {
+                Some(existing) => {
+                    session_supersede_active_tx(tx, &existing.id, now).await?;
+                    Some(existing)
+                }
+                None => None,
+            }
+        };
+        // #1449 — sentences a human typed and this system accepted, stranded on
+        // a runtime that left the active set before its queue drained. The
+        // re-point fence (`PATCH /api/tracks/{id}`) is the reachable case: it
+        // supersedes every live runtime of the track and then restarts through
+        // this very adapter, and until now the successor started with an empty
+        // queue and the sentence was unreachable forever.
+        //
+        // Read, carried and stamped in THIS transaction, together with the
+        // successor's own insert, so the mint and the transfer commit or roll
+        // back together and a second restart reads the stamp and takes nothing.
+        let runtime_id = new_id();
+        let harvested = harvest_pending_user_messages_tx(
+            tx,
+            card.id.as_str(),
+            runtime_id.as_str(),
+            stranded_user_messages,
+        )
+        .await?;
         // #1299 S1 — the track's first user message ships INSIDE this
         // transaction, after the inherited queue (if any) is folded in, so it
         // is the newest entry rather than being overwritten by the inherit
@@ -896,6 +945,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 .push(Observation::SystemContext { text: briefing });
             seeded = true;
         }
+        // #1449 — harvested sentences go after the successor's own briefing and
+        // goal (which are what the #1343 ordering rule above is about) and
+        // before this mint's own `first_message`, oldest first: they were said
+        // before the one that is arriving now.
+        for text in harvested {
+            snapshot
+                .pending_queue
+                .push(Observation::UserMessage { text });
+            seeded = true;
+        }
         if let Some(text) = payload.first_message.as_deref() {
             if text.trim().is_empty() {
                 return Err(CalmError::BadRequest(
@@ -916,7 +975,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.align_pending_envelope_ids();
         }
 
-        let runtime_id = new_id();
         let mut old_runtime_id = None;
         let mut old_runtime_status = None;
         let runtime_init = WorkerSessionInit {
@@ -931,7 +989,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             active_turn_id: None,
             handle_state_json: Some(serde_json::to_value(&snapshot)?),
             spawn_op_id: None,
-            now_ms: now_ms(),
+            now_ms: now,
         };
         if defer_runtime_start {
             if let Some(existing) = existing_active_runtime.as_ref() {
@@ -939,16 +997,21 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 old_runtime_status = Some(existing.status);
             }
             session_prepare_deferred_planner_tx(tx, &runtime_init).await?;
+            // #1449 — the inherit above took this row's WHOLE queue, so the row
+            // is stamped for the same reason a harvested one is. Without this
+            // the NEXT restart would find an unstamped superseded row still
+            // holding the sentences its successor already carries and would
+            // deliver them a second time. The two mechanisms are kept from
+            // double-counting by construction, not by ordering.
+            if let Some(existing) = existing_active_runtime.as_ref() {
+                session_mark_queue_harvested_tx(tx, &existing.id, now).await?;
+            }
         } else {
-            if let Some(existing) =
-                session_projection_active_for_card_tx(tx, card.id.as_str()).await?
-            {
+            if let Some(existing) = superseded_predecessor.as_ref() {
                 old_runtime_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status);
-                session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
-            } else {
-                session_start_runtime_tx(tx, runtime_init).await?;
             }
+            session_start_runtime_tx(tx, runtime_init).await?;
         }
 
         // #1299 S1 — the audit row for the seeded first message, written in the
@@ -1272,6 +1335,55 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
                     if runtime_deferred {
+                        let now = now_ms();
+                        let occupant = session_projection_active_for_card_tx(tx, &card_id).await?;
+                        // A runtime that is NOT this operation's own deferred
+                        // placeholder raced into the card's active slot while
+                        // the thread was being minted.
+                        let raced_in = match occupant.as_ref() {
+                            Some(existing) if existing.id != runtime_id => Some(existing.clone()),
+                            _ => None,
+                        };
+                        // The successor's queue, plus — when a racer is being
+                        // retired here — whatever the racer never delivered.
+                        let mut runtime_snapshot = snapshot.clone();
+                        if let Some(existing) = raced_in.as_ref() {
+                            old_runtime_id = Some(existing.id.clone());
+                            old_runtime_status = Some(existing.status);
+                            checkpoint_output.set_output_data(
+                                "old_runtime_id",
+                                json!(existing.id.clone()),
+                                "planner harness",
+                            )?;
+                            checkpoint_output.set_output_data(
+                                "old_runtime_status",
+                                serde_json::to_value(existing.status)?,
+                                "planner harness",
+                            )?;
+                            // #1449 — supersede FIRST, then harvest, because
+                            // the harvest predicate is `state = 'superseded'`
+                            // and this row is the one being retired. Until now
+                            // this branch dropped the racer's queue outright:
+                            // a sentence a human typed into it in the window
+                            // between the deferred mint and this write was lost
+                            // with no error and no trace.
+                            session_supersede_active_tx(tx, &existing.id, now).await?;
+                            let harvested = harvest_pending_user_messages_tx(
+                                tx,
+                                &card_id,
+                                &runtime_id,
+                                stranded_user_messages,
+                            )
+                            .await?;
+                            if !harvested.is_empty() {
+                                for text in harvested {
+                                    runtime_snapshot
+                                        .pending_queue
+                                        .push(Observation::UserMessage { text });
+                                }
+                                runtime_snapshot.align_pending_envelope_ids();
+                            }
+                        }
                         let runtime_init = WorkerSessionInit {
                             id: runtime_id.clone(),
                             card_id: card_id.clone(),
@@ -1282,32 +1394,25 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             thread_id: Some(thread_for_tx.clone()),
                             session_id: None,
                             active_turn_id: None,
-                            handle_state_json: Some(serde_json::to_value(&snapshot)?),
+                            handle_state_json: Some(serde_json::to_value(&runtime_snapshot)?),
                             spawn_op_id: None,
-                            now_ms: now_ms(),
+                            now_ms: now,
                         };
-                        if let Some(existing) =
-                            session_projection_active_for_card_tx(tx, &card_id).await?
-                        {
-                            let existing_id = existing.id.clone();
-                            let existing_status = existing.status;
-                            if existing_id != runtime_id {
-                                old_runtime_id = Some(existing_id.clone());
-                                old_runtime_status = Some(existing_status);
-                                checkpoint_output.set_output_data(
-                                    "old_runtime_id",
-                                    json!(existing_id),
-                                    "planner harness",
-                                )?;
-                                checkpoint_output.set_output_data(
-                                    "old_runtime_status",
-                                    serde_json::to_value(existing_status)?,
-                                    "planner harness",
-                                )?;
+                        match (occupant, raced_in) {
+                            // This operation's own placeholder: superseded and
+                            // re-inserted under the same id, exactly as before.
+                            (Some(existing), None) => {
+                                session_supersede_and_start_tx(tx, &existing.id, runtime_init)
+                                    .await?;
                             }
-                            session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
-                        } else {
-                            session_start_runtime_tx(tx, runtime_init).await?;
+                            // The racer is already superseded above, so the
+                            // pair `supersede + start` is complete here.
+                            (Some(_), Some(_)) => {
+                                session_start_runtime_tx(tx, runtime_init).await?;
+                            }
+                            (None, _) => {
+                                session_start_runtime_tx(tx, runtime_init).await?;
+                            }
                         }
                     } else {
                         session_bind_attribution_tx(
@@ -1689,6 +1794,78 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
 fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
     reason.contains(REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR)
+}
+
+/// #1449 — the human sentences a superseded runtime never delivered.
+///
+/// The filter is the product ruling, and it is narrow on purpose: **only**
+/// `Observation::UserMessage` travels. `SystemContext` (the #1343 opening
+/// briefing) and `TrackGoal` are functions of the successor's OWN workspace and
+/// payload — after a re-point that is a different directory — so the successor
+/// re-derives them and carrying the predecessor's copies forward would inject a
+/// briefing describing the workspace the track just left. Every other
+/// observation (report bodies, hook observations, diff blocks) describes the old
+/// workspace at an old head; carrying it is worse than dropping it.
+///
+/// Bad shapes warn and yield nothing rather than failing the mint — the same
+/// posture the dormant-restart inherit above takes — and the caller stamps the
+/// row either way, so a snapshot nothing can read is not re-examined forever.
+fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> Vec<String> {
+    let Ok(state) = serde_json::from_str::<Value>(handle_state_json) else {
+        tracing::warn!(
+            runtime_id,
+            "harvest: superseded runtime snapshot is not JSON; leaving its queue behind"
+        );
+        return Vec::new();
+    };
+    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
+        return Vec::new();
+    }
+    if !is_harness_snapshot_value(&state) {
+        tracing::warn!(
+            runtime_id,
+            "harvest: superseded runtime snapshot has corrupt/unknown shape; \
+             leaving its queue behind"
+        );
+        return Vec::new();
+    }
+    let snapshot = HarnessSnapshot::from_value_strict(state);
+    // #1449 — `IssuingTurn` is the one phase in which the persisted queue is
+    // NOT evidence of an undelivered message.
+    //
+    // `maybe_issue_turn` persists the snapshot with the batch still on the
+    // queue, THEN drains it in memory, THEN calls `turn/start`, and only then
+    // persists the emptied queue. That last write is lost whenever the run
+    // loop's `tokio::select!` takes its shutdown arm — the re-point fence's
+    // `shutdown` broadcast cancels the in-flight `maybe_issue_turn` future at
+    // whatever await it is sitting on, `turn/start` included. So a row left in
+    // `issuing_turn` may well hold a batch the daemon already has, and
+    // harvesting it delivers the sentence twice: measured, under load, as
+    // `left: 2` in `a_replay_survives_the_track_being_repointed_in_between`
+    // and `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`.
+    //
+    // This is not a marker-absence heuristic: the phase is the runtime's own
+    // state machine saying "an issuance for this exact batch is in flight", and
+    // the two outcomes it collapses cannot be told apart without a daemon-side
+    // idempotency key (design §7 gap 7). Skipping it leaves that batch exactly
+    // where `main` leaves it today, so this slice regresses nothing; every
+    // other phase — `idle`, `pending_thread_start`, `turn_completed`,
+    // `turn_running` — persisted a queue that no issuance had yet claimed.
+    if snapshot.phase == HarnessPhaseTag::IssuingTurn {
+        tracing::debug!(
+            runtime_id,
+            "harvest: superseded runtime was mid-issuance; its batch may already have reached              the daemon, so it is not carried forward"
+        );
+        return Vec::new();
+    }
+    snapshot
+        .pending_queue
+        .into_iter()
+        .filter_map(|observation| match observation {
+            Observation::UserMessage { text } => Some(text),
+            _ => None,
+        })
+        .collect()
 }
 
 fn output_snapshot(output: &TxOutput) -> Result<HarnessSnapshot> {

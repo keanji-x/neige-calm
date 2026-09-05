@@ -32,6 +32,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0092_track_create_message_less_binding.sql",
     "0093_operations_keyed_rows_are_permanent.sql",
     "0094_runtime_id_to_worker_session_id.sql",
+    "0095_worker_sessions_queue_harvested.sql",
 ];
 
 #[test]
