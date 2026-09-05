@@ -17,10 +17,13 @@ use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::{InputItem, Notification};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use crate::event::{Event, EventBus, EventScope};
+use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
-use crate::harness::queue::{FoldOutcome, QueueEntry, QueueEntryId, try_fold_tail};
+use crate::harness::queue::{
+    FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
+    try_fold_tail,
+};
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
@@ -250,6 +253,34 @@ enum HarnessObservationCommand {
         deliveries: Vec<HarnessObservationDelivery>,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
+    /// #1505 PR2 — a human edit or delete against one queue entry.
+    ///
+    /// It rides the same mpsc as every other command and is handled in the
+    /// same `observations.recv()` arm, so it never runs part-way through a
+    /// tick's `watchdog_tick` / `maybe_issue_turn`.
+    ///
+    /// That is NOT what makes "a delete racing a drain has two outcomes, never
+    /// three" true, and the earlier draft of this comment said it was.
+    /// `pending_queue` is a `tokio::Mutex`; the disjunction comes from
+    /// `queue::apply_mutation` doing its whole compare-and-swap under one hold
+    /// of it, and from `maybe_issue_turn` emptying the queue under the same
+    /// lock before it calls `turn/start`. Running this on the caller's task
+    /// instead was tried as a mutation and reddened nothing, which is correct.
+    ///
+    /// What the single arm does buy: a mutation cannot be interleaved with the
+    /// rest of a tick, and it cannot be starved by one either.
+    ///
+    /// Unlike `Durable`, the sender does NOT hold `durable_observation` while
+    /// it waits. That mutex is held by `observe_durable_observations` across
+    /// its `confirmation.await`, so a POST stuck behind a slow issuance blocks
+    /// every later POST; a mutation must not be able to join that queue behind
+    /// an unrelated send. What this buys is concurrent WAITING, not lower
+    /// latency: every one of these still waits for the same `select!`.
+    Mutate {
+        mutation: QueueMutation,
+        actor: ActorId,
+        applied: oneshot::Sender<Result<MutationResult>>,
+    },
 }
 
 enum ObservationIngress {
@@ -452,6 +483,53 @@ impl PlannerHarness {
                     return Err(error);
                 }
                 Ok(ack)
+            }
+        }
+    }
+
+    /// #1505 PR2 — edit or delete one queue entry, from the REST write port.
+    ///
+    /// The outer `Result` is transport: the harness is shutting down, or its
+    /// command channel is saturated. The inner [`MutationResult`] is the
+    /// queue's own answer — applied, not found, stale, or ambiguous.
+    ///
+    /// `actor` is only ever [`ActorId::User`] today, because both routes
+    /// refuse anything else before calling this. It is a parameter rather than
+    /// a hardcoded constant so the event says who asked rather than restating
+    /// what the route guard happens to permit; PR2b's kernel-authored `Dropped`
+    /// is the second caller.
+    pub async fn mutate_pending_entry(
+        &self,
+        mutation: QueueMutation,
+        actor: ActorId,
+    ) -> Result<MutationResult> {
+        // Deliberately NOT taking `durable_observation`: see the doc comment on
+        // `HarnessObservationCommand::Mutate`.
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict(
+                "planner harness is shutting down; refusing queue mutation".into(),
+            ));
+        }
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (applied, answer) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::Mutate {
+                        mutation,
+                        actor,
+                        applied,
+                    })
+                    .map_err(map_observation_send_error)?;
+                answer.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "planner harness runtime shut down before the queue mutation was applied"
+                            .into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => {
+                handle_queue_mutation(&self.inner, &mutation, &actor).await
             }
         }
     }
@@ -708,6 +786,41 @@ impl PlannerHarness {
         self.inner.issuance_paused.store(true, Ordering::SeqCst);
     }
 
+    /// #1505 PR2 — the debounce arming, for the tests that pin §4.5.
+    ///
+    /// Read directly rather than inferred from whether a turn fired: inferring
+    /// it would make the assertion depend on the 50ms tick, and a rule about
+    /// what the queue is armed with is not a rule about when.
+    #[cfg(feature = "fixtures")]
+    pub async fn debounce_hard_fire_for_test(&self) -> bool {
+        self.inner.debounce.lock().await.hard_fire
+    }
+
+    /// Whether `(first_pending_at, last_pending_at)` are set. The values are
+    /// `Instant`s and mean nothing outside this process; whether they are
+    /// present is the whole of what §4.5 says about them.
+    #[cfg(feature = "fixtures")]
+    pub async fn debounce_timestamps_set_for_test(&self) -> (bool, bool) {
+        let debounce = self.inner.debounce.lock().await;
+        (
+            debounce.first_pending_at.is_some(),
+            debounce.last_pending_at.is_some(),
+        )
+    }
+
+    /// How long the current pending window has been open, in milliseconds.
+    /// Zero when there is no window.
+    #[cfg(feature = "fixtures")]
+    pub async fn debounce_first_pending_elapsed_ms_for_test(&self) -> u128 {
+        self.inner
+            .debounce
+            .lock()
+            .await
+            .first_pending_at
+            .map(|at| at.elapsed().as_millis())
+            .unwrap_or(0)
+    }
+
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
@@ -922,6 +1035,10 @@ async fn run_loop(
                         };
                         let _ = persisted.send(result);
                     }
+                    HarnessObservationCommand::Mutate { mutation, actor, applied } => {
+                        let outcome = handle_queue_mutation(&inner, &mutation, &actor).await;
+                        let _ = applied.send(outcome);
+                    }
                 }
             }
             notif = notifications.recv() => {
@@ -950,6 +1067,94 @@ async fn run_loop(
             }
         }
     }
+}
+
+/// #1505 PR2 — the whole of what `HarnessObservationCommand::Mutate` is allowed
+/// to do: take the queue lock, apply the mutation, re-arm the debounce, persist,
+/// emit.
+///
+/// It runs on the run-loop task (or, under the fixtures ingress, on the
+/// caller's — there is no loop there to hand it to). Nothing here awaits Codex,
+/// so a mutation cannot extend the window during which other commands wait.
+async fn handle_queue_mutation(
+    inner: &Arc<Inner>,
+    mutation: &QueueMutation,
+    actor: &ActorId,
+) -> Result<MutationResult> {
+    let (outcome, checkpoint) = {
+        let mut queue = inner.pending_queue.lock().await;
+        let before = queue.clone();
+        (apply_mutation(&mut queue, mutation), before)
+    };
+    let applied = match outcome {
+        Ok(applied) => applied,
+        // A refusal changed nothing, so there is nothing to persist and nothing
+        // to announce. In particular a 404 does NOT mean the entry was
+        // delivered — `rebuffer_head` can put a drained batch back — so
+        // inventing an event here would put a false sentence in the audit log.
+        Err(refused) => return Ok(Err(refused)),
+    };
+
+    // §4.5 — one rule for every departure from the queue. `hard_fire` is
+    // recomputed over what is left, so deleting the only user message does not
+    // leave a queue of soft observations falsely armed. The timestamps are NOT
+    // touched unless the queue emptied: the observations still waiting keep the
+    // arming they were enqueued with, and a user deleting a message must not
+    // postpone somebody else's turn.
+    if applied.change == HarnessQueueChange::Deleted {
+        let mut debounce = inner.debounce.lock().await;
+        debounce.hard_fire = applied.remaining_hard_fire;
+        if applied.queue_now_empty {
+            debounce.first_pending_at = None;
+            debounce.last_pending_at = None;
+        }
+    }
+
+    if let Err(error) = persist_snapshot(inner).await {
+        // Same shape as the durable enqueue path: memory is rolled back to the
+        // exact queue the mutation started from, so a client that gets a 500
+        // and re-reads sees the entry it tried to change, unchanged.
+        *inner.pending_queue.lock().await = checkpoint;
+        return Err(error);
+    }
+
+    let scope = harness_event_scope(inner, "harness.queue.changed");
+    if let Err(error) = inner
+        .repo
+        .log_pure_event(
+            actor.clone(),
+            scope,
+            None,
+            &inner.events,
+            &inner.card_role_cache,
+            &inner.track_area_cache,
+            Event::HarnessQueueChanged {
+                worker_session_id: inner.worker_session_id.clone(),
+                card_id: inner.card_id.clone(),
+                track_id: inner.track_id.clone(),
+                entry_id: applied.entry_id.as_str().to_string(),
+                change: applied.change,
+                actor: actor.clone(),
+            },
+        )
+        .await
+    {
+        // The snapshot above is already committed, so the change has happened
+        // whatever this says. Reporting failure here would invite a retry of a
+        // delete that already succeeded, and the retry would answer 404 —
+        // telling the user their entry was never there. Surface it
+        // operationally instead. The visible cost is real: the frontend's queue
+        // region is invalidated BY this event, so a client that is not the one
+        // that issued the mutation will not refresh until something else moves.
+        tracing::error!(
+            card_id = %inner.card_id,
+            entry_id = %applied.entry_id,
+            change = ?applied.change,
+            error = %error,
+            "planner queue mutation was applied but its audit event failed"
+        );
+    }
+    Ok(Ok(applied))
 }
 
 async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {

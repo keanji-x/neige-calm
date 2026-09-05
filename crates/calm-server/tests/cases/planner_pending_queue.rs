@@ -10,214 +10,25 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
-    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessSnapshot, MAX_PENDING_QUEUE_LEN,
-    Observation, PlannerHarness, PlannerHarnessParams, QueueEntry,
+    HARNESS_MODE, HarnessSnapshot, MAX_PENDING_QUEUE_LEN, Observation, QueueEntry,
 };
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
+use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
-use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 
-const SEED_THREAD_ID: &str = "thread-pending-queue";
-
-struct Boot {
-    app: axum::Router,
-    harness: PlannerHarness,
-    planner_card: Card,
-    worker_session_id: String,
-}
-
-/// A planner card with a live, registered harness seeded from `snapshot`.
-///
-/// The debounce windows are pushed out to a minute so the run loop cannot
-/// drain the queue out from under an assertion — every test here is about
-/// what is IN the queue.
-async fn boot_with(snapshot: HarnessSnapshot) -> Boot {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let area = repo
-        .area_create(NewArea {
-            name: "pending-queue".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let track = repo
-        .track_create(NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "pending queue".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-
-    let role_cache = CardRoleCache::new();
-    let track_area_cache = TrackAreaCache::new();
-    track_area_cache.insert(track.id.clone(), area.id);
-
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-
-    let worker_session_id = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        calm_server::session_projection_repo::WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
-            status: calm_server::session_projection_repo::WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(SEED_THREAD_ID.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let events = EventBus::new();
-    let state = AppState::from_parts(
-        repo.clone(),
-        events.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-pending-queue"),
-            Vec::new(),
-            EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache.clone()),
-        Some(track_area_cache.clone()),
-    );
-
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: worker_session_id.clone(),
-        track_id: planner_card.track_id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(SEED_THREAD_ID.to_string()),
-        repo: repo_dyn,
-        events,
-        card_role_cache: role_cache,
-        track_area_cache,
-        daemon,
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot,
-    });
-    // Every test in this file asserts on what is IN the queue, and a user
-    // message hard-fires: it bypasses the debounce windows above entirely and
-    // would be drained by the first 50ms tick. Pausing issuance is what makes
-    // these assertions deterministic rather than a race against that tick.
-    harness.pause_issuance_for_dev();
-    state
-        .harness
-        .insert(worker_session_id.clone(), harness.clone());
-
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
-
-    Boot {
-        app,
-        harness,
-        planner_card,
-        worker_session_id,
-    }
-}
-
-fn idle_snapshot(entries: Vec<QueueEntry>) -> HarnessSnapshot {
-    let mut snapshot = HarnessSnapshot::initial(0, entries);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
-    snapshot
-}
-
-async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(uri)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, body)
-}
-
-async fn post_input(app: axum::Router, card_id: &str, text: &str) -> (StatusCode, Value) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/cards/{card_id}/planner/input"))
-                .header("content-type", "application/json")
-                .header("x-calm-actor", "user")
-                .body(Body::from(json!({"text": text}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, body)
-}
+use crate::support::planner_queue_fixture::{
+    SEED_THREAD_ID, boot_with, get, idle_snapshot, post_input,
+};
 
 /// The main acceptance path: the id the sender is handed is the id the queue
 /// shows, and the entry carries its complete text.

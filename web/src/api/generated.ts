@@ -252,6 +252,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/planner/input/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_planner_input"];
+        options?: never;
+        head?: never;
+        patch: operations["edit_planner_input"];
+        trace?: never;
+    };
     "/api/cards/{id}/planner/interrupt": {
         parameters: {
             query?: never;
@@ -1839,6 +1855,14 @@ export interface components {
          * @enum {string}
          */
         DefaultSource: "config_read" | "config_toml" | "unknown";
+        DeletePlannerInputBody: {
+            /**
+             * Format: int32
+             * @description The `rev` the client last read for this entry. Required — see the
+             *     module header.
+             */
+            if_entry_rev: number;
+        };
         DeleteReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -1861,6 +1885,19 @@ export interface components {
         DirEntry: {
             is_dir: boolean;
             name: string;
+        };
+        EditPlannerInputBody: {
+            /**
+             * Format: int32
+             * @description The `rev` the client last read for this entry. A mismatch is a 409, not
+             *     a silent overwrite.
+             */
+            if_entry_rev: number;
+            /**
+             * @description Replacement text. Held to the same limits as `POST /planner/input`,
+             *     because it becomes the same turn input.
+             */
+            text: string;
         };
         /**
          * @description JSON shape returned for every error response — `{error, code}`.
@@ -2386,6 +2423,49 @@ export interface components {
             id: components["schemas"]["AttachmentId"];
             /** Format: int64 */
             size: number;
+        };
+        PlannerInputMutationResponse: {
+            card_id: string;
+            entry_id: string;
+            /**
+             * Format: int32
+             * @description The entry's `rev` after the change. On a delete this is the rev it
+             *     carried when it left, so a client can tell which read it acted on.
+             */
+            rev: number;
+            /**
+             * @description The entry's text after an edit; null for a delete.
+             *
+             *     Echoed rather than assumed: the client is then reconciling against what
+             *     the queue holds rather than against what it hoped it would hold. The
+             *     queue as a whole is deliberately NOT returned — this same mutation emits
+             *     `harness.queue.changed`, which invalidates the planner-run query, so a
+             *     list attached here would be superseded before it could be used.
+             */
+            text?: string | null;
+            worker_session_id: string;
+        };
+        /**
+         * @description 409 body for a compare-and-swap failure.
+         *
+         *     It carries the current text and rev because the alternative is a client
+         *     that has to issue a read to find out what it collided with, and the read it
+         *     would issue can be superseded again before it lands. The extra fields sit
+         *     alongside `error`/`code` so a generic error handler still sees the shape it
+         *     expects.
+         */
+        PlannerInputStaleBody: {
+            /** @description Always `planner_input_stale`. */
+            code: string;
+            entry_id: string;
+            error: string;
+            /**
+             * Format: int32
+             * @description The entry's current rev — resend with this to overwrite deliberately.
+             */
+            rev: number;
+            /** @description The entry's text as it stands now. */
+            text: string;
         };
         /**
          * @description #1255 S3 — the context-usage half of [`GetPlannerRunResponse`].
@@ -4591,6 +4671,181 @@ export interface operations {
                 };
             };
             /** @description Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_planner_input: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+                /** @description Pending queue entry id from `GET /planner/run` */
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeletePlannerInputBody"];
+            };
+        };
+        responses: {
+            /** @description Entry removed from the queue before it was delivered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerInputMutationResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not `X-Calm-Actor: user`, or the card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found, or the entry is no longer in the pending queue — it may already have been delivered. Not retryable: a re-issued DELETE can answer 200 if the batch was rebuffered. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `if_entry_rev` does not match (code `planner_input_stale`), or the harness is shutting down (code `conflict`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerInputStaleBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Harness command channel saturated — retry shortly */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    edit_planner_input: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+                /** @description Pending queue entry id from `GET /planner/run` */
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditPlannerInputBody"];
+            };
+        };
+        responses: {
+            /** @description Entry rewritten */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerInputMutationResponse"];
+                };
+            };
+            /** @description Empty or over-long text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not `X-Calm-Actor: user`, or the card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found, or the entry is no longer in the pending queue */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `if_entry_rev` does not match (code `planner_input_stale`, body carries the current text and rev), or the harness is shutting down (code `conflict`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerInputStaleBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Harness command channel saturated — retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;

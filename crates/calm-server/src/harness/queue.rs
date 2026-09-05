@@ -27,6 +27,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::error::{CalmError, Result};
+use crate::event::HarnessQueueChange;
 use crate::harness::observation::Observation;
 use crate::model::{new_id, now_ms};
 
@@ -44,6 +45,16 @@ impl QueueEntryId {
     /// place an id is created.
     pub(crate) fn mint() -> Self {
         Self(new_id())
+    }
+
+    /// Adopt an id that arrived from a client, verbatim.
+    ///
+    /// No validation, and none is possible: the set of valid ids is exactly
+    /// "the ids currently in this queue", which only the queue can answer. It
+    /// answers by not matching, which is a 404 — so an id from a URL is a
+    /// lookup key here and never a claim about anything.
+    pub fn from_wire(id: String) -> Self {
+        Self(id)
     }
 
     pub fn as_str(&self) -> &str {
@@ -412,6 +423,192 @@ impl QueueEntry {
             _ => None,
         }
     }
+}
+
+/// #1505 PR2 — one addressable change a human asked for.
+///
+/// Both arms carry `if_entry_rev`, and it is required rather than optional on
+/// the delete too. "I am deleting the entry I read" and "I am editing the
+/// entry I read" are the same precondition, and an optional token is an
+/// unconditional write for any client that omits it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueueMutation {
+    Edit {
+        entry_id: QueueEntryId,
+        text: String,
+        if_entry_rev: u32,
+    },
+    Delete {
+        entry_id: QueueEntryId,
+        if_entry_rev: u32,
+    },
+}
+
+impl QueueMutation {
+    pub fn entry_id(&self) -> &QueueEntryId {
+        match self {
+            Self::Edit { entry_id, .. } | Self::Delete { entry_id, .. } => entry_id,
+        }
+    }
+
+    fn if_entry_rev(&self) -> u32 {
+        match self {
+            Self::Edit { if_entry_rev, .. } | Self::Delete { if_entry_rev, .. } => *if_entry_rev,
+        }
+    }
+}
+
+/// A mutation that took effect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationApplied {
+    pub entry_id: QueueEntryId,
+    pub change: HarnessQueueChange,
+    /// The entry's `rev` after the change. `Deleted` reports the rev the entry
+    /// carried when it was removed, so a log line can be joined against the
+    /// read the client acted on.
+    pub rev: u32,
+    /// The text after the change, for `Edit` only.
+    pub text: Option<String>,
+    /// True when this mutation left the queue empty.
+    pub queue_now_empty: bool,
+    /// Whether any entry still in the queue is hard-fire, recomputed from the
+    /// entries that remain. The caller re-arms the debounce with it.
+    pub remaining_hard_fire: bool,
+}
+
+/// Why a mutation did nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MutationRefused {
+    /// No entry in the queue carries this id. Already drained, dropped by a
+    /// snapshot truncation, or gone with a restart — the three are not
+    /// distinguishable here and deliberately are not reported as if they were.
+    /// Note that a drain is not final: `rebuffer_head` can put the batch back,
+    /// so the entry may reappear.
+    NotFound,
+    /// The entry is there, but its text has moved on since the client read it.
+    Stale {
+        entry_id: QueueEntryId,
+        text: String,
+        rev: u32,
+    },
+    /// Two entries in the queue carry the same id, so "the" entry the client
+    /// named does not exist.
+    ///
+    /// Unreachable today, and the point is that it is refused rather than
+    /// resolved: ids are minted as uuid v4, and
+    /// `HarnessSnapshot::deserialize_pending_entry_meta` demotes a duplicate a
+    /// hand-edited `handle_state_json` smuggled past it, so the read boundary
+    /// is what makes ids unique — not this type. Picking the first match would
+    /// turn a violation of somebody else's invariant into a write against
+    /// whichever message happened to be earlier, which is precisely the
+    /// "delete hits the wrong message" failure #1505 PR1 set out to make
+    /// impossible.
+    AmbiguousId {
+        entry_id: QueueEntryId,
+        count: usize,
+    },
+}
+
+/// The domain answer to a mutation: it happened, or it was refused and why.
+///
+/// Distinct from the transport `Result` the harness returns around it. The
+/// outer one means "the request never reached the queue" (the runtime is gone,
+/// the channel is saturated); this one means the queue looked at the request
+/// and answered.
+pub type MutationResult = std::result::Result<MutationApplied, MutationRefused>;
+
+/// Apply one human mutation to the pending queue, in place.
+///
+/// The queue lock is the caller's to hold; this function does no IO and takes
+/// no locks, so the whole compare-and-swap — locate, check `rev`, write —
+/// happens inside one critical section. That is what makes the delete-versus-
+/// drain race have two outcomes instead of three: whichever of the two reaches
+/// the run loop's single `select!` first sees the queue the other has not
+/// touched yet.
+pub fn apply_mutation(
+    queue: &mut VecDeque<QueueEntry>,
+    mutation: &QueueMutation,
+) -> MutationResult {
+    let entry_id = mutation.entry_id();
+    let matches = queue
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.id() == Some(entry_id))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let index = match matches.as_slice() {
+        [] => return Err(MutationRefused::NotFound),
+        [only] => *only,
+        many => {
+            return Err(MutationRefused::AmbiguousId {
+                entry_id: entry_id.clone(),
+                count: many.len(),
+            });
+        }
+    };
+
+    let current_rev = queue[index]
+        .user_view()
+        .expect("an entry matched by id is a User entry, the only variant that has one")
+        .rev;
+    if current_rev != mutation.if_entry_rev() {
+        let view = queue[index].user_view().expect("checked just above");
+        return Err(MutationRefused::Stale {
+            entry_id: entry_id.clone(),
+            text: view.text.to_string(),
+            rev: view.rev,
+        });
+    }
+
+    let (change, rev, text) = match mutation {
+        QueueMutation::Edit { text: new_text, .. } => {
+            let QueueEntry::User { text, rev, .. } = &mut queue[index] else {
+                unreachable!("an entry matched by id is a User entry")
+            };
+            new_text.clone_into(text);
+            // The entry keeps its `message_ids`: an edit changes what the
+            // instance SAYS, not which instance it is, and #1449's give-back
+            // matches on those ids.
+            //
+            // KNOWN GAP (#1449 x #1505 PR2): the harvest journal records the
+            // text as it was at the transfer, so if this entry was harvested
+            // and the mint later fails, the give-back puts the PRE-edit text
+            // back on the source row. Bounded — the entry is identified
+            // correctly and nothing is lost or delivered twice, only the edit
+            // is — and closing it means journalling by reference to a row that
+            // the failing mint is in the middle of emptying. A DELETE has no
+            // such gap: the ids leave with the entry, the give-back's "are
+            // these ids still held" answers no, and the sentence is correctly
+            // not restored.
+            //
+            // Same rule as a fold: the body a client was editing changed, so
+            // any other client's in-flight write against the old rev is now
+            // stale and gets a 409 instead of overwriting this one.
+            *rev = rev.saturating_add(1);
+            (HarnessQueueChange::Edited, *rev, Some(new_text.clone()))
+        }
+        QueueMutation::Delete { .. } => {
+            let removed = queue.remove(index).expect("index came from this queue");
+            let rev = removed
+                .user_view()
+                .expect("an entry matched by id is a User entry")
+                .rev;
+            (HarnessQueueChange::Deleted, rev, None)
+        }
+    };
+
+    Ok(MutationApplied {
+        entry_id: entry_id.clone(),
+        change,
+        rev,
+        text,
+        queue_now_empty: queue.is_empty(),
+        // Recomputed over what is LEFT, not patched. An edit cannot change the
+        // answer (the entry stays, and it was hard-fire before and after), but
+        // computing it the same way in both arms keeps the caller from having
+        // to know which arm can move it.
+        remaining_hard_fire: queue.iter().any(QueueEntry::is_hard_fire),
+    })
 }
 
 /// What [`try_fold_tail`] did with an incoming entry.

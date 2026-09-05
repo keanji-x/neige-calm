@@ -41,7 +41,7 @@ import { invalidationPlanFor } from './invalidation-plan.js';
 const CONVERSATION_LIST_KINDS = [
   'card.added', 'card.updated',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
-  'harness.phase.changed', 'harness.user_message.enqueued',
+  'harness.phase.changed', 'harness.user_message.enqueued', 'harness.queue.changed',
 ] as const;
 
 function event(value: unknown): WireEvent {
@@ -247,6 +247,12 @@ describe('invalidation plan behavior', () => {
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
+    // #1505 PR2. `harness-items` is for the `steered` value, which nothing
+    // emits until PR3; the other three values do not add a transcript row.
+    expect(planned('harness.queue.changed')).toEqual([
+      ['planner-run', 'card-1'], ['harness-items', 'card-1'],
+      ['track-conversations', 'track-1'],
+    ]);
   });
 
   /*
@@ -257,7 +263,7 @@ describe('invalidation plan behavior', () => {
    * `expected` side is the hand-kept list above, and the point is that the two
    * are maintained separately.
    */
-  it('refetches the track conversation list from exactly the seven session-writing kinds', () => {
+  it('refetches the track conversation list from exactly the eight session-writing kinds', () => {
     const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
       .invalidate.some((key) => key[0] === 'track-conversations'));

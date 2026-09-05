@@ -107,6 +107,13 @@ function trackConversations(trackId: string | null): QueryKey {
  * `card.deleted` is knowingly absent from the list and is not this slice's to
  * fix: nothing drops a deleted conversation's row today (#1140).
  *
+ * `state` is not the only field this list shows. `updated_at` comes from
+ * `worker_sessions.updated_at_ms`, and every harness snapshot persist writes it
+ * — which is why `harness.phase.changed`, `harness.user_message.enqueued` and
+ * (#1505 PR2) `harness.queue.changed` are callers too: each of them is emitted
+ * immediately after a persist that moved the timestamp this list sorts and
+ * renders.
+ *
  * The exact caller set is pinned from both sides in `invalidation-plan.test.ts`
  * against a list kept by hand there, so neither a missing nor an extra caller
  * can land silently.
@@ -241,6 +248,20 @@ function policies(): PolicyMap {
   ])),
   'harness.user_message.enqueued': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    ...conversationLists(event.data.track_id),
+  ])),
+  /*
+   * #1505 PR2 — the queue region reads `['planner-run', card_id]`, so that key
+   * is the one this event exists for.
+   *
+   * `harness-items` is here for `change: 'steered'`, whose delivery adds a
+   * transcript row; nothing emits that value yet (#1505 PR3). The three other
+   * values do not need it. One plan that over-invalidates by a single key on
+   * three of four values is cheaper than two plans that can drift apart, and
+   * the key is invalidated on every send already.
+   */
+  'harness.queue.changed': plan((event) => result([
+    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
   /*

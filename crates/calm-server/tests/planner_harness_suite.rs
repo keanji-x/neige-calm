@@ -28,3 +28,5 @@ mod planner_harness_token_usage;
 mod planner_harness_track_vcs;
 #[path = "cases/planner_pending_queue.rs"]
 mod planner_pending_queue;
+#[path = "cases/planner_queue_mutations.rs"]
+mod planner_queue_mutations;

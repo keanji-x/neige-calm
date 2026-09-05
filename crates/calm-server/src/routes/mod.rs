@@ -20,6 +20,7 @@ pub mod conversations_shared;
 pub mod fs;
 pub mod models;
 pub mod overlays;
+pub mod planner_input;
 pub mod plugins;
 pub mod settings;
 pub mod task_recovery;

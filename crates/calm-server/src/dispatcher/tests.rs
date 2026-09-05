@@ -1978,6 +1978,24 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             false,
             false,
         ),
+        // #1505 PR2. Neither a push nor an observation: this event REPORTS a
+        // change to the queue the planner is already going to read, and the
+        // change has been applied to that queue before the event is written.
+        // Waking the planner on it would deliver a turn built from the queue it
+        // is describing, one tick early and for no new input.
+        row(
+            Event::HarnessQueueChanged {
+                worker_session_id: "rt".into(),
+                card_id: planner.clone(),
+                track_id: track.clone(),
+                entry_id: "entry-1".into(),
+                change: calm_types::event::HarnessQueueChange::Deleted,
+                actor: ActorId::User,
+            },
+            ActorId::User,
+            false,
+            false,
+        ),
         row(
             Event::OverlaySet(crate::model::Overlay {
                 id: "o".into(),

@@ -35,6 +35,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0095_worker_sessions_queue_harvested.sql",
     "0096_area_create_idempotency.sql",
     "0097_task_attempt_allocations.sql",
+    "0098_harness_queue_changed_event_version.sql",
 ];
 
 #[test]
