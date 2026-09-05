@@ -33,6 +33,17 @@ describe.each(['terminal', 'codex', 'claude'])('%s terminal lifecycle after refr
     expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
   });
 
+  it('keeps both execution directories visible after the session exits', () => {
+    mountCard(kind, { status: 'exited' }, {
+      cwd: '/repo/worker-checkout', gate_cwd: '/repo/gate-checkout', terminal_id: 'stale-pty',
+    });
+    expect(screen.getByText('/repo/worker-checkout')).toBeTruthy();
+    expect(screen.getByText('/repo/gate-checkout')).toBeTruthy();
+    expect(screen.getByText('Session exited.')).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
+    expect(document.querySelector('[data-nc-terminal-id="stale-pty"]')).toBeNull();
+  });
+
   it('shows a failed session instead of an endless startup', () => {
     mountCard(kind, { status: 'failed' });
     expect(screen.getByText('Session failed.')).toBeTruthy();

@@ -88,8 +88,7 @@ describe('worker checkout visibility', () => {
   it('shows the actual worker directory from the kernel card', () => {
     const card = CODEX_CARD_ENTRY.fromKernel({
       id: 'checkout-worker', kind: 'codex',
-      payload: { cwd: '/repo/.claude/worktrees/track/worker', gate_cwd: '/repo/gate-override', terminal_id: 'stale-pty' },
-      runtime: { runtime_id: 'worker-runtime', kind: 'codex', status: 'exited' },
+      payload: { cwd: '/repo/.claude/worktrees/track/worker', gate_cwd: '/repo/gate-override' },
     });
     if (card === null) throw new Error('worker card must resolve');
     const Component = CODEX_CARD_ENTRY.component;
@@ -98,8 +97,5 @@ describe('worker checkout visibility', () => {
     expect(screen.getByText('Working directory')).toBeTruthy();
     expect(screen.getByText('Gate working directory')).toBeTruthy();
     expect(screen.getByText('/repo/gate-override')).toBeTruthy();
-    expect(screen.getByText('Session exited.')).toBeTruthy();
-    expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
-    expect(document.querySelector('[data-nc-terminal-id="stale-pty"]')).toBeNull();
   });
 });

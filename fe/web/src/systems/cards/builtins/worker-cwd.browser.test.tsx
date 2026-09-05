@@ -13,7 +13,6 @@ it('keeps the worker checkout readable inside a narrow card', async () => {
   const cwd = '/repo/.claude/worktrees/01234567890123456789012345678901/01234567890123456789012345678901';
   const card = CLAUDE_CARD_ENTRY.fromKernel({
     id: 'c1', kind: 'claude', payload: { cwd, gate_cwd: '/repo/explicit-gate-checkout' },
-    runtime: { runtime_id: 'worker-runtime', kind: 'claude', status: 'exited' },
   });
   if (card === null) throw new Error('Claude worker must resolve');
   const host = {
@@ -30,7 +29,6 @@ it('keeps the worker checkout readable inside a narrow card', async () => {
   await expect.element(page.getByText(cwd)).toBeVisible();
   await expect.element(page.getByText('Gate working directory')).toBeVisible();
   await expect.element(page.getByText('/repo/explicit-gate-checkout')).toBeVisible();
-  await expect.element(page.getByText('Session exited.')).toBeVisible();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   await page.screenshot();
 });
