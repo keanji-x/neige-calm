@@ -116,7 +116,18 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  send: (conversationId: string, text: string) => void;
+  /**
+   * Resolves `true` when the text is safely the server's, `false` when it is
+   * not and the reader still owns it.
+   *
+   * #1449 — the kernel now refuses a send that reached a runtime its card has
+   * moved off (`planner_harness_runtime_superseded`): the text was NOT stored,
+   * and sending it again reaches the successor. A `void` return could not say
+   * that, so the composer cleared the field on submit and a refusal left the
+   * reader with an error, no echo, and nothing to retry — worse than before the
+   * refusal existed, because the sentence at least used to stay on screen.
+   */
+  send: (conversationId: string, text: string) => Promise<boolean>;
   interrupt: () => void;
   retryHistory: () => void;
   loadEarlier: () => void;
@@ -548,8 +559,10 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
-  const send = (_conversationId: string, text: string) => {
-    if (sendingRef.current || !registry.tryBeginSend(cardId)) return;
+  const send = async (_conversationId: string, text: string): Promise<boolean> => {
+    /* Not accepted, so the reader keeps the text: a send refused because
+       another one is in flight never reached the server at all. */
+    if (sendingRef.current || !registry.tryBeginSend(cardId)) return false;
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
@@ -565,7 +578,7 @@ export function useConversationStore(
     let sendFailure: string | null = null;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
-    void mutations.send(text).then(() => {
+    return mutations.send(text).then(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /*
        * The answer can outlive the drawer, and the effects above cannot.
@@ -646,7 +659,7 @@ export function useConversationStore(
       activeSend.current = null;
       sendingRef.current = false;
       setSending(false);
-    });
+    }).then(() => sendFailure === null);
   };
 
   /*

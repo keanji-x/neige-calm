@@ -1798,7 +1798,13 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false,
 }: {
-  onSend: (text: string) => void;
+  /**
+   * #1449 — resolving `false` means the text is still the reader's: the server
+   * refused it and nothing was stored. The composer puts it back rather than
+   * leaving an error with nothing to retry. A caller with its own draft
+   * persistence returns `void` and keeps today's behaviour.
+   */
+  onSend: (text: string) => void | Promise<boolean>;
   /**
    * Interrupt the turn in flight. Its presence is what turns Send into Stop.
    *
@@ -2115,8 +2121,19 @@ export function ChatComposer({
         onSubmit={(value) => {
           const text = value.trim();
           if (text === '' || disabled || stopShown) return;
-          onSend(text);
+          const outcome = onSend(text);
           setDraft('');
+          /* Cleared optimistically, restored if the send was refused — the same
+             shape as the optimistic echo this sits beside, which is added on
+             submit and removed by the failure path. Restored only into an empty
+             field: the reader may have started something else while the request
+             was in flight, and that is theirs. */
+          if (outcome !== undefined) {
+            void outcome.then((accepted) => {
+              if (accepted) return;
+              setDraft((current) => current === '' ? text : current);
+            });
+          }
           /* The caret goes back to the field from the effect above, not from
              here: `onSend` may have already queued the `disabled` that takes
              the field away, and this handler runs before React flushes it. */
