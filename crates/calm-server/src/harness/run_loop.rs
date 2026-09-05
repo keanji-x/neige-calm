@@ -1661,6 +1661,40 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
+    // #1449 — the DURABLE half of "may I still speak for this card", and it is
+    // not redundant with the `shutting_down` flag consulted further down.
+    //
+    // `shutting_down` is process memory, set by `PlannerHarness::shutdown`. A
+    // runtime can be retired in the DATABASE with its run loop perfectly
+    // healthy and unaware: `prepare_tx` supersedes the card's live predecessor
+    // and takes its pending queue, and nothing stops the predecessor's handle
+    // until a later step of the same operation tears it down. In that window
+    // the predecessor would issue a turn for a queue its successor is also
+    // carrying.
+    //
+    // Placed HERE, above the work, rather than beside the drain: below this
+    // point every tick pays a card/role lookup, a track-level transcript WRITE
+    // transaction and a diff. A runtime refused at the drain kept paying all of
+    // that, every 50ms, for as long as it lived.
+    //
+    // And a refusal STOPS the handle rather than merely declining: a retired
+    // carrier has nothing left to do, and leaving it Idle with a hard-firing
+    // queue is what made the refusal a permanent cost instead of an event. The
+    // daemon is deliberately not touched — the fence owns thread teardown, and
+    // this runtime interrupting a thread on its way out would reach past what
+    // it still speaks for.
+    if !runtime_is_still_the_live_carrier(inner).await? {
+        tracing::info!(
+            target: "calm_server::planner_harness_issue",
+            runtime_id = %inner.runtime_id,
+            card_id = %inner.card_id,
+            track_id = %inner.track_id,
+            "runtime is no longer the card's live carrier; leaving the queue for its successor \
+             and stopping"
+        );
+        stop_retired_carrier(inner);
+        return Ok(());
+    }
     // Two independent per-turn decisions that used to ride on one boolean
     // (#1189 review A6). Splitting them is the whole point:
     //
@@ -1787,33 +1821,24 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
-    // #1449 — the DURABLE half of the same question, and it is not redundant
-    // with the flag above.
+    // #1449 — asked a SECOND time, here, and the two are not redundant.
     //
-    // `shutting_down` is process memory, set by `PlannerHarness::shutdown`. A
-    // runtime can be retired in the database with its run loop still perfectly
-    // healthy and unaware: `prepare_tx` supersedes the card's live predecessor
-    // and hands its pending queue to the successor being minted, and nothing
-    // stops the predecessor's handle until a later step of the same operation
-    // tears it down. In that window the predecessor would issue a turn for a
-    // queue the successor is also carrying, and the same sentence reaches the
-    // agent twice. This is not new with the harvest — the dormant-restart
-    // INHERIT has copied a live predecessor's queue the same way since long
-    // before it — but the harvest would have widened it from "a copy in memory"
-    // to "a copy on disk", so it is closed here for both.
-    //
-    // Placed before the queue is taken, so a refusal leaves the queue intact
-    // for whoever now owns it. A missing row is treated as "still ours": the
-    // read cannot prove retirement, and a harness whose row has been deleted
-    // outright is a different failure with its own handling.
+    // The check above runs before the transcript refresh and the diff so a
+    // retired runtime stops instead of paying for them; but that leaves the
+    // whole of that work between the answer and the queue being taken, and a
+    // fence landing inside that gap is exactly the case this is about. This
+    // one is immediately before the drain, costs one indexed read per turn
+    // actually being issued, and does not stop the handle — the early check
+    // owns that.
     if !runtime_is_still_the_live_carrier(inner).await? {
-        tracing::debug!(
+        tracing::info!(
             target: "calm_server::planner_harness_issue",
             runtime_id = %inner.runtime_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
-            "runtime is no longer the card's live carrier; leaving the queue for its successor"
+            "runtime was retired while this turn was being prepared; leaving the queue"
         );
+        stop_retired_carrier(inner);
         return Ok(());
     }
     tracing::debug!(
@@ -2358,8 +2383,31 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
         .await?;
     Ok(match state {
         Some(state) => state.is_active_authority(),
-        None => true,
+        // Fail CLOSED. A runtime whose row is gone cannot show that it still
+        // speaks for the card, and the row is deleted only by card, track and
+        // area deletion, by a start's compensation, and by the dev replay reset
+        // — every one of them a context in which this harness has no business
+        // issuing a turn. `worker_sessions_row_disappearance.rs` is the ratchet
+        // that keeps that enumeration from widening silently.
+        None => false,
     })
+}
+
+/// #1449 — a runtime that is no longer its card's carrier stops.
+///
+/// The observation gate closes and the run loop's shutdown arm is signalled, so
+/// the loop leaves rather than paying the per-tick cost of being refused. The
+/// daemon is untouched: thread teardown belongs to whoever retired this row.
+fn stop_retired_carrier(inner: &Arc<Inner>) {
+    {
+        let mut closed = inner
+            .observations_closed
+            .lock()
+            .expect("planner harness observation gate mutex poisoned");
+        *closed = true;
+        inner.shutting_down.store(true, Ordering::SeqCst);
+    }
+    let _ = inner.shutdown.send(());
 }
 
 /// #1449 — persist what the runtime owes after an issuance resolved, on a row

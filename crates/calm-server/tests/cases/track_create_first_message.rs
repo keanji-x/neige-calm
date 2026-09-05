@@ -102,7 +102,7 @@ use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::db::sqlite::session_mark_superseded_runtime_tx;
+use calm_server::db::sqlite::{session_delete_tx, session_mark_superseded_runtime_tx};
 use calm_server::db::write_in_tx_typed;
 use calm_server::event::EventBus;
 use calm_server::harness::Observation;
@@ -3933,6 +3933,72 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         0,
         "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
          anyway is how the same sentence reaches the agent twice"
+    );
+    // #1449 S4 — and it STOPS, rather than being refused once per tick for the
+    // rest of its life. Below the carrier check every tick pays a card/role
+    // lookup, a track-level transcript WRITE transaction and a diff; a refusal
+    // that only declined to issue left a retired runtime paying all of it every
+    // 50ms. The closed observation gate is the witness that the handle wound
+    // down.
+    let handle = b
+        .state
+        .harness
+        .get(&runtime)
+        .expect("the retired handle is still registered — nobody removed it");
+    let refused = handle
+        .observe_user_message_durable("anything at all".into())
+        .await;
+    assert!(
+        refused.is_err(),
+        "a runtime that lost the card must stop accepting work, not keep running refused"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 S4 — a runtime whose row is GONE does not issue either.
+///
+/// The carrier check reads one row by id and has to decide what a missing row
+/// means. It fails closed: a runtime that cannot show it still speaks for the
+/// card does not speak. Rows are deleted by card, track and area deletion, by a
+/// start's compensation, and by the dev replay reset — every one of them a
+/// context where issuing a turn is wrong, and
+/// `worker_sessions_row_disappearance.rs` is the ratchet that keeps that
+/// enumeration from widening without anyone noticing.
+#[tokio::test]
+async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-deleted-row"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (runtime, _card_id) = b.only_runtime().await;
+
+    // Through the production deleter, not a raw `DELETE`: `session_delete_tx`
+    // clears `tracks.root_session_id` first, and a fixture that skipped that
+    // would trip the foreign key rather than reproduce the state a card, track
+    // or area deletion actually leaves behind.
+    {
+        let runtime_id = runtime.clone();
+        write_in_tx_typed(b.repo.as_ref() as &dyn Repo, move |tx| {
+            Box::pin(async move {
+                session_delete_tx(tx, &runtime_id)
+                    .await
+                    .map_err(calm_server::error::CalmError::from)
+            })
+        })
+        .await
+        .expect("delete the runtime row");
+    }
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(STRANDED, 1).await,
+        0,
+        "a runtime with no row cannot show that it is still the card's carrier, and a missing \
+         row is reachable only in contexts where issuing a turn is wrong"
     );
     b.shutdown_harnesses().await;
 }
