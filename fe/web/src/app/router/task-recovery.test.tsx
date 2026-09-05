@@ -27,7 +27,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [
       { id: 'b-task', rev: 1, kind: 'task', payload: {
-        key: 'B', kind: 'codex', declared_by: 'spec', ready: true, goal: 'Complete B under the original requirements.',
+        key: 'B', kind: 'codex', declared_by: 'user', ready: true, goal: 'Complete B under the original requirements.',
       } },
     ] } };
   const worker = { ...card, id: 'old-worker', kind: 'codex', title: 'Previous worker', deletable: true, payload: {} };

@@ -39,7 +39,7 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   await page.viewport(1080, 800);
   const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'b-B', kind: 'task', payload: {
-    key: 'B', declared_by: 'spec', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
+    key: 'B', declared_by: 'user', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
   } }] };
   function Document() {
     const rows = useCurrentTaskRows('w1', deriveReportTasks(report.blocks, [
