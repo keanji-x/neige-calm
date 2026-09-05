@@ -5,7 +5,7 @@ the Settings plugin installation and worker verification fixes merged on
 2026-09-05. An older installation may not have these controls. Use
 `/api/version` to identify its build and the [upgrade guide](deploy-and-upgrade.md)
 to update it. For a fresh installation, start with the
-[README](../README.md#quick-start) or [Linux Alpha runbook](alpha-release.md).
+[Linux Alpha runbook](alpha-release.md).
 
 ## Create a Track from a Recipe
 
