@@ -2217,39 +2217,27 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         "premise: the re-drive must start the placeholder's harness"
     );
 
-    // THE assertion: the sentence reached the runtime that was actually
-    // started. Either it is still on that harness's persisted queue, or the
-    // harness has already handed it to the daemon — both mean it arrived.
-    // Neither is ever true when the harvest stops at the row, because
-    // `handle.persist_snapshot()` writes the started harness's (shorter)
-    // snapshot back over it.
+    // THE assertion: the DAEMON got it. Asserting on the row would be the weak
+    // form — since S1 the row is the single home for a queue, so it is the one
+    // copy that is correct by construction, and a harvest that reached the row
+    // and nowhere else would still pass. What has to be true is that the
+    // runtime this re-drive actually started delivered the sentence.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let arrived = loop {
+    let delivered = loop {
         let handed_over =
             serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
                 .unwrap_or_default()
-                .contains(STRANDED);
-        let still_queued: Option<String> =
-            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
-                .bind(&placeholder_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        let still_queued = still_queued
-            .and_then(|state| serde_json::from_str::<serde_json::Value>(&state).ok())
-            .and_then(|state| state.get("pending_queue").cloned())
-            .map(|queue| queue.to_string().contains(STRANDED))
-            .unwrap_or(false);
-        if handed_over || still_queued || std::time::Instant::now() >= deadline {
-            break handed_over || still_queued;
+                .matches(STRANDED)
+                .count();
+        if handed_over > 0 || std::time::Instant::now() >= deadline {
+            break handed_over;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    assert!(
-        arrived,
-        "the harvested sentence must reach the runtime the re-drive actually started — the row, \
-         the operation checkpoint and the started harness all have to agree, or the successful \
-         path erases it moments later with the source row already stamped as taken"
+    assert_eq!(
+        delivered, 1,
+        "the harvested sentence must be delivered by the runtime the re-drive actually started, \
+         exactly once"
     );
     let racer_stamp: Option<i64> =
         sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")

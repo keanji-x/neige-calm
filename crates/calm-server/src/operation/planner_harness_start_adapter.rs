@@ -1930,6 +1930,22 @@ fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
 /// Bad shapes warn and yield nothing rather than failing the mint — the same
 /// posture the dormant-restart inherit above takes — and the caller stamps the
 /// row either way, so a snapshot nothing can read is not re-examined forever.
+///
+/// # KNOWN GAP — a batch the daemon has and the row does not know about
+///
+/// `maybe_issue_turn` persists "the batch is still queued", drains in memory,
+/// calls `turn/start`, and persists the emptied queue afterwards. If a
+/// retirement commits between the `turn/start` call and its return, this
+/// harvest reads a queue the daemon already has and hands it to the successor,
+/// and the sentence is delivered twice.
+///
+/// The window is one in-flight RPC wide: the carrier check runs immediately
+/// before the drain, so the retirement has to land after that read and before
+/// `turn/start` returns. Nothing here closes it — the persisted queue and what
+/// the daemon accepted have no shared truth to compare, and giving them one
+/// needs an idempotency key on the daemon side, which is outside this slice.
+/// The direction matches #1314's existing ruling: re-deliver rather than record
+/// a delivery that may not have happened.
 /// #1449 S1 — replace a snapshot's pending queue with the one persisted on the
 /// runtime's own row, leaving every other field alone.
 async fn overwrite_queue_from_the_runtimes_own_row(
