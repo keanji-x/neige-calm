@@ -1,4 +1,4 @@
-// The Settings overlay — one dialog, four routes, and the reads each pane needs.
+// The Settings overlay — one dialog, five routes, and the reads each pane needs.
 //
 // ## Why this lives in the shell and not in the route components
 //
@@ -14,8 +14,9 @@
 // owns the dialog, exactly as it already owns the New track dialog and for the
 // same reason — two surfaces, one dialog, one set of strings.
 //
-// The routes stay real routes (`/settings`, `/settings/appearance`,
-// `/settings/plugins`, `/settings/about`) and their components render nothing.
+// The routes stay real routes (`/settings`, `/settings/network`,
+// `/settings/appearance`, `/settings/plugins`, `/settings/about`) and their
+// components render nothing.
 // The URL is the *state* — which section is open, what a deep link means, what
 // Back does — and this file is the *view* of that state. Splitting them that
 // way is what keeps the panel from blinking as the reader moves between
@@ -33,7 +34,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
-  AboutPane, AppearancePane, NetworkPane, SettingsSurface,
+  AboutPane, AppearancePane, GeneralPane, NetworkPane, SettingsSurface,
   type SettingsSection, type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
@@ -52,17 +53,19 @@ import { useTheme } from '../theme/public.tsx';
  * has to reach a pane, and no other path may open the dialog.
  */
 export function settingsSectionForPath(path: string): SettingsSection | null {
-  if (path === '/settings') return 'network';
+  if (path === '/settings') return 'general';
+  if (path === '/settings/network') return 'network';
   if (path === '/settings/appearance') return 'appearance';
   if (path === '/settings/plugins') return 'plugins';
   if (path === '/settings/about') return 'about';
   return null;
 }
 
-/** The route each nav entry navigates to. `network` is the bare `/settings`. */
+/** The route each nav entry navigates to. `general` is the bare `/settings`. */
 function targetForSection(section: SettingsSection): NavTarget {
   switch (section) {
-    case 'network': return { name: 'settings' };
+    case 'general': return { name: 'settings' };
+    case 'network': return { name: 'settings-network' };
     case 'appearance': return { name: 'settings-appearance' };
     case 'plugins': return { name: 'settings-plugins' };
     case 'about': return { name: 'settings-about' };
@@ -89,11 +92,11 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
       wide
     >
       <SettingsSurface
-        section={section ?? 'network'}
+        section={section ?? 'general'}
         onSelectSection={(next) => go(targetForSection(next))}
       >
         <SectionPane
-          section={section ?? 'network'}
+          section={section ?? 'general'}
           transport={transport}
           unauthorized={unauthorized}
         />
@@ -107,11 +110,25 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
   section: SettingsSection;
 }) {
   switch (section) {
+    case 'general': return <GeneralPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'appearance': return <AppearancePaneHost />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
   }
+}
+
+function GeneralPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+  const save = useSettingsMutation(transport, unauthorized);
+  const settings = useQuery(settingsQueryOptions(transport, unauthorized));
+  return (
+    <GeneralPane
+      settings={settings.data?.settings}
+      loadError={settings.error instanceof Error ? settings.error.message : null}
+      onRetryLoad={() => { void settings.refetch(); }}
+      onSave={(patch) => save(patch).then(() => undefined)}
+    />
+  );
 }
 
 function AppearancePaneHost() {
@@ -217,4 +234,3 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
     />
   );
 }
-

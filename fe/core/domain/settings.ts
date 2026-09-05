@@ -24,3 +24,14 @@ export function putSettingsOperation(settings: SettingsPatch): ApiOperation<Sett
 
 export const HTTP_PROXY_KEY = 'http_proxy';
 export const HTTPS_PROXY_KEY = 'https_proxy';
+export const TASK_BUDGET_DEFAULT_KEY = 'task_budget_default';
+export const FALLBACK_TASK_BUDGET_DEFAULT = 1;
+
+/** The API normally returns the effective value; this fallback also keeps
+ * older kernels and test transports safe during a rolling frontend update. */
+export function taskBudgetDefaultFrom(settings: Readonly<Record<string, string>>): number {
+  const raw = settings[TASK_BUDGET_DEFAULT_KEY]?.trim();
+  if (raw === undefined || !/^[1-9]\d*$/.test(raw)) return FALLBACK_TASK_BUDGET_DEFAULT;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : FALLBACK_TASK_BUDGET_DEFAULT;
+}

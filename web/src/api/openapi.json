@@ -2598,6 +2598,16 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid first-class setting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {

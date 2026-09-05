@@ -90,8 +90,9 @@ async fn repo_round_trips_settings_kv() {
 }
 
 #[tokio::test]
-async fn get_settings_returns_empty_bag_initially() {
+async fn get_settings_returns_effective_task_budget_default_initially() {
     let (state, _repo) = fresh_state().await;
+    let fallback = state.dispatcher.scheduler().budget_default();
     let app = axum::Router::new()
         .merge(routes::router())
         .with_state(state);
@@ -110,7 +111,75 @@ async fn get_settings_returns_empty_bag_initially() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(v["settings"].is_object());
-    assert_eq!(v["settings"].as_object().unwrap().len(), 0);
+    assert_eq!(v["settings"]["task_budget_default"], fallback.to_string());
+}
+
+#[tokio::test]
+async fn put_task_budget_default_is_live_for_the_existing_scheduler() {
+    let (state, repo) = fresh_state().await;
+    let scheduler = state.dispatcher.scheduler();
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+
+    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 1);
+    let body = serde_json::json!({
+        "settings": { "task_budget_default": "3" }
+    })
+    .to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(scheduler.effective_budget_default().await.unwrap(), 3);
+    assert!(
+        repo.settings_get_all()
+            .await
+            .unwrap()
+            .contains(&("task_budget_default".into(), "3".into()))
+    );
+}
+
+#[tokio::test]
+async fn invalid_task_budget_default_rejects_the_whole_patch() {
+    let (state, repo) = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+
+    let body = serde_json::json!({
+        "settings": {
+            "http_proxy": "http://must-not-land:3128",
+            "task_budget_default": "0"
+        }
+    })
+    .to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    assert!(
+        repo.settings_get_all().await.unwrap().is_empty(),
+        "validation must finish before the first key is written"
+    );
 }
 
 #[tokio::test]

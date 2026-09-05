@@ -103,7 +103,7 @@ describe('route registration', () => {
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
       '/', '/area/$areaId/new', '/track/$trackId', '/recipes',
-      '/settings', '/settings/plugins', '/settings/appearance', '/settings/about',
+      '/settings', '/settings/network', '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
 
@@ -140,6 +140,7 @@ describe('route registration', () => {
       'track': { name: 'track', trackId: 'w1' },
       'recipes': { name: 'recipes' },
       'settings': { name: 'settings' },
+      'settings-network': { name: 'settings-network' },
       'settings-plugins': { name: 'settings-plugins' },
       'settings-appearance': { name: 'settings-appearance' },
       'settings-about': { name: 'settings-about' },

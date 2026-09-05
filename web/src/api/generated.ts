@@ -5407,6 +5407,15 @@ export interface operations {
                     "application/json": components["schemas"]["SettingsBag"];
                 };
             };
+            /** @description Invalid first-class setting */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error */
             500: {
                 headers: {

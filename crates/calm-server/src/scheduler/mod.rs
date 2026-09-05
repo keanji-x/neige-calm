@@ -538,8 +538,9 @@ pub struct Scheduler {
     /// The dispatcher's global spawn semaphore (§5.3): per-track budgets
     /// cap per-track parallelism, this caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
-    /// Kernel default budget (`NEIGE_TRACK_TASK_BUDGET`, default 1);
-    /// `tracks.task_budget` overrides per track.
+    /// Deployment fallback (`NEIGE_TRACK_TASK_BUDGET`, default 1). The live
+    /// `task_budget_default` setting overrides it, and `tracks.task_budget`
+    /// overrides both per track.
     budget_default: i64,
     /// Persisted running liveness window, resolved once from
     /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
@@ -762,6 +763,14 @@ impl Scheduler {
     /// Configured kernel-default budget. Exposed for test assertions.
     pub fn budget_default(&self) -> i64 {
         self.budget_default
+    }
+
+    /// Resolve the live workspace setting over the boot-time deployment
+    /// fallback. Kept on the scheduler so admission tests exercise the same
+    /// source as production instead of duplicating settings parsing.
+    pub async fn effective_budget_default(&self) -> Result<i64> {
+        let settings = crate::routes::settings::load_settings(self.repo.as_ref()).await?;
+        Ok(settings.task_budget_default.unwrap_or(self.budget_default))
     }
 
     pub fn task_run_timeout_ms(&self) -> i64 {
@@ -1046,8 +1055,9 @@ impl Scheduler {
         Ok(())
     }
 
-    /// `COALESCE(tracks.task_budget, kernel default)` (§5.3).
+    /// `COALESCE(tracks.task_budget, live setting, deployment default)` (§5.3).
     async fn track_budget(&self, track_id: &TrackId) -> Result<i64> {
+        let budget_default = self.effective_budget_default().await?;
         let pool = self
             .repo
             .sqlite_pool()
@@ -1059,7 +1069,7 @@ impl Scheduler {
                 .await?;
         Ok(row
             .and_then(|(budget,)| budget)
-            .unwrap_or(self.budget_default)
+            .unwrap_or(budget_default)
             .max(0))
     }
 
@@ -1166,7 +1176,7 @@ impl Scheduler {
         };
         let task_id = task.id.clone();
         let track_id = track.id.clone();
-        let budget_default = self.budget_default;
+        let budget_default_fallback = self.budget_default;
         let claim_refs = closure.refs;
         let claim_doc_revs = closure.doc_revs;
         let claim_truncated = closure.closure_truncated;
@@ -1295,6 +1305,21 @@ impl Scheduler {
                         {
                             return Err(race_lost_err());
                         }
+                        // The pre-claim pass may have waited on the global
+                        // semaphore. Re-read the live default in this same
+                        // write transaction so a concurrent Settings change
+                        // is fenced just like a per-track budget patch.
+                        let configured_default: Option<String> = sqlx::query_scalar(
+                            "SELECT value FROM settings WHERE key = ?1",
+                        )
+                        .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                        let budget_default =
+                            crate::routes::settings::effective_task_budget_default(
+                                configured_default.as_deref(),
+                                budget_default_fallback,
+                            );
                         let budget = task_budget.unwrap_or(budget_default).max(0);
                         // `siblings` was read AFTER the claim flip, so the
                         // in-flight count includes this row — it must fit
