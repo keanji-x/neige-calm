@@ -29,17 +29,67 @@
 // registration has to say which host it is. Adding a picker therefore forces
 // the author to answer the question that was previously answered by accident.
 //
-// ## What this does and does not prove
+// ## Why the TypeScript parser and not a regular expression
 //
-// It proves the set is *known*. It does not prove each entry's claim — that
-// `new-card` really pushes into a surrounding dialog, and that `new-track`
-// really opens its own modal, are behavioural facts, and each is pinned by the
-// `authoritative_test` its oracle row names (CAP-TRACKWORKSPACE-006 and -003
-// respectively). The two halves are deliberate: this file cannot execute React,
-// and those tests cannot see a call site nobody wrote yet.
+// Until #1471 this file matched `/<DirectoryField[\s/>]/` against `.tsx` and
+// `.jsx` sources. A regex over source text has to re-derive what a name points
+// at, and it got three answers wrong — each one a way to host a picker while
+// the sweep that claims to fail closed stays silent:
+//
+//   1. **A renamed import.** `import { DirectoryField as Folder }` then
+//      `<Folder .../>`: the component on screen is the same one, the text is
+//      not.
+//   2. **`createElement`.** The extension filter admitted only `.tsx`/`.jsx`,
+//      so `createElement(DirectoryBrowser, ...)` in a `.ts` file was not even
+//      read — and in a `.tsx` file it still carries no `<` to match.
+//   3. **A production file named `*.spec.tsx`.** The exclusion was
+//      `/\.(test|spec|browser\.test|contract\.test)\./`, so any file with
+//      `.spec.` in its name was taken for a test and skipped.
+//
+// Hole 3 is worth spelling out, because the exclusion looked defensible. In
+// this workspace `.spec.` names no test: `fe/vitest.config.ts` collects
+// `web/src/**/*.test.{ts,tsx}` and `**/*.browser.test.{ts,tsx}`, and Playwright's
+// `testDir` is `./e2e` — outside the tree scanned here. So the sweep excludes
+// exactly what the test runner claims, and nothing else: a basename ending in
+// `.test.ts` or `.test.tsx`. Tests may render either component freely — they
+// are the things that prove the hosts behave, and a test is not a surface a
+// user can reach.
+//
+// The rest is delegated rather than re-derived: `typescript` parses the file
+// and answers which local names an import bound to the two components, and
+// which of those names reach a render position (a JSX tag, or the first
+// argument of a `createElement`-shaped call).
+//
+// ## KNOWN GAPS
+//
+// Reading these as "everything else is covered" would be reading them
+// backwards. The sweep sees a name bound by an import in the same file and
+// then rendered in it. It does not see:
+//
+//   * **Re-export chains.** `export { DirectoryField as Folder }` from an
+//     intermediate module, imported from there. The importing file binds
+//     `Folder` from a specifier this sweep does not follow, so nothing matches.
+//   * **Values that stop being names.** A component pushed into an array, a
+//     record, or a prop and rendered through that indirection
+//     (`<map[key] />`). Only a direct local `const` alias of a bound name is
+//     followed.
+//   * **Behaviour.** It proves the set of call sites is *known*, never that an
+//     entry's claim holds — that `new-card` really pushes into a surrounding
+//     dialog, and that `new-track` really opens its own modal, are behavioural
+//     facts, each pinned by the `authoritative_test` its oracle row names
+//     (CAP-TRACKWORKSPACE-006 and -003 respectively). This file cannot execute
+//     React, and those tests cannot see a call site nobody wrote yet.
+//   * **A file the parser recovers from.** `createSourceFile` does not throw on
+//     malformed input; it returns a best-effort tree, and a render site inside
+//     the part it could not parse is not seen.
+//
+// `tools/architecture/fixtures/directory-picker-*` drives one violation per
+// case through `architecture.test.ts`, including one for each of the three
+// holes above, so "it would really go red" is executed rather than asserted.
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { extname, resolve } from 'node:path';
+import { basename, extname, resolve } from 'node:path';
+import ts from 'typescript';
 
 /**
  * How a registered surface puts the picker on screen.
@@ -60,8 +110,28 @@ export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/features/area/new-track/public.tsx': 'owns-its-modal',
 });
 
-/** The two components whose presence makes a file a picker host. */
-const RENDERS = [/<DirectoryField[\s/>]/, /<DirectoryBrowser[\s/>]/];
+/** The two components whose rendering makes a file a picker host. */
+const COMPONENTS = new Set(['DirectoryField', 'DirectoryBrowser']);
+
+/**
+ * Call shapes that render their first argument. `jsx`/`jsxs`/`jsxDEV` are the
+ * automatic JSX runtime's emit; hand-written sources use `createElement`.
+ */
+const RENDERING_CALLS = new Set(['createElement', 'jsx', 'jsxs', 'jsxDEV']);
+
+/** Extensions a picker host can be written in. */
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
+
+/**
+ * @param {string} path
+ * @returns {ts.ScriptKind}
+ */
+function scriptKind(path) {
+  const extension = extname(path);
+  if (extension === '.tsx' || extension === '.jsx') return ts.ScriptKind.TSX;
+  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
 
 /**
  * Every candidate source file under `root`, as paths relative to it.
@@ -72,28 +142,141 @@ const RENDERS = [/<DirectoryField[\s/>]/, /<DirectoryBrowser[\s/>]/];
 function sourceFiles(root) {
   return readdirSync(root, { recursive: true })
     .map(String)
-    .filter((entry) => ['.tsx', '.jsx'].includes(extname(entry)))
-    // Tests may render either component freely: they are the things that prove
-    // the hosts behave, and a test is not a surface a user can reach.
-    .filter((entry) => !/\.(test|spec|browser\.test|contract\.test)\./.test(entry));
+    .map((entry) => entry.split('\\').join('/'))
+    .filter((entry) => SOURCE_EXTENSIONS.has(extname(entry)))
+    // The only names vitest collects under this tree; see the header.
+    .filter((entry) => !/\.test\.tsx?$/.test(basename(entry)));
 }
 
-export function checkDirectoryPickerHosts(webSrc = 'web/src') {
+/**
+ * Walks `node` and every descendant.
+ *
+ * @param {ts.Node} node
+ * @param {(node: ts.Node) => void} visit
+ */
+function walk(node, visit) {
+  visit(node);
+  ts.forEachChild(node, (child) => { walk(child, visit); });
+}
+
+/**
+ * The local names in `source` that an import bound to one of the two
+ * components, plus the namespace names a member access could reach them
+ * through, plus local `const` aliases of either.
+ *
+ * @param {ts.SourceFile} source
+ * @returns {{ bound: Set<string>, namespaces: Set<string> }}
+ */
+function boundNames(source) {
+  /** @type {Set<string>} */
+  const bound = new Set();
+  /** @type {Set<string>} */
+  const namespaces = new Set();
+  walk(source, (node) => {
+    if (ts.isImportSpecifier(node)) {
+      // `import { DirectoryField as Folder }` — `propertyName` is the exported
+      // name, `name` the local one; without a rename they are the same node.
+      if (COMPONENTS.has((node.propertyName ?? node.name).text)) bound.add(node.name.text);
+      return;
+    }
+    if (ts.isNamespaceImport(node) || ts.isImportEqualsDeclaration(node)) {
+      namespaces.add(node.name.text);
+      return;
+    }
+    // `const { DirectoryField: Folder } = await import(...)` / `= require(...)`.
+    if (ts.isBindingElement(node) && ts.isIdentifier(node.name)) {
+      const source_ = node.propertyName ?? node.name;
+      if (ts.isIdentifier(source_) && COMPONENTS.has(source_.text)) bound.add(node.name.text);
+    }
+  });
+  // `const Folder = DirectoryField` — one pass per newly bound name, so a chain
+  // of aliases is followed however it is ordered in the file.
+  for (let changed = true; changed;) {
+    changed = false;
+    walk(source, (node) => {
+      if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) return;
+      if (bound.has(node.name.text)) return;
+      const initializer = node.initializer;
+      const reachesComponent = ts.isIdentifier(initializer)
+        ? bound.has(initializer.text)
+        : ts.isPropertyAccessExpression(initializer)
+          && ts.isIdentifier(initializer.expression)
+          && namespaces.has(initializer.expression.text)
+          && COMPONENTS.has(initializer.name.text);
+      if (!reachesComponent) return;
+      bound.add(node.name.text);
+      changed = true;
+    });
+  }
+  return { bound, namespaces };
+}
+
+/**
+ * Whether `node` names one of the two components: a bound local name, or a
+ * member access through an imported namespace.
+ *
+ * @param {ts.Node | undefined} node
+ * @param {{ bound: Set<string>, namespaces: Set<string> }} names
+ * @returns {boolean}
+ */
+function namesComponent(node, names) {
+  if (!node) return false;
+  if (ts.isIdentifier(node)) return names.bound.has(node.text);
+  return ts.isPropertyAccessExpression(node)
+    && ts.isIdentifier(node.expression)
+    && names.namespaces.has(node.expression.text)
+    && COMPONENTS.has(node.name.text);
+}
+
+/**
+ * Whether `contents` renders one of the two components.
+ *
+ * @param {string} path relative path, only used to pick the parser's dialect
+ * @param {string} contents
+ * @returns {boolean}
+ */
+function rendersPicker(path, contents) {
+  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, scriptKind(path));
+  const names = boundNames(source);
+  if (!names.bound.size && !names.namespaces.size) return false;
+  let renders = false;
+  walk(source, (node) => {
+    if (renders) return;
+    if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
+      if (namesComponent(node.tagName, names)) renders = true;
+      return;
+    }
+    if (!ts.isCallExpression(node)) return;
+    const callee = node.expression;
+    const calleeName = ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
+    if (calleeName && RENDERING_CALLS.has(calleeName) && namesComponent(node.arguments[0], names)) renders = true;
+  });
+  return renders;
+}
+
+/**
+ * @param {string} [webSrc]
+ * @param {Readonly<Record<string, string>>} [registry]
+ * @returns {string}
+ */
+export function checkDirectoryPickerHosts(webSrc = 'web/src', registry = DIRECTORY_PICKER_HOSTS) {
   const root = resolve(webSrc);
   const problems = [];
   const seen = new Set();
   for (const entry of sourceFiles(root)) {
-    const path = `web/src/${entry.split('\\').join('/')}`;
+    const path = `web/src/${entry}`;
     const contents = readFileSync(resolve(root, entry), 'utf8');
-    if (!RENDERS.some((pattern) => pattern.test(contents))) continue;
+    if (!rendersPicker(entry, contents)) continue;
     seen.add(path);
-    if (!(path in DIRECTORY_PICKER_HOSTS)) {
+    if (!(path in registry)) {
       problems.push(`${path} renders a directory picker but is not registered in `
         + 'tools/architecture/directory-picker-hosts.mjs — declare whether it pushes into a '
         + 'host dialog or owns its own modal (CAP-TRACKWORKSPACE-003 / -006)');
     }
   }
-  for (const path of Object.keys(DIRECTORY_PICKER_HOSTS)) {
+  for (const path of Object.keys(registry)) {
     if (!seen.has(path)) {
       problems.push(`${path} is registered as a directory picker host but renders neither `
         + 'DirectoryField nor DirectoryBrowser — drop the stale registration');
