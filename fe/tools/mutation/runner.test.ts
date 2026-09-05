@@ -8,12 +8,12 @@ import {
   evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
   failureDetailMessageHeadFraction,
   failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
-  failureDetailTestLimit, infrastructureDiagnosticBytes, judgeMutation,
-  manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, mutationShardMatrix,
+  failureDetailTestLimit, fullMaxShards, infrastructureDiagnosticBytes, judgeMutation,
+  manifestRelativePath, mutationIdPattern, mutationRunExitCode, mutationShardMatrix,
   mutationWitnessNeedsBrowser, mutationWitnessTestPaths, oracleIdsFromDocuments,
   parseFailedTestIds, parseMutationTestScope, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
   selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches, truncateFailureMessage,
-  unexpectedFailureDetails, validateManifest, validateWitnessCatalog, witnessEntriesPerShard,
+  unexpectedFailureDetails, validateManifest, validateWitnessCatalog, witnessEntriesPerShard, witnessMaxShards,
   type MutationEntry, type MutationRunResult, type MutationWitnessCatalog,
 } from './runner';
 
@@ -379,26 +379,34 @@ describe('shared test-harness dependencies reach the entries that need them', ()
 });
 
 describe('dynamic shard plan', () => {
-  it.each([[0, 1], [1, 1], [4, 1], [5, 2], [65, 17], [80, 20], [128, 32]])(
+  it('keeps the 72-entry full-sweep capacity inside one eight-runner browser-install batch', () => {
+    expect(shardPlan(72, 'full')).toEqual({
+      total: 8,
+      shards: [1, 2, 3, 4, 5, 6, 7, 8],
+      clamped: false,
+    });
+  });
+
+  it.each([[0, 1], [1, 1], [9, 1], [10, 2], [71, 8], [72, 8]])(
     '%i selected entries plan %i shards without clamping', (selectedCount, total) => {
       expect(shardPlan(selectedCount))
         .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
     });
   it('never plans fewer than one shard nor more than the cap', () => {
-    expect(entriesPerShard).toBe(4);
-    expect(maxShards).toBe(32);
+    expect(entriesPerShard).toBe(9);
+    expect(fullMaxShards).toBe(8);
     expect(shardPlan(0).shards).toEqual([1]);
-    expect(shardPlan(10_000).total).toBe(maxShards);
+    expect(shardPlan(10_000).total).toBe(fullMaxShards);
   });
   // Past the cap the shards stop being ~entriesPerShard each; the plan says so out loud.
-  it.each([[128, false], [129, true], [400, true], [10_000, true]])(
+  it.each([[72, false], [73, true], [400, true], [10_000, true]])(
     '%i selected entries reports clamped=%s', (selectedCount, clamped) => {
       const plan = shardPlan(selectedCount);
       expect(plan.clamped).toBe(clamped);
-      expect(plan.total).toBe(clamped ? maxShards : Math.ceil(selectedCount / entriesPerShard));
+      expect(plan.total).toBe(clamped ? fullMaxShards : Math.ceil(selectedCount / entriesPerShard));
     });
   it('never reports clamped below the cap', () => {
-    for (let selectedCount = 0; selectedCount <= maxShards * entriesPerShard; selectedCount += 1) {
+    for (let selectedCount = 0; selectedCount <= fullMaxShards * entriesPerShard; selectedCount += 1) {
       expect(shardPlan(selectedCount).clamped).toBe(false);
     }
   });
@@ -408,8 +416,16 @@ describe('dynamic shard plan', () => {
       expect(shardPlan(selectedCount, 'witness'))
         .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
     });
+  it('preserves the independent witness growth cap', () => {
+    expect(witnessMaxShards).toBe(32);
+    expect(shardPlan(385, 'witness')).toEqual({
+      total: 32,
+      shards: Array.from({ length: 32 }, (_v, index) => index + 1),
+      clamped: true,
+    });
+  });
   it('keeps full scope as the safe default and rejects unknown CLI scope values', () => {
-    expect(entriesPerShard).toBe(4);
+    expect(entriesPerShard).toBe(9);
     expect(witnessEntriesPerShard).toBe(12);
     expect(shardPlan(65)).toEqual(shardPlan(65, 'full'));
     expect(parseMutationTestScope('full')).toBe('full');
