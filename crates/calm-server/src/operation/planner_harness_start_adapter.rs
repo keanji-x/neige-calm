@@ -33,6 +33,7 @@ use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // this module into `crate::per_card_lock` so the `/planner/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::activity_window::launchpad_opening_briefing;
+use crate::operation::codex_adapter::card_payload_get_tx;
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
 use crate::routes::cards::{MAX_PLANNER_INPUT_CHARS, card_scope, card_scope_tx};
@@ -1413,14 +1414,23 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             serde_json::to_value(&snapshot)?,
             "planner harness",
         )?;
-        // `output.result` is a card snapshot produced by the PREVIOUS
-        // transactional phase. It is read here only for the card's identity
-        // (`id`, `track_id`, `created_at`) — never for its payload. See
-        // `card_apply_harness_start_payload_tx` for why.
-        let mut card: crate::model::Card = serde_json::from_value(output.result.clone())?;
         let appserver_sock = self.daemon.remote_uri();
 
-        let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
+        // Nothing in this phase reads the `output.result` card snapshot the
+        // previous transactional phase left behind — not its payload (see
+        // `card_apply_harness_start_payload_tx`) and not its identity, which
+        // the `card_id` / `track_id` strings above already carry out of
+        // `output.data`. Deserializing it anyway would be a durability hazard
+        // of exactly the kind this fix is about: `operations.tx_output_json` is
+        // persisted replay input, so a change to `Card`'s serde shape would
+        // make every in-flight operation fail hard on replay at a line that
+        // needs nothing from the snapshot.
+        let scope = card_scope(
+            ctx.repo.as_ref(),
+            CardId::from(card_id.clone()),
+            TrackId::from(track_id.clone()),
+        )
+        .await?;
         let transcript_scope = scope.clone();
         let transcript_worker_session_id = worker_session_id.clone();
         let transcript_card_id = CardId::from(card_id.clone());
@@ -1653,10 +1663,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        let (updated_card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) =
-            tx_out;
+        let (card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) = tx_out;
         drop(mint_lock_guard);
-        card = updated_card;
         // #1449 — merge this transaction's undo journal into the one
         // `prepare_tx` wrote. Both transfers this operation can make have to be
         // in it, or a compensation puts back only half of what it took.
@@ -2504,8 +2512,8 @@ fn output_existing_thread_id(output: &TxOutput) -> Result<Option<String>> {
 /// #1505 S4-1. The previous shape cloned the payload out of
 /// `TxOutput::result` — a card snapshot produced by the previous
 /// transactional phase — mutated the keys below on that clone, and handed the
-/// whole thing to `card_update_tx`, which replaces `cards.payload_json`
-/// wholesale. Between the snapshot and this write sits a cross-process
+/// whole thing to `card_update_tx`, which replaces the card's `payload`
+/// column wholesale. Between the snapshot and this write sits a cross-process
 /// `thread/start` JSON-RPC call, and, because an operation is a durable
 /// resumable entity, a process restart: on a recovery replay the snapshot can
 /// be minutes or hours old. Every key another writer had put into the payload
@@ -2521,18 +2529,7 @@ async fn card_apply_harness_start_payload_tx(
     thread_id: &str,
     appserver_sock: &str,
 ) -> Result<Card> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT payload FROM cards WHERE id = ?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    let Some((payload_text,)) = row else {
-        return Err(CalmError::NotFound(format!(
-            "planner harness card {card_id} disappeared before its payload write"
-        )));
-    };
-    let mut payload: Value = serde_json::from_str(&payload_text).map_err(|e| {
-        CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}"))
-    })?;
+    let mut payload = card_payload_get_tx(tx, card_id).await?;
     let Some(map) = payload.as_object_mut() else {
         return Err(CalmError::Internal(format!(
             "planner harness card {card_id} payload is not a JSON object"

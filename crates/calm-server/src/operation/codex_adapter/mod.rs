@@ -1455,7 +1455,16 @@ async fn persist_shared_worker_runtime_fields(
     Ok(())
 }
 
-async fn card_payload_get_tx(
+/// Read a card's payload JSON inside an open transaction.
+///
+/// `pub(crate)` rather than private because it has a second caller:
+/// `planner_harness_start_adapter::card_apply_harness_start_payload_tx`. Both
+/// need the same thing — the payload as the transaction sees it, so an
+/// owned-keys merge writes back over current data instead of over a snapshot
+/// taken before the transaction opened. #1505 S4-1 lifted the visibility
+/// rather than let the planner adapter carry a byte-identical copy of this
+/// query.
+pub(crate) async fn card_payload_get_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
 ) -> Result<Value> {

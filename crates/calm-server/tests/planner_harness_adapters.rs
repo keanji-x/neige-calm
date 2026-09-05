@@ -1442,8 +1442,8 @@ async fn card_payload(repo: &SqlxRepo, card_id: &str) -> Value {
 /// operation to `app_server_interact` with the STALE `tx_output` and replay.
 ///
 /// The old code copied the stale snapshot's payload and handed the whole thing
-/// to `card_update_tx`, which replaces `cards.payload_json` wholesale, so the
-/// probe keys vanished.
+/// to `card_update_tx`, which replaces the card's `payload` column wholesale,
+/// so the probe keys vanished.
 #[tokio::test]
 async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
@@ -1498,7 +1498,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         "the snapshot must predate the concurrent write"
     );
 
-    // A concurrent writer (in production: `PUT /api/cards/:id`, or the #1505
+    // A concurrent writer (in production: `PATCH /api/cards/:id`, or the #1505
     // model/effort selector) lands after the snapshot and before the replay.
     // It also plants the four runtime keys the adapter is supposed to clear.
     let mut concurrent_payload = card_payload(&repo, &card_id).await;
