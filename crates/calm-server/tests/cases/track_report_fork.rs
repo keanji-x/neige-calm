@@ -844,7 +844,7 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
     assert_eq!(status, StatusCode::OK);
     let source_truth = block_index(&source_report);
     assert_eq!(source_truth.len(), 1);
-    assert_eq!(source_report["schemaVersion"], 1);
+    assert_eq!(source_report["schemaVersion"], 4);
 
     let (status, target_track) = request_json(
         &boot.app,

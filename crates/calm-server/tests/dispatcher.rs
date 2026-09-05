@@ -552,7 +552,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     assert_ne!(frozen_context, "[]");
     spawned.store(0, Ordering::SeqCst);
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'changed') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'changed') \
          WHERE id = 'lagged-context-report'",
     )
     .execute(&pool)

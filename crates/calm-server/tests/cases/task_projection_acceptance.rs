@@ -610,10 +610,15 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
             let mut payload = json!({
                 "key": key,
                 "kind": kind,
-                "goal": format!("exercise {key}"),
                 "ready": true,
                 "declared_by": "spec"
             });
+            let instruction_field = if kind == "terminal" {
+                "command"
+            } else {
+                "goal"
+            };
+            payload[instruction_field] = json!(format!("exercise {key}"));
             if let Some(gate) = gate {
                 payload["gate"] = gate;
             }

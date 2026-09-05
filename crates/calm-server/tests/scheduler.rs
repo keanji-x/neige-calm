@@ -544,7 +544,6 @@ async fn seed_projected_task_for(
     let mut payload = serde_json::Map::from_iter([
         ("key".into(), json!(task.key)),
         ("kind".into(), json!(task.kind)),
-        ("goal".into(), json!(task.goal)),
         (
             "context".into(),
             serde_json::from_str(&task.context_json).expect("task context JSON"),
@@ -558,6 +557,12 @@ async fn seed_projected_task_for(
         ("spawn".into(), json!(task.spawn)),
         ("ready".into(), json!(true)),
     ]);
+    let instruction_field = if task.kind == TaskKind::Terminal {
+        "command"
+    } else {
+        "goal"
+    };
+    payload.insert(instruction_field.into(), json!(task.goal));
     for (key, value) in [
         ("acceptance", task.acceptance_criteria.as_ref()),
         ("cwd", task.cwd.as_ref()),
@@ -4367,7 +4372,7 @@ async fn materialize_then_restore_root_bytes(
 ) {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.goal','temporary') \
+        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','temporary') \
          WHERE id='context-report'",
     )
     .execute(&pool)
@@ -4388,7 +4393,7 @@ async fn materialize_then_restore_root_bytes(
         "fixture must commit material before revert"
     );
     sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.goal','original contract') \
+        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','original contract') \
          WHERE id='context-report'",
     )
     .execute(&pool)
@@ -5436,7 +5441,7 @@ async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_mater
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.docRev', 4, \
-         '$.blocks[0].rev', 4, '$.blocks[0].payload.goal', 'temporary edit') \
+         '$.blocks[0].rev', 4, '$.blocks[0].payload.command', 'temporary edit') \
          WHERE id = 'context-report'",
     )
     .execute(&pool)
@@ -5444,7 +5449,7 @@ async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_mater
     .unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.docRev', 5, \
-         '$.blocks[0].rev', 5, '$.blocks[0].payload.goal', 'original contract') \
+         '$.blocks[0].rev', 5, '$.blocks[0].payload.command', 'original contract') \
          WHERE id = 'context-report'",
     )
     .execute(&pool)
@@ -5477,7 +5482,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
             .await
             .unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'replacement') WHERE id = ?1",
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'replacement') WHERE id = ?1",
     )
     .bind(card_id)
     .execute(&pool)
@@ -5785,7 +5790,7 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'new incarnation') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'new incarnation') \
          WHERE track_id = ?1 AND kind = 'track-report'",
     )
     .bind(boot.track_id.as_str())

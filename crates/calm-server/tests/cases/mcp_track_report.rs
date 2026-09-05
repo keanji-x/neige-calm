@@ -654,7 +654,7 @@ async fn write_replaces_body_and_emits_card_updated() {
                 serde_json::from_value(c.payload.clone()).expect("payload deserializes");
             assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
             assert_eq!(payload.summary, "done refactoring");
-            assert_eq!(payload.schema_version, 3);
+            assert_eq!(payload.schema_version, 4);
             assert_eq!(payload.doc_rev, 1);
             assert_eq!(c.updated_at, new_updated_at);
         }

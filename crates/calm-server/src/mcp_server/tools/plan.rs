@@ -930,8 +930,11 @@ mod tests {
 
         // This side comes from the task-block contract, independently of
         // PlanTaskInput's serde output. These five accepted task fields are
-        // lifecycle/projection controls that a manifest template may not set.
+        // lifecycle/projection controls that a manifest template may not set;
+        // `command` is the terminal-only instruction field, while this fixture
+        // is an agent task and therefore serializes `goal` instead.
         let template_exclusions = BTreeSet::from([
+            "command",
             "refs",
             "released_by_user",
             "spawn",
