@@ -1098,6 +1098,7 @@
       "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
       "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers",
       "the exchange rail, as the engine lays it out paints the resting dot between 3:1 and the text ladder, against the page",
+      "the track lifecycle status in the page header keeps the subdued running colour readable in both themes",
       "dark theme contrast matrix --accent on --bg clears the non-text floor",
       "dark theme contrast matrix --bg → --surface-card is at least 3.0 L apart",
       "dark theme contrast matrix --error on --bg clears the non-text floor",
@@ -1128,9 +1129,10 @@
       "tools/styles/styles.test.ts",
       "web/src/app/theme/theme.browser.test.tsx",
       "web/src/styles/contrast-matrix.browser.test.ts",
-      "web/src/features/chat/thread/thread.browser.test.tsx"
+      "web/src/features/chat/thread/thread.browser.test.tsx",
+      "web/src/features/track/page/header-lifecycle.browser.test.tsx"
     ],
-    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 26 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot, whose resting ink is a per-theme colour measured against the rendered page ground and therefore fails on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and lifecycle status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",
