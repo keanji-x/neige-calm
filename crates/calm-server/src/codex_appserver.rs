@@ -84,6 +84,25 @@ const WS_URI: &str = "ws://localhost/";
 /// (`plugin_host/mcp.rs:373` uses 10 s for its purely-local handshake.)
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// #1453 — bound for [`CodexAppServer::connect`]'s two blocking steps:
+/// `connect(2)` on the unix socket and the WebSocket upgrade that follows.
+///
+/// Both used to be unbounded, and the upgrade is the dangerous one: a peer
+/// whose accept loop is blocked still lets `connect(2)` succeed (the kernel
+/// queues us in its listen backlog) and then never sends the HTTP 101, so
+/// `client_async` waits forever with no timer anywhere above it. That is the
+/// exact shape that wedged three `shared_codex_appserver` tests — and the
+/// self-hosted CI runner behind them — for hours, and in production it is a
+/// boot that never finishes and never errors: the shared-daemon takeover
+/// probe (`shared_codex_appserver::try_takeover_live`) awaits this call with
+/// no deadline of its own.
+///
+/// 10 s: this handshake is purely local (no model work, no disk), the same
+/// budget `plugin_host/mcp.rs` gives its local handshake, and every caller
+/// either retries or classifies the failure. Anything that has not answered
+/// a local WebSocket upgrade in 10 s is wedged, not slow.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 // Notification backpressure decision (issue #293 fix-loop):
 //
 // The notification channel is **unbounded** (`mpsc::unbounded_channel`).
@@ -488,6 +507,45 @@ impl Drop for CodexAppServer {
     }
 }
 
+/// #1453 — the message a [`CONNECT_TIMEOUT`] expiry produces. A bound is only
+/// worth having if the failure says what we were waiting for and what the
+/// peer looked like while we waited, so this names the stage, the socket, the
+/// budget, and the observable peer state (does the socket file still exist?
+/// is anything listening on it right now?) instead of a bare "timed out".
+async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state: &str) -> String {
+    let sock_exists = sock_path.exists();
+    // A fresh probe: `connect(2)` returning ECONNREFUSED means the socket
+    // file is stale (nobody is listening); succeeding means a listener is
+    // still bound. This distinguishes "the daemon died and left its socket
+    // behind" from "the daemon is alive but not answering", which are
+    // opposite repairs. Bounded (200 ms) and async on purpose — a
+    // *blocking* probe here would itself hang against a peer whose listen
+    // backlog is full, which is precisely the state we are reporting on.
+    let listener_bound = match tokio::time::timeout(
+        Duration::from_millis(200),
+        UnixStream::connect(sock_path),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Some(true),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Some(false),
+        // Backlog-full, permission errors, our own 200 ms expiry: inconclusive.
+        Ok(Err(_)) | Err(_) => None,
+    };
+    let listener = match listener_bound {
+        Some(true) => "a listener is still bound",
+        Some(false) => "nothing is listening (stale socket file)",
+        None => "listener state inconclusive",
+    };
+    format!(
+        "timed out after {}s waiting for {awaited} on {} — peer state: \
+         socket file {}, {listener}; {peer_state}",
+        CONNECT_TIMEOUT.as_secs(),
+        sock_path.display(),
+        if sock_exists { "present" } else { "GONE" },
+    )
+}
+
 impl CodexAppServer {
     /// Test-only: build a fully-constructed [`CodexAppServer`] over an
     /// in-process `UnixStream::pair` WebSocket handshake, returning the
@@ -531,9 +589,27 @@ impl CodexAppServer {
     /// [`CodexAppServer::initialize`] next.
     pub async fn connect(sock_path: impl AsRef<Path>) -> Result<(Self, NotificationStream)> {
         let sock_path = sock_path.as_ref();
-        let stream = UnixStream::connect(sock_path).await.map_err(|e| {
-            CalmError::CodexAppServer(format!("connect unix socket {}: {e}", sock_path.display()))
-        })?;
+        let stream =
+            match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(sock_path)).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) => {
+                    return Err(CalmError::CodexAppServer(format!(
+                        "connect unix socket {}: {e}",
+                        sock_path.display()
+                    )));
+                }
+                Err(_) => {
+                    return Err(CalmError::CodexAppServer(
+                        connect_timeout_diagnostic(
+                            sock_path,
+                            "connect(2) on the unix socket",
+                            "the socket file exists but the peer never completed the connection \
+                         (its listen backlog is full, i.e. its accept loop is not running)",
+                        )
+                        .await,
+                    ));
+                }
+            };
 
         // Build the handshake request by hand. `IntoClientRequest` on a
         // `&str` URI fills in the mandatory Sec-WebSocket-* headers and a
@@ -544,11 +620,32 @@ impl CodexAppServer {
             .into_client_request()
             .map_err(|e| CalmError::CodexAppServer(format!("build ws handshake request: {e}")))?;
 
-        let (ws, _resp) = tokio_tungstenite::client_async(request, stream)
-            .await
-            .map_err(|e| {
-                CalmError::CodexAppServer(format!("ws handshake over {}: {e}", sock_path.display()))
-            })?;
+        let (ws, _resp) = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio_tungstenite::client_async(request, stream),
+        )
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => {
+                return Err(CalmError::CodexAppServer(format!(
+                    "ws handshake over {}: {e}",
+                    sock_path.display()
+                )));
+            }
+            Err(_) => {
+                return Err(CalmError::CodexAppServer(
+                    connect_timeout_diagnostic(
+                        sock_path,
+                        "the WebSocket upgrade response (HTTP 101) after connect(2) succeeded",
+                        "the peer accepted the connection and then went silent — it is \
+                             wedged, or its accept loop is head-of-line blocked serving another \
+                             connection",
+                    )
+                    .await,
+                ));
+            }
+        };
 
         let (write, read) = ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));

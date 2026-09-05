@@ -157,13 +157,36 @@ pub fn run_fake_app_server() {
             )
         });
         // Serve connections forever; the kernel opens one, and the test
-        // kills us at teardown. Each connection is handled to completion.
+        // kills us at teardown.
+        //
+        // #1453 — each connection is served on its OWN task. This used to
+        // `.await` `serve_conn` inline, so the fixture served exactly ONE
+        // connection at a time and a connection was reached only after every
+        // earlier one had closed. Measured against the old binary with raw
+        // upgrade requests: with connection A open, B never receives its
+        // HTTP 101; a third connection opened after A closes is likewise
+        // unanswered while B is being served. So an overlapping connection
+        // waits exactly as long as the connection ahead of it lives — and if
+        // that one is never released, it waits forever.
+        //
+        // That is a live trap for every test that hands a daemon from one
+        // supervisor to the next, because the old supervisor's WebSocket
+        // closes ASYNCHRONOUSLY: `Drop for CodexAppServer` only *requests*
+        // its reader task's abort, and the socket is closed when the runtime
+        // gets round to dropping that task. A real `codex app-server` accepts
+        // concurrently and has no such window; the fixture should not invent
+        // one. (The unbounded wait on the other side of that window is fixed
+        // separately, by `CONNECT_TIMEOUT` in `codex_appserver.rs` — the two
+        // fixes are independent, and both are needed.)
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    if let Err(e) = serve_conn(stream, control.clone()).await {
-                        eprintln!("fake app-server: connection ended: {e}");
-                    }
+                    let control = control.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = serve_conn(stream, control).await {
+                            eprintln!("fake app-server: connection ended: {e}");
+                        }
+                    });
                 }
                 Err(e) => {
                     eprintln!("fake app-server: accept failed: {e}");
