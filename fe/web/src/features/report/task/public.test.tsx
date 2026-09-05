@@ -22,7 +22,7 @@ describe('ReportTaskBlock', () => {
     expect(screen.getByText('Task')).toBeTruthy();
     expect(screen.getByText('ingest-resolver')).toBeTruthy();
     expect(screen.getByText('codex')).toBeTruthy();
-    expect(screen.getByText('Not ready')).toBeTruthy();
+    expect(screen.getByText('Declaration not ready')).toBeTruthy();
   });
 
   it('puts the facts about the task in one label column', () => {
@@ -95,7 +95,7 @@ describe('ReportTaskBlock', () => {
     expect(summary.textContent).toContain('Task');
     expect(summary.textContent).toContain('ingest-resolver');
     expect(summary.textContent).toContain('codex');
-    expect(summary.textContent).toContain('Ready');
+    expect(summary.textContent).toContain('Declaration ready');
     /* And the detail is *outside* it, or nothing is folded away. */
     expect(summary.textContent).not.toContain('Route the ingest call sites');
     expect(summary.querySelector('dl')).toBeNull();
@@ -135,6 +135,6 @@ describe('ReportTaskBlock', () => {
       key: 'live', kind: 'terminal', declared_by: 'spec', ready: true, command: 'true', tombstone: null,
     }} />);
     expect(screen.queryByText('Withdrawn')).toBeNull();
-    expect(screen.getByText('Ready')).toBeTruthy();
+    expect(screen.getByText('Declaration ready')).toBeTruthy();
   });
 });

@@ -465,6 +465,19 @@ describe('track route TASKS panel', () => {
     expect((await taskRow(/^no-adapter$/)).getAttribute('aria-description')).toBe('running');
   });
 
+  it('carries execution diagnostics through the real route into the report reference', async () => {
+    setup(TASK_CARDS, { taskDiagnostics: [{
+      blockId: 'b-term', key: 'has-adapter', schedulable: true,
+      status: 'failed', statusDetail: 'gate-red', workerCardId: 'card-term',
+    }] });
+    const row = await taskRow(/^has-adapter$/);
+    await waitFor(() => expect(row.getAttribute('aria-description')).toBe('failed — gate-red'));
+    await userEvent.click(row);
+    const block = document.querySelector('#b-term [data-nc-task-state]');
+    expect(block?.getAttribute('data-nc-task-state')).toBe('failed');
+    expect(block?.querySelector('summary [title]')?.getAttribute('title')).toBe('failed — gate-red');
+  });
+
   it('shows the server-provided dependency, budget, and admission reasons without deriving them', async () => {
     setup(TASK_CARDS, { taskDiagnostics: [
       {

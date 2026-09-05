@@ -308,6 +308,7 @@ pub(crate) fn guard_task_declarations(
     if author == EditAuthor::Assistant {
         guard_assistant_leaves_task_blocks_alone(before, after)?;
     }
+    crate::track_report_gate_guard::check_changed_task_gates(before, after)?;
     Ok(())
 }
 
