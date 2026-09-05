@@ -7698,6 +7698,7 @@
       },
       "TaskAttemptView": {
         "type": "object",
+        "description": "Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.",
         "required": [
           "attempt_id",
           "generation",
@@ -7727,8 +7728,7 @@
             "format": "int64"
           },
           "status": {
-            "type": "string",
-            "description": "Includes awaiting_projection when admission capacity removed a pending row."
+            "type": "string"
           },
           "status_detail": {
             "type": [

@@ -7,61 +7,31 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
 use crate::model::{Task, TaskStatus};
-use calm_types::task_recovery::{TaskAttemptAllocation, TaskAttemptOrigin};
-use serde::Serialize;
-use utoipa::ToSchema;
+use calm_types::task_recovery::{
+    TaskAttemptAllocation, TaskAttemptOrigin, TaskAttemptView, TaskRecoveryCapability,
+    TaskRecoveryView,
+};
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct TaskAttemptView {
-    pub attempt_id: String,
-    pub generation: i64,
-    /// Includes awaiting_projection when admission capacity removed a pending row.
-    pub status: String,
-    #[schema(required = true)]
-    pub status_detail: Option<String>,
-    #[schema(required = true)]
-    pub worker_card_id: Option<String>,
-    pub created_at_ms: i64,
-    #[schema(required = true)]
-    pub finished_at_ms: Option<i64>,
-}
-
-impl TaskAttemptView {
-    fn new(allocation: &TaskAttemptAllocation, task: Option<&Task>) -> Result<Self> {
-        let status = match task {
-            Some(task) => serde_json::to_value(task.status)?
-                .as_str()
-                .ok_or_else(|| {
-                    CalmError::Internal("task status must serialize as a string".into())
-                })?
-                .to_string(),
-            None => "awaiting_projection".into(),
-        };
-        Ok(Self {
-            attempt_id: allocation.attempt_id.clone(),
-            generation: allocation.generation,
-            status,
-            status_detail: task.and_then(|task| task.status_detail.clone()),
-            worker_card_id: task.and_then(|task| task.worker_card_id.clone()),
-            created_at_ms: allocation.created_at_ms,
-            finished_at_ms: task.and_then(|task| task.finished_at_ms),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct TaskRecoveryCapability {
-    pub allowed: bool,
-    pub code: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct TaskRecoveryView {
-    pub key: String,
-    pub current: TaskAttemptView,
-    pub attempts: Vec<TaskAttemptView>,
-    pub recovery: TaskRecoveryCapability,
+fn task_attempt_view(
+    allocation: &TaskAttemptAllocation,
+    task: Option<&Task>,
+) -> Result<TaskAttemptView> {
+    let status = match task {
+        Some(task) => serde_json::to_value(task.status)?
+            .as_str()
+            .ok_or_else(|| CalmError::Internal("task status must serialize as a string".into()))?
+            .to_string(),
+        None => "awaiting_projection".into(),
+    };
+    Ok(TaskAttemptView {
+        attempt_id: allocation.attempt_id.clone(),
+        generation: allocation.generation,
+        status,
+        status_detail: task.and_then(|task| task.status_detail.clone()),
+        worker_card_id: task.and_then(|task| task.worker_card_id.clone()),
+        created_at_ms: allocation.created_at_ms,
+        finished_at_ms: task.and_then(|task| task.finished_at_ms),
+    })
 }
 
 pub async fn task_recovery_view(
@@ -165,7 +135,7 @@ pub(crate) async fn task_recovery_view_tx(
             reason: "Only a failed current execution can be recovered.".into(),
         },
     };
-    let current = TaskAttemptView::new(current, current_task.as_ref())?;
+    let current = task_attempt_view(current, current_task.as_ref())?;
     let mut attempts = Vec::with_capacity(allocations.len());
     for allocation in allocations {
         let task = task_get_tx(tx, &allocation.attempt_id).await?;
@@ -174,7 +144,7 @@ pub(crate) async fn task_recovery_view_tx(
                 "historical execution row is missing".into(),
             ));
         }
-        attempts.push(TaskAttemptView::new(&allocation, task.as_ref())?);
+        attempts.push(task_attempt_view(&allocation, task.as_ref())?);
     }
     Ok(TaskRecoveryView {
         key: key.to_string(),

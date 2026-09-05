@@ -7,6 +7,7 @@ use crate::event::TaskContextRef;
 use crate::ids::ActorId;
 use crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use utoipa::ToSchema;
 
 /// Persisted route values; names describe their meaning without changing bytes.
@@ -52,7 +53,8 @@ pub fn task_root_hash_preimage(payload: &serde_json::Value) -> String {
     crate::report_blocks::canonical_json(&serde_json::Value::Object(projected))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(deny_unknown_fields)]
 pub struct TaskRecoveryRequest {
     pub expected_attempt_id: String,
@@ -61,13 +63,47 @@ pub struct TaskRecoveryRequest {
 }
 
 /// Stable acknowledgement, including when the response to the first call was lost.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(deny_unknown_fields)]
 pub struct TaskRecoveryReceipt {
     pub key: String,
     pub previous_attempt_id: String,
     pub attempt_id: String,
     pub generation: i64,
+}
+
+/// Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+#[derive(Debug, Clone, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskAttemptView {
+    pub attempt_id: String,
+    pub generation: i64,
+    pub status: String,
+    #[schema(required = true)]
+    pub status_detail: Option<String>,
+    #[schema(required = true)]
+    pub worker_card_id: Option<String>,
+    pub created_at_ms: i64,
+    #[schema(required = true)]
+    pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskRecoveryCapability {
+    pub allowed: bool,
+    pub code: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskRecoveryView {
+    pub key: String,
+    pub current: TaskAttemptView,
+    pub attempts: Vec<TaskAttemptView>,
+    pub recovery: TaskRecoveryCapability,
 }
 
 /// Evidence carried into a recovery. Never synthesize this from today's report

@@ -2699,6 +2699,7 @@ export interface components {
                 [key: string]: string | null;
             };
         };
+        /** @description Execution summary. Status includes awaiting_projection when admission capacity removed a pending row. */
         TaskAttemptView: {
             attempt_id: string;
             /** Format: int64 */
@@ -2707,7 +2708,6 @@ export interface components {
             finished_at_ms: number | null;
             /** Format: int64 */
             generation: number;
-            /** @description Includes awaiting_projection when admission capacity removed a pending row. */
             status: string;
             status_detail: string | null;
             worker_card_id: string | null;

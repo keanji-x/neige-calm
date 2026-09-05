@@ -4,8 +4,9 @@
 mod admission;
 mod view;
 pub(crate) use admission::{check_recovery_attempt_tx, require_attempt_startable_tx};
+pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
+pub use view::task_recovery_view;
 pub(crate) use view::task_recovery_view_tx;
-pub use view::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView, task_recovery_view};
 
 use crate::db::sqlite::{
     task_attempt_current_tx, task_get_tx, task_recovery_allocate_tx, task_recovery_lookup_tx,

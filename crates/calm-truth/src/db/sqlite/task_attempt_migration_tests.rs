@@ -41,7 +41,7 @@ async fn task_recovery_migration_preserves_all_execution_values_refs_and_operati
         migrations: Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|m| m.version <= 93)
+                .filter(|m| m.version <= 94)
                 .cloned()
                 .collect(),
         ),
