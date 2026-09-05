@@ -431,6 +431,8 @@ async fn commit_worker_task_report_for_identity(
                 format!("emit {kind_tag}: forbidden: {msg}"),
             ))
         }
+        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(-32409, msg)),
+        Err(CalmError::NotFound(msg)) => Err(RpcError::custom(-32404, msg)),
         Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
     }
 }

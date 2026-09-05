@@ -32,7 +32,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running' }}
+        card={{ type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -58,7 +58,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running' }}
+        card={{ type: 'codex', id: 'x1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -72,7 +72,7 @@ describe('codex card component', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'codex', id: 'x1', title: null, terminalId: null, sessionState: 'starting' }}
+        card={{ type: 'codex', id: 'x1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -81,5 +81,21 @@ describe('codex card component', () => {
     // Empty locator, not a missing one: the card is mounted but not live.
     expect(document.querySelector('[data-nc-terminal-id=""]')).not.toBeNull();
     expect(document.querySelector('[data-nc-terminal-id="t1"]')).toBeNull();
+  });
+});
+
+describe('worker checkout visibility', () => {
+  it('shows the actual worker directory from the kernel card', () => {
+    const card = CODEX_CARD_ENTRY.fromKernel({
+      id: 'checkout-worker', kind: 'codex',
+      payload: { cwd: '/repo/.claude/worktrees/track/worker', gate_cwd: '/repo/gate-override' },
+    });
+    if (card === null) throw new Error('worker card must resolve');
+    const Component = CODEX_CARD_ENTRY.component;
+    render(<Component card={card} host={fakeHost()} />);
+    expect(screen.getByText('/repo/.claude/worktrees/track/worker')).toBeTruthy();
+    expect(screen.getByText('Working directory')).toBeTruthy();
+    expect(screen.getByText('Gate working directory')).toBeTruthy();
+    expect(screen.getByText('/repo/gate-override')).toBeTruthy();
   });
 });

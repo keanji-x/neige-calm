@@ -24,7 +24,8 @@ it('preserves attached terminal geometry and output when its session exits', asy
   const host = createCardHost(registry);
   const board = (status: 'running' | 'exited') => {
     const card = registry.resolve({
-      id: 'card-1', kind: 'terminal', payload: {},
+      id: 'card-1', kind: 'terminal',
+      payload: { cwd: '/repo/worker-checkout', gate_cwd: '/repo/gate-checkout' },
       runtime: { runtime_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
     });
     if (card === null) throw new Error('Missing terminal');
@@ -42,6 +43,8 @@ it('preserves attached terminal geometry and output when its session exits', asy
 
   rerender(board('exited'));
   expect(screen.getByText('Session exited.')).toBeTruthy();
+  expect(screen.getByText('/repo/worker-checkout')).toBeTruthy();
+  expect(screen.getByText('/repo/gate-checkout')).toBeTruthy();
   expect(screen.queryByRole('img', { name: 'status Working' })).toBeNull();
   expect(screen.getByTestId('retained-output')).toBe(output);
   expect(getComputedStyle(body).padding).toBe('0px');

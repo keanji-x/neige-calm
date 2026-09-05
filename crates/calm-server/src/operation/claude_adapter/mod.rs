@@ -1,3 +1,5 @@
+mod workspace;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,11 +21,11 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id};
-use crate::operation::codex_adapter::render_worker_prompt;
+use crate::operation::codex_adapter::render_task_worker_prompt;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
-    acquire_plain_workspace_lease_tx, plain_workspace_lease_path_for,
-    release_workspace_lease_by_id, remove_workspace_artifact_for_lease_by_id,
+    acquire_workspace_lease_tx, prepare_workspace_lease_target_tx, release_workspace_lease_by_id,
+    remove_workspace_artifact_for_lease_by_id,
 };
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
@@ -77,6 +79,7 @@ pub struct ClaudeWorkerAdapter {
     track_area_cache: TrackAreaCache,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
+    workspace_root: PathBuf,
 }
 
 impl ClaudeAdapter {
@@ -121,6 +124,7 @@ impl ClaudeWorkerAdapter {
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             repo,
@@ -128,6 +132,7 @@ impl ClaudeWorkerAdapter {
             mcp_server,
             card_role_cache,
             track_area_cache,
+            workspace_root,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
@@ -140,6 +145,7 @@ impl ClaudeWorkerAdapter {
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
+        workspace_root: PathBuf,
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
@@ -148,6 +154,7 @@ impl ClaudeWorkerAdapter {
             mcp_server,
             card_role_cache,
             track_area_cache,
+            workspace_root,
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -755,15 +762,22 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();
         let track_id = TrackId::from(payload.track_id.clone());
-        let cwd_path = plain_workspace_lease_path_for(track_id.as_str(), &card_id)?;
-        let cwd = cwd_path.to_string_lossy().to_string();
+        let lease_target = prepare_workspace_lease_target_tx(
+            tx,
+            track_id.as_str(),
+            &card_id,
+            &self.workspace_root,
+        )
+        .await?;
+        let cwd = lease_target.path_string();
         let settings_path = self
             .codex
             .claude_settings_dir
             .join(&card_id)
             .join("settings.json");
         let settings_dir = settings_path_parent(&settings_path)?;
-        let rendered_prompt = render_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt(
+            &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
@@ -804,14 +818,9 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) = acquire_plain_workspace_lease_tx(
-            tx,
-            &card_id,
-            card.track_id.as_str(),
-            &op.id,
-            &cwd_path,
-        )
-        .await?;
+        let (lease, lease_event) =
+            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &lease_target)
+                .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
@@ -860,6 +869,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "command_line": command_line,
             "cwd": cwd,
             "lease_id": lease.lease_id,
+            "repo_root": lease_target.repo_root,
+            "slice_branch": lease_target.branch,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,
@@ -989,6 +1000,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let mcp_server = self.mcp_server.as_ref().ok_or_else(|| {
             CalmError::Internal("MCP server is not running; claude worker cannot report".into())
         })?;
+        workspace::provision(self, ctx, output).await?;
+
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;
         let env_map = env.as_object_mut().ok_or_else(|| {
             CalmError::Internal("claude worker env must be an object before spawn".into())

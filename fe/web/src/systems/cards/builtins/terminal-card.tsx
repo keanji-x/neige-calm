@@ -6,6 +6,7 @@ import { Suspense, useEffect } from 'react';
 import { useState } from '../../../ui/state/public.ts';
 import { TerminalSurface } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
+import { PathLabel } from '../../../ui/path-label/public.tsx';
 import { CardHead } from '../ui/card-head.tsx';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 
@@ -15,6 +16,8 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
     readonly title: string | null;
     readonly terminalId: string | null;
     readonly sessionState: WorkerSessionState | null;
+    readonly cwd: string | null;
+    readonly gateCwd: string | null;
   };
   host: CardHostCapabilities;
   /** The board's delete, already resolved — see `CardComponentProps.onRemove`. */
@@ -54,6 +57,12 @@ export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'termin
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
       />
+      {card.cwd !== null && (
+        <PathLabel label="Working directory" path={card.cwd} />
+      )}
+      {card.gateCwd !== null && (
+        <PathLabel label="Gate working directory" path={card.gateCwd} />
+      )}
       <div className="term-body">
         {attached
           ? (

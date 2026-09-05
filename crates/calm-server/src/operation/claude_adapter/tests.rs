@@ -10,146 +10,9 @@ use calm_truth::session_projection_repo::WorkerSessionProjectionRepo;
 use sqlx::Row;
 use std::sync::Arc;
 
-struct ClaudeWorkerHarness {
-    repo: Arc<crate::db::sqlite::SqlxRepo>,
-    adapter: ClaudeWorkerAdapter,
-    track_id: String,
-    events: EventBus,
-}
-
-async fn claude_worker_harness() -> ClaudeWorkerHarness {
-    let repo = Arc::new(
-        crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
-            .await
-            .unwrap(),
-    );
-    let area = crate::db::RepoSyncDomainRaw::area_create(
-        repo.as_ref(),
-        crate::model::NewArea {
-            name: "claude workspace leases".into(),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = crate::db::RepoSyncDomainRaw::track_create(
-        repo.as_ref(),
-        crate::model::NewTrack {
-            template_input: None,
-            area_id: area.id,
-            title: "claude workspace leases".into(),
-            sort: None,
-            cwd: String::new(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-    )
-    .await
-    .unwrap();
-    let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
-    ClaudeWorkerHarness {
-        adapter: ClaudeWorkerAdapter::new(
-            route_repo,
-            Arc::new(CodexClient::new_stub()),
-            None,
-            CardRoleCache::new(),
-            TrackAreaCache::new(),
-        ),
-        repo,
-        track_id: track.id.to_string(),
-        events: EventBus::new(),
-    }
-}
-
-fn claude_worker_payload(track_id: &str, key: &str) -> Value {
-    serde_json::to_value(ClaudeWorkerOperationPayload {
-        actor: ActorId::KernelDispatcher,
-        track_id: track_id.to_string(),
-        idempotency_key: format!("{track_id}:{key}"),
-        goal: format!("do {key}"),
-        cwd: None,
-        context: Value::Null,
-        acceptance_criteria: None,
-    })
-    .unwrap()
-}
-
-fn claude_worker_op(id: &str, payload: Value) -> Operation {
-    Operation {
-        id: id.to_string(),
-        operation_key: format!("op-key-{id}"),
-        kind: "claude-worker".into(),
-        idempotency_key: Some(id.to_string()),
-        payload_hash: "hash".into(),
-        target_type: "unknown".into(),
-        target_id: None,
-        target: json!({ "type": "unknown", "id": null }),
-        payload,
-        tx_output: None,
-        phase: crate::operation::Phase::Pending,
-        phase_detail: None,
-        attempt: 0,
-        last_error: None,
-        compensation_state: None,
-        lease_owner: None,
-        lease_until_ms: None,
-        spawn_artifacts: None,
-        parked_at_ms: None,
-        parked_deadline_ms: None,
-    }
-}
-
-async fn prepare_claude_worker(
-    harness: &ClaudeWorkerHarness,
-    key: &str,
-) -> (TxOutput, Vec<BroadcastEnvelope>, String) {
-    let payload = claude_worker_payload(&harness.track_id, key);
-    let task_id = format!("{}:{key}", harness.track_id);
-    sqlx::query(
-        "INSERT OR IGNORE INTO tasks \
-         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
-         VALUES (?1, ?2, ?3, 'claude', 'test', 'null', '[]', 'dispatched', 1, 1)",
-    )
-    .bind(&task_id)
-    .bind(&harness.track_id)
-    .bind(key)
-    .execute(harness.repo.pool())
-    .await
-    .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
-    let op_id = op_repo
-        .insert_operation(
-            "claude-worker",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(format!("op-{key}")),
-                payload_hash: format!("hash-{key}"),
-            },
-            payload.clone(),
-        )
-        .await
-        .unwrap();
-    let op = op_repo
-        .claim_drive_batch(1)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|op| op.id == op_id)
-        .unwrap();
-    let claimed_op_id = op.id.clone();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
-        .await
-        .unwrap();
-    let events = output.post_commit_events.clone();
-    tx.commit().await.unwrap();
-    (output, events, claimed_op_id)
-}
+#[path = "test_support.rs"]
+mod support;
+use support::*;
 
 #[test]
 fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
@@ -185,15 +48,20 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
         .fetch_one(harness.repo.pool())
         .await
         .unwrap();
+    assert_eq!(track_cwd, harness.workspace.path().to_str().unwrap());
     assert_eq!(
-        track_cwd, "",
-        "regression guard: track cwd is not a git repo"
+        Path::new(&cwd),
+        harness
+            .workspace
+            .path()
+            .join(".claude/worktrees")
+            .join(&harness.track_id)
+            .join(&card_id)
     );
-    assert_eq!(
-        cwd,
-        format!(".claude/worktrees/{}/{}", harness.track_id, card_id)
+    assert!(
+        !Path::new(&cwd).exists(),
+        "prepare must not present an empty directory as a checkout"
     );
-    assert!(std::path::Path::new(&cwd).is_dir(), "leased cwd exists");
     let lease = sqlx::query(
         "SELECT state, path, card_id, track_id FROM workspace_leases WHERE lease_id = ?1",
     )
@@ -238,8 +106,8 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
             .unwrap()
     );
     assert!(
-        std::path::Path::new(&cwd).exists(),
-        "normal lease release preserves leased cwd"
+        !Path::new(&cwd).exists(),
+        "releasing a prepared lease does not create a checkout"
     );
 }
 
@@ -288,9 +156,14 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
     });
     let captured_env = Arc::new(tokio::sync::Mutex::new(None::<Value>));
     let captured_env_for_hook = captured_env.clone();
-    let hook: SpawnHook = Arc::new(move |_terminal_id, _command_line, _cwd, env| {
+    let hook: SpawnHook = Arc::new(move |_terminal_id, _command_line, cwd, env| {
         let captured_env = captured_env_for_hook.clone();
         Box::pin(async move {
+            assert_eq!(
+                std::fs::read_to_string(Path::new(&cwd).join("worker-source")).unwrap(),
+                "tracked source",
+                "Claude must start in a provisioned checkout containing Track source"
+            );
             *captured_env.lock().await = Some(env);
             Ok(SpawnHandle::NoOp)
         })
@@ -302,6 +175,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         Some(mcp_server),
         CardRoleCache::new(),
         TrackAreaCache::new(),
+        harness.workspace.path().to_path_buf(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -321,6 +195,13 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         .await
         .expect("spawn side effect");
 
+    workspace::provision(&adapter, &ctx, &output).await.unwrap();
+    let ready_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.provisioned'")
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(ready_events, 1, "provisioning recovery is idempotent");
     let env = captured_env
         .lock()
         .await
@@ -367,8 +248,8 @@ async fn claude_worker_budget_parallelism_gets_disjoint_lease_paths() {
 
     assert_ne!(first_card, second_card);
     assert_ne!(first_cwd, second_cwd);
-    assert!(first_cwd.starts_with(".claude/worktrees/"));
-    assert!(second_cwd.starts_with(".claude/worktrees/"));
+    assert!(Path::new(&first_cwd).starts_with(harness.workspace.path().join(".claude/worktrees")));
+    assert!(Path::new(&second_cwd).starts_with(harness.workspace.path().join(".claude/worktrees")));
 
     let held: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE state = 'held'")
@@ -410,6 +291,10 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
         harness.events.clone(),
         OperationCompletionBus::new(),
     );
+    workspace::provision(&harness.adapter, &ctx, &output)
+        .await
+        .unwrap();
+    assert!(Path::new(&cwd).join("worker-source").is_file());
     let raw_token = mint_claude_worker_mcp_token(&ctx, &card_id, &runtime_id)
         .await
         .unwrap();
@@ -587,6 +472,7 @@ async fn claude_worker_recovery_already_live_returns_noop_without_respawn_or_tok
         Some(mcp_server),
         CardRoleCache::new(),
         TrackAreaCache::new(),
+        harness.workspace.path().to_path_buf(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -699,6 +585,7 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
         Some(mcp_server),
         CardRoleCache::new(),
         TrackAreaCache::new(),
+        harness.workspace.path().to_path_buf(),
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
@@ -742,4 +629,21 @@ async fn claude_worker_prepare_titles_card_with_task_key() {
 
     let wire: crate::model::Card = serde_json::from_value(output.result.clone()).unwrap();
     assert_eq!(wire.title, Some("slice-c".to_string()));
+}
+
+#[tokio::test]
+async fn claude_worker_prompt_includes_completion_task_id() {
+    let harness = claude_worker_harness().await;
+    let (output, _, _) = prepare_claude_worker(&harness, "identity").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+    release_workspace_lease_for_card_repo(harness.repo.as_ref(), &harness.events, &card_id)
+        .await
+        .unwrap();
+    assert!(
+        output
+            .output_string("prompt", "test")
+            .unwrap()
+            .contains(&format!("{}:identity", harness.track_id)),
+        "the worker must receive the task id it is required to echo"
+    );
 }
