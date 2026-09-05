@@ -518,6 +518,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "calm-task-artifacts"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "calm-test-sockets"
 version = "0.1.0"
 dependencies = [
