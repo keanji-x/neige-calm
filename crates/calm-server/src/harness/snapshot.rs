@@ -61,13 +61,12 @@ pub struct HarnessSnapshot {
     /// the two, which is the very loss of identity the ids exist to prevent, so
     /// a fold unions the sets instead.
     ///
-    /// Empty for every non-`UserMessage` entry, and for every entry that was
-    /// enqueued before this field existed. An empty set means "enqueued before
-    /// the upgrade, instance not distinguishable"; the give-back skips such an
-    /// entry and leaves the message where it is, rather than falling back to
-    /// comparing text. Registered as a KNOWN GAP: a pre-upgrade sentence
-    /// stranded on a runtime whose mint later fails stays on the successor
-    /// rather than being returned.
+    /// Empty for every non-`UserMessage` entry, and for an entry enqueued
+    /// before this field existed — but only until that entry moves: the harvest
+    /// and the inherit mint an id for any `UserMessage` they carry that has
+    /// none, in the transaction that moves it, so a moved instance is always
+    /// identifiable. Minting there rather than at load keeps the id stable
+    /// across reads.
     #[serde(default)]
     pub pending_message_ids: Vec<Vec<String>>,
     #[serde(default)]

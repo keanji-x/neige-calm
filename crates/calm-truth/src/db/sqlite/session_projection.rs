@@ -506,9 +506,9 @@ pub struct HarvestedQueues {
 /// One queue entry taken off a retired row, with the identity of the instances
 /// it carries.
 ///
-/// `ids` is empty for an entry enqueued before #1449 shipped — the instance
-/// cannot be told apart from another copy of the same text, so a caller that
-/// needs identity must skip it rather than fall back to comparing `text`.
+/// `ids` is never empty: the decoder mints one for an entry that was enqueued
+/// before the field existed, in the transaction that moves it, so everything
+/// this carries can be identified and therefore given back.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HarvestedMessage {
     pub text: String,

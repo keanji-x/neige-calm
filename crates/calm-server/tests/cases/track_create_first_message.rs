@@ -4276,3 +4276,86 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     );
     b.shutdown_harnesses().await;
 }
+
+/// #1449 — a sentence that crossed the upgrade with no id is still given back
+/// when the mint that moved it fails.
+///
+/// `pending_message_ids` is `#[serde(default)]`, so every entry a pre-#1449
+/// binary enqueued decodes to an empty set, and nothing back-fills ids for
+/// entries already on a queue. Migration 0095 leaves live rows unstamped on
+/// purpose — so their queues stay harvestable — which puts exactly those
+/// entries in the class that moves.
+///
+/// The give-back returns only ids the failing runtime still holds, and `any`
+/// over an empty set is false. So before ids were minted at the transfer
+/// boundary, such a sentence was moved off its row by the mint, never returned,
+/// and left on a `failed` successor: a row the harvest does not read and
+/// `restore_old_runtime` does not revive.
+#[tokio::test]
+async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
+    const LEGACY: &str = "typed before the upgrade";
+
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+    let (status, body) = b.create_track(Some("idem-1449-legacy"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (predecessor, card_id) = b.only_runtime().await;
+
+    let (sent, sent_body) = b.send_planner_input(&card_id, LEGACY).await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the send lands: body={sent_body}"
+    );
+    entered.notified().await;
+
+    // Rewrite the row the way a pre-#1449 binary left it: the queue is there,
+    // the id array is not. Straight to the column, because the point is a row
+    // this binary never wrote.
+    let state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&predecessor)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let mut state: Value = serde_json::from_str(&state).unwrap();
+    state.as_object_mut().unwrap().remove("pending_message_ids");
+    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&state).unwrap())
+        .bind(&predecessor)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    // The predecessor stays ACTIVE, so the restart takes the inherit arm, and
+    // the restart fails after its transaction committed.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected failure must surface: status={failed} body={failed_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.wait_until_rows_holding(LEGACY, 1).await,
+        1,
+        "a sentence with no id was moved off its row by the mint; when that mint fails it has to \
+         come back, or it is left on a `failed` runtime that nothing reads and nothing revives"
+    );
+
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(LEGACY, 2).await,
+        1,
+        "and it reaches an agent exactly once"
+    );
+    b.shutdown_harnesses().await;
+}

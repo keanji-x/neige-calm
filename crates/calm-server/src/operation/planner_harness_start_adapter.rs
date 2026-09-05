@@ -871,18 +871,27 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // Only the human sentences are journalled, because only they
                 // are returned: the rest of an inherited queue is machine
                 // context the successor re-derives.
-                let messages: Vec<HarvestedMessage> = snapshot
-                    .pending_queue
-                    .iter()
-                    .zip(snapshot.pending_message_ids.iter())
-                    .filter_map(|(observation, ids)| match observation {
-                        Observation::UserMessage { text } => Some(HarvestedMessage {
-                            text: text.clone(),
-                            ids: ids.clone(),
-                        }),
-                        _ => None,
-                    })
-                    .collect();
+                // #1449 — the same mint-at-the-boundary rule as the harvest:
+                // an inherited entry with no ids gets one, written into the
+                // successor's snapshot AND into the journal, so a failed mint
+                // can give it back.
+                let mut messages: Vec<HarvestedMessage> = Vec::new();
+                for (index, observation) in snapshot.pending_queue.iter().enumerate() {
+                    let Observation::UserMessage { text } = observation else {
+                        continue;
+                    };
+                    let ids = snapshot
+                        .pending_message_ids
+                        .get_mut(index)
+                        .expect("side arrays were aligned above");
+                    if ids.is_empty() {
+                        ids.push(new_id());
+                    }
+                    messages.push(HarvestedMessage {
+                        text: text.clone(),
+                        ids: ids.clone(),
+                    });
+                }
                 if !messages.is_empty() {
                     tracing::info!(
                         card_id = %card_id,
@@ -2389,7 +2398,26 @@ fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestO
         .zip(snapshot.pending_envelope_ids)
     {
         match observation {
-            Observation::UserMessage { text } => taken.push(HarvestedMessage { text, ids }),
+            Observation::UserMessage { text } => {
+                // #1449 — MINT AT THE TRANSFER BOUNDARY.
+                //
+                // An entry enqueued before this field existed has no ids, and
+                // the give-back returns only ids the failing runtime still
+                // holds — so an id-less entry could be moved off its row and
+                // never returned, ending on a `failed` successor that the
+                // harvest does not read and `restore_old_runtime` does not
+                // revive. Every pre-upgrade entry is in that class, and
+                // migration 0095 leaves live rows unstamped precisely so their
+                // queues stay harvestable, which is what puts them there.
+                //
+                // Minting here rather than at load: the same id goes into the
+                // successor's snapshot and into the journal entry, in one
+                // transaction, so the instance is identifiable from the moment
+                // it moves. Minting on load would give the same entry a
+                // different id on every read.
+                let ids = if ids.is_empty() { vec![new_id()] } else { ids };
+                taken.push(HarvestedMessage { text, ids });
+            }
             other => {
                 remaining.pending_queue.push(other);
                 remaining.pending_message_ids.push(ids);
