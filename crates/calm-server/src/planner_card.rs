@@ -300,9 +300,10 @@ Available `<path>` values for `neige cat` / `neige ls`:
     has the plan task context.
   * `runs/index.json` — array of all runs in the track with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
-  * `plan/<key>/gate.log` — latest verification gate log for a planned \
-    task key. Read this after a `task.gate_result`, especially on FAILED \
-    gates.
+  * `runs/<task_id>/gates/<attempt>.log` — full log of the exact execution \
+    and verification attempt named by a gate-result observation.
+  * `plan/<key>/gate.log` — latest verification gate log for the current \
+    execution of a task key; this alias can change after recovery.
   * `cards/<card_id>/.payload.json` — the card's own payload in the \
     track (e.g. another worker's bookkeeping or dispatch context). \
     Runtime identity and status live in `cards/<card_id>/runtime.json`.
@@ -314,7 +315,9 @@ Available `<path>` values for `neige cat` / `neige ls`:
 When you are pushed an ungated task completion or failure, the canonical \
 first read is `neige cat runs/K.md` where `K` is the task id from the \
 observation. When you are pushed a gate result, first read \
-`neige cat plan/<key>/gate.log`. The push observation is just a \
+the exact `neige cat runs/K/gates/N.log` path in that observation, \
+where `K` is its execution id and `N` its gate attempt. Do not substitute \
+the current task-key alias when reading historical results. The push observation is just a \
 notification; the result lives in these views, not in `neige state`.
 
 The view is READ-ONLY. To act on what you read, call \
