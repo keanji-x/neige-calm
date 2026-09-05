@@ -181,7 +181,11 @@ mod tests {
         let new = json!({"kind":"terminal","command":"printf ok","refs":[],"priority":2});
         assert_eq!(
             task_root_hash_preimage(&old),
-            r#"{"goal":"printf ok","kind":"terminal","refs":[]}"#
+            r#"{
+  "goal": "printf ok",
+  "kind": "terminal",
+  "refs": []
+}"#
         );
         assert_eq!(task_root_hash_preimage(&old), task_root_hash_preimage(&new));
         let missing = json!({"kind":"terminal","command":"printf ok"});

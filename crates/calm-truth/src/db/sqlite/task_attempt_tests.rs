@@ -52,7 +52,7 @@ async fn project(repo: &SqlxRepo, blocks: &[ReportBlock]) -> Vec<TaskDeclaration
 async fn task_recovery_initial_registration_survives_pending_projection_deletion() {
     let repo = setup().await;
     let mut task = block("b", &[]);
-    project(&repo, &[task.clone()]).await;
+    project(&repo, std::slice::from_ref(&task)).await;
     let initial = task_attempt_current_pool(repo.pool(), "w", "b")
         .await
         .unwrap()
@@ -60,7 +60,7 @@ async fn task_recovery_initial_registration_survives_pending_projection_deletion
     assert_eq!(initial.attempt_id, "w:b");
     assert_eq!(initial.generation, 1);
     task.payload["ready"] = json!(false);
-    project(&repo, &[task.clone()]).await;
+    project(&repo, std::slice::from_ref(&task)).await;
     assert!(repo.task_get("w:b").await.unwrap().is_none());
     assert_eq!(
         task_attempt_current_pool(repo.pool(), "w", "b")
@@ -226,10 +226,10 @@ async fn task_recovery_reprojects_same_key_preserving_failed_attempt_sibling_and
 async fn task_recovery_pending_recreation_keeps_allocation_and_rejects_contract_drift() {
     let repo = setup().await;
     let original = block("b", &[]);
-    project(&repo, &[original.clone()]).await;
+    project(&repo, std::slice::from_ref(&original)).await;
     fail(&repo, &original).await;
     let receipt = recover(&repo, &original).await;
-    project(&repo, &[original.clone()]).await;
+    project(&repo, std::slice::from_ref(&original)).await;
     for field in ["ready", "command", "refs", "spawn", "declared_by"] {
         let mut changed = original.clone();
         changed.payload[field] = match field {
@@ -253,7 +253,7 @@ async fn task_recovery_pending_recreation_keeps_allocation_and_rejects_contract_
                 .attempt_id,
             receipt.attempt_id
         );
-        project(&repo, &[original.clone()]).await;
+        project(&repo, std::slice::from_ref(&original)).await;
         assert_eq!(
             repo.task_current_get("w", "b").await.unwrap().unwrap().id,
             receipt.attempt_id
@@ -269,10 +269,10 @@ async fn task_recovery_pending_recreation_keeps_allocation_and_rejects_contract_
 async fn task_recovery_receipt_replays_after_completion_and_rejects_other_requests() {
     let repo = setup().await;
     let b = block("b", &[]);
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     fail(&repo, &b).await;
     let receipt = recover(&repo, &b).await;
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     task_claim_pending_tx(
         &mut tx,
@@ -351,7 +351,7 @@ async fn task_recovery_receipt_replays_after_completion_and_rejects_other_reques
 async fn task_recovery_requires_complete_evidence_and_transaction_rolls_back_allocation() {
     let repo = setup().await;
     let b = block("b", &[]);
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     fail(&repo, &b).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let invalid = TaskRecoveryConstraint::V1 {
@@ -412,7 +412,7 @@ async fn task_recovery_requires_complete_evidence_and_transaction_rolls_back_all
 async fn task_recovery_concurrent_requests_create_one_successor() {
     let repo = setup().await;
     let b = block("b", &[]);
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     fail(&repo, &b).await;
     let (first, second) = tokio::join!(recover(&repo, &b), recover(&repo, &b));
     assert_eq!(first, second);
@@ -436,10 +436,10 @@ async fn task_recovery_gate_log_resolves_current_attempt_and_preserves_role_gate
     let repo = setup().await;
     let mut b = block("b", &[]);
     b.payload["gate"] = json!({"steps":[{"name":"check","cmd":"true"}]});
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     fail(&repo, &b).await;
     let receipt = recover(&repo, &b).await;
-    project(&repo, &[b.clone()]).await;
+    project(&repo, std::slice::from_ref(&b)).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     task_claim_pending_tx(
         &mut tx,
@@ -489,7 +489,7 @@ async fn task_recovery_domain_deletion_removes_allocations_after_rows() {
     for delete_area in [false, true] {
         let repo = setup().await;
         let b = block("b", &[]);
-        project(&repo, &[b.clone()]).await;
+        project(&repo, std::slice::from_ref(&b)).await;
         fail(&repo, &b).await;
         recover(&repo, &b).await;
         project(&repo, &[b]).await;
