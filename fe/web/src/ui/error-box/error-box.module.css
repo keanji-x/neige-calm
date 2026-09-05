@@ -15,6 +15,7 @@
     padding: var(--space-6);
     overflow-wrap: anywhere;
     color: var(--text);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
   }
   .reason { display: block; font-weight: 500; }
