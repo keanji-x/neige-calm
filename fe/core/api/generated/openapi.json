@@ -939,7 +939,7 @@
             }
           },
           "409": {
-            "description": "Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`)",
+            "description": "Runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)",
             "content": {
               "application/json": {
                 "schema": {

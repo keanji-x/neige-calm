@@ -2478,8 +2478,8 @@ async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
     if persist_snapshot_inner(inner, None).await? {
         return Ok(());
     }
-    Err(CalmError::Conflict(
-        "planner harness runtime is no longer this card's; retry to reach its successor".into(),
+    Err(CalmError::PlannerHarnessRuntimeSuperseded(
+        "this runtime is no longer the card's; your message was not stored — send it again".into(),
     ))
 }
 

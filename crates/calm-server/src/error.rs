@@ -204,6 +204,20 @@ pub enum CalmError {
     #[error("planner harness dormant: {0}")]
     PlannerHarnessDormant(String),
 
+    /// 409 — #1449: the send reached a runtime that is no longer this card's,
+    /// so it could not be written down, and it is refused rather than
+    /// acknowledged.
+    ///
+    /// Its own code rather than the generic [`CalmError::Conflict`] because the
+    /// correct client behaviour is the opposite of the two conflicts it would
+    /// otherwise be indistinguishable from. "Runtime shutting down" and
+    /// "harness dormant" tell a client to stop or to reset; this one says the
+    /// text is intact and re-sending it will reach the successor. A client that
+    /// cannot tell them apart either discards a sentence the user typed or
+    /// retries into a wall.
+    #[error("planner harness runtime superseded: {0}")]
+    PlannerHarnessRuntimeSuperseded(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -260,6 +274,7 @@ impl CalmError {
                 "planner_reset_unsupported_in_shared_mode"
             }
             CalmError::PlannerHarnessDormant(_) => "planner_harness_dormant",
+            CalmError::PlannerHarnessRuntimeSuperseded(_) => "planner_harness_runtime_superseded",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -280,6 +295,7 @@ impl CalmError {
             | CalmError::PluginManifestUnloaded(_)
             | CalmError::PluginConfigCorrupt(_)
             | CalmError::PlannerHarnessDormant(_)
+            | CalmError::PlannerHarnessRuntimeSuperseded(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
             | CalmError::PluginInstall(_)
@@ -400,6 +416,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginKernelTooOld(m)
             | CalmError::PlannerResetUnsupportedInSharedMode(m)
             | CalmError::PlannerHarnessDormant(m)
+            | CalmError::PlannerHarnessRuntimeSuperseded(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexAppServer(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
