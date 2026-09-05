@@ -929,6 +929,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn task_recovery_source_retains_absent_and_empty_raw_fields() {
+        let absent = ReportBlock {
+            id: "b_0001".into(),
+            kind: super::super::KIND_TASK.into(),
+            rev: 0,
+            payload: json!({"key":"b","kind":"terminal","command":"true",
+                "ready":true,"declared_by":PLANNER_DECLARATION_AUTHOR}),
+        };
+        let mut explicit_empty = absent.clone();
+        explicit_empty.payload["refs"] = json!([]);
+        explicit_empty.payload["context"] = json!({});
+        let (mut first, first_diagnostics) = project_task_declarations(&[absent]);
+        let (mut second, second_diagnostics) = project_task_declarations(&[explicit_empty]);
+        assert!(first_diagnostics.iter().all(Vec::is_empty));
+        assert!(second_diagnostics.iter().all(Vec::is_empty));
+        let first = first.remove(0);
+        let second = second.remove(0);
+        assert_eq!(first.refs, second.refs);
+        assert_eq!(first.context, second.context);
+        let TaskDeclarationSource::Report {
+            root_hash_preimage: first_source,
+        } = first.source
+        else {
+            panic!("report extractor must produce report evidence");
+        };
+        let TaskDeclarationSource::Report {
+            root_hash_preimage: second_source,
+        } = second.source
+        else {
+            panic!("report extractor must produce report evidence");
+        };
+        let first_fields: Value = serde_json::from_str(&first_source).unwrap();
+        let second_fields: Value = serde_json::from_str(&second_source).unwrap();
+        assert!(first_fields.get("refs").is_none());
+        assert!(first_fields.get("context").is_none());
+        assert_eq!(second_fields["refs"], json!([]));
+        assert_eq!(second_fields["context"], json!({}));
+        assert_ne!(first_source, second_source);
+    }
+
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
             source: TaskDeclarationSource::ValidationOnly,

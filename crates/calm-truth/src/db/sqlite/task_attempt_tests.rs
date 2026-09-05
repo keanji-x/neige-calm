@@ -430,6 +430,141 @@ async fn task_recovery_concurrent_requests_create_one_successor() {
 }
 
 #[tokio::test]
+async fn task_recovery_rebuild_rejects_changed_authoritative_root_with_stale_cache() {
+    let repo = setup().await;
+    let original = block("b", &[]);
+    project(&repo, std::slice::from_ref(&original)).await;
+    fail(&repo, &original).await;
+    recover(&repo, &original).await;
+    let mut changed = original.clone();
+    changed.payload["command"] = json!("echo changed authoritative command");
+    // Rebuild extracts its declaration from the authoritative report snapshot;
+    // unlike an edit, it need not rewrite the cached JSON before projecting.
+    let (declarations, diagnostics) = project_task_declarations(&[changed]);
+    assert!(diagnostics.iter().all(Vec::is_empty));
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let projection = project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
+        .await
+        .unwrap();
+    assert!(
+        task_current_get_tx(&mut tx, "w", "b")
+            .await
+            .unwrap()
+            .is_none(),
+        "a matching stale cache must not authorize a changed declaration"
+    );
+    assert!(
+        projection.diagnostics[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "declaration_changed_in_flight")
+    );
+    assert_eq!(
+        task_get_tx(&mut tx, "w:b").await.unwrap().unwrap().status,
+        TaskStatus::Failed
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_recovery_rebuild_accepts_unchanged_authoritative_root_despite_stale_cache() {
+    let repo = setup().await;
+    let original = block("b", &[]);
+    project(&repo, std::slice::from_ref(&original)).await;
+    fail(&repo, &original).await;
+    let receipt = recover(&repo, &original).await;
+    let mut changed_cache = original.clone();
+    changed_cache.payload["command"] = json!("echo stale cached command");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id='report'")
+        .bind(json!({"blocks":[changed_cache],"docRev":0}).to_string())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let (declarations, diagnostics) = project_task_declarations(&[original]);
+    assert!(diagnostics.iter().all(Vec::is_empty));
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
+        .await
+        .unwrap();
+    let current = task_current_get_tx(&mut tx, "w", "b")
+        .await
+        .unwrap()
+        .expect("an unchanged authoritative declaration must survive cache drift");
+    assert_eq!(current.id, receipt.attempt_id);
+    assert_eq!(current.goal, "true");
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_recovery_projection_refuses_validation_only_source() {
+    use calm_types::report_blocks::tasks::TaskDeclarationSource;
+    let repo = setup().await;
+    let (mut declarations, diagnostics) = project_task_declarations(&[block("b", &[])]);
+    declarations[0].source = TaskDeclarationSource::ValidationOnly;
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let error = project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("requires report-source evidence")
+    );
+    assert!(
+        task_attempt_current_tx(&mut tx, "w", "b")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_recovery_rebuild_rejects_identical_payload_under_replacement_root_id() {
+    let repo = setup().await;
+    let mut original = block("b", &[]);
+    original.id = "b_0001".into();
+    project(&repo, std::slice::from_ref(&original)).await;
+    fail(&repo, &original).await;
+    let receipt = recover(&repo, &original).await;
+    let mut replacement = original.clone();
+    replacement.id = "b_0002".into();
+    assert_eq!(replacement.payload, original.payload);
+    assert_eq!(
+        constraint(&replacement).refs()[0].hash,
+        constraint(&original).refs()[0].hash
+    );
+    let (declarations, diagnostics) = project_task_declarations(&[replacement]);
+    assert!(diagnostics.iter().all(Vec::is_empty));
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let projection = project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
+        .await
+        .unwrap();
+    assert!(
+        task_current_get_tx(&mut tx, "w", "b")
+            .await
+            .unwrap()
+            .is_none(),
+        "same bytes cannot substitute a different frozen root identity"
+    );
+    assert!(
+        projection.diagnostics[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "declaration_changed_in_flight")
+    );
+    assert_eq!(
+        task_attempt_current_tx(&mut tx, "w", "b")
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt_id,
+        receipt.attempt_id
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
 async fn task_recovery_gate_log_resolves_current_attempt_and_preserves_role_gate() {
     use crate::model::CardRole;
     use crate::track_fs_view::TrackFsView;

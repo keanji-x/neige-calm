@@ -26,7 +26,16 @@ use super::{
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn declaration(index: usize, key: &str, goal: &str) -> TaskDeclaration {
-    let block = ReportBlock {
+    declaration_with_refs(index, key, goal, Vec::new())
+}
+
+fn declaration_with_refs(
+    index: usize,
+    key: &str,
+    goal: &str,
+    refs: Vec<String>,
+) -> TaskDeclaration {
+    let mut block = ReportBlock {
         id: format!("b_{index:04x}"),
         kind: calm_types::report_blocks::KIND_TASK.into(),
         rev: 0,
@@ -39,24 +48,41 @@ fn declaration(index: usize, key: &str, goal: &str) -> TaskDeclaration {
             "declared_by": PLANNER_DECLARATION_AUTHOR
         }),
     };
+    if !refs.is_empty() {
+        block.payload["refs"] = json!(refs);
+    }
     let (mut declarations, diagnostics) = project_task_declarations(&[block]);
+    // These DB snapshot tests deliberately include legacy and invalid reference
+    // strings. Keep their genuine raw source from the extractor; parser-level
+    // admission diagnostics are tested elsewhere, while this suite supplies its
+    // own diagnostic input to isolate reference materialization in one SQL read.
     assert!(
-        diagnostics.iter().all(Vec::is_empty),
-        "test declaration must be valid: {diagnostics:?}"
+        diagnostics
+            .iter()
+            .flatten()
+            .all(|diagnostic| diagnostic.code == "invalid_declaration"
+                && diagnostic.path == "payload")
     );
+    assert_eq!(declarations.len(), 1);
     declarations.remove(0)
 }
 
 fn changed_declaration() -> TaskDeclaration {
-    let mut declaration = declaration(0, "running-key", "changed goal");
-    declaration.refs = vec!["neige://card/reference-blocker".into()];
-    declaration
+    declaration_with_refs(
+        0,
+        "running-key",
+        "changed goal",
+        vec!["neige://card/reference-blocker".into()],
+    )
 }
 
 fn reference_declaration() -> TaskDeclaration {
-    let mut declaration = declaration(0, "new-key", "reference goal");
-    declaration.refs = vec!["neige://card/reference-blocker".into()];
-    declaration
+    declaration_with_refs(
+        0,
+        "new-key",
+        "reference goal",
+        vec!["neige://card/reference-blocker".into()],
+    )
 }
 
 fn declaration_with_reference(
@@ -64,9 +90,7 @@ fn declaration_with_reference(
     key: &str,
     reference: impl Into<String>,
 ) -> TaskDeclaration {
-    let mut declaration = declaration(index, key, &format!("goal {key}"));
-    declaration.refs = vec![reference.into()];
-    declaration
+    declaration_with_refs(index, key, &format!("goal {key}"), vec![reference.into()])
 }
 
 fn legacy_block_reference(track_id: &str, block_id: &str) -> String {

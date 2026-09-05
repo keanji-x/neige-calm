@@ -743,7 +743,6 @@ struct TrackProjectionState {
     frozen: Vec<FrozenDeclarationRow>,
     reference_targets: BTreeMap<String, ReferenceTargetRow>,
     recovery_constraints: Vec<super::task_recovery_projection::RecoveryProjection>,
-    report_blocks: Vec<serde_json::Value>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -758,7 +757,6 @@ struct TrackProjectionStateRow {
     frozen_json: String,
     reference_targets_json: String,
     recovery_constraints_json: String,
-    report_blocks_json: String,
 }
 
 /// Materializes every database fact used by the local schedulability verdict
@@ -801,11 +799,6 @@ async fn track_projection_state(
                   (SELECT json_group_array(json_object('key',a.key,'origin',json(a.origin_json)))
                      FROM current_task_attempt_allocations a WHERE a.track_id=w.id
                        AND json_extract(a.origin_json,'$.kind')='recovery') AS recovery_constraints_json,
-                  CASE WHEN EXISTS(SELECT 1 FROM current_task_attempt_allocations a
-                     WHERE a.track_id=w.id AND json_extract(a.origin_json,'$.kind')='recovery')
-                  THEN COALESCE((SELECT json_extract(c.payload,'$.blocks') FROM cards c
-                     WHERE c.track_id=w.id AND c.kind='track-report' LIMIT 1),'[]')
-                  ELSE '[]' END AS report_blocks_json,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -897,7 +890,6 @@ async fn track_projection_state(
         frozen: serde_json::from_str(&row.frozen_json)?,
         reference_targets,
         recovery_constraints: serde_json::from_str(&row.recovery_constraints_json)?,
-        report_blocks: serde_json::from_str(&row.report_blocks_json)?,
     })
 }
 
@@ -1047,6 +1039,16 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     read: TaskReadOptions,
     after_snapshot: impl std::future::Future<Output = ()>,
 ) -> Result<Vec<BlockVerdict>> {
+    if declarations.iter().any(|declaration| {
+        matches!(
+            &declaration.source,
+            calm_types::report_blocks::tasks::TaskDeclarationSource::ValidationOnly,
+        )
+    }) {
+        return Err(CalmError::BadRequest(
+            "task projection requires report-source evidence",
+        ));
+    }
     let references_by_declaration = declarations
         .iter()
         .map(declaration_references)
@@ -1317,7 +1319,6 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         declarations,
         &mut verdicts,
         &state.recovery_constraints,
-        &state.report_blocks,
     )?;
 
     // A deleted block has no declaration to drive the loop above. Surface its
@@ -1834,11 +1835,16 @@ mod tests {
     use serde_json::json;
 
     fn declaration(index: usize, key: &str) -> TaskDeclaration {
-        use calm_types::report_blocks::tasks::{
-            PLANNER_DECLARATION_AUTHOR, project_task_declarations,
-        };
+        report_declaration(
+            index,
+            json!({"key":key,"kind":"codex","goal":format!("goal {key}"),
+            "no_gate_reason":"not needed","declared_by":PLANNER_DECLARATION_AUTHOR,"ready":true}),
+        )
+    }
+
+    fn report_declaration(index: usize, payload: serde_json::Value) -> TaskDeclaration {
+        use calm_types::report_blocks::tasks::project_task_declarations;
         use calm_types::report_blocks::{KIND_PROSE, KIND_TASK};
-        use calm_types::track_report::ReportBlock;
         let mut blocks: Vec<ReportBlock> = (0..index)
             .map(|position| ReportBlock {
                 id: format!("b_{position:04x}"),
@@ -1848,23 +1854,23 @@ mod tests {
             })
             .collect();
         blocks.push(ReportBlock {
-            id: format!("b_{index:04x}"), kind: KIND_TASK.into(), rev: 0,
-            payload: json!({"key":key,"kind":"codex","goal":format!("goal {key}"),
-                "no_gate_reason":"not needed","declared_by":PLANNER_DECLARATION_AUTHOR,"ready":true}),
+            id: format!("b_{index:04x}"),
+            kind: KIND_TASK.into(),
+            rev: 0,
+            payload,
         });
         let (mut declarations, diagnostics) = project_task_declarations(&blocks);
         assert!(diagnostics.iter().all(Vec::is_empty));
         declarations.remove(0)
     }
 
-    /// The shape `report_blocks::tasks` produces for a deleted task block:
-    /// `tombstone` set, `ready` absent (so `false`).
+    /// A tombstone also carries evidence extracted from its actual raw payload.
     fn tombstone_declaration(index: usize, key: &str) -> TaskDeclaration {
-        TaskDeclaration {
-            tombstone: true,
-            ready: false,
-            ..declaration(index, key)
-        }
+        report_declaration(
+            index,
+            json!({"key":key,"tombstone":{},
+            "declared_by":PLANNER_DECLARATION_AUTHOR,"tombstoned_by":PLANNER_DECLARATION_AUTHOR}),
+        )
     }
 
     async fn setup() -> (super::super::SqlxRepo, String) {
