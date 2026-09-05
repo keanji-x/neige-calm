@@ -27,6 +27,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0087_area_track_defaults.sql",
     "0088_track_create_idempotency.sql",
     "0089_track_create_request_fingerprint.sql",
+    "0090_track_vcs_commit_prefix_index.sql",
 ];
 
 #[test]

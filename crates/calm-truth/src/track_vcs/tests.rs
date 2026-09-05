@@ -3,7 +3,9 @@ use super::gc::{
     TRACK_HISTORY_PRUNE_INTERVAL_SECS_ENV, TRACK_HISTORY_PRUNE_KEEP_ENV,
     track_history_pruner_config_from_env,
 };
-use super::store::{CommitTreeMeta, commit_hash_for_tree};
+use super::store::{
+    COMMIT_PREFIX_QUERY, CommitTreeMeta, commit_hash_for_tree, commit_records_for_track_pool,
+};
 use super::*;
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
@@ -11,6 +13,7 @@ use crate::event::{Event, ForgeMergeSubject};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use sqlx::Row;
 use std::time::Duration;
 
 #[test]
@@ -32,6 +35,114 @@ fn commit_hash_ignores_author_metadata() {
     assert_eq!(
         commit_hash_for_tree(&track_id, "tree-1", "draft", &base).unwrap(),
         commit_hash_for_tree(&track_id, "tree-1", "draft", &other_author).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn commit_prefix_query_uses_track_hash_index_without_temporary_sorting() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    let explain = format!("EXPLAIN QUERY PLAN {COMMIT_PREFIX_QUERY}");
+    let details = sqlx::query(&explain)
+        .bind("track-1")
+        .bind("deadbeef")
+        .bind("deadbeefg")
+        .fetch_all(repo.pool())
+        .await
+        .expect("explain commit prefix query")
+        .into_iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>();
+    let plan = details.join("\n");
+
+    assert!(
+        plan.contains("idx_track_vcs_commits_track_hash"),
+        "prefix lookup must use the track/hash index: {plan}"
+    );
+    assert!(
+        !plan.contains("TEMP B-TREE"),
+        "prefix lookup must preserve index order: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn commit_log_keyset_pages_ignore_newer_concurrent_commits() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("open sqlite pool");
+    sqlx::query(
+        r#"CREATE TABLE track_vcs_commits (
+               hash TEXT PRIMARY KEY,
+               track_id TEXT NOT NULL,
+               parent_hash TEXT,
+               tree_hash TEXT NOT NULL,
+               manifest_schema_version INTEGER NOT NULL,
+               author TEXT,
+               message TEXT,
+               lifecycle TEXT NOT NULL,
+               event_id INTEGER,
+               created_at INTEGER NOT NULL
+           )"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create commit table");
+    let track_id = TrackId::from("track-1");
+    for index in 0..4_i64 {
+        sqlx::query(
+            r#"INSERT INTO track_vcs_commits (
+                   hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+                   author, message, lifecycle, event_id, created_at
+               )
+               VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'seed', 'active', ?5, ?5)"#,
+        )
+        .bind(format!("{index:064x}"))
+        .bind(track_id.as_str())
+        .bind(format!("tree-{index}"))
+        .bind(MANIFEST_SCHEMA_VERSION)
+        .bind(index)
+        .execute(&pool)
+        .await
+        .expect("insert seed commit");
+    }
+
+    let first = commit_records_for_track_pool(&pool, &track_id, 2, true, None)
+        .await
+        .expect("first log page");
+    assert_eq!(
+        first
+            .iter()
+            .map(|record| record.created_at)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+
+    sqlx::query(
+        r#"INSERT INTO track_vcs_commits (
+               hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+               author, message, lifecycle, event_id, created_at
+           )
+           VALUES (?1, ?2, NULL, 'tree-new', ?3, NULL, 'concurrent',
+                   'active', 10, 10)"#,
+    )
+    .bind(format!("{:064x}", 10))
+    .bind(track_id.as_str())
+    .bind(MANIFEST_SCHEMA_VERSION)
+    .execute(&pool)
+    .await
+    .expect("insert concurrent commit");
+
+    let second = commit_records_for_track_pool(&pool, &track_id, 2, true, first.last())
+        .await
+        .expect("second log page");
+    assert_eq!(
+        second
+            .iter()
+            .map(|record| record.created_at)
+            .collect::<Vec<_>>(),
+        vec![1, 0],
+        "the second page must continue below its keyset anchor"
     );
 }
 
