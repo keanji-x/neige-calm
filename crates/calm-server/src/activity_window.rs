@@ -14,8 +14,11 @@
 //!
 //! * `routes::today_summary` — `POST /api/today/summary`, which turns it into
 //!   an instruction to rewrite the day's report;
-//! * `routes::track_conversations` — a conversation started **on the launchpad
-//!   track**, which opens with it as material rather than as an instruction.
+//! * `operation::planner_harness_start_adapter` — a conversation started **on
+//!   the launchpad track**, which opens with it as material rather than as an
+//!   instruction. It is read there, not in `routes::track_conversations`,
+//!   because since #1314 that route has no post-operation step left to read it
+//!   in; the route only rules on *whether* to brief.
 //!
 //! Neither computes it for itself. [`todays_workspace_activity`] is the one
 //! entry point both go through, and [`activity_counts_block`] is the one

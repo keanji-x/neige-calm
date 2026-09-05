@@ -743,9 +743,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             Some(OpeningBriefing::CallerSuppliesItsOwn) | None => None,
         };
         if let Some(briefing) = opening_briefing.as_deref() {
-            // The same independent budget `send_planner_input_with_context`
-            // gave it: server-owned context is bounded separately from the
-            // user's input, and neither consumes the other's allowance.
+            // Server-owned context is bounded independently from the user's
+            // input, and neither consumes the other's allowance — the same
+            // budget, and the same reason for it, that `/planner/input` gave
+            // this material while it still travelled the observation channel.
+            //
+            // `Internal`, not `BadRequest`: nothing the caller sent can make
+            // this fire. The text is the server's own projection of the day,
+            // so an over-long one is the server's bug, not a bad request.
             if briefing.chars().count() > MAX_PLANNER_INPUT_CHARS {
                 return Err(CalmError::Internal(format!(
                     "opening briefing must be at most {MAX_PLANNER_INPUT_CHARS} characters",
