@@ -749,13 +749,12 @@ async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use tokio::net::UnixListener;
 
     #[tokio::test]
     async fn read_control_reply_or_kill_sends_kill_on_timeout() {
-        let dir = tempdir().expect("tempdir");
-        let sock = dir.path().join("supervisor.sock");
+        let dir = calm_test_sockets::socket_dir("tr");
+        let sock = calm_test_sockets::socket_path(dir.path(), "supervisor.sock");
         let listener = UnixListener::bind(&sock).expect("bind listener");
         let proc_id = "term:test-timeout".to_string();
         let expected_proc_id = proc_id.clone();
@@ -810,8 +809,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_control_reply_times_out_when_supervisor_is_silent() {
-        let dir = tempdir().expect("tempdir");
-        let sock = dir.path().join("supervisor.sock");
+        let dir = calm_test_sockets::socket_dir("tr");
+        let sock = calm_test_sockets::socket_path(dir.path(), "supervisor.sock");
         let listener = UnixListener::bind(&sock).expect("bind listener");
         let accept_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept connection");

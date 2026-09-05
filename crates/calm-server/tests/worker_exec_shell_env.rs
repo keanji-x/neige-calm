@@ -288,8 +288,8 @@ async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: 
 /// server. The returned `TempDir` owns the bound UDS path and must outlive the
 /// dispatcher.
 async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
-    let tmp = TempDir::new().expect("mcp socket tempdir");
-    let socket_path = tmp.path().join("mcp.sock");
+    let tmp = calm_test_sockets::socket_dir("wes");
+    let socket_path = calm_test_sockets::socket_path(tmp.path(), "mcp.sock");
     let wcc = calm_server::track_area_cache::TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&wcc).await.unwrap();
     let server = McpServer::spawn(

@@ -75,8 +75,8 @@ async fn boot() -> Boot {
 }
 
 async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
-    let tmp = TempDir::new().expect("tempdir for MCP socket");
-    let socket_path = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("mcp");
+    let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
     // Hold the concrete `SqlxRepo` separately so we can reach `pool()`
     // for the direct-tx card mint below; the `Arc<dyn Repo>` upcast
@@ -844,8 +844,8 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
 /// errors and leaves the original listener intact.
 #[tokio::test]
 async fn spawn_refuses_to_steal_live_co_tenant_socket() {
-    let tmp = TempDir::new().expect("tempdir for MCP socket");
-    let socket_path = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("mcp");
+    let socket_path = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
 
     // Stand-in "live first tenant": just a raw UnixListener bound at
     // the same path. We don't need the full McpServer stack to exercise

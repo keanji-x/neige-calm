@@ -48,8 +48,8 @@ const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 /// E2E that walks the full stack.
 #[tokio::test]
 async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let control_sock = temp.path().join("proc-supervisor.sock");
+    let temp = calm_test_sockets::socket_dir("ps");
+    let control_sock = calm_test_sockets::socket_path(temp.path(), "proc-supervisor.sock");
     let mut supervisor = Command::new(locate_bin("calm-proc-supervisor"))
         .arg("--control-sock")
         .arg(&control_sock)
@@ -164,7 +164,9 @@ fn ensure_request(temp: &TempDir) -> EnsureProcRequest {
             "--id".into(),
             "terminal-1".into(),
             "--sock".into(),
-            temp.path().join("session.sock").display().to_string(),
+            calm_test_sockets::socket_path(temp.path(), "session.sock")
+                .display()
+                .to_string(),
             "--ready-fd".into(),
             "0".into(),
         ],

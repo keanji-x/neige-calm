@@ -258,6 +258,7 @@ nix = { version = "0.29", features = ["signal"] }
 libc = "0.2"
 
 [dev-dependencies]
+calm-test-sockets = { path = "../calm-test-sockets" }
 # Self-loop to auto-enable the `fixtures` feature when building
 # integration tests (`tests/*.rs`). Each integration test is its own
 # crate that depends on `calm-server`; this dev-dep entry tells Cargo to

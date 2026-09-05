@@ -26,13 +26,22 @@ const TEST_BUDGET: Duration = Duration::from_secs(5);
 /// Spawn a UDS listener at `socket_path`. Returns the listener; the
 /// caller `accept()`s once when the shim connects.
 fn listen(socket_path: &std::path::Path) -> UnixListener {
-    UnixListener::bind(socket_path).expect("bind stub UDS")
+    // #1439: socket 路径由 `calm_test_sockets` 发放短路径；这里再断言一次，
+    // 越限时把路径和它的字节数一起打出来。
+    calm_test_sockets::assert_fits(socket_path);
+    UnixListener::bind(socket_path).unwrap_or_else(|e| {
+        panic!(
+            "bind stub UDS at {} ({} bytes): {e}",
+            socket_path.display(),
+            socket_path.as_os_str().as_encoded_bytes().len()
+        )
+    })
 }
 
 #[tokio::test]
 async fn stdin_to_socket_forwards_bytes() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
     // Spawn the shim with the env vars pointing at our stub socket
@@ -90,8 +99,8 @@ async fn stdin_to_socket_forwards_bytes() {
 
 #[tokio::test]
 async fn socket_to_stdout_forwards_bytes() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
     let mut child = Command::new(SHIM_BIN)
@@ -162,8 +171,8 @@ async fn socket_to_stdout_forwards_bytes() {
 /// shape it passes deterministically.
 #[tokio::test]
 async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
     let mut child = Command::new(SHIM_BIN)
@@ -259,8 +268,8 @@ async fn missing_token_env_exits_nonzero() {
     // handshake would fail at the kernel anyway; failing fast at
     // shim boot gives a clear stderr line instead of an opaque
     // JSON-RPC error on stdout.
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     // Bind a stub UDS so the shim wouldn't fail on the `connect`
     // step — the missing-token check runs BEFORE connect, so this
     // is mostly defensive against a future refactor that swaps
@@ -299,8 +308,8 @@ async fn initialize_first_frame_gets_token_injected() {
     // .token` from the `NEIGE_MCP_TOKEN` env. Boots a stub UDS,
     // feeds an `initialize` request on stdin with no `_meta`, and
     // asserts the bytes that land on the socket carry the auth slot.
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
     let mut child = Command::new(SHIM_BIN)
@@ -353,8 +362,8 @@ async fn initialize_first_frame_gets_token_injected() {
 
 #[tokio::test]
 async fn daemon_token_env_takes_precedence_over_legacy_token() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let socket_path: PathBuf = tmp.path().join("kernel.sock");
+    let tmp = calm_test_sockets::socket_dir("shim");
+    let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
 
     let mut child = Command::new(SHIM_BIN)

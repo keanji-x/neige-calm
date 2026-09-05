@@ -212,6 +212,7 @@ pub async fn boot_forge_e2e_fixture(
         EvidenceTempDir::new(target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?);
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
+    calm_test_sockets::assert_fits(&socket_path);
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
     let track_cwd = tmp.path().join("track-cwd");
@@ -1246,10 +1247,9 @@ pub fn target_tmpdir(prefix: &str) -> std::io::Result<TempDir> {
     tempfile::Builder::new().prefix(prefix).tempdir_in(base)
 }
 
+/// #1439: socket 目录不能问 `$TMPDIR` 要 —— 见 `calm_test_sockets`。
 pub fn socket_tempdir() -> std::io::Result<TempDir> {
-    let base = std::env::temp_dir().join("fwe-s");
-    std::fs::create_dir_all(&base)?;
-    tempfile::Builder::new().prefix("s").tempdir_in(base)
+    calm_test_sockets::try_socket_dir("s")
 }
 
 pub fn read_lossy(path: &Path) -> String {

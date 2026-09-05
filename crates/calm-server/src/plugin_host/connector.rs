@@ -699,9 +699,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_unix_socket_at_the_secrets_path_is_refused_as_not_a_regular_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join(SECRETS_FILENAME);
-        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // #1439: socket 目录钉在短基址上，不受 `$TMPDIR` 长度影响。
+        let tmp = calm_test_sockets::socket_dir("sec");
+        let path = calm_test_sockets::socket_path(tmp.path(), SECRETS_FILENAME);
+        let _listener = calm_test_sockets::bind(&path);
         let err = read_secrets(tmp.path()).await.unwrap_err();
         assert!(
             matches!(err, SecretsError::NotRegularFile { .. }),

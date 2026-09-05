@@ -38,6 +38,7 @@ test-support = []
 pgid-escape-probe = []
 
 [dependencies]
+calm-test-sockets = { path = "../calm-test-sockets" }
 anyhow = "1"
 calm-session = { path = "../calm-session" }
 clap = { version = "4", features = ["derive"] }

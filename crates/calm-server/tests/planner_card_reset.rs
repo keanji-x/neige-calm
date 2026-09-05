@@ -1830,10 +1830,13 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
         })
         .await
         .unwrap();
-    // The temp directory already isolates this test. Keep the leaf short so a
-    // long self-hosted RUNNER_TEMP prefix still fits in sockaddr_un::sun_path.
-    let socket_path = boot._tmp.path().join("terminal.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    // #1439: socket 不能挂在 `$TMPDIR` 下的 TempDir 上 —— 自托管 runner 的
+    // TMPDIR 已经 49 字节，再加 TempDir 的 `/.tmpXXXXXX` 和
+    // `terminal-<uuid>.sock` 就越过 sun_path 的 107 字节上限。
+    let socket_dir = calm_test_sockets::socket_dir("t");
+    let socket_path =
+        calm_test_sockets::socket_path(socket_dir.path(), &format!("terminal-{}.sock", new_id()));
+    let listener = calm_test_sockets::bind(&socket_path);
     drop(listener);
     let mut process = tokio::process::Command::new("sh")
         .arg("-c")

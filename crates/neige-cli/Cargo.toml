@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["rt", "macros", "io-util", "net"] }
 serde_json = "1"
 
 [dev-dependencies]
+calm-test-sockets = { path = "../calm-test-sockets" }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
