@@ -5003,3 +5003,145 @@ async fn stop_grace_config_default_flag_env_and_validation() {
         "values beyond the 600s sanity cap must be rejected"
     );
 }
+
+// ===========================================================================
+// #1453 — the unbounded-wait class that wedged the CI runner.
+// ===========================================================================
+
+/// #1453 regression guard — the fake app-server must serve OVERLAPPING
+/// connections.
+///
+/// The wedge: the fixture's accept loop used to `.await serve_conn(..)`
+/// inline, so it served exactly one connection at a time. Every adopt/drain
+/// test hands a live daemon from a dropped supervisor to a fresh one, and the
+/// old supervisor's WebSocket closes asynchronously (`Drop for CodexAppServer`
+/// only *requests* the reader task's abort). Whenever the new supervisor's
+/// connect landed inside that window, the fixture never answered its upgrade
+/// — and because the queued connection was then accepted and read from
+/// forever, the accept loop stayed blocked for good. With no timeout anywhere
+/// above `client_async`, the test process sat at 0% CPU until a human killed
+/// it, taking the self-hosted runner with it.
+///
+/// Two clients at once, both fully initialized, is the smallest statement of
+/// the fixed behaviour — and it is also how a real `codex app-server` behaves.
+#[tokio::test]
+async fn fake_app_server_serves_overlapping_connections() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server");
+    let pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    wait_for_start_time_and_socket(pid, &sock).await;
+
+    let info = || calm_server::codex_appserver::ClientInfo {
+        name: "neige-calm-1453-probe".into(),
+        version: "0".into(),
+    };
+
+    // First client stays connected for the whole test — this is the state a
+    // not-yet-released supervisor client leaves the daemon in.
+    let (first, _first_notifications) =
+        calm_server::codex_appserver::CodexAppServer::connect(&sock)
+            .await
+            .expect("first client connects");
+    first.initialize(info()).await.expect("first initialize");
+
+    // The second connection is the one that used to hang forever. Bound it
+    // well below `CONNECT_TIMEOUT` so a regression fails as a timeout here
+    // rather than as a 10s-per-attempt slowdown.
+    let second = tokio::time::timeout(
+        Duration::from_secs(5),
+        calm_server::codex_appserver::CodexAppServer::connect(&sock),
+    )
+    .await
+    .expect(
+        "the fake app-server must accept a SECOND overlapping connection — \
+         a serial accept loop here is exactly the #1453 CI wedge",
+    )
+    .expect("second client connects");
+    let (second, _second_notifications) = second;
+    tokio::time::timeout(Duration::from_secs(5), second.initialize(info()))
+        .await
+        .expect("the second connection must reach initialize, not sit in the backlog")
+        .expect("second initialize");
+
+    // And the first connection is still usable — concurrency, not takeover.
+    first
+        .initialize(info())
+        .await
+        .expect("the first connection must survive the second");
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+/// #1453 characterization — a peer that accepts the socket and then goes
+/// silent must produce a BOUNDED, self-describing failure.
+///
+/// This pins the fix at its root: `CodexAppServer::connect`'s WebSocket
+/// upgrade had no deadline, so every caller inherited an unbounded wait —
+/// including `try_takeover_live`'s `running`-row adoption probe
+/// (`shared_codex_appserver.rs`, the `connect_initialized(&sock).await` arm),
+/// which is a production boot path. A never-answering daemon there used to
+/// hang calm-server's boot forever with no error and no heal.
+///
+/// The listener below accepts and never writes a byte — a wedged daemon's
+/// exact observable shape. The assertion is on the DIAGNOSTIC, not merely on
+/// the error: a bound that says only "timed out" would leave the next
+/// on-call reading this file instead of the log line.
+#[tokio::test]
+async fn connect_to_a_silent_peer_fails_with_a_bounded_diagnostic() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("silent.sock");
+    let listener = tokio::net::UnixListener::bind(&sock).expect("bind silent listener");
+    // Accept forever, answer nothing. Held for the test's lifetime.
+    let _accepting = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let err = tokio::time::timeout(
+        Duration::from_secs(30),
+        calm_server::codex_appserver::CodexAppServer::connect(&sock),
+    )
+    .await
+    .expect("connect must bound itself — an outer timeout firing means the bound is gone");
+    let err = match err {
+        Ok(_) => panic!("a peer that never answers the upgrade must be an error, not a hang"),
+        Err(e) => e,
+    };
+    let elapsed = started.elapsed();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("WebSocket upgrade response (HTTP 101)"),
+        "the diagnostic must name WHAT was awaited; got: {msg}"
+    );
+    assert!(
+        msg.contains(&sock.display().to_string()),
+        "the diagnostic must name the socket; got: {msg}"
+    );
+    assert!(
+        msg.contains("a listener is still bound"),
+        "the diagnostic must report the PEER's observed state (bound but silent, \
+         as opposed to a stale socket file with nothing listening); got: {msg}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(25),
+        "the bound must be the connect timeout, not the outer belt; took {elapsed:?}"
+    );
+}

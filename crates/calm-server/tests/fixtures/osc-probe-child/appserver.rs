@@ -157,13 +157,28 @@ pub fn run_fake_app_server() {
             )
         });
         // Serve connections forever; the kernel opens one, and the test
-        // kills us at teardown. Each connection is handled to completion.
+        // kills us at teardown.
+        //
+        // #1453 — each connection is served on its OWN task. This used to
+        // `.await` `serve_conn` inline, which made the fixture serve exactly
+        // one connection at a time: a second, overlapping connection sat in
+        // the listen backlog, never got its WebSocket upgrade, and — because
+        // the queued connection was then accepted and read from while its
+        // client had already gone away — permanently head-of-line blocked the
+        // accept loop, so every later connection wedged too. That is not how
+        // a real `codex app-server` behaves, and it is what turned the
+        // supervisor-handoff window in the adopt/drain tests (old supervisor's
+        // connection not yet closed when the new one connects) into an
+        // unbounded hang that wedged the CI runner for hours.
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    if let Err(e) = serve_conn(stream, control.clone()).await {
-                        eprintln!("fake app-server: connection ended: {e}");
-                    }
+                    let control = control.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = serve_conn(stream, control).await {
+                            eprintln!("fake app-server: connection ended: {e}");
+                        }
+                    });
                 }
                 Err(e) => {
                     eprintln!("fake app-server: accept failed: {e}");

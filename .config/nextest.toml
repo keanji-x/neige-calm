@@ -20,9 +20,22 @@ nextest-version = { required = "0.9.100" }
 # stronger check than running the tests here. Excluded in the default profile
 # too so a plain local `cargo nextest run` cannot corrupt the working tree.
 default-filter = 'not test(/export_bindings_/)'
-# Warn-only: collect slow-test data first (Slice C) without introducing a new
-# flake source from timeout-killed processes.
-slow-timeout = { period = "60s" }
+# #1453 — warn at 60s, then TERMINATE at 60s x 10 = 600s.
+#
+# The warn-only setting this replaces gave a wedged test binary no ceiling at
+# all: three `shared_codex_appserver` tests deadlocked on an unbounded
+# WebSocket upgrade and sat at 0% CPU until a human killed them by PID, taking
+# a self-hosted CI runner (and every PR queued behind it) with them. A killed
+# test is a red verdict you can read; a wedged one is no verdict at all.
+#
+# Why 600s is not a flake source: the slowest test in a full local run is
+# `append_seam_trybuild` at 72s (it compiles a crate), and the slowest known
+# CI test is `migration_replay_harness::synthetic_fixture_replays_from_every_version`
+# at up to 250s when it shares a contended four-core hosted runner. 600s is
+# 2.4x that worst case, so nothing legitimately slow is inside the ceiling.
+# The warn period stays at 60s so the SLOW lines that feed the timing analysis
+# keep appearing.
+slow-timeout = { period = "60s", terminate-after = 10 }
 
 [profile.ci]
 # Same ts-rs export-race exclusion as profile.default (see comment above).
@@ -31,7 +44,13 @@ fail-fast = false                    # surface every failure in one round
 retries = 0                          # don't mask flakes; revisit in Slice C if needed
 failure-output = "immediate-final"   # print on failure + summarize at the end
 status-level = "slow"
-slow-timeout = { period = "120s" }   # warn-only; stdio_shim's longest test is ~5s budget × many waits, ample headroom
+# #1453 — warn at 120s, then TERMINATE at 120s x 5 = 600s. Same ceiling and
+# same rationale as profile.default above (nothing legitimate is near 600s;
+# the worst known CI test peaks at ~250s). nextest SIGTERMs the test's process
+# group at the ceiling and SIGKILLs it after the grace period, so a wedged
+# binary now ends as a named failure in this run instead of holding the
+# self-hosted runner indefinitely.
+slow-timeout = { period = "120s", terminate-after = 5 }
 
 [profile.ci.junit]
 # Per-test timing on disk (target/nextest/ci/junit.xml), Slice C's timing input.

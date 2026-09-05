@@ -1772,6 +1772,18 @@ impl SharedCodexAppServer {
             self.poll_adopt_initialized(&sock, pid, start_time, &boot_id, remaining)
                 .await
         } else {
+            // #1453 — this arm has no deadline of its own, and for a long
+            // time it had none anywhere: `connect_initialized` awaited a
+            // WebSocket upgrade that a wedged daemon simply never answers,
+            // so adopting one hung the boot forever with no error and no
+            // heal (and hung three tests, and the CI runner under them).
+            // The bound now lives at the transport, in
+            // `CodexAppServer::connect`'s `CONNECT_TIMEOUT`, so every caller
+            // of this helper gets it: connect ≤10s + upgrade ≤10s +
+            // `initialize` ≤10s (`connect_initialized`'s request timeout).
+            // A silent peer therefore lands in `HandshakeFailed` below —
+            // which reaps the verified process group and relaunches — with a
+            // diagnostic naming the socket and the peer's observed state.
             match connect_initialized(&sock).await {
                 Ok(pair) => AdoptProbe::Connected(pair),
                 Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
