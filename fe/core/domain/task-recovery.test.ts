@@ -5,18 +5,22 @@ import { performApiRequest } from '../api/client.js';
 import { attemptStatusLabel, recoverTaskOperation, taskAttemptsOperation, taskRecoveryViewSchema } from './task-recovery.js';
 
 function view() {
-  const current = { attempt_id: 'server-id', generation: 2, status: 'awaiting_projection', status_detail: null,
+  const current = { attempt_id: 'server-id', generation: 2, status: 'awaiting_projection', blocking_reason: null, status_detail: null,
     worker_card_id: null, created_at_ms: 1000, finished_at_ms: null };
   return { key: 'b', current, attempts: [current], recovery: { allowed: false, code: 'not_failed', reason: 'Waiting for admission.' } };
 }
 
 it('requires nullable execution evidence keys and keeps an allocation without a projection', () => {
   expect(taskRecoveryViewSchema.parse(view()).current.status).toBe('awaiting_projection');
-  for (const field of ['status_detail', 'worker_card_id', 'finished_at_ms']) {
+  for (const field of ['blocking_reason', 'status_detail', 'worker_card_id', 'finished_at_ms']) {
     const body = view();
     Reflect.deleteProperty(body.current, field);
     expect(taskRecoveryViewSchema.safeParse(body).success).toBe(false);
   }
+  const historical = view();
+  historical.attempts = [{ ...historical.current }];
+  Reflect.deleteProperty(historical.attempts[0], 'blocking_reason');
+  expect(taskRecoveryViewSchema.safeParse(historical).success).toBe(false);
 });
 
 it('rejects history for another business task through the API boundary', async () => {

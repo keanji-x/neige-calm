@@ -214,7 +214,7 @@ function taskRow(task: ReportTaskRow): PanelRow {
   const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
-  const reason = task.execution === undefined ? task.pendingReason?.message ?? null : null;
+  const reason = task.execution === undefined ? task.pendingReason?.message ?? null : task.execution.blockingReason;
   const status = currentStatus !== null
     ? {
         token: currentStatus,

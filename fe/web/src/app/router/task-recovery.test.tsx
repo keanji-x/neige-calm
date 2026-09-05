@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -8,18 +8,30 @@ import type { TaskAttempt } from '../../../../core/domain/task-recovery.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
+import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 afterEach(cleanup);
 
-function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 'dispatched' | 'refresh-fails' | 'stale-report' | 'lost-ahead' = 'success') {
+function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 'dispatched' | 'refresh-fails' | 'stale-report' | 'lost-ahead' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' = 'success') {
   const requests: ApiRequest[] = [];
-  const old: TaskAttempt = { attempt_id: 'opaque-old-id', generation: 1, status: 'failed', status_detail: 'gate-red',
+  const taskKey = mode === 'dependency' ? 'c' : 'b';
+  const blocker = mode === 'dependency' ? 'Blocked by b (failed). Recover b before c can continue.'
+    : mode === 'withdrawn' ? 'Execution release was withdrawn. Release this task to continue.'
+    : mode === 'contract-blocked' ? 'Task requirements changed after recovery was requested. Review the declaration.'
+    : mode === 'capacity' ? 'All execution slots are occupied. Waiting for capacity.' : null;
+  const old: TaskAttempt = { attempt_id: 'opaque-old-id', generation: 1, status: 'failed', blocking_reason: null, status_detail: 'gate-red',
     worker_card_id: 'old-worker', created_at_ms: 1000, finished_at_ms: 2000 };
   const next: TaskAttempt = { ...old, attempt_id: 'opaque-new-id', generation: 2, status: 'pending',
-    status_detail: null, worker_card_id: null, finished_at_ms: null };
+    blocking_reason: null, status_detail: null, worker_card_id: null, finished_at_ms: null };
   let current = mode === 'awaiting' ? { ...next, status: 'awaiting_projection' }
     : mode === 'dispatched' ? { ...next, status: 'dispatched' } : old;
+  if (blocker !== null) current = { ...next,
+    status: mode === 'dependency' || mode === 'capacity' ? 'pending' : 'awaiting_projection',
+    blocking_reason: blocker,
+  };
   let writes = 0;
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -27,9 +39,13 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [
       { id: 'b-task', rev: 1, kind: 'task', payload: {
-        key: 'b', kind: 'codex', declared_by: 'user', ready: true, goal: 'Complete b under the original requirements.',
+        key: taskKey, kind: 'codex', declared_by: 'user', ready: mode !== 'withdrawn',
+        goal: `Complete ${taskKey} under the original requirements.`, depends_on: mode === 'dependency' ? ['b'] : [],
       } },
     ] } };
+  if (mode === 'dependency') card.payload.blocks.push({ id: 'b-dependency', rev: 1, kind: 'task', payload: {
+    key: 'b', kind: 'codex', declared_by: 'user', ready: true, goal: 'Prepare the input for c.', depends_on: [],
+  } });
   const worker = { ...card, id: 'old-worker', kind: 'codex', title: 'Previous worker', deletable: true, payload: {} };
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
@@ -39,10 +55,13 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [
-      { blockId: 'b-task', key: 'b', schedulable: true, status: mode === 'awaiting' ? null : 'failed', statusDetail: 'gate-red', workerCardId: 'old-worker', diagnostics: [] },
+      { blockId: 'b-task', key: taskKey, schedulable: true,
+        pendingReason: mode === 'dependency' ? { kind: 'dependencyBlocked', message: blocker, dependencies: ['b'] } : null,
+        status: blocker !== null ? (mode === 'dependency' ? 'pending' : current.status === 'awaiting_projection' ? null : current.status) : mode === 'event-advance' ? current.status : mode === 'awaiting' ? null : 'failed', statusDetail: blocker !== null || mode === 'event-advance' ? current.status_detail : 'gate-red', workerCardId: blocker !== null ? null : mode === 'event-advance' ? current.worker_card_id : 'old-worker', diagnostics: [] },
+      ...(mode === 'dependency' ? [{ blockId: 'b-dependency', key: 'b', schedulable: true, status: 'failed', statusDetail: 'gate-red', diagnostics: [] }] : []),
     ] });
     if (request.path.endsWith('/attempts') && mode === 'refresh-fails' && writes > 0) return { status: 503, statusText: 'Unavailable', body: { error: 'History temporarily unavailable.', code: 'service_unavailable' } };
-    if (request.path.endsWith('/attempts')) return ok({ key: 'b', current,
+    if (request.path.endsWith('/attempts')) return ok({ key: taskKey, current,
       attempts: current === old ? [old] : mode === 'lost-ahead' ? [old, next, current] : [old, current],
       recovery: { allowed: current === old && mode !== 'blocked', code: mode === 'blocked' ? 'predecessor_not_quiescent' : 'available',
         reason: mode === 'blocked' ? 'The previous worker is still stopping. Wait for cleanup.' : 'Recover under the unchanged contract.' },
@@ -53,7 +72,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
         : mode === 'lost-ahead' ? { ...next, attempt_id: 'attempt-three', generation: 3, status: 'running', worker_card_id: 'new-worker' } : next;
       if (mode === 'conflict') return { status: 409, statusText: 'Conflict', body: { code: 'conflict', error: 'A newer attempt already exists.' } };
       if ((mode === 'lost' || mode === 'lost-ahead') && writes === 1) throw new Error('response lost after commit');
-      return ok({ key: 'b', previous_attempt_id: old.attempt_id, attempt_id: next.attempt_id, generation: 2 });
+      return ok({ key: taskKey, previous_attempt_id: old.attempt_id, attempt_id: next.attempt_id, generation: 2 });
     }
     if (request.path === '/api/settings') return ok({});
     return ok([]);
@@ -67,7 +86,15 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   mount();
-  return { requests, client, router, mount, open: async () => {
+  return { requests, client, router, mount, advance: (status: string) => {
+    current = { ...next, status, worker_card_id: 'new-worker' };
+    const event = wireEventSchema.parse(status === 'done'
+      ? { ev: 'task.completed', data: { idempotency_key: current.attempt_id, result: {}, artifacts: [] } }
+      : { ev: 'task.dispatched', data: { idempotency_key: current.attempt_id, kind: 'codex' } });
+    applyEventEffects(client, reduceEventFrame(initialEventState(null), {
+      type: 'event', event, meta: { id: requests.length + 1, eventVersion: 1 },
+    }).effects);
+  }, open: async () => {
     await userEvent.click(await screen.findByText('Reference'));
     await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
   } };
@@ -188,4 +215,52 @@ it('keeps the newer view when replay returns an older recovery receipt', async (
   expect(screen.queryByText('Recovery requested. A new attempt is queued for preparation.')).toBeNull();
   await userEvent.click(screen.getByTitle('Open the worker card for b'));
   await waitFor(() => expect(router.state.location.href).toContain('card=new-worker'));
+});
+
+
+it('refreshes collapsed current execution through task events without reopening history', async () => {
+  const { open, advance, router } = setup('event-advance');
+  await open();
+  await screen.findByText('Current attempt 1 · Failed');
+  const disclosure = document.querySelector<HTMLDetailsElement>('[data-nc-task-state]')!;
+  await userEvent.click(disclosure.querySelector('summary')!);
+  await waitFor(() => expect(disclosure.open).toBe(false));
+  await act(() => { advance('running'); return Promise.resolve(); });
+  await waitFor(() => expect(disclosure.querySelector('summary')!.textContent).toContain('Running'));
+  expect(disclosure.open).toBe(false);
+  expect(screen.getByTitle('1 active')).toBeTruthy();
+  await userEvent.click(screen.getByTitle('Open the worker card for b'));
+  await waitFor(() => expect(router.state.location.href).toContain('card=new-worker'));
+  await act(() => { advance('done'); return Promise.resolve(); });
+  await waitFor(() => expect(disclosure.querySelector('summary')!.textContent).toContain('Completed'));
+  expect(screen.getByTitle('1 done')).toBeTruthy();
+  expect(disclosure.open).toBe(false);
+});
+
+
+it('keeps the current failed dependency explanation after loading pending task history', async () => {
+  const { open, advance } = setup('dependency');
+  const cause = 'Blocked by b (failed). Recover b before c can continue.';
+  expect(await screen.findByTitle(cause)).toBeTruthy();
+  await open();
+  await screen.findByText('Current attempt 2 · Queued');
+  expect(screen.getByText(cause)).toBeTruthy();
+  expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(cause);
+  expect(screen.getByTitle(cause)).toBeTruthy();
+  await act(() => { advance('running'); return Promise.resolve(); });
+  await screen.findByText('Current attempt 2 · Running');
+  expect(screen.queryByText(cause)).toBeNull();
+  expect(screen.queryByTitle(cause)).toBeNull();
+});
+
+it.each([
+  ['withdrawn', 'Execution release was withdrawn. Release this task to continue.'],
+  ['contract-blocked', 'Task requirements changed after recovery was requested. Review the declaration.'],
+  ['capacity', 'All execution slots are occupied. Waiting for capacity.'],
+] as const)('explains current admission blocker %s without requiring a projected row', async (mode, cause) => {
+  await setup(mode).open();
+  await screen.findByText(mode === 'capacity' ? 'Current attempt 2 · Queued' : 'Current attempt 2 · Waiting for admission');
+  expect(screen.getByText(cause)).toBeTruthy();
+  expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(cause);
+  expect(screen.getByTitle(cause)).toBeTruthy();
 });

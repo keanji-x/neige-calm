@@ -28,6 +28,7 @@ export function TaskRecoveryDetails({ view, current, loading, loadError, busy, e
       <p className={styles.current}>{current.generation === null ? current.label
         : `Current attempt ${current.generation} · ${current.label}`}</p>
       {current.statusDetail !== null && <p className={styles.detail}>{current.statusDetail}</p>}
+      {current.blockingReason !== null && <p className={styles.detail}>{current.blockingReason}</p>}
       {current.status === 'failed' && view !== undefined && <p className={styles.detail}>{view.recovery.reason}</p>}
     </>}
     {busy && <p role="status">Requesting recovery…</p>}

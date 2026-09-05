@@ -7,6 +7,7 @@ export const taskAttemptSchema = z.object({
   generation: z.number().int().positive(),
   status: z.string().min(1),
   status_detail: z.string().nullable(),
+  blocking_reason: z.string().nullable(),
   worker_card_id: z.string().nullable(),
   created_at_ms: z.number(),
   finished_at_ms: z.number().nullable(),

@@ -55,7 +55,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   const status = task?.execution?.status ?? task?.status ?? null;
   const explanation = [
     status === null ? null : taskStatusPhrase(task?.execution?.label ?? status, task?.execution === undefined ? task?.statusDetail ?? null : boundedStatusDetail(task.execution.statusDetail)),
-    task?.execution === undefined ? task?.pendingReason?.message : null,
+    task?.execution === undefined ? task?.pendingReason?.message : task.execution.blockingReason,
   ].filter(Boolean).join(' — ');
   return (
     <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -8,6 +8,9 @@ import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task
 import { deriveReportTasks, type TrackReport } from '../../../../core/domain/report.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import '../../styles/entry.css';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
+import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 
 afterEach(cleanup);
@@ -15,10 +18,10 @@ afterEach(cleanup);
 it('recovers from the task disclosure and navigates prior evidence at desktop and phone widths', async () => {
   const requests: ApiRequest[] = [];
   const first: TaskAttempt = { attempt_id: 'attempt-one', generation: 1, status: 'failed',
-    status_detail: 'The implementation did not pass validation.', worker_card_id: 'worker-old',
+    blocking_reason: null, status_detail: 'The implementation did not pass validation.', worker_card_id: 'worker-old',
     created_at_ms: 1788600000000, finished_at_ms: 1788600060000 };
   const second: TaskAttempt = { attempt_id: 'attempt-two', generation: 2, status: 'dispatched',
-    status_detail: null, worker_card_id: null, created_at_ms: 1788600070000, finished_at_ms: null };
+    blocking_reason: null, status_detail: null, worker_card_id: null, created_at_ms: 1788600070000, finished_at_ms: null };
   let current = first;
   let conversation: string | null = null;
   const transport: ApiTransportPort = { send(request) {
@@ -29,7 +32,7 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
       return { status: 200, statusText: 'OK', body: { key: 'b', previous_attempt_id: first.attempt_id,
         attempt_id: second.attempt_id, generation: 2 } };
     }
-    const body: TaskRecoveryView = { key: 'b', current, attempts: current === first ? [first] : [first, second],
+    const body: TaskRecoveryView = { key: 'b', current, attempts: current === first ? [first] : [first, current],
       recovery: { allowed: current === first, code: current === first ? 'available' : 'not_failed',
         reason: 'Start a new attempt under the unchanged task requirements.' } };
     return { status: 200, statusText: 'OK', body };
@@ -70,4 +73,25 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   await action.click();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
   await page.screenshot({ path: '__screenshots__/issue-1501-phone.png' });
+  current = { ...second, status: 'awaiting_projection',
+    blocking_reason: 'Execution release was withdrawn. Release this task to continue.' };
+  await action.click();
+  await expect.element(page.getByText(current.blocking_reason!)).toBeVisible();
+  expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(current.blocking_reason);
+  await page.screenshot({ path: '__screenshots__/issue-1501-blocker-phone.png' });
+  const disclosure = document.querySelector<HTMLDetailsElement>('[data-nc-task-state]')!;
+  await userEvent.click(disclosure.querySelector('summary')!);
+  expect(disclosure.open).toBe(false);
+  current = { ...second, status: 'done' };
+  await act(() => {
+    const event = wireEventSchema.parse({ ev: 'task.completed', data: {
+      idempotency_key: second.attempt_id, result: {}, artifacts: [],
+    } });
+    applyEventEffects(client, reduceEventFrame(initialEventState(null), {
+      type: 'event', event, meta: { id: 1, eventVersion: 1 },
+    }).effects);
+    return Promise.resolve();
+  });
+  await expect.poll(() => disclosure.querySelector('summary')!.textContent).toContain('Completed');
+  expect(disclosure.open).toBe(false);
 });

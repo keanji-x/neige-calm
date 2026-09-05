@@ -26,9 +26,12 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
   const intentQuery = useQuery<Intent>({ queryKey: intentKey, queryFn: () => ({ phase: 'idle' }),
     initialData: { phase: 'idle' }, enabled: false, staleTime: Infinity, gcTime: Infinity });
   const intent = intentQuery.data;
-  const history = useQuery({ queryKey: historyKey, enabled: expanded, retry: false,
+  // Once loaded, current execution also drives the collapsed summary and inventory.
+  // Keep this sole fetch owner active so events and polling can refresh that authority.
+  const history = useQuery<TaskRecoveryView>({ queryKey: historyKey,
+    enabled: (query) => expanded || query.state.data !== undefined, retry: false,
     queryFn: ({ signal }) => runOperation(transport, { ...taskAttemptsOperation(trackId, taskKey), signal }, unauthorized),
-    refetchInterval: (query) => expanded && !query.state.error && query.state.data !== undefined
+    refetchInterval: (query) => !query.state.error && query.state.data !== undefined
       && !['done', 'canceled'].includes(query.state.data.current.status) ? 3000 : false,
   });
   const refresh = async () => {
