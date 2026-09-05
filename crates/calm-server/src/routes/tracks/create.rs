@@ -583,6 +583,16 @@ pub(super) async fn create_track_with_first_message(
     // function is the only writer of the field, and it is reachable only from
     // `CreatePlan::Mint`. Pinned by
     // `a_message_less_create_writes_no_binding_row`.
+    // #1430 — `None` in production and in every other test; one `Option` check
+    // on the mint path. Armed only by the cross-instance primary-key race case,
+    // which needs this request held *after* its lookup 1 missed and *before*
+    // `create_track_structure` opens the transaction that writes the binding
+    // row. See `super::TrackCreateMintRendezvous` for why the race has to be
+    // constructed here rather than hoped for, and why every wait it performs is
+    // bounded.
+    if let Some(gate) = s.track_create_mint_rendezvous.clone() {
+        gate.hold().await;
+    }
     options.idempotency_claim = Some(TrackCreateIdempotencyClaim {
         key: plan.idempotency_key.clone(),
         create_request_sha256: plan.create_request_sha256.clone(),

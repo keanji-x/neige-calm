@@ -743,7 +743,21 @@ test went red, not how many.
      instance — the technique `a_binding_miss_with_an_occupied_key_mints_nothing`
      (`track_create_first_message.rs:2217-2255`) already uses.
 
-   What remains a gap, for a smaller reason: see gap 12.
+   **CLOSED (the `Stuck` half) by #1430**, in one instance and with no
+   fixture: `a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing`
+   writes the `stuck` phase onto the operation a real create produced, so the
+   next request under that key takes the `Replay` arm into `wait` and gets the
+   recorded 500 back — and opens no `#N` attempt and delivers no second copy.
+   Mutation that reddens exactly it and nothing else: let
+   `retryable_operation_key` step over `Stuck`.
+
+   (Note, measured while closing this: the `Stuck` → 500 *mapping itself* was
+   already exercised on the **minting** arm by
+   `a_stuck_start_after_spawn_has_already_delivered_the_first_message` —
+   breaking `response_for`'s `Stuck` branch reddens that test too. What was
+   genuinely unpinned is the **resuming** arm over a `Stuck` predecessor.)
+
+   The in-flight half remains a gap, for a smaller reason: see gap 12.
 3. **The cross-process primary-key race is not tested, and the mapping is
    fail-closed rather than recovering.** `plan_first_message` takes
    `lock_card(&s.conversation_first_message_locks, &base_key)` *before* the
@@ -767,6 +781,22 @@ test went red, not how many.
    deterministic still needs one injection point between lookup 1
    (`routes/tracks/create.rs:412`) and the mint — a `Repo` decorator is not the
    cheap way there (109 methods across the supertraits, one impl in the tree).
+
+   **CLOSED by #1430.**
+   `a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner`
+   boots two `AppState`s over one on-disk SQLite file in one process
+   (`boot_two_instances_on_one_database`) and holds the loser at
+   `TrackCreateMintGate` — two `tokio::sync::Barrier`s parked between lookup 1
+   and `create_track_structure`, armed only by
+   `AppState::with_track_create_mint_rendezvous` (a `fixtures`-gated builder
+   over an unconditional field, the same shape as `SystemAreaMintRendezvous`)
+   and bounded at 30s so a held request resumes on its own rather than wedging a
+   runner. It pins the three things T-BIND-2 cannot: the route's `map_err`, that
+   the loser's rolled-back mint leaves **no orphan track**, and that the loser's
+   retry resolves to the winner's track through `Resume`. Mutation: swallow the
+   binding-claim error there — the loser then commits, the run measures
+   `tracks = 2`, and the 500 becomes the orphan-behind-a-409 failure class this
+   design exists to abolish.
 4. **A deleted track poisons its key permanently.** No FK, no cascade (§3): the
    binding row survives, `track_get` misses, and the key answers 500 forever.
    Deliberate — fail-closed beats minting a different track for a byte-identical

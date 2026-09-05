@@ -167,6 +167,16 @@ pub struct RouteState {
     ///      and `/planner/reset` take only the recovery lock and never enter
     ///      the Today bootstrap arm); any new caller must preserve this order.
     pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
+    /// #1430 — `None` in production. Armed by the cross-instance primary-key
+    /// race case so the losing racer is *held* between lookup 1 and the mint
+    /// instead of hoping a scheduler orders two requests that way. Lives on
+    /// [`RouteState`] rather than in a `static` for the same reason
+    /// [`crate::routes::today::SystemAreaMintRendezvous`] does: a process-global
+    /// is shared by every state in the process, which a threaded test binary
+    /// turns into cross-case interference. The field is unconditional and the
+    /// route's `if let Some(..)` is compiled into every build; only
+    /// [`AppState::with_track_create_mint_rendezvous`] is `fixtures`-gated.
+    pub(crate) track_create_mint_rendezvous: crate::routes::tracks::TrackCreateMintRendezvous,
     /// Per-track fence shared by single-track deletion and direct runtime
     /// recovery/reattach paths that bypass `OperationRuntime`. Once DELETE owns
     /// this lock, those paths cannot install a runtime behind its teardown
@@ -261,6 +271,7 @@ impl BootState {
             hook_ingest_cache,
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
+            track_create_mint_rendezvous: None,
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
         };
@@ -966,6 +977,25 @@ impl AppState {
             self.events.clone(),
         );
         self.rebuild_operation_runtime();
+        self
+    }
+
+    /// #1430 — arm the track-create mint rendezvous so the cross-instance
+    /// primary-key race is *constructed* rather than hoped for.
+    ///
+    /// Same shape and same reasons as
+    /// [`Self::with_system_area_mint_rendezvous`]: the field is unconditional
+    /// and the route's `if let Some(..)` is compiled into every build, so the
+    /// tested binary executes the instructions the shipped one does; only the
+    /// ability to arm it is test-only. Placed *after* a complete function, per
+    /// that builder's warning about attribute-sensitive insertion.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_track_create_mint_rendezvous(
+        mut self,
+        gate: Arc<crate::routes::tracks::TrackCreateMintGate>,
+    ) -> Self {
+        self.route.track_create_mint_rendezvous = Some(gate);
         self
     }
 
