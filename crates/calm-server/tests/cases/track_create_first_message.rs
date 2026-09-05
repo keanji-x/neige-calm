@@ -3934,22 +3934,36 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
          anyway is how the same sentence reaches the agent twice"
     );
-    // #1449 — the refusal declines to ISSUE; it does not wind the handle down.
+    // #1449 — two separate things, and the earlier version of this test had
+    // one of them backwards.
     //
-    // A stopped handle stays registered, and `ensure_live_planner_harness` does
+    // The handle stays REGISTERED and alive. A handle that wound itself down
+    // would still be in the registry, and `ensure_live_planner_harness` does
     // not health-check a registered handle, so a predecessor a failed mint
-    // later restores would answer `Conflict` on every send with no way back but
-    // `/planner/reset`. The handle therefore has to keep accepting work even
-    // while it declines to speak for the card.
+    // later restores would answer `Conflict` forever with no way back but
+    // `/planner/reset`.
+    //
+    // But a durable send through it is REFUSED, because it cannot be made
+    // durable: `session_set_handle_state_tx` matches no row once this runtime
+    // is retired, and reporting success there is how a sentence got a 201 and
+    // no home. Refusing sends the caller to the successor.
     let handle = b
         .state
         .harness
         .get(&runtime)
-        .expect("the retired handle is still registered");
-    handle
-        .observe_user_message_durable("still accepted".into())
-        .await
-        .expect("a runtime that lost the card must keep accepting work, not answer Conflict");
+        .expect("the retired handle must stay registered");
+    let refused = handle
+        .observe_user_message_durable("cannot be made durable here".into())
+        .await;
+    assert!(
+        refused.is_err(),
+        "a send that cannot reach the row must be refused, not acknowledged: {refused:?}"
+    );
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "and the refusal must leave the row exactly as it was"
+    );
     b.shutdown_harnesses().await;
 }
 
@@ -4191,61 +4205,75 @@ async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
     b.shutdown_harnesses().await;
 }
 
-/// #1449 — a sentence accepted with a 201 must be on the row, not only in the
-/// memory of a runtime that has stopped.
+/// #1449 — a durable send is either ON THE ROW or REFUSED. Never accepted and
+/// only in memory.
 ///
-/// This is the defect a `stop_retired_carrier` step introduced and this test
-/// exists to keep out. Setting `shutting_down` outside `inner.durable_observation`
-/// — the lock every other setter of that flag takes, and the only point that
-/// linearises an in-flight durable send against teardown — let this interleave:
+/// This is the invariant, and the previous version of this test did not test
+/// it. It sent through `POST /api/cards/{id}/planner/input`, which resolves the
+/// runtime through `ACTIVE_CARD_RUNTIME_SELECT` and therefore answers 409 for a
+/// retired row before reaching the harness at all — so every iteration hit the
+/// `continue` and the assertion never ran. It was green for the same reason an
+/// empty loop is green, while standing as the only evidence that the race was
+/// closed.
 ///
-/// 1. the HTTP task takes `durable_observation`, reads `shutting_down == false`
-///    and sends its `Durable` command;
-/// 2. the run loop stops the handle from its tick arm;
-/// 3. the next `select!` has both `observations.recv()` and `shutdown.recv()`
-///    ready and picks between them at random;
-/// 4. on the observations arm the message is enqueued and `persist_snapshot`
-///    returns `Ok` WITHOUT writing, because `shutting_down` is now set — so the
-///    send is acknowledged, the route answers 201 and writes
-///    `harness.user_message.enqueued`, and the sentence exists only in the
-///    memory of a loop that is about to exit.
-///
-/// The witness is the invariant rather than the interleaving: after a runtime
-/// has been retired underneath a durable send, a send that was ACCEPTED has to
-/// be on the row. Run repeatedly, because step 3 is a coin flip; a version of
-/// this that only asserted after the stop had completed gave false confidence
-/// for a whole round.
+/// So this one goes through the HANDLE, which is what the route holds once it
+/// has resolved a runtime, and which is the object the reachable window hands
+/// to a send that started before the mint committed. The counter in the loop is
+/// asserted, so an interleaving that stops reaching the send fails here instead
+/// of passing quietly.
 #[tokio::test]
-async fn an_accepted_send_is_on_the_row_even_when_the_runtime_is_retired_underneath_it() {
-    const ACCEPTED: &str = "accepted while the carrier was being retired";
-
+async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     let b = boot().await;
-    let (status, body) = b.create_track(Some("idem-1449-accept"), None).await;
+    let (status, body) = b.create_track(Some("idem-1449-durable"), None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let (runtime, card_id) = b.only_runtime().await;
+    let (runtime, _card_id) = b.only_runtime().await;
+    let handle = b
+        .state
+        .harness
+        .get(&runtime)
+        .expect("the live handle the route would have resolved");
 
-    // Retire the row underneath the live handle, then send. The run loop's
-    // carrier check will refuse to issue from now on; the question is what
-    // happens to a send that is accepted anyway.
+    // A send while the runtime is still the carrier: accepted, and on the row.
+    handle
+        .observe_user_message_durable("before the retirement".into())
+        .await
+        .expect("premise: a live carrier accepts a durable send");
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: and it lands on the row"
+    );
+
+    // Now the mint commits underneath the handle the caller is holding.
     b.retire_runtime_in_the_database(&runtime).await;
 
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
     for attempt in 0..20 {
-        let text = format!("{ACCEPTED} #{attempt}");
-        let (sent, sent_body) = b.send_planner_input(&card_id, &text).await;
-        if !sent.is_success() {
-            // Refusing the send is a legitimate answer: nothing was promised.
-            continue;
+        let text = format!("after the retirement #{attempt}");
+        match handle.observe_user_message_durable(text.clone()).await {
+            Ok(()) => {
+                accepted += 1;
+                let persisted = b.persisted_queue(&runtime).await;
+                assert!(
+                    persisted.iter().any(|e| e.to_string().contains(&text)),
+                    "send #{attempt} was ACCEPTED but is not on the row — it exists only in the \
+                     memory of a runtime that must not speak for this card, on a row the harvest \
+                     will not read because it is stamped. Persisted queue: {persisted:?}"
+                );
+            }
+            Err(_) => refused += 1,
         }
-        let persisted = b.persisted_queue(&runtime).await;
-        let on_the_row = persisted
-            .iter()
-            .any(|entry| entry.to_string().contains(&text));
-        assert!(
-            on_the_row,
-            "send #{attempt} was accepted ({sent}, body={sent_body}) but the sentence is not on \
-             the row — it exists only in the runtime's memory, which is the loss #1449 exists to \
-             end, reintroduced. Persisted queue: {persisted:?}"
-        );
     }
+    assert_eq!(
+        accepted + refused,
+        20,
+        "premise: every attempt must have reached the handle"
+    );
+    assert!(
+        refused > 0,
+        "premise: this test is worthless unless the sends actually reached a retired runtime; \
+         {accepted} were accepted and none refused, so the retirement did not take"
+    );
     b.shutdown_harnesses().await;
 }

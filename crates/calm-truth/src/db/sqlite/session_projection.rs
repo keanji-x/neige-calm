@@ -263,15 +263,16 @@ pub async fn session_clear_terminal_run_id_tx(
     Ok(())
 }
 
+/// Returns whether the row was written; see
+/// [`session_set_handle_state_mirror_tx`] for why a caller has to care.
 pub async fn session_set_handle_state_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
     state: Option<serde_json::Value>,
-) -> WorkerSessionProjectionResult<()> {
+) -> WorkerSessionProjectionResult<bool> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
     let now = now_ms();
-    session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
-    Ok(())
+    session_set_handle_state_mirror_tx(tx, id, &state_text, now).await
 }
 
 pub async fn session_set_active_turn_tx(
@@ -426,8 +427,8 @@ pub struct HarvestOutcome {
     /// The human sentences taken off this row.
     pub taken: Vec<HarvestedMessage>,
     /// The row's snapshot with those sentences removed, to be written back.
-    /// `None` when the decoder could not read the snapshot and therefore took
-    /// nothing — the row is left byte-for-byte as it was.
+    /// `None` means the decoder took nothing and the row is left byte-for-byte
+    /// as it was; `taken` is empty whenever this is.
     pub remaining_snapshot: Option<serde_json::Value>,
 }
 

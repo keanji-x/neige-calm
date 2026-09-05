@@ -407,7 +407,7 @@ impl PlannerHarness {
                         ));
                     }
                 }
-                if let Err(error) = persist_snapshot(&self.inner).await {
+                if let Err(error) = persist_snapshot_for_durable_send(&self.inner).await {
                     restore_durable_user_message(&self.inner, checkpoint).await;
                     return Err(error);
                 }
@@ -839,7 +839,7 @@ async fn run_loop(
                             }
                         }
                         let result = if accepted {
-                            match persist_snapshot(&inner).await {
+                            match persist_snapshot_for_durable_send(&inner).await {
                                 Ok(()) => Ok(()),
                                 Err(error) => {
                                     restore_durable_user_message(&inner, checkpoint).await;
@@ -2429,12 +2429,35 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
-    persist_snapshot_inner(inner, None).await
+    persist_snapshot_inner(inner, None).await.map(|_| ())
+}
+
+/// #1449 — persist a durable user send, and REFUSE it if the row was not
+/// written.
+///
+/// `session_set_handle_state_tx` carries
+/// `AND state IN ('starting','running','idle','turn_pending')`, so once this
+/// runtime's row is retired the write matches nothing and used to report
+/// success. That is how a sentence got a 201, an `harness.user_message.enqueued`
+/// row, and no durable home: it lived in the memory of a runtime the carrier
+/// check had already decided must not speak, on a row a later harvest will not
+/// read because it is stamped.
+///
+/// Refusing sends the caller to the successor, which owns this card's queue
+/// now. Writing through the retired-row writer instead would not help: that row
+/// is stamped, so what landed on it would never be read again.
+async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
+    if persist_snapshot_inner(inner, None).await? {
+        return Ok(());
+    }
+    Err(CalmError::Conflict(
+        "planner harness runtime is no longer this card's; retry to reach its successor".into(),
+    ))
 }
 
 async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()> {
     let issued_head = inner.issued_turn_head.lock().await.clone();
-    persist_snapshot_inner(inner, issued_head.clone()).await?;
+    let _written = persist_snapshot_inner(inner, issued_head.clone()).await?;
     if issued_head.is_some() {
         *inner.last_seen_head.lock().await = issued_head;
     }
@@ -2442,12 +2465,15 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
     Ok(())
 }
 
+/// Returns whether the runtime's own row was written. `false` means the write
+/// matched no row — the runtime is shutting down, or its row has left the
+/// active set — and a caller that promised durability must not report success.
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
     last_seen_head_override: Option<track_vcs::CommitHash>,
-) -> Result<()> {
+) -> Result<bool> {
     if inner.shutting_down.load(Ordering::SeqCst) {
-        return Ok(());
+        return Ok(false);
     }
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
@@ -2472,10 +2498,14 @@ async fn persist_snapshot_inner(
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
 
-    write_in_tx_typed(repo.as_ref(), move |tx| {
+    let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::session_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
-                .await?;
+            let written = crate::db::sqlite::session_set_handle_state_tx(
+                tx,
+                &runtime_id,
+                Some(snapshot_value),
+            )
+            .await?;
             crate::db::sqlite::session_set_harness_observation_runtime_tx(
                 tx,
                 &runtime_id,
@@ -2484,7 +2514,7 @@ async fn persist_snapshot_inner(
                 active_turn_id.as_deref(),
             )
             .await?;
-            Ok(())
+            Ok(written)
         })
     })
     .await?;
@@ -2525,11 +2555,11 @@ async fn persist_snapshot_inner(
             // is intentionally retryable/best-effort here: reporting failure
             // would make durable ingress roll back memory after its message was
             // durably accepted, allowing a later snapshot to erase it.
-            return Ok(());
+            return Ok(written);
         }
         *last_phase = new_phase;
     }
-    Ok(())
+    Ok(written)
 }
 
 fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {

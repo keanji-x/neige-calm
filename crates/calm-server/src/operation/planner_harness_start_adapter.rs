@@ -1837,14 +1837,22 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // request, before the transaction that harvests. The journal it
             // would have replayed is empty.
             //
-            // Asserted rather than assumed, because the next thing that moves
-            // work earlier in this function turns the claim false.
-            debug_assert!(
-                read_harvested_from_journal(output).is_empty(),
-                "this compensation arm plans no `fail_runtime`, so a non-empty harvest journal \
-                 would be dropped: {:?}",
-                output.data.get("harvested_from")
-            );
+            // Checked, and NOT with `debug_assert`: that compiles out of a
+            // release build, so the thing it guards would be dropped exactly
+            // where nobody is watching — the failure mode the paragraph above
+            // it argues against. If the journal is not empty the assumption is
+            // wrong and the give-back has to run rather than be skipped.
+            if !read_harvested_from_journal(output).is_empty() {
+                tracing::error!(
+                    card_id = %card_id,
+                    "planner harness: a compensation arm that plans no `fail_runtime` found a \
+                     non-empty harvest journal; planning the give-back anyway"
+                );
+                steps.push(CompensationStep::new(
+                    "fail_runtime",
+                    json!({ "runtime_id": runtime_id }),
+                ));
+            }
             return Ok(finish(steps));
         }
         if matches!(
@@ -2112,7 +2120,32 @@ async fn return_harvested_queues_and_fail_tx(
                 continue;
             }
             let mut source = HarnessSnapshot::from_value_strict(source_state);
+            // #1449 — idempotent against the SOURCE row, not only against a
+            // re-driven compensation.
+            //
+            // A retired runtime can put a batch back on its own row after the
+            // harvest took it: `maybe_issue_turn`'s `turn/start` error arm
+            // re-buffers the batch, and `persist_issuance_outcome` writes that
+            // in-process queue to the retired row. If this mint then fails, the
+            // failing runtime still holds those ids so they qualify for return,
+            // and pushing them would leave the row carrying the same instance
+            // twice — which `restore_old_runtime` revives and delivers twice.
+            let already_on_source: std::collections::HashSet<String> = source
+                .pending_message_ids
+                .iter()
+                .flat_map(|ids| ids.iter().cloned())
+                .collect();
             for message in &returning {
+                if message
+                    .ids
+                    .iter()
+                    .any(|id| already_on_source.contains(id.as_str()))
+                {
+                    // Already back where it belongs. Still counts as returned,
+                    // so it is pruned from the failing runtime below.
+                    returned_any_ids.extend(message.ids.iter().cloned());
+                    continue;
+                }
                 source.pending_queue.push(Observation::UserMessage {
                     text: message.text.clone(),
                 });
@@ -2339,9 +2372,20 @@ fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestO
             }
         }
     }
+    let Ok(remaining_snapshot) = serde_json::to_value(&remaining) else {
+        // `None` has one meaning to the caller — "nothing was taken" — so a
+        // remainder that will not serialize takes nothing, rather than turning
+        // the move into a copy.
+        tracing::warn!(
+            runtime_id,
+            "harvest: could not re-serialize the remainder of this snapshot; leaving its queue \
+             behind"
+        );
+        return HarvestOutcome::default();
+    };
     HarvestOutcome {
         taken,
-        remaining_snapshot: serde_json::to_value(&remaining).ok(),
+        remaining_snapshot: Some(remaining_snapshot),
     }
 }
 

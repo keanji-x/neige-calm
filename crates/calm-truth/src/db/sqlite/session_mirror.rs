@@ -475,13 +475,20 @@ pub(super) async fn session_clear_terminal_run_id_mirror_tx(
     Ok(())
 }
 
+/// Returns whether the row was actually written.
+///
+/// #1449 — the predicate means this affects zero rows once the runtime has been
+/// retired, and it reported success anyway. A durable user send persisted
+/// through here, matched nothing, was acknowledged, and the route answered 201
+/// for a sentence that existed only in process memory. A caller that promises
+/// durability has to look at this.
 pub(super) async fn session_set_handle_state_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
     state_text: &Option<String>,
     now: i64,
-) -> WorkerSessionProjectionResult<()> {
-    sqlx::query(
+) -> WorkerSessionProjectionResult<bool> {
+    let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1,
                   updated_at_ms = ?2
@@ -493,7 +500,7 @@ pub(super) async fn session_set_handle_state_mirror_tx(
     .bind(id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(res.rows_affected() > 0)
 }
 
 pub(super) async fn session_set_active_turn_mirror_tx(
