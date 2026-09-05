@@ -69,7 +69,8 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await screen.findByRole('button', { name: 'Delete track Risky' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Risky' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
   await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   await userEvent.click(screen.getByRole('button', { name: 'Account menu for You' }));

@@ -214,23 +214,27 @@
     background: var(--warn);
   }
 
-  /* Coloured at rest, not on hover (§4.3). 28px box, 16px glyph — the one
-     chrome pairing. */
-  .headerDelete {
-    display: grid;
-    place-items: center;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--error-text);
-    cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out;
+  /* Track-level mutations live behind one conventional overflow trigger. The
+     destructive colour belongs to the confirmation step, not permanently in
+     the page header. */
+  .headerActions {
+    display: inline-flex;
+    color: var(--text-2);
   }
 
-  .headerDelete:hover,
-  .headerDelete:focus-visible {
-    background: var(--error-soft);
+  .headerActions button {
+    inline-size: var(--control-h) !important;
+    min-inline-size: var(--control-h) !important;
+    block-size: var(--control-h) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: inherit !important;
+  }
+
+  .headerActions button:hover,
+  .headerActions button:focus-visible,
+  .headerActions button[aria-expanded='true'] {
+    color: var(--text) !important;
   }
 
   .mobilePanelButton,
@@ -242,12 +246,6 @@
 
   .desktopPanelSurface {
     display: contents;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .headerDelete {
-      transition: none;
-    }
   }
 
   /* Main column plus the `--panel-span` track, separated by the standard
@@ -1041,10 +1039,6 @@
       min-block-size: var(--rail-w-collapsed) !important;
       background: transparent !important;
       box-shadow: none !important;
-    }
-
-    .headerDelete {
-      display: none;
     }
 
     .needsInput,

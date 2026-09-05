@@ -181,9 +181,15 @@ export function Sidebar({
     <nav ref={railRef} className={`${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
       <div className={styles.brandRow}>
         {!collapsed && (
-          <button type="button" data-nc-role="row" className={styles.brand} onClick={() => onGo({ name: 'today' })}>
+          <button
+            type="button"
+            data-nc-role="row"
+            className={styles.brand}
+            aria-label="Go to Today"
+            onClick={() => onGo({ name: 'today' })}
+          >
             <span className={styles.brandMark} aria-hidden="true" />
-            <span className={styles.brandText}>neige · calm</span>
+            <span className={styles.brandText}>Today</span>
           </button>
         )}
         {collapsed ? (

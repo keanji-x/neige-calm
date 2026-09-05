@@ -29,7 +29,8 @@ describe('TrackPage delete confirm contract', () => {
     const onDeleteTrack = vi.fn(() => gate.promise);
     renderPage({ onDeleteTrack });
 
-    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await userEvent.click(screen.getByRole('button', { name: /^Track actions for / }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
 
     // Still mounted, mid-flight.
@@ -48,7 +49,7 @@ describe('TrackPage delete confirm contract', () => {
 
     gate.resolve();
     await gate.promise;
-    await screen.findByRole('button', { name: /^Delete track / });
+    await screen.findByRole('button', { name: /^Track actions for / });
   });
 
   it('closes the confirm and clears pending when onDeleteTrack rejects', async () => {
@@ -56,16 +57,18 @@ describe('TrackPage delete confirm contract', () => {
     const onDeleteTrack = vi.fn(() => gate.promise);
     renderPage({ onDeleteTrack });
 
-    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await userEvent.click(screen.getByRole('button', { name: /^Track actions for / }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
 
     gate.reject();
     await gate.promise.catch(() => undefined);
 
     // The dialog let go, and re-opening it hands back a live Confirm button.
-    const reopen = await screen.findByRole('button', { name: /^Delete track / });
+    const reopen = await screen.findByRole('button', { name: /^Track actions for / });
     expect(screen.queryByRole('dialog')).toBeNull();
     await userEvent.click(reopen);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete track' }).getAttribute('aria-disabled')).toBeNull();
   });

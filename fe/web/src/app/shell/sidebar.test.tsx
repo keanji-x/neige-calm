@@ -369,10 +369,14 @@ describe('user menu', () => {
 });
 
 describe('collapse toggle', () => {
-  it('places the mark with the wordmark in the expanded rail', () => {
-    renderSidebar();
-    const brand = screen.getByRole('button', { name: 'neige · calm' });
-    expect(brand.querySelector('[aria-hidden="true"]')).toBeTruthy();
+  it('pairs the mark with a clear Today destination in the expanded rail', async () => {
+    const onGo = vi.fn();
+    renderSidebar({ onGo });
+    const today = screen.getByRole('button', { name: 'Go to Today' });
+    expect(today.textContent).toBe('Today');
+    expect(today.querySelector('[aria-hidden="true"]')).toBeTruthy();
+    await userEvent.click(today);
+    expect(onGo).toHaveBeenCalledWith({ name: 'today' });
   });
 
   /*

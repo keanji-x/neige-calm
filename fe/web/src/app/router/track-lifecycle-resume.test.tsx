@@ -71,12 +71,12 @@ it('PATCHes Working and renders the returned lifecycle after Resume work', async
     </QueryClientProvider>,
   );
 
-  await userEvent.click(await screen.findByRole('button', { name: 'Track lifecycle: Done' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Recover me' }));
   await userEvent.click(screen.getByRole('menuitem', { name: /Resume work/ }));
 
   await waitFor(() => {
     expect(requests.filter((request) => request.method === 'PATCH' && request.path === '/api/tracks/w1'))
       .toEqual([expect.objectContaining({ body: { lifecycle: 'working' } })]);
   });
-  await screen.findByRole('button', { name: 'Track lifecycle: Working' });
+  await screen.findByRole('status', { name: 'Track lifecycle: Working' });
 });

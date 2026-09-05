@@ -1,11 +1,11 @@
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { render } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
 
 import { useState } from '../../../ui/state/public.ts';
-import { TrackLifecycleBadge } from '../lifecycle-badge/public.tsx';
+import { TrackPage } from './public.tsx';
 import { renderPage, track } from './test-fixtures.tsx';
 
 afterEach(() => {
@@ -38,8 +38,8 @@ function contrast(first: Rgb, second: Rgb): number {
   return (high + 0.05) / (low + 0.05);
 }
 
-describe('the track lifecycle control in the page header', () => {
-  it('sits directly beside the title as a quiet compact button', async () => {
+describe('the track lifecycle status in the page header', () => {
+  it('sits directly beside the title as quiet text', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({ track: track({ title: 'Status preview', lifecycle: 'working' }) });
 
@@ -53,69 +53,86 @@ describe('the track lifecycle control in the page header', () => {
     expect(title.scrollWidth).toBeLessThanOrEqual(title.clientWidth);
   });
 
-  it('borrows the side-panel card surface and radius without a border', async () => {
+  it('uses a transparent text-only treatment', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
 
     const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Done"]')!;
-    const panelCard = document.querySelector<HTMLElement>('[data-nc-desktop-panel] > div')!;
     const statusStyle = getComputedStyle(status);
-    const panelStyle = getComputedStyle(panelCard);
 
-    expect(paintedRgb(statusStyle.backgroundColor)).toEqual(paintedRgb(panelStyle.backgroundColor));
-    expect(statusStyle.borderRadius).toBe(panelStyle.borderRadius);
+    expect(status.getBoundingClientRect().height).toBe(24);
+    expect(statusStyle.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(statusStyle.padding).toBe('0px');
     expect(statusStyle.borderTopWidth).toBe('0px');
   });
 
-  it('returns focus to the lifecycle button when Escape closes its menu', async () => {
+  it('keeps the three-dot action visible at the secondary text rank', async () => {
+    await browserPage.viewport(1200, 800);
+    renderPage();
+
+    const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
+    const text2 = getComputedStyle(document.documentElement).getPropertyValue('--text-2');
+    expect(paintedRgb(getComputedStyle(actions).color)).toEqual(paintedRgb(text2));
+  });
+
+  it('returns focus to the Track actions button when Escape closes its menu', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
-    const status = document.querySelector<HTMLButtonElement>('[aria-label="Track lifecycle: Done"]')!;
+    const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
 
-    status.click();
+    actions.click();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(document.querySelector<HTMLElement>('[role="menu"]')?.closest('[popover]')
       ?.matches(':popover-open')).toBe(true);
 
     await userEvent.keyboard('{Escape}');
-    expect(document.activeElement).toBe(status);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(document.activeElement).toBe(
+      document.querySelector('[aria-label^="Track actions for "]'),
+    );
   });
 
-  it('keeps keyboard focus on the lifecycle fact after Resume removes the action', async () => {
+  it('keeps keyboard focus on Track actions after Resume removes the action', async () => {
     function ResumeHarness() {
       const [resumed, setResumed] = useState(false);
       return (
-        <TrackLifecycleBadge
-          lifecycle={resumed ? 'working' : 'done'}
-          canResume={!resumed}
-          onResume={() => { setResumed(true); }}
+        <TrackPage
+          track={track({ lifecycle: resumed ? 'working' : 'done' })}
+          cards={[]}
+          tasks={[]}
+          canResumeTrack={!resumed}
+          onRenameTrack={vi.fn()}
+          onResumeTrack={() => { setResumed(true); }}
+          onDeleteTrack={vi.fn()}
         />
       );
     }
 
     await browserPage.viewport(1200, 800);
     render(<ResumeHarness />);
-    const status = document.querySelector<HTMLButtonElement>('[aria-label="Track lifecycle: Done"]')!;
-    status.focus();
+    const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
+    actions.focus();
     await userEvent.keyboard('{Enter}');
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(document.activeElement?.getAttribute('role')).toBe('menuitem');
 
     await userEvent.keyboard('{Enter}');
-    const lifecycle = document.querySelector<HTMLElement>('[data-testid="track-lifecycle"]')!;
-    expect(document.activeElement).toBe(lifecycle);
-    expect(lifecycle.matches(':focus-visible')).toBe(true);
-    expect(getComputedStyle(lifecycle).outlineStyle).not.toBe('none');
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const currentActions = document.querySelector<HTMLButtonElement>(
+      '[aria-label^="Track actions for "]',
+    )!;
+    expect(document.activeElement).toBe(currentActions);
+    expect(currentActions.matches(':focus-visible')).toBe(true);
     expect(document.querySelector('[aria-label="Track lifecycle: Working"]')).not.toBeNull();
   });
 
-  it('light-dismisses the lifecycle menu on an outside click', async () => {
+  it('light-dismisses Track actions on an outside click', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({ track: track({ lifecycle: 'done' }), canResumeTrack: true });
-    const status = document.querySelector<HTMLButtonElement>('[aria-label="Track lifecycle: Done"]')!;
+    const actions = document.querySelector<HTMLButtonElement>('[aria-label^="Track actions for "]')!;
     const popover = () => document.querySelector<HTMLElement>('[role="menu"]')?.closest<HTMLElement>('[popover]');
 
-    status.click();
+    actions.click();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(popover()?.matches(':popover-open')).toBe(true);
     await userEvent.click(document.body);
@@ -132,14 +149,14 @@ describe('the track lifecycle control in the page header', () => {
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
-    const remove = document.querySelector<HTMLElement>('[aria-label^="Delete track "]')!;
+    const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
     const titleBox = title.getBoundingClientRect();
     const statusBox = status.getBoundingClientRect();
 
     expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
     expect(statusBox.left - titleBox.right).toBeGreaterThanOrEqual(4);
     expect(statusBox.left - titleBox.right).toBeLessThanOrEqual(12);
-    expect(statusBox.right).toBeLessThan(remove.getBoundingClientRect().left);
+    expect(statusBox.right).toBeLessThan(actions.getBoundingClientRect().left);
   });
 
   it('keeps the subdued running colour readable in both themes', async () => {
@@ -150,7 +167,9 @@ describe('the track lifecycle control in the page header', () => {
     for (const theme of ['light', 'dark'] as const) {
       document.documentElement.dataset.theme = theme;
       const foreground = paintedRgb(getComputedStyle(status).color);
-      const background = paintedRgb(getComputedStyle(status).backgroundColor);
+      const background = paintedRgb(
+        getComputedStyle(document.documentElement).getPropertyValue('--bg'),
+      );
       expect(contrast(foreground, background), theme).toBeGreaterThanOrEqual(4.5);
     }
   });

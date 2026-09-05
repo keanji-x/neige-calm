@@ -17,7 +17,7 @@ test.afterEach(async ({ request }) => {
   createdAreaIds.length = 0;
 });
 
-test('resumes a canceled track to Working from the lifecycle button', async ({ page, request }) => {
+test('resumes a canceled track to Working from Track actions', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
@@ -29,10 +29,10 @@ test('resumes a canceled track to Working from the lifecycle button', async ({ p
   expect(canceled.ok()).toBe(true);
 
   await page.goto(`/next/track/${track.id}`);
-  await page.getByRole('button', { name: 'Track lifecycle: Canceled' }).click();
+  await page.getByRole('button', { name: /^Track actions for / }).click();
   await page.getByRole('menuitem', { name: /Resume work/ }).click();
 
-  await expect(page.getByRole('button', { name: 'Track lifecycle: Working' })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Track lifecycle: Working' })).toBeVisible();
   await expect.poll(async () => {
     const response = await request.get(`/api/tracks/${track.id}`);
     const detail = await response.json() as { track: { lifecycle: string; terminal_at: number | null } };

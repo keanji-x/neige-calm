@@ -15,6 +15,8 @@
 // that line for the whole subtree.
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
+import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownMenu';
+import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { useEffect, useRef, type ReactNode } from 'react';
 
@@ -187,6 +189,13 @@ export function TrackPage({
     }
     return resumed;
   };
+  const trackMutationActions = [
+    ...(canResumeTrack ? [
+      { label: 'Resume work', isDisabled: resumePending, onClick: resumeWork },
+      { type: 'divider' as const },
+    ] : []),
+    { label: 'Delete track', onClick: () => deletion.request(track.id) },
+  ];
   /*
    * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
    *
@@ -223,6 +232,8 @@ export function TrackPage({
    */
   const panelView = deriveTrackPageView({ cards, tasks });
   const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
+  const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
+  const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
@@ -341,10 +352,7 @@ export function TrackPage({
           })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
-          ...(canResumeTrack ? [{
-            label: 'Resume work', isDisabled: resumePending, onClick: resumeWork,
-          }] : []),
-          { label: 'Delete track', onClick: () => deletion.request(track.id) },
+          ...trackMutationActions,
         ]}
       />
     </span>
@@ -414,9 +422,6 @@ export function TrackPage({
               /></h1>
               <TrackLifecycleBadge
                 lifecycle={track.lifecycle}
-                canResume={canResumeTrack}
-                resumePending={resumePending}
-                onResume={resumeWork}
               />
             </div>
           </>
@@ -428,16 +433,27 @@ export function TrackPage({
           </span>
         ) : undefined}
         actions={(
-          <button
-            type="button"
-            data-nc-role="icon"
-            className={styles.headerDelete}
-            aria-label={`Delete track ${trackDisplayTitle(track.title)}`}
-            title="Delete track"
-            onClick={() => deletion.request(track.id)}
-          >
-            <Icon name="close" />
-          </button>
+          <span className={styles.headerActions}>
+            <AstryxDropdownMenu
+              button={{
+                ref: desktopActionsRef,
+                label: `Track actions for ${trackDisplayTitle(track.title)}`,
+                icon: getAstryxIcon('moreHorizontal'),
+                variant: 'ghost',
+                size: 'sm',
+                isIconOnly: true,
+              }}
+              items={trackMutationActions}
+              hasChevron={false}
+              isMenuOpen={desktopActionsOpen}
+              onOpenChange={(isOpen) => {
+                setDesktopActionsOpen(isOpen);
+                if (!isOpen) {
+                  requestAnimationFrame(() => desktopActionsRef.current?.focus());
+                }
+              }}
+            />
+          </span>
         )}
         /*
          * No identity row — `--header-h` is 62 here now, not 92.

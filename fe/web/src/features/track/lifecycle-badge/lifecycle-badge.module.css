@@ -3,48 +3,14 @@
     display: inline-flex;
     flex: none;
     align-items: center;
-    border-radius: var(--radius-md);
+    block-size: var(--row-h-sm);
     color: var(--text-2);
-  }
-
-  /* A successful keyboard Resume replaces the menu button with an inert
-     lifecycle fact. The stable host receives focus for that hand-off and must
-     keep the focus location visible even though the inner button is disabled. */
-  .host:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: var(--space-1);
-  }
-
-  /* PR #1446 made lifecycle a quiet label beside the title. The recovery
-     control keeps that rank: the button borrows the side panel card's exact
-     surface and radius, with no border or extra state graphic. */
-  .trigger {
-    min-inline-size: 0;
-    padding-inline: var(--space-3) !important;
-    border: 0 !important;
-    border-radius: var(--radius-md) !important;
-    background: var(--surface-card) !important;
-    box-shadow: none !important;
-    color: inherit !important;
     font-family: var(--font-sans);
-    font-size: var(--text-xs) !important;
-    font-weight: var(--weight-medium) !important;
-    line-height: var(--leading-none) !important;
-    letter-spacing: var(--tracking-normal) !important;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-normal);
     white-space: nowrap;
-  }
-
-  /* Every lifecycle stays visible. A state with no Resume action is inert, not
-     unavailable, so native disabled opacity must not erase the status fact. */
-  .trigger:disabled {
-    opacity: 1 !important;
-    cursor: default;
-  }
-
-  .trigger:not(:disabled):hover,
-  .trigger:not(:disabled):focus-visible,
-  .trigger[aria-expanded='true'] {
-    background: var(--surface-chip) !important;
   }
 
   .attention {
