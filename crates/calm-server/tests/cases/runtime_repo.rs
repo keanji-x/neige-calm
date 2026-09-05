@@ -1,9 +1,10 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_claude_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    session_bind_attribution_tx, session_commit_exit_tx, session_complete_for_card_tx,
+    harvest_pending_user_messages_tx, session_bind_attribution_tx,
+    session_clear_queue_harvested_tx, session_commit_exit_tx, session_complete_for_card_tx,
     session_complete_tx, session_fail_if_active_runtime_tx, session_insert_tx,
-    session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
+    session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
     session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
     session_projection_by_id_tx, session_restore_from_superseded_runtime_tx,
     session_set_active_turn_tx, session_set_handle_state_tx,
@@ -2713,4 +2714,315 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, codex_id);
     assert_ne!(rows[0].id, placeholder_id);
+}
+
+/// #1449 — the harvest predicate, row by row.
+///
+/// Everything the mint transaction relies on lives in this one statement, and
+/// every conjunct in it is a decision someone could delete without a test
+/// noticing:
+///
+/// * `state = 'superseded'` — a `failed` row is NOT harvested, because a failed
+///   create's caller re-sends its own text under a `#N` key and harvesting it
+///   would double-send;
+/// * `queue_harvested_at_ms IS NULL` — this is what makes a second restart take
+///   nothing;
+/// * `id != successor` — a deferred placeholder can be superseded by a racer and
+///   revived under the same id, so the successor must not harvest itself;
+/// * every row the read touched is stamped, INCLUDING the ones that yielded
+///   nothing (`handle_state_json IS NULL` is the reachable shape: terminal and
+///   Claude runtimes never write one), so an unreadable row is not re-examined
+///   for the rest of time.
+#[tokio::test]
+async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+
+    fn queued(text: &str) -> serde_json::Value {
+        json!({
+            "schema_version": 1,
+            "mode": "harness",
+            "phase": "idle",
+            "push_watermark": 0,
+            "pending_queue": [{"type": "user_message", "text": text}],
+            "pending_envelope_ids": [null],
+        })
+    }
+    /// Start a runtime and take it out of the active set again in the same
+    /// transaction.
+    ///
+    /// One at a time, because `worker_sessions` carries a partial unique index
+    /// over the card's ACTIVE row — which is also why every production path
+    /// modelled here supersedes the predecessor in the transaction that inserts
+    /// the successor. `created_at_ms` is set explicitly and increasing so the
+    /// harvest's `ORDER BY created_at_ms, id` is a fact of the fixture rather
+    /// than of the clock's resolution.
+    async fn start_then_retire(
+        repo: &SqlxRepo,
+        card_id: &str,
+        created_at_ms: i64,
+        state: Option<serde_json::Value>,
+        terminal: WorkerSessionState,
+    ) -> String {
+        let mut init = runtime_init(
+            card_id.to_string(),
+            WorkerSessionKind::SharedPlanner,
+            Some(AgentProvider::Codex),
+            WorkerSessionState::Starting,
+        );
+        init.handle_state_json = state;
+        init.now_ms = created_at_ms;
+        let mut tx = repo.pool().begin().await.unwrap();
+        let started = session_start_runtime_tx(&mut tx, init).await.unwrap();
+        if terminal == WorkerSessionState::Failed {
+            session_fail_if_active_runtime_tx(&mut tx, &started.id)
+                .await
+                .unwrap();
+        } else {
+            session_mark_superseded_runtime_tx(&mut tx, &started.id)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        started.id
+    }
+
+    // Four rows on one card, in creation order.
+    let retired_with_a_sentence = start_then_retire(
+        &repo,
+        card.id.as_str(),
+        1_000,
+        Some(queued("carry me")),
+        WorkerSessionState::Superseded,
+    )
+    .await;
+    let retired_with_no_snapshot = start_then_retire(
+        &repo,
+        card.id.as_str(),
+        2_000,
+        None,
+        WorkerSessionState::Superseded,
+    )
+    .await;
+    let failed_with_a_sentence = start_then_retire(
+        &repo,
+        card.id.as_str(),
+        3_000,
+        Some(queued("do not carry me")),
+        WorkerSessionState::Failed,
+    )
+    .await;
+    // The successor is `superseded` too, which is the reachable shape: a
+    // deferred placeholder a racer displaced, about to be revived under the
+    // same id by the insert that follows this harvest.
+    let successor = start_then_retire(
+        &repo,
+        card.id.as_str(),
+        4_000,
+        Some(queued("my own sentence")),
+        WorkerSessionState::Superseded,
+    )
+    .await;
+
+    let extract = |_id: &str, state: &str| -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(state)
+            .ok()
+            .and_then(|state| state.get("pending_queue").cloned())
+            .and_then(|queue| serde_json::from_value::<Vec<serde_json::Value>>(queue).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|obs| obs.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+            .collect()
+    };
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let harvested = harvest_pending_user_messages_tx(
+        &mut tx,
+        card.id.as_str(),
+        successor.as_str(),
+        1_700_000_000_000,
+        extract,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        harvested.messages,
+        vec!["carry me".to_string()],
+        "the `failed` row and the successor's own row must contribute nothing"
+    );
+    assert_eq!(
+        harvested.stamped_runtime_ids,
+        vec![
+            retired_with_a_sentence.clone(),
+            retired_with_no_snapshot.clone(),
+        ],
+        "the snapshot-less row is stamped too — it was read, it yielded nothing, and it must \
+         not be read again for the rest of time"
+    );
+
+    async fn stamp(repo: &SqlxRepo, id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
+    }
+    assert_eq!(
+        stamp(&repo, retired_with_a_sentence.as_str()).await,
+        Some(1_700_000_000_000)
+    );
+    assert_eq!(
+        stamp(&repo, retired_with_no_snapshot.as_str()).await,
+        Some(1_700_000_000_000)
+    );
+    assert_eq!(
+        stamp(&repo, failed_with_a_sentence.as_str()).await,
+        None,
+        "a `failed` row is not read and therefore not stamped"
+    );
+    assert_eq!(
+        stamp(&repo, successor.as_str()).await,
+        None,
+        "and the successor never stamps itself"
+    );
+
+    // Second pass: the stamp is what makes it take nothing.
+    let mut tx = repo.pool().begin().await.unwrap();
+    let again = harvest_pending_user_messages_tx(
+        &mut tx,
+        card.id.as_str(),
+        successor.as_str(),
+        1_700_000_000_001,
+        extract,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        again.messages.is_empty() && again.stamped_runtime_ids.is_empty(),
+        "a second restart must read nothing: {again:?}"
+    );
+
+    // And the undo puts the row back where it was.
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_clear_queue_harvested_tx(&mut tx, retired_with_a_sentence.as_str())
+        .await
+        .unwrap();
+    let after_undo = harvest_pending_user_messages_tx(
+        &mut tx,
+        card.id.as_str(),
+        successor.as_str(),
+        1_700_000_000_002,
+        extract,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        after_undo.messages,
+        vec!["carry me".to_string()],
+        "clearing the marker is what a failed mint's compensation does, and it has to make the \
+         queue harvestable again"
+    );
+}
+
+/// #1449 — the marker is about the QUEUE a row is carrying, not about its id.
+///
+/// A runtime id outlives the queue it was stamped for. Two production writes
+/// hand the same row a different queue:
+///
+/// * `session_prepare_deferred_planner_tx` re-arms a `superseded` placeholder
+///   under the same id with a fresh `handle_state_json` (boot recovery and the
+///   deferred mint both do this);
+/// * `session_restore_from_superseded_tx` puts an inherited predecessor back
+///   into the active set when a start compensates, and its snapshot was never
+///   edited in place, so it owes its own queue again.
+///
+/// If the stamp survived either one, the row's NEW queue would be permanently
+/// unharvestable — the marker would say "already taken" about sentences nobody
+/// has ever seen.
+#[tokio::test]
+async fn re_arming_a_row_clears_the_harvest_marker() {
+    let repo = fresh_repo().await;
+
+    async fn stamp(repo: &SqlxRepo, id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
+    }
+
+    // (1) a refreshed deferred placeholder.
+    let card = make_card(&repo, "codex").await;
+    let mut init = runtime_init(
+        card.id.to_string(),
+        WorkerSessionKind::SharedPlanner,
+        Some(AgentProvider::Codex),
+        WorkerSessionState::Starting,
+    );
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_prepare_deferred_planner_tx(&mut tx, &init)
+        .await
+        .unwrap();
+    session_mark_superseded_runtime_tx(&mut tx, &init.id)
+        .await
+        .unwrap();
+    session_mark_queue_harvested_tx(&mut tx, &init.id, 1_700_000_000_000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        stamp(&repo, &init.id).await.is_some(),
+        "premise: the placeholder's queue was taken"
+    );
+
+    init.now_ms = now_ms();
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_prepare_deferred_planner_tx(&mut tx, &init)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        stamp(&repo, &init.id).await,
+        None,
+        "the row is a new carrier now: keeping the marker would make its incoming queue \
+         unharvestable for the rest of the row's life"
+    );
+
+    // (2) a predecessor restored by a start's compensation.
+    let other = make_card(&repo, "codex").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let predecessor = session_start_runtime_tx(
+        &mut tx,
+        runtime_init(
+            other.id.to_string(),
+            WorkerSessionKind::SharedPlanner,
+            Some(AgentProvider::Codex),
+            WorkerSessionState::Idle,
+        ),
+    )
+    .await
+    .unwrap();
+    session_mark_superseded_runtime_tx(&mut tx, &predecessor.id)
+        .await
+        .unwrap();
+    session_mark_queue_harvested_tx(&mut tx, &predecessor.id, 1_700_000_000_000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_restore_from_superseded_runtime_tx(&mut tx, &predecessor.id, WorkerSessionState::Idle)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        stamp(&repo, &predecessor.id).await,
+        None,
+        "a restored predecessor is live again and owes its own queue again — its snapshot was \
+         never edited in place, so the sentences are still sitting on it"
+    );
 }

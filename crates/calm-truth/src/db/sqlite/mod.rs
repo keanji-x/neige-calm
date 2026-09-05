@@ -103,15 +103,16 @@ pub use session_mirror::{
     session_supersede_active_tx, session_supersede_and_start_tx,
 };
 pub use session_projection::{
-    harvest_pending_user_messages_tx, session_bind_attribution_tx,
-    session_clear_terminal_run_id_tx, session_complete_for_card_tx,
-    session_complete_for_terminal_tx, session_complete_tx, session_fail_if_active_runtime_tx,
-    session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
-    session_projection_active_for_card_tx, session_projection_active_for_terminal_tx,
-    session_projection_by_id_tx, session_restore_from_superseded_runtime_tx,
-    session_set_active_turn_tx, session_set_handle_state_tx,
+    HarvestedQueues, harvest_pending_user_messages_tx, session_bind_attribution_tx,
+    session_clear_queue_harvested_tx, session_clear_terminal_run_id_tx,
+    session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
+    session_fail_if_active_runtime_tx, session_mark_queue_harvested_tx,
+    session_mark_superseded_runtime_tx, session_projection_active_for_card_tx,
+    session_projection_active_for_terminal_tx, session_projection_by_id_tx,
+    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
+    session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
     session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
-    session_set_status_tx,
+    session_set_status_tx, session_state_if_present_tx,
 };
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use session_row::{

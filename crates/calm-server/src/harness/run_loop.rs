@@ -52,9 +52,21 @@ use crate::track_vcs;
 /// `shutting_down` immediately after the lock is what stops the parked loop
 /// from draining once it is released.
 ///
-/// `fixtures`-only, same convention as `WorkspaceRepointRaceHook` in
-/// `routes/tracks.rs`: a release build compiles neither the call, nor the
-/// arguments, nor the map.
+/// Same convention as `WorkspaceRepointRaceHook` in `routes/tracks.rs`, and the
+/// same limit to it: the hook struct, the registry and the wait are
+/// `fixtures`-only, so a release build compiles no map and no rendezvous. The
+/// call site and `wait_at_planner_harness_drain_race_hook` itself are NOT
+/// `cfg`-gated — the function body collapses to `let _ = runtime_id;` and the
+/// call is an argument-free no-op, which is what the release build keeps.
+///
+/// # Arming
+///
+/// [`ANY_RUNTIME`] parks whichever runtime reaches the drain FIRST, not a
+/// runtime chosen by name — the two are the same thing only while the process
+/// has exactly one harness that can drain. `nextest` gives every test its own
+/// process, so no other test in this suite can steal the entry; a card that
+/// starts a second harness within one test can. Arm by runtime id whenever the
+/// id is knowable.
 #[cfg(feature = "fixtures")]
 #[derive(Clone)]
 pub struct PlannerHarnessDrainRaceHook {
@@ -1732,6 +1744,35 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
+    // #1449 — the DURABLE half of the same question, and it is not redundant
+    // with the flag above.
+    //
+    // `shutting_down` is process memory, set by `PlannerHarness::shutdown`. A
+    // runtime can be retired in the database with its run loop still perfectly
+    // healthy and unaware: `prepare_tx` supersedes the card's live predecessor
+    // and hands its pending queue to the successor being minted, and nothing
+    // stops the predecessor's handle until a later step of the same operation
+    // tears it down. In that window the predecessor would issue a turn for a
+    // queue the successor is also carrying, and the same sentence reaches the
+    // agent twice. This is not new with the harvest — the dormant-restart
+    // INHERIT has copied a live predecessor's queue the same way since long
+    // before it — but the harvest would have widened it from "a copy in memory"
+    // to "a copy on disk", so it is closed here for both.
+    //
+    // Placed before the queue is taken, so a refusal leaves the queue intact
+    // for whoever now owns it. A missing row is treated as "still ours": the
+    // read cannot prove retirement, and a harness whose row has been deleted
+    // outright is a different failure with its own handling.
+    if !runtime_is_still_the_live_carrier(inner).await? {
+        tracing::debug!(
+            target: "calm_server::planner_harness_issue",
+            runtime_id = %inner.runtime_id,
+            card_id = %inner.card_id,
+            track_id = %inner.track_id,
+            "runtime is no longer the card's live carrier; leaving the queue for its successor"
+        );
+        return Ok(());
+    }
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
         runtime_id = %inner.worker_session_id,
@@ -1833,7 +1874,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 turn_id,
                 segments: input_segments,
             });
-            persist_snapshot(inner).await?;
+            persist_issuance_outcome(inner).await?;
         }
         Err(e) => {
             rebuffer_head(inner, drained, drained_envelope_ids).await;
@@ -1844,7 +1885,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 });
             *inner.issued_turn_id.lock().await = None;
             *inner.issued_turn_head.lock().await = None;
-            persist_snapshot(inner).await?;
+            persist_issuance_outcome(inner).await?;
             tracing::warn!(error = %e, "planner harness turn/start failed; re-buffered batch");
         }
     }
@@ -2223,6 +2264,71 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     snapshot.issued_input_segments = issued_input_segments;
     snapshot.token_usage = token_usage;
     snapshot
+}
+
+/// #1449 — is this runtime still the row the card is being driven from?
+///
+/// Fail-OPEN on a missing row, deliberately and narrowly: the question this
+/// answers is "has someone else taken over my queue", and an absent row is not
+/// evidence that they have. Every production path keeps the row for the
+/// lifetime of the handle.
+async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
+    let runtime_id = inner.runtime_id.clone();
+    let state = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::session_state_if_present_tx(tx, &runtime_id)
+                .await
+                .map_err(CalmError::from)
+        })
+    })
+    .await?;
+    Ok(match state {
+        Some(state) => state.is_active_authority(),
+        None => true,
+    })
+}
+
+/// #1449 — persist what the runtime owes after an issuance resolved, on a row
+/// the ordinary writer may already refuse.
+///
+/// Two independent gates make the ordinary [`persist_snapshot`] a no-op exactly
+/// when this write matters most, and BOTH are set by the re-point fence before
+/// the run loop reaches this point:
+///
+/// * `persist_snapshot_inner` returns early once `shutting_down` is set, and
+///   `shutdown_inner` sets that flag BEFORE it queues behind `inner.issuance`;
+/// * `session_set_handle_state_tx` carries
+///   `AND state IN ('starting','running','idle','turn_pending')`, and the
+///   fence's transaction commits `superseded` before it touches the process.
+///
+/// So the last thing ever written about a fenced runtime is the pre-drain
+/// snapshot — "the batch is still queued" — no matter what happened to the
+/// batch. That was invisible while nothing read an abandoned snapshot; it is
+/// the whole basis of the harvest now. `session_set_handle_state_of_retired_runtime_tx`
+/// is the narrow exception: `handle_state_json` only, retired rows only.
+///
+/// It runs after the ordinary write, not instead of it: for a live runtime the
+/// ordinary write is the one that lands (status, phase event and all) and this
+/// one matches zero rows.
+async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
+    persist_snapshot(inner).await?;
+    let snapshot = snapshot_for(inner).await;
+    let runtime_id = inner.runtime_id.clone();
+    let snapshot_value = serde_json::to_value(snapshot)?;
+    let now = crate::model::now_ms();
+    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
+                tx,
+                &runtime_id,
+                Some(snapshot_value),
+                now,
+            )
+            .await
+            .map_err(CalmError::from)
+        })
+    })
+    .await
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {

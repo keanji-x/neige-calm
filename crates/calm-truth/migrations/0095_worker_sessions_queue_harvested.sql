@@ -8,11 +8,19 @@
 -- left the undelivered set yet".
 ALTER TABLE worker_sessions ADD COLUMN queue_harvested_at_ms INTEGER;
 
--- Backfill, deliberately: a legacy `superseded` row may well carry a non-empty
--- `pending_queue` — that stranding IS #1449 — and without this the first
--- restart after the upgrade would replay a sentence from days ago into a brand
--- new thread. A stale replay is worse than a loss that already happened and is
+-- Backfill, deliberately, and ONLY over retired rows. A legacy `superseded`
+-- row may well carry a non-empty `pending_queue` — that stranding IS #1449 —
+-- and without this the first restart after the upgrade would replay a sentence
+-- from days ago into a brand new thread. A stale replay is worse than a loss that already happened and is
 -- already recorded. It also shrinks the steady-state scan set to almost nothing.
+--
+-- The `state` predicate is the whole point of the row set: boot recovery reuses
+-- a runtime's id, so a row that is `idle` right now goes on living across this
+-- upgrade and will receive NEW input afterwards (`observe_user_message_durable`
+-- writes that very row). Stamping it here would make the sentence a user types
+-- AFTER the upgrade unharvestable — losing exactly the input this migration
+-- exists to protect, instead of the stale queue it means to retire.
 UPDATE worker_sessions
    SET queue_harvested_at_ms = 1788566400000
- WHERE queue_harvested_at_ms IS NULL;
+ WHERE queue_harvested_at_ms IS NULL
+   AND state = 'superseded';

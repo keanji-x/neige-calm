@@ -372,8 +372,9 @@ pub async fn harvest_pending_user_messages_tx<F>(
     tx: &mut WorkerSessionProjectionTx<'_>,
     card_id: &str,
     successor_id: &str,
+    now: i64,
     extract: F,
-) -> WorkerSessionProjectionResult<Vec<String>>
+) -> WorkerSessionProjectionResult<HarvestedQueues>
 where
     F: Fn(&str, &str) -> Vec<String>,
 {
@@ -391,17 +392,116 @@ where
     .fetch_all(&mut **tx)
     .await?;
 
-    let now = now_ms();
-    let mut harvested = Vec::new();
+    let mut harvested = HarvestedQueues::default();
     for row in &rows {
         let id: String = row.try_get("id")?;
         let state: Option<String> = row.try_get("handle_state_json")?;
         if let Some(state) = state.as_deref() {
-            harvested.extend(extract(id.as_str(), state));
+            harvested.messages.extend(extract(id.as_str(), state));
         }
         session_mark_queue_harvested_tx(tx, &id, now).await?;
+        harvested.stamped_runtime_ids.push(id);
     }
     Ok(harvested)
+}
+
+/// What one [`harvest_pending_user_messages_tx`] call took, and from where.
+///
+/// The ids are not diagnostics: the caller's saga has to be able to give them
+/// back. A mint that harvests and then fails leaves the harvested sentences on
+/// a `failed` successor — a state the harvest predicate deliberately never
+/// reads — while the rows they came from are stamped, so without an undo the
+/// sentences are unreachable for good and nothing reports it. See
+/// [`session_clear_queue_harvested_tx`].
+#[derive(Debug, Default, Clone)]
+pub struct HarvestedQueues {
+    pub messages: Vec<String>,
+    pub stamped_runtime_ids: Vec<String>,
+}
+
+/// #1449 — give a harvested queue back, because the mint that took it did not
+/// survive.
+///
+/// The compensating half of [`harvest_pending_user_messages_tx`]. The mint
+/// transaction's own rollback covers only a failure *inside* that transaction;
+/// a `thread/start` that fails afterwards is compensated in a DIFFERENT
+/// transaction, and that compensation marks the successor `failed`. The
+/// sentences would then be sitting on a row the harvest never reads, taken from
+/// rows that are stamped: silent, permanent loss.
+pub async fn session_clear_queue_harvested_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET queue_harvested_at_ms = NULL
+            WHERE id = ?1"#,
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// #1449 — record what a runtime still owes, on a row the ordinary snapshot
+/// writer refuses to touch.
+///
+/// [`session_set_handle_state_tx`] carries
+/// `AND state IN ('starting','running','idle','turn_pending')`, so the moment a
+/// fence flips a row to `superseded` that runtime's snapshot writes silently
+/// affect zero rows — and `persist_snapshot_inner` additionally returns early
+/// once `shutting_down` is set. Both gates land BEFORE the run loop finishes
+/// the turn it is issuing, so the last thing written about a retired runtime is
+/// "the batch is still queued", whether or not the daemon has it.
+///
+/// That was harmless while nothing read an abandoned snapshot. It is not
+/// harmless now that the successor harvests it. This writer is the exception,
+/// and it is deliberately the narrowest one that closes the hole: it writes
+/// `handle_state_json` and nothing else — no `state`, no `active_turn_id`, no
+/// phase event — so it cannot revive a row the fence retired, which is what the
+/// predicate on the ordinary writer exists to prevent.
+///
+/// It refuses ACTIVE rows for the mirror-image reason: a row that has been
+/// revived under the same id (a refreshed deferred placeholder) belongs to a
+/// different harness, and a dead run loop must not write its stale queue over
+/// a live one.
+pub async fn session_set_handle_state_of_retired_runtime_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    state: Option<serde_json::Value>,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3
+              AND state NOT IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(&state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// #1449 — is this runtime still the card's live carrier?
+///
+/// `None` when the row is gone. Read by the run loop immediately before it
+/// turns its queue into a turn: once the row is retired, its queue belongs to
+/// whatever the mint transaction handed it to, and issuing it anyway delivers
+/// the same sentence twice.
+pub async fn session_state_if_present_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionState>> {
+    let row: Option<String> = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.as_deref().map(run_status_from_db).transpose()
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the

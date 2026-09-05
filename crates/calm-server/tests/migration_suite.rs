@@ -10,5 +10,7 @@ mod migration_0037_drop_plain_role;
 mod migration_0055_drop_runtimes;
 #[path = "cases/migration_0094_worker_session_id.rs"]
 mod migration_0094_worker_session_id;
+#[path = "cases/migration_0095_queue_harvested_backfill.rs"]
+mod migration_0095_queue_harvested_backfill;
 #[path = "cases/migration_replay_harness.rs"]
 mod migration_replay_harness;

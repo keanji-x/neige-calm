@@ -102,6 +102,8 @@ use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::session_mark_superseded_runtime_tx;
+use calm_server::db::write_in_tx_typed;
 use calm_server::event::EventBus;
 use calm_server::harness::Observation;
 use calm_server::harness::run_loop::{
@@ -111,6 +113,7 @@ use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
@@ -547,6 +550,45 @@ impl Boot {
         }
     }
 
+    /// How many copies of `needle` the DAEMON was actually handed.
+    ///
+    /// `copies_in_harness` deliberately sums turns AND live pending queues,
+    /// because a message that has not drained yet is still a message the system
+    /// owes. That makes it the wrong instrument for the #1449 lifetime cases:
+    /// a runtime whose row was retired under it keeps its queue in memory —
+    /// it simply may never issue it — so the queued copy and a successor's
+    /// delivery would read as a double delivery when only one turn ever
+    /// happened. This counts turns only.
+    ///
+    /// Polls, and returns what it saw, for the same reasons `copies_in_harness`
+    /// does: asking for `want + 1` burns the deadline and turns "no second copy
+    /// had arrived at the instant I looked" into an assertion.
+    async fn delivered_copies(&self, needle: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self
+                .state
+                .shared_codex_appserver
+                .started_turns_for_test()
+                .iter()
+                .map(|(_, items)| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            serde_json::to_string(item)
+                                .map(|s| s.matches(needle).count())
+                                .unwrap_or(0)
+                        })
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+            if seen >= want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     /// Everything the fake app-server was ever asked to run a turn on, as one
     /// JSON blob. This is the *rendered* text — `Observation::to_turn_text` —
     /// which is where `TrackGoal` and `UserMessage` visibly differ.
@@ -684,7 +726,9 @@ impl Boot {
     ///
     /// The queue specifically, not the whole snapshot: a runtime that has
     /// already issued the turn keeps the same text in `issued_input_segments`
-    /// forever, and that is evidence of delivery, not a pending debt.
+    /// until its NEXT issuance clears it, and that copy is evidence of a
+    /// delivery, not a pending debt. A substring match over the whole snapshot
+    /// would count it.
     ///
     /// The harvest and the inherit both leave the predecessor's snapshot
     /// untouched (`session_restore_from_superseded_tx` exists, so editing it in
@@ -728,6 +772,124 @@ impl Boot {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+    }
+
+    /// #1449 — park the harness INSIDE `turn/start`, after the fake daemon has
+    /// already recorded the batch.
+    ///
+    /// The window this opens is the one the harvest has to reason about: the
+    /// daemon has the sentence, and `maybe_issue_turn` has not yet written the
+    /// emptied queue back to the row.
+    fn hold_the_next_turn_start(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        self.state
+            .shared_codex_appserver
+            .install_turn_start_return_hook_for_test(TurnStartReturnHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            });
+        (entered, release)
+    }
+
+    /// Retire a runtime in the database and NOTHING else — the durable half of
+    /// the re-point fence (`routes/tracks.rs` calls this very helper), without
+    /// the process half that tears the handle down.
+    ///
+    /// That split is the point: a live, healthy run loop whose row has been
+    /// retired under it is reachable in production (`prepare_tx` supersedes the
+    /// card's live predecessor and nothing stops its handle until a later step
+    /// of the same operation), and it is what these tests need to order.
+    async fn retire_runtime_in_the_database(&self, runtime_id: &str) {
+        let runtime_id = runtime_id.to_string();
+        write_in_tx_typed(self.repo.as_ref() as &dyn Repo, move |tx| {
+            Box::pin(async move {
+                session_mark_superseded_runtime_tx(tx, &runtime_id)
+                    .await
+                    .map_err(calm_server::error::CalmError::from)
+            })
+        })
+        .await
+        .expect("retire runtime");
+    }
+
+    /// The `pending_queue` a runtime's PERSISTED snapshot still holds.
+    async fn persisted_queue(&self, runtime_id: &str) -> Vec<Value> {
+        let state: Option<String> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+                .bind(runtime_id)
+                .fetch_one(self.repo.pool())
+                .await
+                .unwrap();
+        state
+            .and_then(|state| serde_json::from_str::<Value>(&state).ok())
+            .and_then(|state| state.get("pending_queue").cloned())
+            .and_then(|queue| queue.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Poll until a runtime's persisted queue reaches `want` entries; report
+    /// what was actually seen so a failure names the real number.
+    async fn wait_for_persisted_queue_len(&self, runtime_id: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self.persisted_queue(runtime_id).await.len();
+            if seen == want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    /// The card's currently ACTIVE runtime id. Unlike `only_runtime`, safe on a
+    /// track that also has a terminal card with a runtime of its own.
+    async fn active_runtime_of_card(&self, card_id: &str) -> String {
+        sqlx::query_scalar(
+            "SELECT id FROM worker_sessions WHERE card_id = ?1 \
+             AND state IN ('starting','running','idle','turn_pending')",
+        )
+        .bind(card_id)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap()
+    }
+
+    /// `POST /api/today/launchpad/ensure` — the production caller of
+    /// `prepare_tx`'s NON-deferred arm on its second and later calls.
+    async fn ensure_launchpad(&self) -> (StatusCode, Value) {
+        self.post_json("/api/today/launchpad/ensure", "{}").await
+    }
+
+    /// `POST /api/cards/{id}/planner/input` — the production send path, whose
+    /// enqueue is persisted before the response (`observe_user_message_durable`).
+    async fn send_planner_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
+        self.post_json(
+            &format!("/api/cards/{card_id}/planner/input"),
+            &json!({ "text": text }).to_string(),
+        )
+        .await
+    }
+
+    async fn post_json(&self, uri: &str, body: &str) -> (StatusCode, Value) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     /// `POST /api/cards/{id}/planner/reset` — the production dormant-restart
@@ -3590,9 +3752,14 @@ async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
 ///
 /// The #1343 opening briefing is an `Observation::SystemContext` describing the
 /// runtime's `cwd`, and a re-point is precisely the event that makes that
-/// directory the wrong one. The successor re-derives its own; carrying the
-/// predecessor's copy forward would brief a fresh workspace with a description
-/// of the one the track just left.
+/// directory the wrong one.
+///
+/// What this test asserts is exactly one direction: the OLD briefing does not
+/// travel. It does **not** assert that the successor writes a new one, and the
+/// successor does not: the re-point's restart payload carries
+/// `opening_briefing: None` (`routes/tracks.rs`), so no briefing is rendered on
+/// this path at all. Re-briefing a re-pointed workspace is a product question
+/// this slice does not answer.
 ///
 /// Red when the harvest filter stops excluding `SystemContext`.
 #[tokio::test]
@@ -3647,6 +3814,237 @@ async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
         0,
         "but the old workspace's briefing must NOT — the successor lives in a different directory \
          and writes its own"
+    );
+    b.shutdown_harnesses().await;
+}
+
+// ---------------------------------------------------------------------------
+// #1449 review round 2 — the three lifetime holes the harvest opened, and the
+// one it inherited.
+//
+// The common shape: a runtime's row can be retired while its run loop is alive,
+// healthy and unaware. `PATCH /api/tracks/{id}` commits that retirement in one
+// transaction and tears the handle down afterwards; `prepare_tx` commits it and
+// leaves the handle to a later step of the same operation. Everything below
+// orders events inside that gap, with `retire_runtime_in_the_database` standing
+// in for the durable half exactly as the fence performs it.
+// ---------------------------------------------------------------------------
+
+/// A batch the daemon already has must not be handed to the successor as well.
+///
+/// The window: `maybe_issue_turn` persists "the batch is still queued", drains
+/// in memory, calls `turn/start`, and only THEN persists the emptied queue. That
+/// last write used to be lost twice over — `persist_snapshot_inner` returns
+/// early once `shutting_down` is set, and `session_set_handle_state_tx` carries
+/// `AND state IN ('starting','running','idle','turn_pending')` so a retired row
+/// matches nothing. Either way the last word on a fenced runtime was "still
+/// queued", and the harvest believed it.
+///
+/// Red before `persist_issuance_outcome`: the row keeps a one-entry queue for
+/// good and the restart delivers the sentence a second time.
+#[tokio::test]
+async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retired() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_turn_start();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-issued"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    // Parked inside `turn/start`: the fake daemon has already recorded the
+    // batch, and the run loop has not yet written the emptied queue back.
+    entered.notified().await;
+    let (runtime, card_id) = b.only_runtime().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: the row still says the batch is queued — that is the pre-drain write"
+    );
+
+    // The fence's durable half, and only that half.
+    b.retire_runtime_in_the_database(&runtime).await;
+    release.notify_one();
+
+    assert_eq!(
+        b.wait_for_persisted_queue_len(&runtime, 0).await,
+        0,
+        "a retired runtime must still be able to write down that it delivered the batch — \
+         otherwise the last word on the row is a debt it has already paid"
+    );
+
+    let (reset, reset_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset,
+        StatusCode::OK,
+        "premise: the restart must succeed: body={reset_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "and the successor must not re-deliver a sentence the daemon already has"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// A runtime that is no longer its card's carrier must not issue its queue.
+///
+/// The mirror image of the case above, and the one that makes the harvest safe
+/// in the other direction: the mint transaction takes the queue and commits,
+/// and the predecessor's run loop — which knows nothing about it, because
+/// `shutting_down` is process memory and nobody set it — would otherwise drain
+/// the same batch and deliver it too.
+///
+/// **This window is older than the harvest.** The dormant-restart INHERIT
+/// (`prepare_tx`'s deferred arm) has copied a live predecessor's whole queue
+/// the same way since long before #1449; the harvest only widened the copy from
+/// memory to disk. The check added here closes it for both, which is why this
+/// test is red on `ce4445f6` — the repro commit, whose production code is
+/// `main`'s — as well as on `b44f45c7`.
+#[tokio::test]
+async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-carrier"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (runtime, _card_id) = b.only_runtime().await;
+
+    // Somebody else now owns this queue.
+    b.retire_runtime_in_the_database(&runtime).await;
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(STRANDED, 1).await,
+        0,
+        "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
+         anyway is how the same sentence reaches the agent twice"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// A restart that fails after the harvest committed must give the queue back.
+///
+/// `plan_compensation` marks the half-started successor `failed`, and `failed`
+/// is a state the harvest predicate deliberately never reads. The rows the
+/// sentences came from are already stamped. Without an undo the sentence is
+/// unreachable for good — no error, no card change, nothing to notice — and the
+/// mint transaction's own rollback does not cover it, because compensation is a
+/// different transaction.
+///
+/// The reasoning that justifies excluding `failed` in the first place does not
+/// reach here either: a failed *create* is retried by its caller with the same
+/// text under a `#N` key, but a restart's payload carries `first_message: None`.
+#[tokio::test]
+async fn a_failed_restart_gives_the_harvested_sentence_back() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-compensate"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (stranded_runtime, card_id) = b.only_runtime().await;
+    b.retire_runtime_in_the_database(&stranded_runtime).await;
+    release.notify_one();
+
+    // The restart harvests, then its `thread/start` fails and compensation runs.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected thread/start failure must surface: status={failed} \
+         body={failed_body}"
+    );
+    assert!(
+        b.harvest_stamp(&stranded_runtime).await.is_none(),
+        "the compensation must give the queue back: a mint that did not survive has not \
+         delivered anything, so the row it took from must be harvestable again"
+    );
+
+    // And the proof that "harvestable again" means what it says.
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "the sentence must still reach an agent after a failed restart in between — exactly \
+         once, so a compensation that gave the queue back cannot also have delivered it"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The NON-deferred arm of `prepare_tx`, which every other test in this file
+/// misses: they all create tracks, and `force_new_thread: true` is what a create
+/// with a message and a re-point both send.
+///
+/// `POST /api/today/launchpad/ensure` is the reachable caller of the other arm:
+/// the first call creates and forces a new thread, the second finds the track
+/// already there and starts with `force_new_thread: false`
+/// (`routes/today.rs`). That arm supersedes the card's live predecessor without
+/// inheriting anything from it, so before #1449 whatever the predecessor still
+/// owed was dropped on the floor — the same silent loss as the re-point, on a
+/// path nobody was looking at.
+#[tokio::test]
+async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
+    const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
+
+    let b = boot().await;
+    let (first, first_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        first,
+        StatusCode::CREATED,
+        "premise: the launchpad must be minted: body={first_body}"
+    );
+    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
+    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+
+    // Park the drain, THEN send: the sentence has to be durably queued and
+    // still undrained when the second ensure runs.
+    let (entered, release) = b.hold_the_next_drain();
+    let (sent, sent_body) = b
+        .send_planner_input(&planner_card_id, LAUNCHPAD_SENTENCE)
+        .await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the send must be accepted: body={sent_body}"
+    );
+    entered.notified().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: the sentence is durably queued on the predecessor and has not drained"
+    );
+
+    // The second ensure takes the other arm.
+    let (second, second_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        second,
+        StatusCode::OK,
+        "premise: the second ensure must resolve the existing launchpad — a 201 here would mean \
+         it minted a new one and never reached the arm under test: body={second_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(LAUNCHPAD_SENTENCE, 2).await,
+        1,
+        "the non-deferred arm must hand the predecessor's undelivered sentence to the successor \
+         — exactly once"
+    );
+    assert!(
+        b.harvest_stamp(&runtime).await.is_some(),
+        "and the row it was taken from must be stamped, or the next start takes it again"
     );
     b.shutdown_harnesses().await;
 }
