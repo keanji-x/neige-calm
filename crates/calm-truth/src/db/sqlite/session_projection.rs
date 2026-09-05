@@ -343,7 +343,13 @@ pub async fn session_mark_queue_harvested_tx(
 /// card's superseded runtimes and handed to the successor being minted in THIS
 /// transaction.
 ///
-/// The predicate is `state = 'superseded'`, and the exclusion of `'failed'` is
+/// The predicate is `state = 'superseded'` ONLY, which is narrower than the
+/// path table in the design's §3 reads: a dormant or `exited` predecessor is
+/// not harvested, so the residual documented at
+/// `user_message_enqueued_on_active_runtime` has a smaller membership than
+/// "every replacement".
+///
+/// The exclusion of `'failed'` is
 /// deliberate rather than incidental: the caller of a failed attempt gets a
 /// non-2xx and re-sends the same text under a `#N` retry key, so harvesting a
 /// failed row would deliver it twice.
