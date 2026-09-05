@@ -4,14 +4,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::{response::Redirect, routing::get};
-use calm_server::actor::{actor_middleware, require_loopback_connect_info};
-use calm_server::auth::{self, AuthConfig, AuthState};
+use calm_server::auth::{AuthConfig, AuthState};
 use calm_server::config::Config;
 use calm_server::db::Repo;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::routes;
 use calm_server::state::AppState;
-use calm_server::ws;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -140,56 +138,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let auth_state = AuthState::new(auth_config);
 
-    // Scope G — REST routes carry the `X-Calm-Actor` middleware so handler
-    // writes get a declared actor (user / ai:<id>).
-    //
-    // Issue #189 — the protected REST subtree (everything except version
-    // + openapi.json + the auth endpoints themselves) sits behind the
-    // session middleware. Order matters: `actor_middleware` wraps
-    // BEFORE `require_session` so the session check runs first; an
-    // unauthenticated request never reaches the actor-validation code.
-    let protected_rest = routes::protected_router()
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .layer(axum::middleware::from_fn_with_state(
-            auth_state.clone(),
-            auth::require_session,
-        ));
-
-    // Internal worker hooks — loopback callbacks from codex/Claude worker
-    // subprocesses. They carry `X-Calm-Actor` but no browser session cookie,
-    // so they get actor + loopback validation and stay outside the human
-    // session gate.
-    let internal_rest = routes::internal_router()
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .layer(axum::middleware::from_fn(require_loopback_connect_info));
-
-    // WS routes — issue #189 — every upgrade handshake must carry a valid
-    // session cookie (cookies are sent automatically with the WS upgrade
-    // GET). The `actor_middleware` layer is NOT applied here because the
-    // existing convention (see `actor.rs` doc) is that WS frames don't go
-    // through the write-eventized path; we only enforce auth.
-    let protected_ws = ws::router().layer(axum::middleware::from_fn_with_state(
-        auth_state.clone(),
-        auth::require_session_ws,
-    ));
-
-    // Public REST — version + openapi.json. No session gate, no actor
-    // gate.
-    let public_rest = routes::public_router();
-
-    // Auth routes — login/whoami/logout. Public; mounted as a
-    // separately-stated router because they consume `AuthState`, not
-    // `AppState`.
-    let auth_router = auth::router().with_state(auth_state.clone());
-
-    let mut app = axum::Router::new()
-        .merge(protected_rest)
-        .merge(internal_rest)
-        .merge(protected_ws)
-        .merge(public_rest)
-        .with_state(state)
-        .merge(auth_router)
-        .layer(cors);
+    let mut app = routes::application_router(state, auth_state).layer(cors);
 
     app = mount_frontends(app, cfg.web_dist.as_deref(), cfg.fe_dist.as_deref());
 

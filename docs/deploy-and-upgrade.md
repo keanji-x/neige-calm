@@ -3,6 +3,11 @@
 Operator-facing recipe for installing `neige-app` and driving upgrades
 through the `/upgrade/apply` admin endpoint.
 
+Before installing local plugins, read [Plugin host security](plugin-security.md).
+Their native code executes as the service OS identity. Protect both the plugin
+root and every symlink target/source tree from unintended writers; production
+plugin sources should not be linked to shared or lower-trust agent worktrees.
+
 ## 1. Layout
 
 ```
