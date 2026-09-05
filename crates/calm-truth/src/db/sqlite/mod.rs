@@ -68,7 +68,12 @@ mod session_repo_impl;
 mod session_row;
 mod task;
 mod task_attempt;
+#[cfg(test)]
+mod task_attempt_migration_tests;
+#[cfg(test)]
+mod task_attempt_tests;
 mod task_projection;
+mod task_recovery_projection;
 mod track;
 mod track_recipe;
 mod track_tree;
@@ -134,9 +139,9 @@ pub use task::{
     track_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_attempt::{
-    task_attempt_current_pool, task_attempt_current_tx, task_attempt_get_tx,
-    task_current_get_pool, task_current_get_tx, task_history_by_key_pool,
-    task_recovery_allocate_tx, task_recovery_constraint_tx, task_recovery_lookup_tx,
+    task_attempt_current_pool, task_attempt_current_tx, task_attempt_get_tx, task_current_get_pool,
+    task_current_get_tx, task_history_by_key_pool, task_recovery_allocate_tx,
+    task_recovery_constraint_tx, task_recovery_lookup_tx,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,

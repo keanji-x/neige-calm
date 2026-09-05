@@ -353,13 +353,17 @@ pub trait RepoRead: Send + Sync + 'static {
     ) -> Result<Vec<Track>>;
 
     // ---- tasks (issue #644 — track-scoped task plan)
-    /// Every task in the track's plan, ordered for stable listing:
+    /// Current execution rows in the track's plan, ordered for stable listing:
     /// `priority DESC, created_at_ms ASC, key ASC` (the same order the
     /// PR-B scheduler's ready-set query uses, design §5.2). Backed by
     /// the `tasks_track_status_idx` index from migration 0041.
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
     /// Single-row fetch by the composed `"{track_id}:{key}"` id.
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
+    /// Current execution only; None also covers a withdrawn pending projection.
+    async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>>;
+    /// All surviving execution rows, oldest generation first.
+    async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
     /// Issue #644 PR-B — every non-terminal task across every track
     /// (`pending` / `dispatched` / `running` / `verifying`), in stable
     /// `(track_id, priority DESC, created_at_ms ASC, key ASC)` order.

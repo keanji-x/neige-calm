@@ -475,7 +475,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- tasks
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
         let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE track_id = ?1 \
+            "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 \
              ORDER BY priority DESC, created_at_ms ASC, key ASC"
         );
         let rows = sqlx::query_as::<_, Task>(&sql)
@@ -483,6 +483,14 @@ impl RepoRead for SqlxRepo {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows)
+    }
+
+    async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
+        super::task_attempt::task_current_get_pool(&self.pool, track_id, key).await
+    }
+
+    async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>> {
+        super::task_attempt::task_history_by_key_pool(&self.pool, track_id, key).await
     }
 
     async fn task_get(&self, id: &str) -> Result<Option<Task>> {
@@ -496,7 +504,7 @@ impl RepoRead for SqlxRepo {
 
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>> {
         let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks \
+            "SELECT {TASK_COLUMNS} FROM current_tasks \
              WHERE status IN ('pending', 'dispatched', 'running', 'verifying') \
              ORDER BY track_id ASC, priority DESC, created_at_ms ASC, key ASC"
         );

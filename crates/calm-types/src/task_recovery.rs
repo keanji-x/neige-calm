@@ -5,8 +5,52 @@
 
 use crate::event::TaskContextRef;
 use crate::ids::ActorId;
+use crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+/// Persisted route values; names describe their meaning without changing bytes.
+pub const TASK_IN_TRACK_ROUTE: &str = "in-wave";
+pub const TASK_CHILD_TRACK_ROUTE: &str = "sub-wave";
+
+/// Released task-root hash field partition. Reused by initial claim freezing
+/// and recovery checks; changing this would reinterpret historical evidence.
+pub const TASK_ROOT_HASH_FIELDS: &[&str] = &[
+    "kind",
+    "goal",
+    "command",
+    "acceptance",
+    "gate",
+    "no_gate_reason",
+    "depends_on",
+    "refs",
+    "cwd",
+    "context",
+];
+
+/// Canonical preimage of the released root hash (including terminal goal alias).
+/// The caller hashes these bytes with SHA-256; keeping the projection IO-free
+/// lets declaration projection and the server claim fence share one definition.
+pub fn task_root_hash_preimage(payload: &serde_json::Value) -> String {
+    let mut projected = serde_json::Map::new();
+    if let Some(object) = payload.as_object() {
+        let terminal = object.get("kind").and_then(serde_json::Value::as_str) == Some("terminal");
+        for key in TASK_ROOT_HASH_FIELDS {
+            if *key == "command" {
+                continue;
+            }
+            let value = if terminal && *key == "goal" {
+                object.get("command").or_else(|| object.get("goal"))
+            } else {
+                object.get(*key)
+            };
+            if let Some(value) = value.filter(|value| !value.is_null()) {
+                projected.insert((*key).into(), value.clone());
+            }
+        }
+    }
+    crate::report_blocks::canonical_json(&serde_json::Value::Object(projected))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -53,8 +97,13 @@ impl TaskRecoveryConstraint {
             spawn,
             declared_by,
         } = self;
-        if spawn != "in-wave" || !matches!(declared_by.as_str(), "spec" | "user") {
-            return Err("recovery requires an in-wave route and known declaration author".into());
+        if spawn != TASK_IN_TRACK_ROUTE
+            || !matches!(declared_by.as_str(), PLANNER_DECLARATION_AUTHOR | "user")
+        {
+            return Err(
+                "recovery requires execution within the parent Track and known declaration author"
+                    .into(),
+            );
         }
         if refs.iter().filter(|reference| reference.is_root).count() != 1 {
             return Err("recovery requires exactly one frozen root reference".into());
@@ -118,5 +167,49 @@ impl TaskAttemptAllocation {
             attempt_id: self.attempt_id.clone(),
             generation: self.generation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn task_recovery_keeps_released_terminal_root_preimage() {
+        let old = json!({"kind":"terminal","goal":"printf ok","refs":[],"priority":8});
+        let new = json!({"kind":"terminal","command":"printf ok","refs":[],"priority":2});
+        assert_eq!(
+            task_root_hash_preimage(&old),
+            r#"{"goal":"printf ok","kind":"terminal","refs":[]}"#
+        );
+        assert_eq!(task_root_hash_preimage(&old), task_root_hash_preimage(&new));
+        let missing = json!({"kind":"terminal","command":"printf ok"});
+        assert_ne!(
+            task_root_hash_preimage(&new),
+            task_root_hash_preimage(&missing),
+            "historical absent versus explicit empty fields must not be renormalized"
+        );
+    }
+
+    #[test]
+    fn task_recovery_origin_requires_typed_constraint_and_rejects_future_versions() {
+        assert_eq!(
+            serde_json::from_value::<TaskAttemptOrigin>(json!({"kind":"initial"})).unwrap(),
+            TaskAttemptOrigin::Initial
+        );
+        let missing = json!({"kind":"recovery","previous_attempt_id":"old","idempotency_key":"request",
+            "request_fingerprint":"fingerprint","reason":"retry","actor":{"kind":"Kernel"}});
+        assert!(serde_json::from_value::<TaskAttemptOrigin>(missing).is_err());
+        assert!(
+            serde_json::from_value::<TaskRecoveryConstraint>(json!({"version":"v99","refs":[]}))
+                .is_err()
+        );
+        let empty = TaskRecoveryConstraint::V1 {
+            refs: vec![],
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            declared_by: PLANNER_DECLARATION_AUTHOR.into(),
+        };
+        assert!(empty.validate("w").is_err());
     }
 }

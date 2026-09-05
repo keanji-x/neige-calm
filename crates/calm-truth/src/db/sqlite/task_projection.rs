@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::ids::{ActorId, TrackId};
 use calm_types::report_blocks::tasks::{
-    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
-    gate_rule_violations, json_eq, opt_json_eq, task_diagnostic_action, unknown_deps,
+    Diagnostic, GateInput, PLANNER_DECLARATION_AUTHOR, TASK_BLOCKING_DIAGNOSTIC_PATHS,
+    TaskDeclaration, diagnostic_args, gate_rule_violations, json_eq, opt_json_eq,
+    task_diagnostic_action, unknown_deps,
 };
 use calm_types::report_links::{format_track_destination, parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -741,6 +742,8 @@ struct TrackProjectionState {
     task_budget: Option<i64>,
     frozen: Vec<FrozenDeclarationRow>,
     reference_targets: BTreeMap<String, ReferenceTargetRow>,
+    recovery_constraints: Vec<super::task_recovery_projection::RecoveryProjection>,
+    report_blocks: Vec<serde_json::Value>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -754,6 +757,8 @@ struct TrackProjectionStateRow {
     task_budget: Option<i64>,
     frozen_json: String,
     reference_targets_json: String,
+    recovery_constraints_json: String,
+    report_blocks_json: String,
 }
 
 /// Materializes every database fact used by the local schedulability verdict
@@ -793,10 +798,18 @@ async fn track_projection_state(
            )
            SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
                   w.task_budget,
+                  (SELECT json_group_array(json_object('key',a.key,'origin',json(a.origin_json)))
+                     FROM current_task_attempt_allocations a WHERE a.track_id=w.id
+                       AND json_extract(a.origin_json,'$.kind')='recovery') AS recovery_constraints_json,
+                  CASE WHEN EXISTS(SELECT 1 FROM current_task_attempt_allocations a
+                     WHERE a.track_id=w.id AND json_extract(a.origin_json,'$.kind')='recovery')
+                  THEN COALESCE((SELECT json_extract(c.payload,'$.blocks') FROM cards c
+                     WHERE c.track_id=w.id AND c.kind='track-report' LIMIT 1),'[]')
+                  ELSE '[]' END AS report_blocks_json,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
-                   FROM tasks t
+                   FROM current_tasks t
                    WHERE t.track_id = w.id
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    CASE WHEN ?3 != 0 THEN (SELECT json_group_array(json_object(
@@ -823,13 +836,13 @@ async fn track_projection_state(
                             ELSE json('[]')
                           END
                         END))
-                     FROM tasks t WHERE t.track_id = w.id)
+                     FROM current_tasks t WHERE t.track_id = w.id)
                    ELSE '[]' END AS task_read_state_json,
                    (SELECT json_group_array(json_array(
                         t.status,t.key,t.kind,t.goal,t.context_json,
                         t.acceptance_criteria,t.cwd,t.depends_on_json,t.priority,
                         t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user))
-                      FROM tasks t
+                      FROM current_tasks t
                      WHERE t.track_id = w.id AND t.status != 'pending') AS frozen_json,
                    (SELECT json_group_array(json_object(
                         'reference', r.reference,
@@ -883,6 +896,8 @@ async fn track_projection_state(
         task_budget: row.task_budget,
         frozen: serde_json::from_str(&row.frozen_json)?,
         reference_targets,
+        recovery_constraints: serde_json::from_str(&row.recovery_constraints_json)?,
+        report_blocks: serde_json::from_str(&row.report_blocks_json)?,
     })
 }
 
@@ -1086,7 +1101,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     let ceiling_occupied: i64 = state
         .inflight
         .iter()
-        .filter(|r| r.declared_by == "spec")
+        .filter(|r| r.declared_by == PLANNER_DECLARATION_AUTHOR)
         .count() as i64;
     let ceiling_capacity = ceiling.saturating_sub(ceiling_occupied).max(0);
     // Pending rows are projection output and re-enter below as candidates.
@@ -1187,7 +1202,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             }
         }
         if effective_wait
-            && declaration.declared_by == "spec"
+            && declaration.declared_by == PLANNER_DECLARATION_AUTHOR
             && !declaration.released_by_user
             && !declaration.tombstone
         {
@@ -1297,6 +1312,14 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         }
     }
 
+    super::task_recovery_projection::constrain_recovery_declarations(
+        track_id,
+        declarations,
+        &mut verdicts,
+        &state.recovery_constraints,
+        &state.report_blocks,
+    )?;
+
     // A deleted block has no declaration to drive the loop above. Surface its
     // still-live projection row as a synthetic verdict so both read APIs retain
     // the §6.5 withdrawal diagnostic without changing their response shape.
@@ -1328,7 +1351,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         .enumerate()
         .filter(|(i, verdict)| {
             verdict.schedulable
-                && declarations[*i].declared_by == "spec"
+                && declarations[*i].declared_by == PLANNER_DECLARATION_AUTHOR
                 && !inflight_key_set.contains(declarations[*i].key.as_str())
                 && !frozen_by_key.contains_key(&declarations[*i].key)
         })
@@ -1591,11 +1614,12 @@ async fn project_tasks_from_verdicts_tx(
             folded
         },
     );
-    let existing: Vec<(String, String, String, Option<String>)> =
-        sqlx::query_as("SELECT id,key,status,claim_context_json FROM tasks WHERE track_id=?1")
-            .bind(track_id)
-            .fetch_all(&mut **tx)
-            .await?;
+    let existing: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id,key,status,claim_context_json FROM current_tasks WHERE track_id=?1",
+    )
+    .bind(track_id)
+    .fetch_all(&mut **tx)
+    .await?;
     let mut verdicts = verdicts;
     // All verdict slots of a key, in document order.
     let verdict_indexes_by_key = verdicts.iter().enumerate().fold(
@@ -1719,7 +1743,10 @@ async fn project_tasks_from_verdicts_tx(
         if !verdict.schedulable {
             continue;
         }
-        let id = format!("{track_id}:{}", declaration.key);
+        let id = super::task_attempt::task_attempt_current_tx(tx, track_id, &declaration.key)
+            .await?
+            .map(|allocation| allocation.attempt_id)
+            .unwrap_or_else(|| format!("{track_id}:{}", declaration.key));
         let context = serde_json::to_string(&declaration.context)
             .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
         let depends = serde_json::to_string(&declaration.depends_on)
@@ -1739,7 +1766,7 @@ async fn project_tasks_from_verdicts_tx(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
                    ?14,?15,?16,?16
                )
-               ON CONFLICT(track_id,key) DO UPDATE SET
+               ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
                    goal=excluded.goal,
                    context_json=excluded.context_json,
@@ -1823,7 +1850,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
-            spawn: "in-wave".into(),
+            spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
             tombstoned_by: None,
             ready: true,
             tombstone: false,
@@ -2105,7 +2132,7 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(first.changed_keys, ["route"]);
-        declaration.spawn = "sub-wave".into();
+        declaration.spawn = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE.into();
         let mut tx = repo.pool.begin().await.unwrap();
         let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
             .await
@@ -2118,7 +2145,7 @@ mod tests {
                 .fetch_one(&repo.pool)
                 .await
                 .unwrap();
-        assert_eq!(spawn, "sub-wave");
+        assert_eq!(spawn, calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE);
     }
 
     #[tokio::test]

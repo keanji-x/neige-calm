@@ -259,10 +259,9 @@ impl<'a> TrackFsView<'a> {
                 "track_file: forbidden: plan/{key}/gate.log is planner-only (§6.7); caller role {role:?}"
             )));
         }
-        let task_id = format!("{}:{key}", track.id.as_str());
         let task = self
             .repo
-            .task_get(&task_id)
+            .task_current_get(track.id.as_str(), key)
             .await
             .map_err(|e| TrackFsError::Internal(format!("track_file: task lookup: {e}")))?
             .ok_or_else(|| path_not_available(&format!("plan/{key}/gate.log")))?;
@@ -276,7 +275,7 @@ impl<'a> TrackFsView<'a> {
                 "plan/{key}/gate.log (no gate attempt has run yet)"
             )));
         }
-        let log_path = gate_logs_dir.join(format!("{task_id}-g{}.log", task.gate_attempt));
+        let log_path = gate_logs_dir.join(format!("{}-g{}.log", task.id, task.gate_attempt));
         match tokio::fs::read_to_string(&log_path).await {
             Ok(content) => Ok(TrackFsContent {
                 content,

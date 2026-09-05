@@ -24,12 +24,18 @@ struct AllocationRow {
 
 impl AllocationRow {
     fn decode(self) -> Result<TaskAttemptAllocation> {
+        let origin: TaskAttemptOrigin = serde_json::from_str(&self.origin_json)?;
+        if let TaskAttemptOrigin::Recovery { constraint, .. } = &origin {
+            constraint
+                .validate(&self.track_id)
+                .map_err(CalmError::Internal)?;
+        }
         Ok(TaskAttemptAllocation {
             attempt_id: self.attempt_id,
             track_id: self.track_id,
             key: self.key,
             generation: self.generation,
-            origin: serde_json::from_str(&self.origin_json)?,
+            origin,
             created_at_ms: self.created_at_ms,
         })
     }
@@ -91,6 +97,7 @@ pub async fn task_recovery_lookup_tx(
 ) -> Result<Option<TaskRecoveryReceipt>> {
     let row = sqlx::query_as::<_, AllocationRow>(
         "SELECT * FROM task_attempt_allocations WHERE track_id=?1 \
+         AND json_extract(origin_json,'$.kind')='recovery' \
          AND json_extract(origin_json,'$.idempotency_key')=?2",
     )
     .bind(track_id)
@@ -110,7 +117,7 @@ pub async fn task_recovery_lookup_tx(
         return Ok(allocation.recovery_receipt());
     }
     Err(CalmError::Conflict(
-        "recovery idempotency key was used for a different request".into(),
+        "recovery idempotency key was used for a different request",
     ))
 }
 
@@ -131,9 +138,7 @@ pub async fn task_recovery_allocate_tx(
         || request.reason.trim().is_empty()
         || request_fingerprint.is_empty()
     {
-        return Err(CalmError::BadRequest(
-            "recovery fields must be nonempty".into(),
-        ));
+        return Err(CalmError::BadRequest("recovery fields must be nonempty"));
     }
     if let Some(receipt) = task_recovery_lookup_tx(
         tx,
@@ -154,21 +159,21 @@ pub async fn task_recovery_allocate_tx(
         .ok_or_else(|| CalmError::NotFound(format!("task {track_id}:{key}")))?;
     if current.attempt_id != request.expected_attempt_id {
         return Err(CalmError::Conflict(
-            "recovery expected attempt is no longer current".into(),
+            "recovery expected attempt is no longer current",
         ));
     }
-    let previous = task_get_tx(tx, &current.attempt_id).await?.ok_or_else(|| {
-        CalmError::Conflict("recovery current attempt has no execution row".into())
-    })?;
+    let previous = task_get_tx(tx, &current.attempt_id)
+        .await?
+        .ok_or_else(|| CalmError::Conflict("recovery current attempt has no execution row"))?;
     if previous.status != TaskStatus::Failed {
         return Err(CalmError::Conflict(
-            "only a failed execution can be recovered".into(),
+            "only a failed execution can be recovered",
         ));
     }
     let generation = current
         .generation
         .checked_add(1)
-        .ok_or_else(|| CalmError::Conflict("task generation exhausted".into()))?;
+        .ok_or_else(|| CalmError::Conflict("task generation exhausted"))?;
     let allocation = TaskAttemptAllocation {
         attempt_id: new_id(),
         track_id: track_id.into(),
