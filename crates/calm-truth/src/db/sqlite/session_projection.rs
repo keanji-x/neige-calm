@@ -427,14 +427,14 @@ where
             }
             if !outcome.taken.is_empty() {
                 harvested.taken_from.push(HarvestedFrom {
-                    runtime_id: id.clone(),
+                    worker_session_id: id.clone(),
                     messages: outcome.taken.clone(),
                 });
             }
             harvested.messages.extend(outcome.taken);
         }
         session_mark_queue_harvested_tx(tx, &id, now).await?;
-        harvested.stamped_runtime_ids.push(id);
+        harvested.stamped_worker_session_ids.push(id);
     }
     Ok(harvested)
 }
@@ -454,7 +454,7 @@ pub struct HarvestOutcome {
 /// it back where it came from rather than somewhere plausible.
 #[derive(Debug, Default, Clone)]
 pub struct HarvestedFrom {
-    pub runtime_id: String,
+    pub worker_session_id: String,
     pub messages: Vec<HarvestedMessage>,
 }
 
@@ -514,7 +514,7 @@ pub async fn session_set_handle_state_of_any_runtime_tx(
 #[derive(Debug, Default, Clone)]
 pub struct HarvestedQueues {
     pub messages: Vec<HarvestedMessage>,
-    pub stamped_runtime_ids: Vec<String>,
+    pub stamped_worker_session_ids: Vec<String>,
     /// Per source row, what was taken off it. The undo journal: a mint that
     /// fails after this transaction commits has to put each sentence back on
     /// the row it came from.

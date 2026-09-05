@@ -27,6 +27,37 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
 use tempfile::TempDir;
 
+/// The stored `planner-harness-start` payload every boot-recovery fixture in
+/// this file needs, differing only in `goal`.
+///
+/// One place spells the struct so a field added to it is a compile error here
+/// once rather than five times, and so the five fixtures cannot drift apart on
+/// a field none of them is about.
+fn start_payload(
+    track_id: &str,
+    planner_card_id: &CardId,
+    cwd: &str,
+    goal: Option<&str>,
+) -> serde_json::Value {
+    serde_json::to_value(PlannerHarnessStartOperationPayload {
+        actor: ActorId::User,
+        track_id: track_id.to_string(),
+        planner_card_id: planner_card_id.clone(),
+        report_card_id: None,
+        sort: None,
+        cwd: cwd.to_string(),
+        goal: goal.map(ToOwned::to_owned),
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        opening_briefing: None,
+        first_message: None,
+        create_request_sha256: None,
+    })
+    .expect("planner-harness-start payload serializes")
+}
+
 fn app_state_for_boot_test_with_role_cache(
     repo: Arc<SqlxRepo>,
     role_cache: calm_server::card_role_cache::CardRoleCache,
@@ -1231,23 +1262,12 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let placeholder_id = new_id();
         let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
         let now = now_ms();
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: Some("recover after crash".into()),
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(
+            track.id.as_ref(),
+            &card.id,
+            &track.workspace.path,
+            Some("recover after crash"),
+        );
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
@@ -2067,23 +2087,7 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
             }],
         );
         let now = now_ms();
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
@@ -2091,6 +2095,14 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         );
         // Exactly what `prepare_tx` committed: the placeholder's own snapshot,
         // which knows nothing about the racer.
+        //
+        // #1316: the retiring key below, and the same one in the `fail_runtime`
+        // step args further down, are not names this file chooses.
+        // `planner_harness_start_adapter.rs` reads them back out of rows
+        // written by shipped binaries (`output_string` and `step.arg_string`).
+        // Spelling them anything else would build a payload the adapter cannot
+        // read, so these fixtures would stop standing for the stored row they
+        // exist to reproduce.
         output.data = json!({
             "card_id": card.id.to_string(),
             "track_id": track.id.to_string(),
@@ -2261,10 +2273,10 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         .cloned()
         .unwrap_or_default();
     assert!(
-        journal
-            .iter()
-            .any(|entry| entry["runtime_id"] == serde_json::json!(racer_id)
-                && entry["messages"].to_string().contains(STRANDED)),
+        journal.iter().any(
+            |entry| entry["worker_session_id"] == serde_json::json!(racer_id)
+                && entry["messages"].to_string().contains(STRANDED)
+        ),
         "the app-server transaction's harvest must reach the undo journal, or a later failure \
          strands the racer's sentence on a `failed` runtime: {journal:#?}"
     );
@@ -2313,7 +2325,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
 
     let tmp = TempDir::new().unwrap();
     let db_url = sqlite_url(&tmp, "row-is-the-single-home.db");
-    let (card_id, track_id, runtime_id, op_id) = {
+    let (card_id, track_id, worker_session_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
             .area_create(NewArea {
@@ -2339,7 +2351,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
             .unwrap();
         let card = seed_planner_card_row(&repo, &track.id).await;
 
-        let runtime_id = new_id();
+        let worker_session_id = new_id();
         // The row: the queue is empty, because a mint in between moved the
         // sentence to another runtime.
         let row_snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -2351,23 +2363,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
             }],
         );
         let now = now_ms();
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
@@ -2376,7 +2372,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         output.data = json!({
             "card_id": card.id.to_string(),
             "track_id": track.id.to_string(),
-            "runtime_id": runtime_id.clone(),
+            "runtime_id": worker_session_id.clone(),
             "runtime_deferred": true,
             "cwd": track.workspace.path.clone(),
             "goal": null,
@@ -2392,7 +2388,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
-                id: runtime_id.clone(),
+                id: worker_session_id.clone(),
                 card_id: card.id.to_string(),
                 kind: WorkerSessionKind::SharedPlanner,
                 agent_provider: Some(AgentProvider::Codex),
@@ -2430,7 +2426,12 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         .unwrap();
         tx.commit().await.unwrap();
 
-        (card.id.to_string(), track.id.to_string(), runtime_id, op_id)
+        (
+            card.id.to_string(),
+            track.id.to_string(),
+            worker_session_id,
+            op_id,
+        )
     };
 
     let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
@@ -2461,7 +2462,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
          `app_server_interact` — that is the writer this test exists for"
     );
     assert!(
-        state.harness.get(&runtime_id).is_some(),
+        state.harness.get(&worker_session_id).is_some(),
         "premise: the re-drive must start the harness: op {op_id}"
     );
 
@@ -2481,7 +2482,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
     }
     let persisted: Option<String> =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
-            .bind(&runtime_id)
+            .bind(&worker_session_id)
             .fetch_one(repo.pool())
             .await
             .unwrap();
@@ -2491,7 +2492,7 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
          the row"
     );
 
-    if let Some(handle) = state.harness.remove(&runtime_id) {
+    if let Some(handle) = state.harness.remove(&worker_session_id) {
         handle.shutdown().await.unwrap();
     }
 }
@@ -2567,27 +2568,11 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
             "report_card_id": null,
             "snapshot": serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
             "harvested_from": [{
-                "runtime_id": source_id.clone(),
+                "worker_session_id": source_id.clone(),
                 "messages": [{"text": MOVED_ONWARD, "ids": [MESSAGE_ID]}],
             }],
         });
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let compensation_state = json!({
             "version": 1,
             "from_phase": "app_server_interact",
@@ -2802,27 +2787,11 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
             "report_card_id": null,
             "snapshot": serde_json::to_value(&failing_snapshot).unwrap(),
             "harvested_from": [{
-                "runtime_id": source_id.clone(),
+                "worker_session_id": source_id.clone(),
                 "messages": [{"text": RETURNED, "ids": [RETURNED_ID]}],
             }],
         });
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let compensation_state = json!({
             "version": 1,
             "from_phase": "app_server_interact",

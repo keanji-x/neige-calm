@@ -98,16 +98,16 @@ pub const ANY_RUNTIME: &str = "#1449-any-runtime";
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub fn install_planner_harness_drain_race_hook_for_test(
-    runtime_id: &str,
+    worker_session_id: &str,
     hook: PlannerHarnessDrainRaceHook,
 ) {
     planner_harness_drain_race_hooks()
         .lock()
         .expect("planner harness drain hook mutex")
-        .insert(runtime_id.to_string(), hook);
+        .insert(worker_session_id.to_string(), hook);
 }
 
-async fn wait_at_planner_harness_drain_race_hook(runtime_id: &str) {
+async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
     #[cfg(feature = "fixtures")]
     {
         let hook = {
@@ -115,7 +115,7 @@ async fn wait_at_planner_harness_drain_race_hook(runtime_id: &str) {
                 .lock()
                 .expect("planner harness drain hook mutex");
             hooks
-                .remove(runtime_id)
+                .remove(worker_session_id)
                 .or_else(|| hooks.remove(ANY_RUNTIME))
         };
         if let Some(hook) = hook {
@@ -124,7 +124,7 @@ async fn wait_at_planner_harness_drain_race_hook(runtime_id: &str) {
         }
     }
     #[cfg(not(feature = "fixtures"))]
-    let _ = runtime_id;
+    let _ = worker_session_id;
 }
 
 const OBSERVATION_BUFFER: usize = 256;
@@ -1692,7 +1692,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::debug!(
             target: "calm_server::planner_harness_issue",
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             "runtime is no longer the card's live carrier; leaving the queue for its successor"
@@ -1836,7 +1836,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::debug!(
             target: "calm_server::planner_harness_issue",
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             "runtime was retired while this turn was being prepared; leaving the queue"
@@ -2417,14 +2417,14 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
     let snapshot = snapshot_for(inner).await;
-    let runtime_id = inner.worker_session_id.clone();
+    let worker_session_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let now = crate::model::now_ms();
     let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
                 tx,
-                &runtime_id,
+                &worker_session_id,
                 Some(snapshot_value),
                 now,
             )

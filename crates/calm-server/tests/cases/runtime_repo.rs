@@ -2878,7 +2878,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         "the `failed` row and the successor's own row must contribute nothing"
     );
     assert_eq!(
-        harvested.stamped_runtime_ids,
+        harvested.stamped_worker_session_ids,
         vec![
             retired_with_a_sentence.clone(),
             retired_with_no_snapshot.clone(),
@@ -2926,7 +2926,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     .unwrap();
     tx.commit().await.unwrap();
     assert!(
-        again.messages.is_empty() && again.stamped_runtime_ids.is_empty(),
+        again.messages.is_empty() && again.stamped_worker_session_ids.is_empty(),
         "a second restart must read nothing: {again:?}"
     );
 

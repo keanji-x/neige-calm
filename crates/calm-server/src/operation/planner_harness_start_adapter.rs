@@ -901,7 +901,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                          predecessor"
                     );
                     inherited_from.push(HarvestedFrom {
-                        runtime_id: existing.id.clone(),
+                        worker_session_id: existing.id.clone(),
                         messages,
                     });
                 }
@@ -948,11 +948,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // Read, carried and stamped in THIS transaction, together with the
         // successor's own insert, so the mint and the transfer commit or roll
         // back together and a second restart reads the stamp and takes nothing.
-        let runtime_id = new_id();
+        let worker_session_id = new_id();
         let harvested = harvest_pending_user_messages_tx(
             tx,
             card.id.as_str(),
-            runtime_id.as_str(),
+            worker_session_id.as_str(),
             now,
             stranded_user_messages,
         )
@@ -1013,9 +1013,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // that happens silently cannot be told from a loss afterwards.
             tracing::info!(
                 card_id = %card_id,
-                worker_session_id = %runtime_id,
+                worker_session_id = %worker_session_id,
                 moved = harvested.messages.len(),
-                from_rows = harvested.stamped_runtime_ids.len(),
+                from_rows = harvested.stamped_worker_session_ids.len(),
                 "planner harness: harvested undelivered user messages into a new runtime"
             );
         }
@@ -1049,10 +1049,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.align_pending_side_arrays();
         }
 
-        let mut old_runtime_id = None;
+        let mut old_worker_session_id = None;
         let mut old_runtime_status = None;
         let runtime_init = WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: session_kind,
             agent_provider: Some(AgentProvider::Codex),
@@ -1067,7 +1067,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         if defer_runtime_start {
             if let Some(existing) = existing_active_runtime.as_ref() {
-                old_runtime_id = Some(existing.id.clone());
+                old_worker_session_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status);
             }
             // #1449 — the inherit above took the predecessor's WHOLE queue, so
@@ -1105,7 +1105,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             session_prepare_deferred_planner_tx(tx, &runtime_init).await?;
         } else {
             if let Some(existing) = superseded_predecessor.as_ref() {
-                old_runtime_id = Some(existing.id.clone());
+                old_worker_session_id = Some(existing.id.clone());
                 old_runtime_status = Some(existing.status);
             }
             session_start_runtime_tx(tx, runtime_init).await?;
@@ -1141,7 +1141,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // write.
             let scope = card_scope_tx(tx, card.id.clone(), card.track_id.clone()).await?;
             let event = Event::HarnessUserMessageEnqueued {
-                worker_session_id: runtime_id.clone(),
+                worker_session_id: worker_session_id.clone(),
                 card_id: card.id.clone(),
                 track_id: card.track_id.clone(),
                 char_count,
@@ -1175,7 +1175,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         output.data = json!({
             "card_id": card.id,
             "track_id": track_id,
-            "runtime_id": runtime_id,
+            "runtime_id": worker_session_id,
             "runtime_deferred": defer_runtime_start,
             "cwd": payload.cwd,
             "goal": payload.goal,
@@ -1204,8 +1204,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     .collect::<Vec<_>>(),
             ),
         });
-        if let Some(old_runtime_id) = old_runtime_id {
-            output.set_output_data("old_runtime_id", json!(old_runtime_id), "planner harness")?;
+        if let Some(old_worker_session_id) = old_worker_session_id {
+            output.set_output_data(
+                "old_runtime_id",
+                json!(old_worker_session_id),
+                "planner harness",
+            )?;
         }
         if let Some(old_runtime_status) = old_runtime_status {
             output.set_output_data(
@@ -1252,7 +1256,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
-        let runtime_id = output.output_string("runtime_id", "planner harness")?;
+        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output.output_string("cwd", "planner harness")?;
         // OLD PTY shutdown at Phase-2 entry, immediately after the Phase-1
@@ -1260,10 +1264,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // hard reset: the DB-side supersede lives in calm-truth, and the
         // handle kill stays here as the first app-server-side action after
         // commit.
-        if let Some(old_runtime_id) =
+        if let Some(old_worker_session_id) =
             output.output_optional_string("old_runtime_id", "planner harness")?
-            && old_runtime_id != runtime_id
-            && let Some(old_handle) = self.harness_registry.remove(&old_runtime_id)
+            && old_worker_session_id != worker_session_id
+            && let Some(old_handle) = self.harness_registry.remove(&old_worker_session_id)
         {
             old_handle.shutdown().await?;
         }
@@ -1428,7 +1432,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
         let scope = card_scope(ctx.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
         let transcript_scope = scope.clone();
-        let transcript_runtime_id = runtime_id.clone();
+        let transcript_worker_session_id = worker_session_id.clone();
         let transcript_card_id = CardId::from(card_id.clone());
         let transcript_track_id = TrackId::from(track_id.clone());
         let write = WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone());
@@ -1448,7 +1452,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             move |tx| {
                 Box::pin(async move {
                     let mut checkpoint_output = output_clone;
-                    let mut old_runtime_id = None;
+                    let mut old_worker_session_id = None;
                     let mut old_runtime_status = None;
                     // #1449 — what this transaction took off which row, for
                     // the undo journal. It has to leave the closure: the
@@ -1465,7 +1469,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         // placeholder raced into the card's active slot while
                         // the thread was being minted.
                         let raced_in = match occupant.as_ref() {
-                            Some(existing) if existing.id != runtime_id => Some(existing.clone()),
+                            Some(existing) if existing.id != worker_session_id => {
+                                Some(existing.clone())
+                            }
                             _ => None,
                         };
                         // The successor's queue, plus — when a racer is being
@@ -1490,12 +1496,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         let mut runtime_snapshot = snapshot.clone();
                         overwrite_queue_from_the_runtimes_own_row_tx(
                             tx,
-                            &runtime_id,
+                            &worker_session_id,
                             &mut runtime_snapshot,
                         )
                         .await?;
                         if let Some(existing) = raced_in.as_ref() {
-                            old_runtime_id = Some(existing.id.clone());
+                            old_worker_session_id = Some(existing.id.clone());
                             old_runtime_status = Some(existing.status);
                             checkpoint_output.set_output_data(
                                 "old_runtime_id",
@@ -1518,7 +1524,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             let harvested = harvest_pending_user_messages_tx(
                                 tx,
                                 &card_id,
-                                &runtime_id,
+                                &worker_session_id,
                                 now,
                                 stranded_user_messages,
                             )
@@ -1534,7 +1540,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             let mut journal = read_harvested_from_journal(&checkpoint_output)
                                 .into_iter()
                                 .map(|entry| HarvestedFrom {
-                                    runtime_id: entry.runtime_id,
+                                    worker_session_id: entry.worker_session_id,
                                     messages: entry.messages,
                                 })
                                 .collect::<Vec<_>>();
@@ -1555,7 +1561,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             }
                         }
                         let runtime_init = WorkerSessionInit {
-                            id: runtime_id.clone(),
+                            id: worker_session_id.clone(),
                             card_id: card_id.clone(),
                             kind: session_kind,
                             agent_provider: Some(AgentProvider::Codex),
@@ -1587,9 +1593,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     } else {
                         session_bind_attribution_tx(
                             tx,
-                            &runtime_id,
+                            &worker_session_id,
                             ThreadAttribution {
-                                worker_session_id: runtime_id.clone(),
+                                worker_session_id: worker_session_id.clone(),
                                 provider: AgentProvider::Codex,
                                 thread_id: Some(thread_for_tx.clone()),
                                 session_id: None,
@@ -1601,19 +1607,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         let mut bound_snapshot = snapshot.clone();
                         overwrite_queue_from_the_runtimes_own_row_tx(
                             tx,
-                            &runtime_id,
+                            &worker_session_id,
                             &mut bound_snapshot,
                         )
                         .await?;
                         session_set_handle_state_tx(
                             tx,
-                            &runtime_id,
+                            &worker_session_id,
                             Some(serde_json::to_value(&bound_snapshot)?),
                         )
                         .await?;
                     }
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
-                        mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
+                        mirror_session_mcp_token(tx, &worker_session_id, hashed).await?;
                     }
                     // #1252 S0-2 — the delete is a hard delete across the
                     // card's whole history, so measure the transcript here,
@@ -1651,7 +1657,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     Ok((
                         (
                             card.clone(),
-                            old_runtime_id,
+                            old_worker_session_id,
                             old_runtime_status,
                             cleared_measure,
                             taken_from,
@@ -1662,7 +1668,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        let (updated_card, old_runtime_id, old_runtime_status, cleared_measure, taken_from) =
+        let (updated_card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) =
             tx_out;
         drop(mint_lock_guard);
         card = updated_card;
@@ -1673,7 +1679,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             let mut merged = read_harvested_from_journal(output)
                 .into_iter()
                 .map(|entry| HarvestedFrom {
-                    runtime_id: entry.runtime_id,
+                    worker_session_id: entry.worker_session_id,
                     messages: entry.messages,
                 })
                 .collect::<Vec<_>>();
@@ -1684,8 +1690,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 "planner harness",
             )?;
         }
-        if let Some(old_runtime_id) = old_runtime_id {
-            output.set_output_data("old_runtime_id", json!(old_runtime_id), "planner harness")?;
+        if let Some(old_worker_session_id) = old_worker_session_id {
+            output.set_output_data(
+                "old_runtime_id",
+                json!(old_worker_session_id),
+                "planner harness",
+            )?;
         }
         if let Some(old_runtime_status) = old_runtime_status {
             output.set_output_data(
@@ -1704,7 +1714,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     &self.card_role_cache,
                     &self.track_area_cache,
                     Event::HarnessTranscriptCleared {
-                        worker_session_id: transcript_runtime_id,
+                        worker_session_id: transcript_worker_session_id,
                         card_id: transcript_card_id,
                         track_id: transcript_track_id,
                         // Always `Some(..)` — the `Option` on the event exists
@@ -1731,7 +1741,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output.output_string("runtime_id", "planner harness")?;
+        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
@@ -1759,20 +1769,25 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // safety argument, it is the pre-#1449 behaviour preserved — a missing
         // row at spawn means the mint transaction's own insert is gone, and
         // this function is not where that gets adjudicated.
-        overwrite_queue_from_the_runtimes_own_row(self.repo.as_ref(), &runtime_id, &mut snapshot)
-            .await?;
+        overwrite_queue_from_the_runtimes_own_row(
+            self.repo.as_ref(),
+            &worker_session_id,
+            &mut snapshot,
+        )
+        .await?;
         // #953 §5 — atomic replace claim: the old remove-then-insert pair
         // left a window where a concurrent registration could land between
         // the two ops. `reserve_replacing` swaps the slot to Reserved in one
         // entry op and hands back the previous Live handle for shutdown
         // outside the map lock.
-        let (reservation, previous_live) =
-            self.harness_registry.reserve_replacing(runtime_id.clone());
+        let (reservation, previous_live) = self
+            .harness_registry
+            .reserve_replacing(worker_session_id.clone());
         if let Some(existing) = previous_live {
             existing.shutdown().await?;
         }
         let handle = PlannerHarness::run(PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),
             card_id: CardId::from(card_id),
             thread_id,
@@ -1791,12 +1806,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // row.
             handle.shutdown().await?;
             return Err(crate::error::CalmError::Internal(format!(
-                "planner harness registration for runtime {runtime_id} superseded during start"
+                "planner harness registration for runtime {worker_session_id} superseded during start"
             )));
         }
         handle.persist_snapshot().await?;
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
-            worker_session_id: runtime_id,
+            worker_session_id,
         }))
     }
 
@@ -1818,7 +1833,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let payload: PlannerHarnessStartOperationPayload =
             serde_json::from_value(op.payload.clone())?;
         let card_id = output.output_string("card_id", "planner harness")?;
-        let runtime_id = output.output_string("runtime_id", "planner harness")?;
+        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
         let mut steps = Vec::new();
         // #1098 §5.6 — a card this operation minted must come back out on
@@ -1885,7 +1900,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 );
                 steps.push(CompensationStep::new(
                     "fail_runtime",
-                    json!({ "runtime_id": runtime_id }),
+                    json!({ "runtime_id": worker_session_id }),
                 ));
             }
             return Ok(finish(steps));
@@ -1896,7 +1911,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         ) {
             steps.push(CompensationStep::new(
                 "abort_harness_task",
-                json!({ "runtime_id": runtime_id }),
+                json!({ "runtime_id": worker_session_id }),
             ));
         }
         if matches!(
@@ -1914,9 +1929,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         }
         steps.push(CompensationStep::new(
             "fail_runtime",
-            json!({ "runtime_id": runtime_id }),
+            json!({ "runtime_id": worker_session_id }),
         ));
-        if let Some(old_runtime_id) =
+        if let Some(old_worker_session_id) =
             output.output_optional_string("old_runtime_id", "planner harness")?
         {
             let old_runtime_status =
@@ -1932,7 +1947,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             steps.push(CompensationStep::new(
                 "restore_old_runtime",
                 json!({
-                    "runtime_id": old_runtime_id,
+                    "runtime_id": old_worker_session_id,
                     "status": old_runtime_status,
                 }),
             ));
@@ -1952,8 +1967,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         }
         match step.op.as_str() {
             "abort_harness_task" => {
-                let runtime_id = step.arg_string("runtime_id", "planner harness")?;
-                if let Some(handle) = self.harness_registry.remove(&runtime_id) {
+                let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
+                if let Some(handle) = self.harness_registry.remove(&worker_session_id) {
                     handle.shutdown().await?;
                 }
                 Ok(())
@@ -1987,11 +2002,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // return, so they do not end up in two places. An entry with no ids
             // (enqueued before #1449) is skipped rather than matched on text.
             "fail_runtime" => {
-                let runtime_id = step.arg_string("runtime_id", "planner harness")?;
+                let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
                 let journal = read_harvested_from_journal(_output);
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        return_harvested_queues_and_fail_tx(tx, &runtime_id, &journal).await
+                        return_harvested_queues_and_fail_tx(tx, &worker_session_id, &journal).await
                     })
                 })
                 .await
@@ -2040,15 +2055,20 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 Ok(())
             }
             "restore_old_runtime" => {
-                let runtime_id = step.arg_string("runtime_id", "planner harness")?;
+                let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
                 let status = step_arg_run_status(step, "status")?;
-                restore_old_runtime_after_spawn_failure(ctx.repo.as_ref(), runtime_id, status).await
+                restore_old_runtime_after_spawn_failure(
+                    ctx.repo.as_ref(),
+                    worker_session_id,
+                    status,
+                )
+                .await
             }
             "delete_runtime" => {
-                let runtime_id = step.arg_string("runtime_id", "planner harness")?;
+                let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        session_delete_tx(tx, &runtime_id)
+                        session_delete_tx(tx, &worker_session_id)
                             .await
                             .map_err(CalmError::from)?;
                         Ok(())
@@ -2118,11 +2138,11 @@ async fn overwrite_queue_from_the_runtimes_own_row_tx(
 /// transaction commits or none of it happened.
 async fn return_harvested_queues_and_fail_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    runtime_id: &str,
+    worker_session_id: &str,
     journal: &[HarvestedFromJournalEntry],
 ) -> Result<()> {
     let now = crate::model::now_ms();
-    let successor_state = session_handle_state_by_id_tx(tx, runtime_id)
+    let successor_state = session_handle_state_by_id_tx(tx, worker_session_id)
         .await
         .map_err(CalmError::from)?;
     if let Some(state) = successor_state
@@ -2145,7 +2165,7 @@ async fn return_harvested_queues_and_fail_tx(
             if returning.is_empty() {
                 continue;
             }
-            let Some(source_state) = session_handle_state_by_id_tx(tx, &entry.runtime_id)
+            let Some(source_state) = session_handle_state_by_id_tx(tx, &entry.worker_session_id)
                 .await
                 .map_err(CalmError::from)?
             else {
@@ -2191,7 +2211,7 @@ async fn return_harvested_queues_and_fail_tx(
             source.align_pending_side_arrays();
             session_set_handle_state_of_any_runtime_tx(
                 tx,
-                &entry.runtime_id,
+                &entry.worker_session_id,
                 Some(serde_json::to_value(&source)?),
                 now,
             )
@@ -2201,12 +2221,12 @@ async fn return_harvested_queues_and_fail_tx(
             // on it. A row this operation stamped and returned nothing to keeps
             // its stamp: its queue is somewhere else, legitimately.
             tracing::info!(
-                worker_session_id = %runtime_id,
-                returned_to = %entry.runtime_id,
+                worker_session_id = %worker_session_id,
+                returned_to = %entry.worker_session_id,
                 returned = returning.len(),
                 "planner harness: a failed mint returned undelivered user messages"
             );
-            session_clear_queue_harvested_tx(tx, &entry.runtime_id)
+            session_clear_queue_harvested_tx(tx, &entry.worker_session_id)
                 .await
                 .map_err(CalmError::from)?;
         }
@@ -2263,7 +2283,7 @@ async fn return_harvested_queues_and_fail_tx(
             successor.align_pending_side_arrays();
             session_set_handle_state_of_any_runtime_tx(
                 tx,
-                runtime_id,
+                worker_session_id,
                 Some(serde_json::to_value(&successor)?),
                 now,
             )
@@ -2271,7 +2291,7 @@ async fn return_harvested_queues_and_fail_tx(
             .map_err(CalmError::from)?;
         }
     }
-    session_fail_if_active_runtime_tx(tx, &runtime_id.to_string())
+    session_fail_if_active_runtime_tx(tx, &worker_session_id.to_string())
         .await
         .map_err(CalmError::from)
 }
@@ -2283,7 +2303,7 @@ fn harvested_from_journal(taken_from: &[HarvestedFrom]) -> Value {
             .iter()
             .map(|from| {
                 json!({
-                    "runtime_id": from.runtime_id,
+                    "worker_session_id": from.worker_session_id,
                     "messages": from
                         .messages
                         .iter()
@@ -2297,7 +2317,7 @@ fn harvested_from_journal(taken_from: &[HarvestedFrom]) -> Value {
 
 /// One journal entry read back at compensation time.
 struct HarvestedFromJournalEntry {
-    runtime_id: String,
+    worker_session_id: String,
     messages: Vec<HarvestedMessage>,
 }
 
@@ -2308,7 +2328,7 @@ fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEnt
     entries
         .iter()
         .filter_map(|entry| {
-            let runtime_id = entry.get("runtime_id")?.as_str()?.to_string();
+            let worker_session_id = entry.get("worker_session_id")?.as_str()?.to_string();
             let messages = entry
                 .get("messages")?
                 .as_array()?
@@ -2326,7 +2346,7 @@ fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEnt
                 })
                 .collect();
             Some(HarvestedFromJournalEntry {
-                runtime_id,
+                worker_session_id,
                 messages,
             })
         })
@@ -2369,10 +2389,10 @@ fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEnt
 /// have no shared truth to compare, and giving them one needs an idempotency
 /// key on the daemon side. The direction matches #1314's ruling — re-deliver
 /// rather than record a delivery that may not have happened.
-fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestOutcome {
+fn stranded_user_messages(worker_session_id: &str, handle_state_json: &str) -> HarvestOutcome {
     let Ok(state) = serde_json::from_str::<Value>(handle_state_json) else {
         tracing::warn!(
-            runtime_id,
+            worker_session_id,
             "harvest: superseded runtime snapshot is not JSON; leaving its queue behind"
         );
         return HarvestOutcome::default();
@@ -2382,7 +2402,7 @@ fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestO
     }
     if !is_harness_snapshot_value(&state) {
         tracing::warn!(
-            runtime_id,
+            worker_session_id,
             "harvest: superseded runtime snapshot has corrupt/unknown shape; \
              leaving its queue behind"
         );
@@ -2437,7 +2457,7 @@ fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestO
         // remainder that will not serialize takes nothing, rather than turning
         // the move into a copy.
         tracing::warn!(
-            runtime_id,
+            worker_session_id,
             "harvest: could not re-serialize the remainder of this snapshot; leaving its queue \
              behind"
         );
@@ -2534,13 +2554,13 @@ async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> 
 
 async fn restore_old_runtime_after_spawn_failure(
     repo: &dyn crate::db::RouteRepo,
-    old_runtime_id: String,
+    old_worker_session_id: String,
     status: WorkerSessionState,
 ) -> Result<()> {
     active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            session_restore_from_superseded_runtime_tx(tx, &old_runtime_id, status)
+            session_restore_from_superseded_runtime_tx(tx, &old_worker_session_id, status)
                 .await
                 .map_err(CalmError::from)
         })
@@ -2866,14 +2886,14 @@ mod tests {
             .await
             .expect("mint conversation card");
 
-            let runtime_id = new_id();
+            let worker_session_id = new_id();
             let thread_id = format!("thread-{}", card.id.as_str());
             let mut snapshot = base.clone();
             snapshot.last_thread_id = Some(thread_id.clone());
             session_start_runtime_tx(
                 &mut tx,
                 WorkerSessionInit {
-                    id: runtime_id.clone(),
+                    id: worker_session_id.clone(),
                     card_id: card.id.to_string(),
                     kind: session_kind_for(profile),
                     agent_provider: Some(AgentProvider::Codex),
@@ -2892,7 +2912,7 @@ mod tests {
             )
             .await
             .expect("start runtime");
-            expected.push(runtime_id);
+            expected.push(worker_session_id);
         }
         tx.commit().await.expect("commit seed tx");
 

@@ -714,9 +714,9 @@ impl Boot {
     }
 
     /// `queue_harvested_at_ms` for one runtime row.
-    async fn harvest_stamp(&self, runtime_id: &str) -> Option<i64> {
+    async fn harvest_stamp(&self, worker_session_id: &str) -> Option<i64> {
         sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
-            .bind(runtime_id)
+            .bind(worker_session_id)
             .fetch_one(self.repo.pool())
             .await
             .unwrap()
@@ -800,11 +800,11 @@ impl Boot {
     /// retired under it is reachable in production (`prepare_tx` supersedes the
     /// card's live predecessor and nothing stops its handle until a later step
     /// of the same operation), and it is what these tests need to order.
-    async fn retire_runtime_in_the_database(&self, runtime_id: &str) {
-        let runtime_id = runtime_id.to_string();
+    async fn retire_runtime_in_the_database(&self, worker_session_id: &str) {
+        let worker_session_id = worker_session_id.to_string();
         write_in_tx_typed(self.repo.as_ref() as &dyn Repo, move |tx| {
             Box::pin(async move {
-                session_mark_superseded_runtime_tx(tx, &runtime_id)
+                session_mark_superseded_runtime_tx(tx, &worker_session_id)
                     .await
                     .map_err(calm_server::error::CalmError::from)
             })
@@ -814,10 +814,10 @@ impl Boot {
     }
 
     /// The `pending_queue` a runtime's PERSISTED snapshot still holds.
-    async fn persisted_queue(&self, runtime_id: &str) -> Vec<Value> {
+    async fn persisted_queue(&self, worker_session_id: &str) -> Vec<Value> {
         let state: Option<String> =
             sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
-                .bind(runtime_id)
+                .bind(worker_session_id)
                 .fetch_one(self.repo.pool())
                 .await
                 .unwrap();
@@ -830,10 +830,10 @@ impl Boot {
 
     /// Poll until a runtime's persisted queue reaches `want` entries; report
     /// what was actually seen so a failure names the real number.
-    async fn wait_for_persisted_queue_len(&self, runtime_id: &str, want: usize) -> usize {
+    async fn wait_for_persisted_queue_len(&self, worker_session_id: &str, want: usize) -> usize {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let seen = self.persisted_queue(runtime_id).await.len();
+            let seen = self.persisted_queue(worker_session_id).await.len();
             if seen == want || std::time::Instant::now() >= deadline {
                 return seen;
             }
@@ -3993,10 +3993,10 @@ async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
     // would trip the foreign key rather than reproduce the state a card, track
     // or area deletion actually leaves behind.
     {
-        let runtime_id = runtime.clone();
+        let worker_session_id = runtime.clone();
         write_in_tx_typed(b.repo.as_ref() as &dyn Repo, move |tx| {
             Box::pin(async move {
-                session_delete_tx(tx, &runtime_id)
+                session_delete_tx(tx, &worker_session_id)
                     .await
                     .map_err(calm_server::error::CalmError::from)
             })
