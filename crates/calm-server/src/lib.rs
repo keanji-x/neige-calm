@@ -698,6 +698,7 @@ pub mod track_lifecycle;
 pub mod track_report;
 pub mod track_report_doc;
 mod track_report_edit_guard;
+mod track_report_gate_guard;
 mod track_report_guard;
 /// #1252 S1 step 1 — write-origin vocabulary. Not wired into production yet.
 pub mod track_report_origin;

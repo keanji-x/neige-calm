@@ -137,9 +137,23 @@ writes are transactional.
      `require_task_gates`, an ungated codex/claude block write still succeeds, \
      but the read surface reports a `gate_required` diagnostic and the task is \
      not projected or scheduled unless it provides `no_gate_reason`; terminal \
-     tasks are exempt. Gate cwd defaults task cwd → track cwd; set \
-     `gate.cwd` when the worker's checkout differs. Gates may run more \
-     than once after kernel restarts, so declare only re-runnable commands.
+     tasks are exempt. Gate cwd uses explicit `gate.cwd`, otherwise the bound \
+     worker execution's durable checkout; task cwd → track cwd is only the \
+     fallback when no execution is bound. A missing bound checkout fails verification \
+     without falling back. Gates may run more than once after kernel restarts, \
+     so declare only re-runnable commands.
+   * Gate commands run under `/bin/sh` with an empty environment plus inherited \
+     PATH, HOME, LANG, LC_ALL, TERM and configured proxy settings. Gates have no \
+     NEIGE_MCP_SOCKET or NEIGE_MCP_TOKEN: `neige cat`, `neige state` and task \
+     reporting are unavailable there. Direct kernel CLI calls are rejected when \
+     a task is authored; this check cannot inspect scripts or dynamic commands. \
+     Use checkout files as verification inputs, e.g. `python3 -m unittest discover` \
+     or `test -s artifacts/result.json`; the latter checks existence only, not \
+     correctness. Specify artifact paths and semantic checks in the worker goal; \
+     have the worker record hashes and report artifact paths with its exact task ID. \
+     Downstream workers have separate checkouts: explicitly supply the producing \
+     checkout/path and expected hash; never assume relative files are shared. Read \
+     `plan/<key>/output` and `plan/<key>/gate.log` from the Planner session, outside gates.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
      not a worker claim. Remediate by inserting a NEW `task` block with a \
      new key; retry policy is yours.

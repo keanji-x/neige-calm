@@ -2899,6 +2899,7 @@ function TrackRouteBody({
       }}
       report={<ReportDocument
         report={report}
+        taskVerdicts={verdicts}
         rail={<ReportOutline items={outline} />}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}

@@ -97,17 +97,10 @@
   }
 
   .kind,
-  .ready,
-  .notReady,
+  .state,
   .withdrawn {
     font-size: var(--text-xs);
     color: var(--text-3);
-  }
-
-  /* Ready carries a colour and Not ready does not: only one of the two is a
-     state you might act on, and colouring both would make the pair decorative. */
-  .ready {
-    color: var(--success-text);
   }
 
   .withdrawn {

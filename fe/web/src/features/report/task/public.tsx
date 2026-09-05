@@ -1,4 +1,5 @@
-import type { TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import type { ReportTaskRow, TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
 
@@ -17,9 +18,10 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload, blockId }: {
+export function ReportTaskBlock({ payload, blockId, task }: {
   payload: TaskBlockPayload;
   blockId: string;
+  task?: ReportTaskRow;
 }) {
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
@@ -46,8 +48,13 @@ export function ReportTaskBlock({ payload, blockId }: {
   }
 
   const live: LiveTask = payload;
+  const status = task?.status ?? null;
+  const explanation = [
+    status === null ? null : taskStatusPhrase(status, task?.statusDetail ?? null),
+    task?.pendingReason?.message,
+  ].filter(Boolean).join(' — ');
   return (
-    <details className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'}>
+    <details className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
       <summary className={styles.head}>
         <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
         <span className={styles.kindLabel}>Task</span>
@@ -56,8 +63,8 @@ export function ReportTaskBlock({ payload, blockId }: {
         <span className={styles.kind}>
           {live.kind}{live.spawn === 'sub-wave' ? ' · sub-track' : ''}
         </span>
-        <span className={live.ready ? styles.ready : styles.notReady}>
-          {live.ready ? 'Ready' : 'Not ready'}
+        <span className={styles.state} title={explanation || undefined}>
+          {status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
         </span>
       </summary>
 

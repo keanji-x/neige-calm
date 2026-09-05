@@ -1603,6 +1603,30 @@ async fn task_keys(boot: &Boot) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn task_gate_rejects_kernel_cli_before_persisting_or_scheduling() {
+    let boot = boot().await;
+    let before = current_payload(&boot).await;
+    let mut payload = planner_task_payload("analyze", "Analyze artifacts");
+    payload["gate"]["steps"][0]["cmd"] = json!("neige cat plan/analyze/output");
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({"kind": "task", "payload": payload, "if_doc_rev": before.doc_rev}),
+    )
+    .await
+    .expect_err("credential-dependent gate must be rejected before expensive work");
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("gate.steps[0].cmd"), "{err:?}");
+    assert!(err.message.contains("NEIGE_MCP_SOCKET"), "{err:?}");
+    assert!(err.message.contains("worker checkout"), "{err:?}");
+    let after = current_payload(&boot).await;
+    assert_eq!(after.doc_rev, before.doc_rev);
+    assert_eq!(after.body, before.body);
+    assert!(task_keys(&boot).await.is_empty());
+}
+
+#[tokio::test]
 async fn write_markdown_cannot_silently_drop_a_planner_task_block() {
     let boot = boot().await;
     seed_planner_task(&boot, "build").await;
