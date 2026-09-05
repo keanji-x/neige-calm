@@ -1,6 +1,7 @@
 use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::track_report::TrackReportPayload;
+use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
 use calm_types::track_report::ReportBlock;
 
 /// One self-consistent `calm.report.read` snapshot: `summary`, flat
@@ -67,24 +68,31 @@ pub async fn load_report_read_snapshot(
     let derive = |body: &str| {
         calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
     };
+    let flatten = |blocks: &[ReportBlock]| {
+        blocks
+            .iter()
+            .map(calm_types::report_blocks::flat_text)
+            .collect::<String>()
+    };
     // Pure legacy row (no CRDT yet): doc_rev is zero and the seed will run `reassign_ids`
     //     over the same body with the same (absent) hints.
     let Some(bytes) = bytes else {
-        let blocks = derive(&payload.body);
+        let blocks = normalize_legacy_terminal_task_blocks(&derive(&payload.body));
+        let body = flatten(&blocks);
         let task_diagnostics = repo
             .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
-            schema_version: payload.schema_version,
+            schema_version: TrackReportPayload::SCHEMA_VERSION,
             doc_rev: 0,
             summary: payload.summary,
-            body: payload.body,
+            body,
             blocks,
             task_diagnostics,
         });
     };
-    let doc = crate::track_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
+    let mut doc = crate::track_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
         CalmError::Internal(format!(
             "track_report: load CRDT for card {report_card_id}: {e}"
         ))
@@ -97,15 +105,17 @@ pub async fn load_report_read_snapshot(
     // Cache may provide the projection, but revision always comes from
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
+        let blocks = normalize_legacy_terminal_task_blocks(&blocks);
+        let body = flatten(&blocks);
         let task_diagnostics = repo
             .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
             .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
-            schema_version: payload.schema_version,
+            schema_version: TrackReportPayload::SCHEMA_VERSION,
             doc_rev,
             summary: payload.summary,
-            body: payload.body,
+            body,
             blocks,
             task_diagnostics,
         });
@@ -115,20 +125,15 @@ pub async fn load_report_read_snapshot(
     // 2 + 3b. Everything from the one doc: summary, body, and (for a
     //     v2 layout) the block snapshot — internally consistent by
     //     construction.
+    doc.ensure_blocks_layout(None).map_err(internal)?;
     let (summary, body) = doc.project().map_err(internal)?;
-    let blocks = if doc.has_blocks_layout().map_err(internal)? {
-        doc.blocks_snapshot().map_err(internal)?
-    } else {
-        // Legacy doc layout: mirror the migrator's derivation from
-        // the doc's own projected body.
-        derive(&body)
-    };
+    let blocks = doc.blocks_snapshot().map_err(internal)?;
     let task_diagnostics = repo
         .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
         .await?;
     Ok(ReportReadSnapshot {
         updated_at: card.updated_at,
-        schema_version: payload.schema_version,
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev,
         summary,
         body,
@@ -256,5 +261,76 @@ mod tests {
     #[tokio::test]
     async fn legacy_crdt_read_ids_survive_first_real_write() {
         assert_first_write_preserves_read_ids(true).await;
+    }
+
+    #[tokio::test]
+    async fn v3_terminal_goal_reads_as_v4_command_before_first_write() {
+        let (repo, track, _card) = fixture(false).await;
+        let block = ReportBlock {
+            id: "b_terminal".into(),
+            kind: calm_types::report_blocks::KIND_TASK.into(),
+            rev: 5,
+            payload: json!({
+                "key": "compile", "kind": "terminal", "goal": "cargo check",
+                "ready": true,
+                "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR
+            }),
+        };
+        let payload = json!({
+            "schemaVersion": 3,
+            "docRev": 9,
+            "summary": "legacy",
+            "body": calm_types::report_blocks::flat_text(&block),
+            "blocks": [block]
+        });
+        sqlx::query("UPDATE cards SET payload=?1 WHERE id='report'")
+            .bind(serde_json::to_string(&payload).unwrap())
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let snapshot =
+            load_report_read_snapshot(&repo, "report", crate::scheduler::DEFAULT_TRACK_TASK_BUDGET)
+                .await
+                .unwrap();
+        assert_eq!(snapshot.schema_version, 4);
+        assert_eq!(
+            snapshot.doc_rev, 0,
+            "without CRDT the read anchor stays zero"
+        );
+        assert_eq!(
+            snapshot.blocks[0].rev, 1,
+            "the pre-CRDT read path derives fresh block revisions as before"
+        );
+        assert_eq!(snapshot.blocks[0].payload["command"], "cargo check");
+        assert!(snapshot.blocks[0].payload.get("goal").is_none());
+        assert!(snapshot.body.contains(r#""command": "cargo check""#));
+
+        let card = repo.card_get("report").await.unwrap().unwrap();
+        let current: TrackReportPayload = serde_json::from_value(card.payload.clone()).unwrap();
+        let mut next = TrackReportPayload::new(snapshot.summary, snapshot.body);
+        next.doc_rev = snapshot.doc_rev;
+        let persisted = persist_report(
+            &repo,
+            &EventBus::new(),
+            &WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
+            ActorId::Kernel,
+            EditAuthor::Kernel,
+            track,
+            card,
+            current,
+            next,
+            0,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("the first persist must migrate the legacy task before applying the edit");
+        let persisted: TrackReportPayload = serde_json::from_value(persisted.payload).unwrap();
+        assert_eq!(persisted.schema_version, 4);
+        let persisted_task = persisted.blocks.unwrap().remove(0);
+        assert_eq!(persisted_task.payload["command"], "cargo check");
+        assert!(persisted_task.payload.get("goal").is_none());
     }
 }

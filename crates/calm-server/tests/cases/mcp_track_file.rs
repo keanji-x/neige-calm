@@ -486,6 +486,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
         Event::TaskFailed {
             idempotency_key: key.into(),
             reason: reason.into(),
+            details: None,
             agent_message: None,
         },
     )
@@ -1509,7 +1510,21 @@ async fn worker_failure_without_planner_verdict_stays_failed() {
     let boot = boot().await;
     request_codex(&boot, "worker-failed").await;
     materialize_worker(&boot, "worker-failed").await;
-    worker_fail_run(&boot, "worker-failed", "stub failure").await;
+    log_worker_card_event(
+        &boot,
+        Event::TaskFailed {
+            idempotency_key: "worker-failed".into(),
+            reason: "stub failure".into(),
+            details: Some(json!({
+                "exit_code": 2,
+                "pty_output": "compiler failed\n",
+                "pty_output_truncated": true,
+                "source": "terminal-exit"
+            })),
+            agent_message: None,
+        },
+    )
+    .await;
 
     let out = call_tool(
         &boot,
@@ -1525,8 +1540,27 @@ async fn worker_failure_without_planner_verdict_stays_failed() {
         run["events"]["failed"]["payload"]["reason"],
         json!("stub failure")
     );
+    assert_eq!(
+        run["events"]["failed"]["payload"]["details"]["pty_output"],
+        json!("compiler failed\n")
+    );
     assert!(run["verdict"].is_null(), "run = {run:?}");
     assert!(run["events"]["verdict"].is_null(), "run = {run:?}");
+
+    let out = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({ "path": "runs/worker-failed.md" }),
+    )
+    .await
+    .expect("planner can read worker-failed run markdown");
+    let markdown = out["content"].as_str().expect("markdown content");
+    assert!(markdown.contains("compiler failed"), "{markdown}");
+    assert!(
+        markdown.contains("\"pty_output_truncated\": true"),
+        "{markdown}"
+    );
 }
 
 #[tokio::test]
@@ -1554,6 +1588,7 @@ async fn track_scoped_dispatcher_failure_is_not_planner_verdict() {
         Event::TaskFailed {
             idempotency_key: "dispatcher-track-failed".into(),
             reason: "spawn failed".into(),
+            details: None,
             agent_message: None,
         },
     )

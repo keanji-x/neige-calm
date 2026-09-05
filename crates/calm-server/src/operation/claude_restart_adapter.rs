@@ -252,6 +252,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         // Restart affordance if the replacement spawn fails.
         let prev_exit_code = term.exit_code;
         let prev_signal_killed = term.signal_killed;
+        let prev_pty_output = term.pty_output.clone();
+        let prev_pty_output_truncated = term.pty_output_truncated;
         let mut output = TxOutput::new(
             "runtime",
             Some(runtime_id.clone()),
@@ -269,6 +271,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "env": env,
             "prev_exit_code": prev_exit_code,
             "prev_signal_killed": prev_signal_killed,
+            "prev_pty_output": prev_pty_output,
+            "prev_pty_output_truncated": prev_pty_output_truncated,
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: runtime_event_id,
@@ -429,6 +433,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let terminal_id = output.output_string("terminal_id", "claude restart")?;
         let prev_exit_code = output_optional_i32(output, "prev_exit_code");
         let prev_signal_killed = output_bool(output, "prev_signal_killed");
+        let prev_pty_output = output
+            .data
+            .get("prev_pty_output")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let prev_pty_output_truncated = output_bool(output, "prev_pty_output_truncated");
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
@@ -447,6 +457,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                         "terminal_id": terminal_id,
                         "prev_exit_code": prev_exit_code,
                         "prev_signal_killed": prev_signal_killed,
+                        "prev_pty_output": prev_pty_output,
+                        "prev_pty_output_truncated": prev_pty_output_truncated,
                     }),
                     completed: false,
                     attempts: 0,
@@ -490,8 +502,24 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     .get("prev_signal_killed")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                let prev_pty_output = step
+                    .args
+                    .get("prev_pty_output")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let prev_pty_output_truncated = step
+                    .args
+                    .get("prev_pty_output_truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 ctx.repo
-                    .terminal_set_exit(&terminal_id, prev_exit_code, prev_signal_killed)
+                    .terminal_set_exit_with_output(
+                        &terminal_id,
+                        prev_exit_code,
+                        prev_signal_killed,
+                        prev_pty_output,
+                        prev_pty_output_truncated,
+                    )
                     .await?;
                 Ok(())
             }

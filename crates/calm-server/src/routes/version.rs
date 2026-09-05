@@ -72,7 +72,11 @@ pub const API_VERSION: &str = "5";
 /// #1450 bumps 21 -> 22 with API v5. Cached bundles at 21 do not carry the
 /// required Track-detail `can_resume` contract and must refresh before they
 /// communicate with this server.
-pub const WEB_COMPAT_VERSION: u32 = 22;
+///
+/// #1456 bumps 22 -> 23: terminal task blocks now carry `command` instead of
+/// the shared `goal`. Cached bundles at 22 parse that known block as invalid
+/// and disable report UI unless the compatibility curtain stops them first.
+pub const WEB_COMPAT_VERSION: u32 = 23;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

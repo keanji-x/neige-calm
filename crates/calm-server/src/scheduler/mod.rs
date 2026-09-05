@@ -934,6 +934,7 @@ impl Scheduler {
                                 "child-track-incomplete: {} pending task(s) remain",
                                 snapshot.pending_count
                             ),
+                            details: None,
                             agent_message: None,
                         };
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
@@ -956,6 +957,7 @@ impl Scheduler {
                     let event = Event::TaskFailed {
                         idempotency_key: snapshot.task_id,
                         reason: format!("{}: {}", outcome.code(), outcome.detail()),
+                        details: None,
                         agent_message: None,
                     };
                     Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]))
@@ -1707,6 +1709,7 @@ impl Scheduler {
                         Event::TaskFailed {
                             idempotency_key: task_id,
                             reason,
+                            details: None,
                             agent_message: None,
                         },
                     ));
@@ -1855,6 +1858,7 @@ impl Scheduler {
                         Event::TaskFailed {
                             idempotency_key: task_id.clone(),
                             reason,
+                            details: None,
                             agent_message: None,
                         },
                     )];
@@ -2193,6 +2197,7 @@ impl Scheduler {
                         Event::TaskFailed {
                             idempotency_key: task_id.clone(),
                             reason,
+                            details: None,
                             agent_message: None,
                         },
                     )];
@@ -2441,6 +2446,8 @@ impl Scheduler {
             &card_id,
             terminal.exit_code,
             terminal.signal_killed,
+            &terminal.pty_output,
+            terminal.pty_output_truncated,
         )
         .await
         {
@@ -2708,15 +2715,18 @@ impl TerminalTaskHook {
         terminal_id: &str,
         exit_code: Option<i32>,
         signal_killed: bool,
+        pty_output: &str,
+        pty_output_truncated: bool,
     ) {
-        let card_id = match self.repo.terminal_get(terminal_id).await {
-            Ok(Some(term)) => term.card_id,
+        let terminal = match self.repo.terminal_get(terminal_id).await {
+            Ok(Some(term)) => term,
             Ok(None) => return,
             Err(e) => {
                 tracing::warn!(terminal_id, error = %e, "terminal task hook: terminal_get failed");
                 return;
             }
         };
+        let card_id = terminal.card_id.clone();
         let card = match self.repo.card_get(card_id.as_str()).await {
             Ok(Some(card)) => card,
             Ok(None) => return,
@@ -2763,6 +2773,8 @@ impl TerminalTaskHook {
             card_id.as_str(),
             exit_code,
             signal_killed,
+            pty_output,
+            pty_output_truncated,
         )
         .await
         {
@@ -2796,6 +2808,8 @@ pub async fn complete_terminal_task(
     worker_card_id: &str,
     exit_code: Option<i32>,
     signal_killed: bool,
+    pty_output: &str,
+    pty_output_truncated: bool,
 ) -> Result<()> {
     let Some(track) = repo.track_get(track_id).await? else {
         return Ok(());
@@ -2809,6 +2823,7 @@ pub async fn complete_terminal_task(
     let track_id_str = track_id.to_string();
     let track_id_typed = track.id.clone();
     let worker_card_id = worker_card_id.to_string();
+    let pty_output = pty_output.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
             let now = now_ms();
@@ -2847,7 +2862,12 @@ pub async fn complete_terminal_task(
                     },
                     Event::TaskCompleted {
                         idempotency_key: task_id.clone(),
-                        result: json!({ "exit_code": 0, "source": "terminal-exit" }),
+                        result: json!({
+                            "exit_code": 0,
+                            "source": "terminal-exit",
+                            "pty_output": pty_output,
+                            "pty_output_truncated": pty_output_truncated,
+                        }),
                         artifacts: Vec::new(),
                         agent_message: None,
                     },
@@ -2881,6 +2901,13 @@ pub async fn complete_terminal_task(
                     Event::TaskFailed {
                         idempotency_key: task_id.clone(),
                         reason,
+                        details: Some(json!({
+                            "exit_code": exit_code,
+                            "signal_killed": signal_killed,
+                            "source": "terminal-exit",
+                            "pty_output": pty_output,
+                            "pty_output_truncated": pty_output_truncated,
+                        })),
                         agent_message: None,
                     },
                 )

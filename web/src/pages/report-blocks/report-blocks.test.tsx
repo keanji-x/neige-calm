@@ -1018,6 +1018,10 @@ describe('degraded blocks', () => {
       key: 'missing-goal', kind: 'codex', ready: true, declared_by: 'spec',
     }).success).toBe(false);
     expect(taskBlockPayloadSchema.safeParse({
+      key: 'terminal-command', kind: 'terminal', command: 'cargo test',
+      ready: true, declared_by: 'spec',
+    }).success).toBe(true);
+    expect(taskBlockPayloadSchema.safeParse({
       key: 'mixed', kind: 'codex', goal: 'g', ready: true,
       declared_by: 'spec', tombstone: {}, tombstoned_by: 'user',
     }).success).toBe(false);

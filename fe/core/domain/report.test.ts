@@ -74,6 +74,29 @@ describe('readTrackReport', () => {
       .toEqual([['b-1', 'prose'], ['b-2', 'table']]);
   });
 
+  it('normalizes a persisted terminal goal into the discriminated command field', () => {
+    const report = readTrackReport([card({
+      payload: {
+        schemaVersion: 3, docRev: 4, summary: 'legacy', body: 'legacy terminal',
+        blocks: [{
+          id: 'b-terminal', kind: 'task', rev: 7,
+          payload: {
+            key: 'compile', kind: 'terminal', goal: 'cargo check',
+            ready: true, declared_by: 's\u0070ec',
+          },
+        }],
+      },
+    })]);
+
+    const block = report?.blocks?.[0];
+    expect(block).toMatchObject({
+      id: 'b-terminal', kind: 'task',
+      payload: { key: 'compile', kind: 'terminal', command: 'cargo check' },
+    });
+    if (block?.kind !== 'task') throw new Error('expected migrated task block');
+    expect(block.payload).not.toHaveProperty('goal');
+  });
+
   it('drops one wire-invalid block while keeping the other blocks', () => {
     const report = readTrackReport([card({
       payload: {

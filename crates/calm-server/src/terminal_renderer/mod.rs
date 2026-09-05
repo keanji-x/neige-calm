@@ -22,6 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+mod output_capture;
 mod snapshot;
 
 pub use client_pump::{ClientPumpContext, run_client_pump};
@@ -605,19 +606,27 @@ async fn ensure_entry(
         }),
     )
     .await?;
-    match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
-        ControlReply::AttachOk(Attached { replay, .. }) => {
-            if !replay.is_empty() {
-                let effects = match render_plane.lock() {
-                    Ok(mut rp) => rp.on_pty_chunk(replay),
-                    Err(_) => Vec::new(),
-                };
-                client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+    let output_capture =
+        match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
+            ControlReply::AttachOk(Attached {
+                cursor_head,
+                replay,
+                ..
+            }) => {
+                let output_capture =
+                    output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
+                if !replay.is_empty() {
+                    let effects = match render_plane.lock() {
+                        Ok(mut rp) => rp.on_pty_chunk(replay),
+                        Err(_) => Vec::new(),
+                    };
+                    client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+                }
+                output_capture
             }
-        }
-        ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
-        other => anyhow::bail!("unexpected proc-supervisor attach reply: {other:?}"),
-    }
+            ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("unexpected proc-supervisor attach reply: {other:?}"),
+        };
 
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
     // Teardown's persistence signal. The sender lives inside the attach reader
@@ -637,6 +646,7 @@ async fn ensure_entry(
         cfg.terminal_id.clone(),
         task_hook,
         exit_persisted_tx,
+        output_capture,
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 

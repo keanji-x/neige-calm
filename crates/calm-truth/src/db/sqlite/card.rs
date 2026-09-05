@@ -19,7 +19,8 @@ pub async fn terminal_get_by_card_tx(
 ) -> Result<Option<Terminal>> {
     let row = sqlx::query_as::<_, Terminal>(
         r#"SELECT id, card_id, program, cwd, env, pid,
-                  theme_fg, theme_bg, exit_code, signal_killed, created_at
+                  theme_fg, theme_bg, exit_code, signal_killed,
+                  pty_output, pty_output_truncated, created_at
            FROM terminals WHERE card_id = ?1"#,
     )
     .bind(card_id)
@@ -709,6 +710,8 @@ pub async fn terminal_create_tx(
         theme_bg,
         exit_code: None,
         signal_killed: false,
+        pty_output: String::new(),
+        pty_output_truncated: false,
         created_at: now,
     })
 }

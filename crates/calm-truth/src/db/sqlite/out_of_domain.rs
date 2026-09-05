@@ -266,6 +266,8 @@ impl RepoOutOfDomain for SqlxRepo {
             theme_bg,
             exit_code: None,
             signal_killed: false,
+            pty_output: String::new(),
+            pty_output_truncated: false,
             created_at: now,
         })
     }
@@ -290,17 +292,34 @@ impl RepoOutOfDomain for SqlxRepo {
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()> {
-        // #306 — single UPDATE; the two columns are written together so
+        let output_unavailable = exit_code.is_some() || signal_killed;
+        self.terminal_set_exit_with_output(id, exit_code, signal_killed, "", output_unavailable)
+            .await
+    }
+
+    async fn terminal_set_exit_with_output(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+        pty_output: &str,
+        pty_output_truncated: bool,
+    ) -> Result<()> {
+        // #306/#1456 — single UPDATE; exit and output evidence are written together so
         // a reader never sees a mismatched intermediate state. The
         // mutual-exclusion invariant (signal_killed=true ⇒ exit_code=None)
         // is the writer's responsibility — see daemon `spawn_child_waiter`.
-        let res =
-            sqlx::query("UPDATE terminals SET exit_code = ?1, signal_killed = ?2 WHERE id = ?3")
-                .bind(exit_code)
-                .bind(if signal_killed { 1_i64 } else { 0_i64 })
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
+        let res = sqlx::query(
+            "UPDATE terminals SET exit_code=?1,signal_killed=?2,pty_output=?3,\
+             pty_output_truncated=?4 WHERE id=?5",
+        )
+        .bind(exit_code)
+        .bind(if signal_killed { 1_i64 } else { 0_i64 })
+        .bind(pty_output)
+        .bind(if pty_output_truncated { 1_i64 } else { 0_i64 })
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
         }
@@ -309,7 +328,8 @@ impl RepoOutOfDomain for SqlxRepo {
 
     async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()> {
         let res = sqlx::query(
-            "UPDATE terminals SET pid = NULL, exit_code = NULL, signal_killed = 0 WHERE id = ?1",
+            "UPDATE terminals SET pid=NULL,exit_code=NULL,signal_killed=0,pty_output='',\
+             pty_output_truncated=0 WHERE id=?1",
         )
         .bind(id)
         .execute(&self.pool)

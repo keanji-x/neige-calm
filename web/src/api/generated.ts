@@ -2446,6 +2446,16 @@ export interface components {
             pid?: number | null;
             program: string;
             /**
+             * @description #1456 — bounded tail of the terminal's merged PTY byte stream, decoded
+             *     lossily as UTF-8. A PTY has no separable stdout/stderr channels.
+             */
+            pty_output: string;
+            /**
+             * @description True when bytes were dropped before `pty_output`, either by the
+             *     supervisor replay window or the smaller durable-evidence cap.
+             */
+            pty_output_truncated: boolean;
+            /**
              * @description #306 — true when the child was killed by a signal (SIGTERM,
              *     SIGKILL, SIGSEGV, …). Mutually exclusive with `exit_code.is_some()`
              *     at the writer: the daemon picks one branch on the way out and
@@ -2976,7 +2986,7 @@ export interface components {
          *
          *     ```json
          *     {
-         *       "schemaVersion": 3,
+         *       "schemaVersion": 4,
          *       "docRev": 7,
          *       "summary": "Refactored the dispatcher into a typed actor",
          *       "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
@@ -3013,9 +3023,9 @@ export interface components {
              * Format: int32
              * @description Tier A persistence contract — see
              *     `TRACK_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-             *     `validation.rs`. `3` since #979 added document-wide optimistic
-             *     concurrency; blocks remain authoritative and `body` is their
-             *     flat projection. v1/v2 rows remain readable and are lazily
+             *     `validation.rs`. `4` since #1456 discriminated terminal `command`
+             *     from agent `goal`; blocks remain authoritative and `body` is their
+             *     flat projection. Older rows remain readable and are lazily
              *     upgraded at the next persist via the CRDT-layer migrator
              *     (`ReportDoc::ensure_blocks_layout`).
              */

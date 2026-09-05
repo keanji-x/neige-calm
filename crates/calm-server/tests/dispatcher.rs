@@ -343,6 +343,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
         Event::TaskFailed {
             idempotency_key: "k2".into(),
             reason: "x".into(),
+            details: None,
             agent_message: None,
         },
     );
@@ -450,7 +451,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
             kind: "task".into(),
             rev: 1,
             payload: serde_json::json!({
-                "key": "lagged-stale", "kind": "terminal", "goal": "must not spawn"
+                "key": "lagged-stale", "kind": "terminal", "command": "false"
             }),
         }]),
     };
@@ -551,7 +552,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     assert_ne!(frozen_context, "[]");
     spawned.store(0, Ordering::SeqCst);
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'changed') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'changed') \
          WHERE id = 'lagged-context-report'",
     )
     .execute(&pool)

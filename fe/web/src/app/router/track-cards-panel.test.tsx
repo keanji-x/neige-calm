@@ -108,7 +108,7 @@ const TASK_REPORT_CARD = card({
   payload: {
     schemaVersion: 3, docRev: 1, summary: 's', body: 'b',
     blocks: [
-      { id: 'b-term', kind: 'task', rev: 1, payload: { key: 'has-adapter', kind: 'terminal', declared_by: 'spec', ready: true, goal: 'g' } },
+      { id: 'b-term', kind: 'task', rev: 1, payload: { key: 'has-adapter', kind: 'terminal', declared_by: 'spec', ready: true, command: 'true' } },
       { id: 'b-codex', kind: 'task', rev: 1, payload: { key: 'codex-adapter', kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' } },
       { id: 'b-unknown', kind: 'task', rev: 1, payload: { key: 'no-adapter', kind: 'claude', declared_by: 'spec', ready: true, goal: 'g' } },
     ],

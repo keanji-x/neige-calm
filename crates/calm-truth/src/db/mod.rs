@@ -976,6 +976,17 @@ pub trait RepoOutOfDomain: RepoRead {
         exit_code: Option<i32>,
         signal_killed: bool,
     ) -> Result<()>;
+    /// #1456 — atomically persist the exit status and bounded merged PTY
+    /// output evidence. The live attach reader uses this; synthetic recovery
+    /// writers use `terminal_set_exit` and therefore record an empty stream.
+    async fn terminal_set_exit_with_output(
+        &self,
+        id: &str,
+        exit_code: Option<i32>,
+        signal_killed: bool,
+        pty_output: &str,
+        pty_output_truncated: bool,
+    ) -> Result<()>;
     /// Clear stale PID and exit markers immediately before spawning or
     /// reattaching a terminal child. Fresh terminal rows are already clean;
     /// recovered rows may carry a previous PID plus boot reconciliation exit

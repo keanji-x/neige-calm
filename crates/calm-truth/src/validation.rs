@@ -78,15 +78,15 @@ pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "track-report"` (issue
 /// #229 PR B). Mirrors `calm_types::track_report::TrackReportPayload::SCHEMA_VERSION`.
 ///
-/// `3` since #979: the CRDT root carries `doc_rev`, mirrored as
-/// `docRev` in the payload. There is no SQL migration — v1/v2 rows
-/// deserialize with revision zero and are lazily upgraded to v3 on
+/// `4` since #1456: terminal task blocks use `command` while agent task
+/// blocks use `goal`. There is no SQL migration — older rows are normalized
+/// on read and lazily upgraded to v4 on
 /// their next write through the report-edit boundary
 /// (`calm_server::track_report::write::persist`), whose CRDT migrator
 /// (`ReportDoc::ensure_blocks_layout`) rebuilds the block layout. The
 /// read path carries no version guard for this kind, so v1 rows stay
 /// readable in place.
-pub const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 3;
+pub const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 4;
 /// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
 pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
@@ -1324,7 +1324,7 @@ mod tests {
     fn track_report_happy() {
         validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 3, "docRev": 1, "summary": "", "body": "# Goal\n" }),
+            &json!({ "schemaVersion": 4, "docRev": 1, "summary": "", "body": "# Goal\n" }),
         )
         .unwrap();
     }
@@ -1342,10 +1342,10 @@ mod tests {
     }
 
     #[test]
-    fn track_report_v3_rejects_missing_doc_rev() {
+    fn track_report_v4_rejects_missing_doc_rev() {
         let err = validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 3, "summary": "", "body": "# Goal\n" }),
+            &json!({ "schemaVersion": 4, "summary": "", "body": "# Goal\n" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
@@ -1358,7 +1358,7 @@ mod tests {
     fn track_report_rejects_missing_summary() {
         let err = validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 3, "body": "# Goal" }),
+            &json!({ "schemaVersion": 4, "body": "# Goal" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
@@ -1371,7 +1371,7 @@ mod tests {
     fn track_report_rejects_missing_body() {
         let err = validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 3, "summary": "x" }),
+            &json!({ "schemaVersion": 4, "summary": "x" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
@@ -1384,7 +1384,7 @@ mod tests {
     fn track_report_rejects_wrong_field_type() {
         let err = validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 3, "summary": 42, "body": "x" }),
+            &json!({ "schemaVersion": 4, "summary": 42, "body": "x" }),
         )
         .unwrap_err();
         assert!(is_bad_request(&err));
@@ -1394,19 +1394,19 @@ mod tests {
     fn track_report_rejects_unknown_schema_version() {
         let err = validate_builtin_card(
             "track-report",
-            &json!({ "schemaVersion": 4, "summary": "", "body": "" }),
+            &json!({ "schemaVersion": 5, "summary": "", "body": "" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
             panic!("expected BadRequest");
         };
         assert!(msg.contains("track-report"), "msg = {msg}");
-        assert!(msg.contains('4'), "msg = {msg}");
+        assert!(msg.contains('5'), "msg = {msg}");
     }
 
     #[test]
     fn track_report_rejects_declared_legacy_schema_versions() {
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let err = validate_builtin_card(
                 "track-report",
                 &json!({ "schemaVersion": version, "summary": "", "body": "" }),
@@ -1416,7 +1416,7 @@ mod tests {
                 panic!("expected BadRequest");
             };
             assert!(msg.contains(&version.to_string()), "msg = {msg}");
-            assert!(msg.contains('3'), "msg = {msg}");
+            assert!(msg.contains('4'), "msg = {msg}");
         }
     }
 
@@ -1428,7 +1428,7 @@ mod tests {
         validate_builtin_card(
             "track-report",
             &json!({
-                "schemaVersion": 3,
+                "schemaVersion": 4,
                 "docRev": 0,
                 "summary": "",
                 "body": "x",

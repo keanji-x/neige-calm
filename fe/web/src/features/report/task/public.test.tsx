@@ -132,7 +132,7 @@ describe('ReportTaskBlock', () => {
   // not the discriminant — the attribution is.
   it('reads a task carrying an explicit null tombstone as live', () => {
     render(<ReportTaskBlock blockId="b-1" payload={{
-      key: 'live', kind: 'terminal', declared_by: 'spec', ready: true, goal: 'g', tombstone: null,
+      key: 'live', kind: 'terminal', declared_by: 'spec', ready: true, command: 'true', tombstone: null,
     }} />);
     expect(screen.queryByText('Withdrawn')).toBeNull();
     expect(screen.getByText('Ready')).toBeTruthy();

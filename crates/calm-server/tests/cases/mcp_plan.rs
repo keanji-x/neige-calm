@@ -470,6 +470,9 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
             .unwrap()
             .contains("ready: true")
     );
+    let shape = out["migration"]["shape"].as_str().unwrap();
+    assert!(shape.contains("goal (codex/claude)"), "{shape}");
+    assert!(shape.contains("command (terminal)"), "{shape}");
     assert_eq!(
         all_persistent_rows(&boot).await,
         before,
@@ -776,7 +779,7 @@ async fn track_delete_removes_plan_rows() {
     write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     write_task_block(
         &boot,
-        json!({ "key": "b", "kind": "terminal", "goal": "cargo test" }),
+        json!({ "key": "b", "kind": "terminal", "command": "cargo test" }),
     )
     .await;
     assert_eq!(task_row_count(&boot).await, 2);
@@ -827,7 +830,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
     .await;
     write_task_block(
         &boot,
-        json!({ "key": "b", "kind": "terminal", "goal": "cargo test", "depends_on": ["a"] }),
+        json!({ "key": "b", "kind": "terminal", "command": "cargo test", "depends_on": ["a"] }),
     )
     .await;
 

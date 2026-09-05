@@ -27,7 +27,7 @@ export const PLANNER_PAYLOAD_SCHEMA_VERSION = 1;
 export const CLAUDE_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "track-report"` card payloads (issue #229 PR B;
  *  v2 adds the `blocks` array; v3 adds `docRev` — issue #979). */
-export const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION = 3;
+export const TRACK_REPORT_PAYLOAD_SCHEMA_VERSION = 4;
 /** `schemaVersion` for `kind: "status"` overlay payloads. */
 export const OVERLAY_STATUS_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "progress"` overlay payloads. */

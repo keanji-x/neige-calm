@@ -691,11 +691,17 @@ pub enum Event {
     ///
     /// `reason` is a free-form failure string — the kernel never parses
     /// it, but persists it on the events table so audit-log replay can
-    /// surface the rationale a worker gave its planner.
+    /// surface the rationale a worker gave its planner. `details` is optional
+    /// structured evidence; terminal auto-completion records its exit and
+    /// bounded merged PTY output there.
     #[serde(rename = "task.failed")]
     TaskFailed {
         idempotency_key: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        #[ts(type = "unknown")]
+        details: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
@@ -1813,6 +1819,7 @@ mod scope_tests {
         let failed = Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            details: None,
             agent_message: None,
         };
         assert_eq!(failed.kind_tag(), "task.failed");
@@ -2305,12 +2312,16 @@ mod scope_tests {
         let ev = Event::TaskFailed {
             idempotency_key: "idem-4".into(),
             reason: "process exited with code 137".into(),
+            details: Some(
+                serde_json::json!({"pty_output": "boom\n", "pty_output_truncated": false}),
+            ),
             agent_message: Some("rejected rationale".into()),
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["ev"], "task.failed");
         assert_eq!(json["data"]["idempotency_key"], "idem-4");
         assert_eq!(json["data"]["reason"], "process exited with code 137");
+        assert_eq!(json["data"]["details"]["pty_output"], "boom\n");
         assert_eq!(json["data"]["agent_message"], "rejected rationale");
 
         let back: Event = serde_json::from_value(json).unwrap();
@@ -2869,6 +2880,7 @@ mod scope_tests {
             Event::TaskFailed {
                 idempotency_key: "k".into(),
                 reason: "boom".into(),
+                details: None,
                 agent_message: None,
             },
             Event::PlanUpdated {

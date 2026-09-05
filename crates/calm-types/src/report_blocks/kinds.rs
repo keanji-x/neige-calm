@@ -65,7 +65,7 @@ pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str>
             .and_then(Value::as_str)
             .into_iter()
             .collect(),
-        KIND_TASK => ["goal", "acceptance"]
+        KIND_TASK => ["goal", "command", "acceptance"]
             .into_iter()
             .filter_map(|field| payload.get(field).and_then(Value::as_str))
             .collect(),
@@ -120,6 +120,7 @@ pub const TASK_FIELDS: &[&str] = &[
     "key",
     "kind",
     "goal",
+    "command",
     "acceptance",
     "gate",
     "no_gate_reason",
@@ -187,12 +188,30 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if map.contains_key("tombstoned_by") {
         errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
     }
-    match map.get("kind").and_then(Value::as_str) {
-        Some("codex" | "claude" | "terminal") => {}
-        _ => errors
-            .push("kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into()),
+    let task_kind = match map.get("kind").and_then(Value::as_str) {
+        Some(kind @ ("codex" | "claude" | "terminal")) => Some(kind),
+        _ => {
+            errors.push(
+                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into(),
+            );
+            None
+        }
+    };
+    match task_kind {
+        Some("terminal") => {
+            required_non_empty_string(map, "command", errors);
+            if map.contains_key("goal") {
+                errors.push("goal: must be absent when kind is \"terminal\"".into());
+            }
+        }
+        Some("codex" | "claude") => {
+            required_non_empty_string(map, "goal", errors);
+            if map.contains_key("command") {
+                errors.push("command: must be absent when kind is \"codex\" or \"claude\"".into());
+            }
+        }
+        _ => {}
     }
-    required_non_empty_string(map, "goal", errors);
     optional_non_empty_string(map, "acceptance", errors);
     optional_non_empty_string(map, "no_gate_reason", errors);
     optional_abs_path(map, "cwd", errors);

@@ -119,7 +119,7 @@ async fn task_dispatch(
         "error": "calm.task.dispatch was retired (#644); no task was dispatched",
         "migration": {
             "use": "calm.report.blocks.upsert",
-            "shape": "{ kind: \"task\", payload: { key, kind, goal, acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
+            "shape": "{ kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
             "notes": "Read docRev with calm.report.read. The kernel schedules ready task blocks and runs verification gates; use calm.plan.list for status."
         }
     }))
@@ -398,6 +398,7 @@ async fn task_fail(
     let event = Event::TaskFailed {
         idempotency_key,
         reason,
+        details: None,
         agent_message: None,
     };
     commit_worker_task_report_for_identity(&ctx, &identity, event).await?;

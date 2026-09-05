@@ -1,10 +1,16 @@
 {
-  "description": "task.failed with agent_message present.",
+  "description": "task.failed with structured terminal evidence and agent_message present.",
   "wire": {
     "ev": "task.failed",
     "data": {
       "idempotency_key": "idem-01",
       "reason": "compile error",
+      "details": {
+        "exit_code": 2,
+        "pty_output": "compiler error\n",
+        "pty_output_truncated": false,
+        "source": "terminal-exit"
+      },
       "agent_message": "giving up"
     }
   }

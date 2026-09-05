@@ -543,7 +543,7 @@ async fn read_returns_initial_seeded_body() {
         Some(TrackReportPayload::initial().body.as_str())
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(3));
+    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(4));
     assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(0));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
@@ -654,7 +654,7 @@ async fn write_replaces_body_and_emits_card_updated() {
                 serde_json::from_value(c.payload.clone()).expect("payload deserializes");
             assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
             assert_eq!(payload.summary, "done refactoring");
-            assert_eq!(payload.schema_version, 3);
+            assert_eq!(payload.schema_version, 4);
             assert_eq!(payload.doc_rev, 1);
             assert_eq!(c.updated_at, new_updated_at);
         }

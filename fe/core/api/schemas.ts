@@ -634,13 +634,15 @@ export const taskCompletedSchema = z.object({
  * `Event::TaskFailed` — worker card reports task failure. `reason` is a
  * free-form failure string; the kernel never parses it but persists it
  * on the events table so audit-log replay can surface the rationale the
- * worker gave its planner.
+ * worker gave its planner. `details` carries optional structured evidence,
+ * including terminal PTY output.
  */
 export const taskFailedSchema = z.object({
   ev: z.literal('task.failed'),
   data: z.object({
     idempotency_key: z.string(),
     reason: z.string(),
+    details: z.unknown().optional(),
     agent_message: z.string().optional(),
   }),
 });

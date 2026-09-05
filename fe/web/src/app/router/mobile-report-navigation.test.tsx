@@ -55,7 +55,7 @@ const REPORT_CARD = {
       { id: 'b-1', kind: 'prose', rev: 1, payload: { markdown: '# Findings\n' } },
       {
         id: 'b-task', kind: 'task', rev: 1,
-        payload: { key: 'ship-it', kind: 'terminal', declared_by: 'spec', ready: true, goal: 'g' },
+        payload: { key: 'ship-it', kind: 'terminal', declared_by: 'spec', ready: true, command: 'true' },
       },
     ],
   },

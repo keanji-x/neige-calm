@@ -196,11 +196,16 @@ fn outline_response(
 fn block_heading(block: &calm_types::track_report::ReportBlock) -> String {
     if block.kind != calm_types::report_blocks::KIND_PROSE {
         if block.kind == calm_types::report_blocks::KIND_TASK {
-            if let Some(goal) = block.payload.get("goal").and_then(Value::as_str) {
-                let rendered_goal = calm_types::report_links::scan_links(goal).plain;
-                let rendered_goal = rendered_goal.trim();
-                if !rendered_goal.is_empty() {
-                    return truncate_chars(&format!("{}: goal={rendered_goal}", block.kind), 60);
+            let field = if block.payload.get("kind").and_then(Value::as_str) == Some("terminal") {
+                "command"
+            } else {
+                "goal"
+            };
+            if let Some(instruction) = block.payload.get(field).and_then(Value::as_str) {
+                let rendered = calm_types::report_links::scan_links(instruction).plain;
+                let rendered = rendered.trim();
+                if !rendered.is_empty() {
+                    return truncate_chars(&format!("{}: {field}={rendered}", block.kind), 60);
                 }
             }
             return truncate_chars(
@@ -347,7 +352,18 @@ mod tests {
         -->\n\n";
 
     #[test]
-    fn task_headings_render_markdown_goal_then_use_key_and_kind_fallbacks() {
+    fn task_headings_render_discriminated_instruction_then_use_fallbacks() {
+        assert_eq!(
+            block_heading(&block(
+                calm_types::report_blocks::KIND_TASK,
+                json!({
+                    "kind": "terminal",
+                    "command": "cargo test",
+                    "key": "test"
+                }),
+            )),
+            "task: command=cargo test"
+        );
         assert_eq!(
             block_heading(&block(
                 calm_types::report_blocks::KIND_TASK,

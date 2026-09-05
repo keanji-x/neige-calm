@@ -389,6 +389,7 @@ mod filter_tests {
         Event::TaskFailed {
             idempotency_key: "k".into(),
             reason: "boom".into(),
+            details: None,
             agent_message: None,
         }
     }

@@ -61,7 +61,9 @@ export function ReportTaskBlock({ payload, blockId }: {
         </span>
       </summary>
 
-      <p className={styles.goal}>{live.goal}</p>
+      <p className={styles.goal}>
+        {live.kind === 'terminal' ? live.command : live.goal}
+      </p>
 
       <dl className={styles.fields}>
         {live.acceptance != null && live.acceptance !== '' && (

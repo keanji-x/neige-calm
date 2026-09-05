@@ -346,6 +346,12 @@ pub struct Terminal {
     /// never both. Required (NOT NULL DEFAULT 0 in SQL) — every row
     /// carries a value, even if `false`.
     pub signal_killed: bool,
+    /// #1456 — bounded tail of the terminal's merged PTY byte stream, decoded
+    /// lossily as UTF-8. A PTY has no separable stdout/stderr channels.
+    pub pty_output: String,
+    /// True when bytes were dropped before `pty_output`, either by the
+    /// supervisor replay window or the smaller durable-evidence cap.
+    pub pty_output_truncated: bool,
     pub created_at: i64,
 }
 
@@ -456,6 +462,10 @@ pub struct Task {
     pub track_id: String,
     pub key: String,
     pub kind: TaskKind,
+    /// Internal execution instruction stored in the released `tasks.goal`
+    /// column. Public task blocks and `calm.plan.list` discriminate this as
+    /// `goal` for agent kinds and `command` for terminal; do not expose this
+    /// storage name as a shared wire field.
     pub goal: String,
     pub context_json: String,
     pub acceptance_criteria: Option<String>,

@@ -361,6 +361,39 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
 }
 
 #[test]
+fn failed_run_markdown_retains_structured_terminal_output_evidence() {
+    let write = fallback_write();
+    let failed = track_scoped(
+        6,
+        600,
+        ActorId::KernelDispatcher,
+        Event::TaskFailed {
+            idempotency_key: "w:k".into(),
+            reason: "terminal worker exited with code 2".into(),
+            details: Some(json!({
+                "exit_code": 2,
+                "source": "terminal-exit",
+                "pty_output": "compiler failed\n",
+                "pty_output_truncated": true
+            })),
+            agent_message: None,
+        },
+    );
+    let runs = project_runs(
+        &write,
+        vec![],
+        vec![dispatched_event(5, 500, "w:k", "terminal"), failed],
+    );
+    let markdown = run_markdown(&runs[0]);
+
+    assert!(markdown.contains("compiler failed"), "{markdown}");
+    assert!(
+        markdown.contains("\"pty_output_truncated\": true"),
+        "{markdown}"
+    );
+}
+
+#[test]
 fn project_runs_real_requested_event_wins_over_dispatch_record() {
     // Legacy `calm.task.dispatch` keys keep their `*.worker_requested`
     // record even if a dispatch record ever coexisted; the fallback
