@@ -307,9 +307,14 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
         ),
         "declare_and_wait" => "this track requires user release before planner tasks are queued".into(),
         "declaration_changed_in_flight" => {
-            "task is already executing; declaration changes were not applied".into()
+            "the declaration differs from the recorded execution; its frozen requirements were not changed".into()
         }
-        "task_key_completed" => "task key has already completed; declare a new key instead".into(),
+        "task_key_completed" => match arg(args, "status") {
+            "failed" => "the current attempt failed; inspect its recovery options".into(),
+            "done" => "this task is complete; its execution history remains available".into(),
+            "canceled" => "the current attempt was canceled; review its execution history".into(),
+            _ => "this execution has ended; inspect its outcome".into(),
+        },
         "context_stale_declaration" => format!(
             "task `{}` is in flight ({}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected",
             arg(args, "key"),

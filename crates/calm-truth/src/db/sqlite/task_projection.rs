@@ -487,11 +487,14 @@ fn attach_task_pending_reasons(
                             [dependency] => format!("Waiting for `{dependency}`"),
                             many => format!("Waiting for {} dependencies", many.len()),
                         },
+                        [(dependency, "failed")] => {
+                            format!("Blocked by `{dependency}` (failed); inspect recovery options")
+                        }
                         [(dependency, status)] => {
-                            format!("Blocked by `{dependency}` ({status}); revise dependencies")
+                            format!("Blocked by `{dependency}` ({status}); review this prerequisite")
                         }
                         many => format!(
-                            "Blocked by {} terminal dependencies; revise dependencies",
+                            "Blocked by {} failed or canceled prerequisites; inspect their outcomes",
                             many.len()
                         ),
                     };
@@ -1286,14 +1289,16 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                     "task_key_completed"
                 },
                 "key",
-                BTreeMap::new(),
+                diagnostic_args([("status", serde_json::json!(status))]),
                 vec![],
                 None,
                 Some(
                     if changed {
                         "open_worker_output"
+                    } else if status == "failed" {
+                        "inspect_recovery_options"
                     } else {
-                        "create_task_with_new_key"
+                        "inspect_task_attempts"
                     }
                     .into(),
                 ),
@@ -2069,7 +2074,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_stale_row_only_offers_the_new_key_action() {
+    async fn terminal_stale_row_points_to_recovery_without_live_context_warning() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "terminal-stale", "failed").await;
         sqlx::query(
@@ -2099,6 +2104,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.contains(&"task_key_completed"));
         assert!(!codes.contains(&"context_stale_reference"));
+        assert!(verdicts[0].diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "task_key_completed"
+                && diagnostic.action.as_deref() == Some("inspect_recovery_options")
+        }));
     }
 
     #[tokio::test]
