@@ -42,9 +42,9 @@
 //   2. **`createElement`.** The extension filter admitted only `.tsx`/`.jsx`,
 //      so `createElement(DirectoryBrowser, ...)` in a `.ts` file was not even
 //      read — and in a `.tsx` file it still carries no `<` to match.
-//   3. **A production file named `*.spec.tsx`.** The exclusion was
-//      `/\.(test|spec|browser\.test|contract\.test)\./`, so any file with
-//      `.spec.` in its name was taken for a test and skipped.
+//   3. **A production file named `*.spec.tsx`.** The exclusion took any file
+//      whose name carried `.test.`, `.spec.`, `.browser.test.` or
+//      `.contract.test.` for a test, and skipped it.
 //
 // Hole 3 is worth spelling out, because the exclusion looked defensible. In
 // this workspace `.spec.` names no test: `fe/vitest.config.ts` collects
@@ -65,7 +65,7 @@
 // deliberate and it is the fail-closed direction: resolving the specifier would
 // be this file re-deriving module resolution, and a second component under
 // these names is a thing a reviewer should have to look at, not a thing this
-// sweep should quietly wave through.
+// sweep should quietly let through.
 //
 // ## The one import form this file does not read, and who does
 //

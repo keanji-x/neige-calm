@@ -41,7 +41,7 @@ function sourceFilesUnder(root: string): string[] {
 const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>> = {
   'directory-picker-alias': {},
   'directory-picker-create-element': {},
-  'directory-picker-spec-name': {},
+  'directory-picker-nontest-name': {},
   'directory-picker-stale-registration': { 'web/src/features/area/gone/public.tsx': 'owns-its-modal' },
   'directory-picker-default-export': {},
   'directory-picker-module-moved': {},
@@ -56,7 +56,7 @@ const directoryPickerRegistries: Record<string, Readonly<Record<string, string>>
 const directoryPickerModules: Record<string, readonly string[]> = {
   'directory-picker-alias': [],
   'directory-picker-create-element': [],
-  'directory-picker-spec-name': [],
+  'directory-picker-nontest-name': [],
   'directory-picker-stale-registration': [],
   'directory-picker-default-export': ['web/src/ui/f/public.tsx'],
   'directory-picker-module-moved': ['web/src/ui/f/public.tsx'],
@@ -274,7 +274,7 @@ describe('architecture fixtures', () => {
     ['test-module-runtime-state-exemption', 'architecture/'],
     ['directory-picker-alias', 'web/src/features/area/aliased/public.tsx renders a directory picker'],
     ['directory-picker-create-element', 'web/src/features/area/create-element/public.ts renders a directory picker'],
-    ['directory-picker-spec-name', 'web/src/features/area/spec-name/public.spec.tsx renders a directory picker'],
+    ['directory-picker-nontest-name', 'web/src/features/area/suffixed/public.spec.tsx renders a directory picker'],
     ['directory-picker-stale-registration', 'drop the stale registration'],
     ['directory-picker-default-export', 'web/src/ui/f/public.tsx has a default export'],
     ['directory-picker-module-moved', 'and no file is there'],
