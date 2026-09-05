@@ -128,6 +128,18 @@ pub struct HarnessSnapshot {
     pub token_usage: Option<TokenUsage>,
 }
 
+/// The queue and the arrays that run parallel to it, passed as one value.
+///
+/// #1449 — they are three views of the same list and are meaningless apart: an
+/// entry's identity is its position in all three. Passing them separately let
+/// `from_state` grow to eight arguments and, more to the point, let a caller
+/// pass two of the three.
+pub struct PendingQueueState {
+    pub queue: Vec<Observation>,
+    pub envelope_ids: Vec<Option<i64>>,
+    pub message_ids: Vec<Vec<String>>,
+}
+
 impl HarnessSnapshot {
     pub fn initial(push_watermark: i64, pending_queue: Vec<Observation>) -> Self {
         let pending_envelope_ids = vec![None; pending_queue.len()];
@@ -154,13 +166,16 @@ impl HarnessSnapshot {
     pub fn from_state(
         state: &HarnessState,
         push_watermark: i64,
-        pending_queue: Vec<Observation>,
-        pending_envelope_ids: Vec<Option<i64>>,
-        pending_message_ids: Vec<Vec<String>>,
+        pending: PendingQueueState,
         last_thread_id: Option<String>,
         last_turn_id: Option<String>,
         last_report_body_sha256: Option<String>,
     ) -> Self {
+        let PendingQueueState {
+            queue: pending_queue,
+            envelope_ids: pending_envelope_ids,
+            message_ids: pending_message_ids,
+        } = pending;
         let phase = HarnessPhaseTag::from(state);
         let wedged_reason = match state {
             HarnessState::Wedged { reason, .. } => Some(reason.clone()),

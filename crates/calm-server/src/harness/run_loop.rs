@@ -2337,9 +2337,11 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let mut snapshot = HarnessSnapshot::from_state(
         &state,
         push_watermark,
-        queue,
-        pending_envelope_ids,
-        pending_message_ids,
+        crate::harness::snapshot::PendingQueueState {
+            queue,
+            envelope_ids: pending_envelope_ids,
+            message_ids: pending_message_ids,
+        },
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
