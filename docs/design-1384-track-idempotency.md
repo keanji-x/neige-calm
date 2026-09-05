@@ -353,6 +353,8 @@ It is safe because that function is *designed* to be re-run:
   (called at `:399`) removes a `config.lock` left by a killed process.
 
 **The permanently un-materializable state IS reachable from a create crash.**
+*(Closed by #1427 — see KNOWN GAP 5. The construction below was correct and is
+kept because it is what motivated the fix; the code it cites has since changed.)*
 Round 2 of this document claimed it was not, on the grounds that the window
 between `create_dir_all` and `write_owner_marker` leaves an *empty* directory.
 Reading `write_owner_marker` itself refutes that, and the refutation is recorded
@@ -738,18 +740,20 @@ test went red, not how many.
    binding row survives, `track_get` misses, and the key answers 500 forever.
    Deliberate — fail-closed beats minting a different track for a byte-identical
    request — but there is no operator affordance to clear it.
-5. **A crash inside `write_owner_marker` poisons one `Idempotency-Key`
-   permanently.** Reachable, not theoretical (§4.4): death between
-   `create_dir_all(<path>/.git)` (`workspace_materialize.rs:547-555`) and the
-   marker write (`:556-561`) leaves an unmarked non-empty directory that the
-   fence refuses forever (`:353-364`). Every retry under that key answers 409
-   `idempotency_key_exhausted`; the client recovers with a new key, at a fresh
-   path. The residue is a dead directory under the workspace root that nothing
-   reaps, and the liveness cost is stated in §4.4 rather than softened.
-   Follow-up: *"make the workspace ownership marker crash-atomic"* (write to a
-   temp file and rename, or claim the path with a marker that does not require
-   creating `.git` first) — that closes the window rather than working around
-   it, and is out of scope here.
+5. ~~**A crash inside `write_owner_marker` poisons one `Idempotency-Key`
+   permanently.**~~ **CLOSED by #1427.** The gap as written was real and the
+   §4.4 construction stood: death between `create_dir_all(<path>/.git)` and the
+   marker write left an unmarked non-empty directory that the fence refuses
+   forever, so every retry under that key answered 409
+   `idempotency_key_exhausted`. #1427 made the claim crash-atomic —
+   `claim_owner_marker` assembles `.git/<marker>` in a staging directory beside
+   `<path>` and publishes it with one `rename(2)` over the (empty) `<path>`, and
+   the marker's re-assertion after `git init` renames a sibling temp file rather
+   than truncating the published one. There is no longer an intermediate state
+   in which `<path>` is non-empty and unmarked, and the fence was **not**
+   relaxed to get there. The §4.4 paragraphs below still describe the window
+   accurately as of this document's writing; read them as history, not as
+   current behaviour.
 6. **A replay does not repair an attached workspace.** `Resume` deliberately
    does not re-run `validate_attached_workspace` (variant 3), and
    `materialize_workspace` is a no-op for `Attached`

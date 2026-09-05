@@ -367,7 +367,11 @@ fn materialize_managed_workspace_inner(
             // Empty and unclaimed: claim it *before* writing anything else, so
             // a crash at any later point leaves a directory we can prove is
             // ours and repair, instead of an unmarked non-empty brick.
-            write_owner_marker(path, track_id)?;
+            //
+            // #1427: the claim itself has to be crash-atomic, or the very act
+            // of making it opens the window it exists to close. See
+            // [`claim_owner_marker`].
+            claim_owner_marker(path, track_id)?;
         }
     }
 
@@ -543,6 +547,205 @@ fn read_owner_marker(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Observation seam for #1427's crash-atomicity test. Called at every point
+/// where the ownership claim has just changed what a `read_dir` of `<path>`
+/// would report, i.e. every point at which process death would freeze the
+/// workspace directory in whatever state it is currently in. In non-test
+/// builds it compiles to nothing.
+#[inline]
+fn claim_crash_point(path: &Path) {
+    #[cfg(test)]
+    tests::claim_crash_point(path);
+    #[cfg(not(test))]
+    let _ = path;
+}
+
+/// Name of the staging directory the ownership claim is assembled in, before
+/// it is published over `<path>` with a single `rename`. Dot-prefixed so it can
+/// never collide with a track id (ids are never dot-prefixed — the same
+/// reasoning [`crate::workspace_recycle::TRASH_DIR_NAME`] relies on), and it
+/// lives in `<path>`'s **parent** so a crash leaves the debris outside the
+/// directory whose emptiness the fence reads.
+const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
+
+/// Claim `path` for `track_id` **atomically** (#1427).
+///
+/// The claim is the one write on this path that must not be interruptible: it
+/// is the step that decides whether `<path>` is a directory we can prove is
+/// ours (repairable on every later call) or an unmarked non-empty directory
+/// that the fence at [`materialize_managed_workspace_inner`] refuses *forever*
+/// — which, since #1384, permanently poisons the create's `Idempotency-Key`.
+///
+/// A temp-file-plus-`rename` **inside** `<path>/.git` does not close that
+/// window: it still needs `<path>/.git` to exist first, and death right there
+/// is construction 1 of the issue verbatim. So the unit that gets renamed is
+/// the whole `.git` directory, assembled out of the way and published in one
+/// `rename(2)`:
+///
+/// * `rename` replaces an **empty** destination directory atomically (POSIX:
+///   `newpath` may be an existing empty directory), and `<path>` is empty on
+///   this arm — that was just measured by `dir_has_entries`. A non-empty
+///   `<path>` makes the rename fail with `ENOTEMPTY` instead of clobbering it,
+///   which is the fail-closed direction: this arm never overwrites bytes.
+/// * The staging directory sits in `<path>`'s parent, so it is on the same
+///   filesystem (`rename` is only atomic within one) and, crucially, is *not*
+///   an entry of `<path>`: debris from a crashed claim cannot itself trip the
+///   "non-empty and unmarked" refusal.
+/// * The staging name is fixed per track, so a crashed claim's debris is
+///   reclaimed by the next attempt rather than accumulating. Only this track's
+///   own claims can ever use that name.
+///
+/// The marker keeps its historical location and format
+/// (`<path>/.git/neige-workspace`, `"<track id>\n"`), which is load-bearing:
+/// [`crate::workspace_recycle`] reads it independently as guard 3 of the
+/// recycle fence. Workspaces created before #1427 are therefore unaffected —
+/// there is nothing to migrate and no second location to read.
+///
+/// # Durability
+///
+/// The marker file and both staging directories are `fsync`ed before the
+/// publishing `rename`, and `<path>`'s parent after it. A `rename` whose
+/// operands were never synced can still be lost to a power cut, which would
+/// resurrect exactly the state this function exists to abolish; the claim runs
+/// once per workspace, so the cost is not on any hot path. The re-init and
+/// commit steps that follow are deliberately *not* synced: they are
+/// reconstructible by the repair path, which the marker is what unlocks.
+///
+/// # What a crashed claim leaves behind
+///
+/// Death between staging and the publishing `rename` leaves
+/// `.neige-claim-<track>` in the area directory. The next materialize of this
+/// track reclaims it — debris exists only while `<path>` is still empty and
+/// unmarked, which is the arm that routes here, and the first thing this
+/// function does is `remove_dir_all(&staging)`. A track that is never retried
+/// keeps its entry: one per track that crashed mid-claim and was never
+/// retried, and it stays there.
+///
+/// The one reader that acts on it is `remove_empty_area_dir`
+/// (`workspace_recycle.rs:698`): its `rmdir` answers `ENOTEMPTY`, so
+/// `area_dir_removed` comes back `false` and the area directory is left in
+/// place — classed as cosmetic at that call site's own doc comment. Every
+/// other reader of that directory either filters it (the listing route drops
+/// leading-dot names, `routes/fs.rs:184-187`) or never reaches it.
+///
+/// That residue is not a new cost. Before #1427 the same crash left
+/// `<path>/.git` unmarked, which blocked that same `rmdir` identically *and*
+/// poisoned the create's `Idempotency-Key`; what this version leaves is a
+/// strict subset of what it replaced.
+///
+/// # Two processes, one track
+///
+/// The staging name is shared per track, so a second process entering this
+/// function can `remove_dir_all` a first one's staging mid-flight. The loser
+/// of that race gets a returned `Internal` error with `<path>` still empty, so
+/// the next call succeeds: `remove_dir_all` is called on `staging` and nowhere
+/// else in this module, and `<path>` is not a `remove_dir_all` target here at
+/// all. In one process the per-path mutex makes the interleaving unreachable;
+/// across processes it is untested ground, and
+/// `docs/design-1384-track-idempotency.md` §9 KNOWN GAP 3 already records the
+/// cross-process race as untested. Both windows were driven once through
+/// `claim_crash_point` during #1427's review; **no test pins them**, so treat
+/// this paragraph as a measurement, not as a guarantee.
+fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "materialize workspace: {} has no parent directory to stage the \
+             ownership claim in",
+            path.display()
+        ))
+    })?;
+    let staging = parent.join(format!(
+        "{CLAIM_STAGING_PREFIX}{}",
+        sanitize_path_segment(track_id)
+    ));
+
+    // Anything under this name is debris from one of *our* earlier claims for
+    // *this* track: nothing else ever writes it, and the per-path mutex is
+    // held. Removing it is what keeps repeated crashes from accumulating
+    // staging directories in the area folder.
+    match std::fs::remove_dir_all(&staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CalmError::Internal(format!(
+                "materialize workspace: clear stale ownership claim {}: {error}",
+                staging.display()
+            )));
+        }
+    }
+
+    let staged_git = staging.join(".git");
+    std::fs::create_dir_all(&staged_git).map_err(|error| {
+        CalmError::Internal(format!(
+            "materialize workspace: create ownership claim {}: {error}",
+            staged_git.display()
+        ))
+    })?;
+    claim_crash_point(path);
+    write_marker_file(&staged_git.join(OWNER_MARKER), track_id)?;
+    claim_crash_point(path);
+    fsync_dir(&staged_git)?;
+    fsync_dir(&staging)?;
+    claim_crash_point(path);
+
+    std::fs::rename(&staging, path).map_err(|error| {
+        CalmError::Internal(format!(
+            "materialize workspace: publish ownership claim {} onto {}: {error}",
+            staging.display(),
+            path.display()
+        ))
+    })?;
+    claim_crash_point(path);
+    fsync_dir(parent)?;
+    claim_crash_point(path);
+    Ok(())
+}
+
+/// Reduce `segment` to characters that are unambiguous in a file name. Track
+/// ids are already used as path components by [`managed_workspace_path`], so
+/// this is belt-and-braces; a collision between two sanitized ids would only
+/// mean two of *our* claims sharing a staging name, which the mutex and the
+/// `rename`'s fail-closed behaviour already handle.
+fn sanitize_path_segment(segment: &str) -> String {
+    segment
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// Write `track_id` to `target` and `fsync` it. See [`claim_owner_marker`] for
+/// why the sync is here.
+fn write_marker_file(target: &Path, track_id: &str) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(target).map_err(|error| {
+        CalmError::Internal(format!(
+            "materialize workspace: create ownership marker {}: {error}",
+            target.display()
+        ))
+    })?;
+    file.write_all(format!("{track_id}\n").as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "materialize workspace: write ownership marker {}: {error}",
+                target.display()
+            ))
+        })
+}
+
+/// `fsync` a directory, so a rename or creation inside it survives a power
+/// cut and not merely a process death.
+fn fsync_dir(path: &Path) -> Result<()> {
+    std::fs::File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "materialize workspace: fsync {}: {error}",
+                path.display()
+            ))
+        })
+}
+
 fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let marker = owner_marker_path(path);
     if let Some(parent) = marker.parent() {
@@ -553,12 +756,32 @@ fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
             ))
         })?;
     }
-    std::fs::write(&marker, format!("{track_id}\n")).map_err(|error| {
+    claim_crash_point(path);
+    // Publish by `rename`, never by writing the destination in place (#1427
+    // construction 2): `std::fs::write` truncates first, so a crash inside it
+    // leaves a torn — in practice empty — marker at the published path, which
+    // reads back as an owner that is not this track and lands on the
+    // foreign-owner arm's permanent refusal. The temp file is a sibling inside
+    // `.git/`, so the rename stays within one filesystem and any debris is
+    // invisible to the fence (which reads `<path>`, not `<path>/.git`).
+    //
+    // Unlike [`claim_owner_marker`] this is only ever reached with `.git`
+    // already present, so it does not — and cannot — close construction 1 on
+    // its own.
+    let staged = marker.with_extension("staged");
+    write_marker_file(&staged, track_id)?;
+    claim_crash_point(path);
+    std::fs::rename(&staged, &marker).map_err(|error| {
         CalmError::Internal(format!(
-            "materialize workspace: write ownership marker {}: {error}",
+            "materialize workspace: publish ownership marker {}: {error}",
             marker.display()
         ))
-    })
+    })?;
+    claim_crash_point(path);
+    if let Some(parent) = marker.parent() {
+        fsync_dir(parent)?;
+    }
+    Ok(())
 }
 
 fn dir_has_entries(path: &Path) -> Result<bool> {

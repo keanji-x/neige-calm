@@ -1049,3 +1049,178 @@ fn n4_moving_the_workspace_root_strands_existing_tracks() {
          about a symlink that is not there: {error}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1427 — crash atomicity of the ownership claim.
+// ---------------------------------------------------------------------------
+
+/// Violations recorded by the installed crash-point observer, if any.
+///
+/// A thread-local rather than a `static`: the observer is armed for the
+/// duration of one test body and must not leak into any other test sharing the
+/// process under `cargo test`.
+type CrashObserver = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+thread_local! {
+    static CRASH_OBSERVER: std::cell::RefCell<Option<CrashObserver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Called by [`super::claim_crash_point`]. Deliberately records instead of
+/// panicking: a panic raised while the `RefCell` is borrowed would abort the
+/// process during unwind when the guard below tries to clear the slot.
+pub(super) fn claim_crash_point(path: &Path) {
+    let sink = CRASH_OBSERVER.with(|slot| slot.borrow().clone());
+    let Some(sink) = sink else { return };
+    if let Err(violation) = workspace_dir_is_empty_or_ours(path) {
+        sink.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(violation);
+    }
+}
+
+struct CrashObserverGuard(CrashObserver);
+
+impl CrashObserverGuard {
+    fn arm() -> Self {
+        let sink: CrashObserver = Default::default();
+        CRASH_OBSERVER.with(|slot| *slot.borrow_mut() = Some(sink.clone()));
+        Self(sink)
+    }
+
+    fn violations(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Drop for CrashObserverGuard {
+    fn drop(&mut self) {
+        CRASH_OBSERVER.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// The invariant #1427 is about, stated as a predicate over the workspace
+/// directory: **if `<path>` has any entry at all, it carries our marker**.
+///
+/// Its negation is precisely the `None if dir_has_entries(path)` arm — the
+/// permanent refusal that poisons the `Idempotency-Key`.
+fn workspace_dir_is_empty_or_ours(path: &Path) -> std::result::Result<(), String> {
+    let entries: Vec<_> = match std::fs::read_dir(path) {
+        Ok(read) => read
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|error| format!("read_dir({}): {error}", path.display()))?,
+        // Not created yet: nothing on disk, nothing to be refused later.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read_dir({}): {error}", path.display())),
+    };
+    if entries.is_empty() {
+        return Ok(());
+    }
+    match std::fs::read_to_string(path.join(".git").join(super::OWNER_MARKER)) {
+        Ok(contents) if contents.trim() == TRACK => Ok(()),
+        Ok(contents) => Err(format!(
+            "{} holds {entries:?} but the marker reads {contents:?}, not `{TRACK}` \
+             — the foreign-owner arm refuses this forever",
+            path.display()
+        )),
+        Err(error) => Err(format!(
+            "{} holds {entries:?} and has no readable marker ({error}) \
+             — `None if dir_has_entries` refuses this forever",
+            path.display()
+        )),
+    }
+}
+
+/// **#1427 construction 1.** The claim must have no intermediate state in
+/// which `<path>` is non-empty and unmarked, because process death freezes
+/// whatever state it is in and the fence then refuses that directory forever.
+///
+/// The window is not raced for: `claim_crash_point` is called at each point
+/// where the claim has just changed what `read_dir(<path>)` reports, and the
+/// observer checks the invariant there. Those are the only points at which the
+/// claim mutates `<path>`; after the claim publishes the marker the invariant
+/// holds for every later write (`git init` and friends all land under a `.git`
+/// that already carries the marker).
+///
+/// Red before the fix: `write_owner_marker` `create_dir_all`s `<path>/.git`
+/// and only then writes the marker, so the checkpoint between those two
+/// syscalls sees a non-empty, unmarked workspace.
+#[test]
+fn the_ownership_claim_never_leaves_an_unmarked_non_empty_workspace() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+
+    let observer = CrashObserverGuard::arm();
+    materialize(&root, &repo_root).expect("materialize");
+    let violations = observer.violations();
+
+    assert!(
+        violations.is_empty(),
+        "the ownership claim passed through {} state(s) that the fence would \
+         refuse forever:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// **#1427 construction 2.** `std::fs::write` truncates the destination and
+/// then writes it, so a crash mid-write leaves a torn (in practice: empty)
+/// marker, which reads back as an owner that is not this track and lands on
+/// the foreign-owner arm — the same permanent refusal.
+///
+/// Asserted through the mechanism rather than by racing a torn read: the
+/// published marker must never be the file that was written into, so a rewrite
+/// has to replace the destination **inode**. An in-place truncating write keeps
+/// the inode; a temp-file-plus-`rename` cannot.
+#[test]
+fn republishing_the_marker_replaces_the_inode_instead_of_truncating_it() {
+    use std::os::unix::fs::MetadataExt;
+
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
+
+    let marker = repo_root.join(".git").join(super::OWNER_MARKER);
+    let before = std::fs::metadata(&marker).unwrap().ino();
+
+    // Break `HEAD` without touching the marker, so re-materialize takes the
+    // `!git_head_resolves` branch and re-asserts the marker (`:413-416`).
+    std::fs::remove_file(repo_root.join(".git").join("HEAD")).unwrap();
+    assert!(!head_resolves(&repo_root), "fixture did not break HEAD");
+
+    materialize(&root, &repo_root).expect("re-materialize repairs the workspace");
+
+    let after = std::fs::metadata(&marker).unwrap().ino();
+    assert_ne!(
+        before, after,
+        "the marker was rewritten in place at inode {before}: a crash inside \
+         that write leaves a torn marker at the published path"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap().trim(),
+        TRACK,
+        "the republished marker must still name this track"
+    );
+}
+
+/// The fence is **not** relaxed by #1427. A directory whose only entry is
+/// `.git/` — exactly the post-crash shape this issue is about, and equally the
+/// shape of a user's own bare or half-initialised repository — stays refused.
+/// There is no marker-absence allowlist; the fix closes the window that
+/// produces the state instead of admitting the state.
+#[test]
+fn a_dot_git_only_directory_without_a_marker_is_still_refused() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+
+    let error = materialize(&root, &repo_root)
+        .expect_err("an unmarked directory containing only `.git/` must stay refused");
+    assert!(
+        error.to_string().contains("refusing to reuse"),
+        "unexpected error: {error}"
+    );
+}
