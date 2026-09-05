@@ -6,10 +6,9 @@ import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
 import { deriveReportTasks, type TrackReport } from '../../../../core/domain/report.ts';
-import { useCurrentTaskRows } from './task-execution.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import '../../styles/entry.css';
-import { TaskRecovery } from './task-recovery.tsx';
+import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 
 afterEach(cleanup);
 

@@ -39,8 +39,7 @@ import {
 } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
-import { TaskRecovery } from './task-recovery.tsx';
-import { useCurrentTaskRows } from './task-execution.ts';
+import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
