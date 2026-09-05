@@ -678,14 +678,12 @@ const DRAWER_BLOCK_INSETS = 20 + 28;
  * and compare against a number it already has.
  *
  * *The host stands in for `.main`*: `position: relative` so the two absolute
- * boxes resolve against it, `container-type: inline-size` and a `--panel-span`
+ * boxes resolve against it, `container-type: inline-size` and a `--conversation-span`
  * so `.drawer`'s own `inline-size` and the preview's `cqi` cap behave as they
- * do in the app. 396 is the literal `--panel-span` works out to at the width
- * the shell gives it, and the fixture says so of itself rather than any
- * assertion turning on it. One case overrides it, to the 240px floor
- * `--panel-span` is clamped at in a narrow window, because the preview's height
- * is a function of its width and that case is about a panel tall enough to be
- * clamped; it says so where it does it.
+ * do in the app. 396 is the established regression-fixture width. One case
+ * deliberately narrows it to 240 so an overlong preview becomes tall enough
+ * to exercise the edge clamp; that value is a test condition, not a claim
+ * about the product's new 352px desktop floor.
  *
  * ── The 36px of block-start clearance, which is unchanged and still load-
  *    bearing ────────────────────────────────────────────────────────────────
@@ -704,10 +702,10 @@ const DRAWER_BLOCK_INSETS = 20 + 28;
  * sticky does not lift an element to its inset. The track is in the seam now
  * and bounded by the seam, so that case no longer exists.
  */
-function RailPane({ turns, paneHeight = 400, panelSpan = 396 }: {
+function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   turns: readonly TranscriptEntry[];
   paneHeight?: number;
-  panelSpan?: number;
+  conversationSpan?: number;
 }) {
   return (
     <div
@@ -717,7 +715,7 @@ function RailPane({ turns, paneHeight = 400, panelSpan = 396 }: {
         containerType: 'inline-size',
         blockSize: paneHeight + DRAWER_BLOCK_INSETS,
         inlineSize: 900,
-        ['--panel-span' as string]: `${panelSpan}px`,
+        ['--conversation-span' as string]: `${conversationSpan}px`,
       }}
     >
       <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none' }}>
@@ -2149,8 +2147,8 @@ describe('the exchange rail, as the engine lays it out', () => {
    * width, so the prompt alone was not enough at the fixture's usual 396px and
    * still left 3.4px of clearance. Both together are the premise this case has
    * always needed and used to get for free from a first dot sitting on the
-   * track's own edge. 240 is `--panel-span`'s floor, i.e. a real window, not a
-   * number invented to make the case work.
+   * track's own edge. 240 is deliberately below the production floor: this
+   * case owns the clamp's narrow-input behavior, not the shell's width policy.
    *
    * The premise is asserted rather than assumed: if the panel ever stops being
    * taller than the room above the first dot, this case goes back to measuring
@@ -2162,7 +2160,7 @@ describe('the exchange rail, as the engine lays it out', () => {
       turns={promptTurns(30, (index) => (
         index === 0 || index === 29 ? OVERLONG_PROMPT : LONG_PROMPT
       ))}
-      panelSpan={240}
+      conversationSpan={240}
     />);
     await frame();
     await scrollPaneTo(0);

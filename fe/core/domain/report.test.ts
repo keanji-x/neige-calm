@@ -1272,7 +1272,7 @@ describe('trackTaskVerdictsOperation', () => {
 });
 
 describe('deriveReportOutline', () => {
-  it('numbers sections continuously across prose blocks, never restarting per block', () => {
+  it('keeps H1 sections at the top level and hangs H2 headings beneath them', () => {
     const outline = deriveReportOutline(readTrackReport([card({
       payload: {
         body: 'x',
@@ -1281,9 +1281,9 @@ describe('deriveReportOutline', () => {
     })])?.blocks ?? null);
     expect(outline.map((item) => [item.number, item.label, item.blockId])).toEqual([
       [1, 'One', 'b-1-h1'],
-      [2, 'Two', 'b-1-h2'],
-      [3, 'Three', 'b-2-h1'],
+      [2, 'Three', 'b-2-h1'],
     ]);
+    expect(outline[0]?.children).toEqual([{ blockId: 'b-1-h2', label: 'Two' }]);
   });
 
   it('hangs a non-prose block under the section above it, as evidence rather than a section', () => {
@@ -1355,14 +1355,14 @@ describe('deriveReportOutline', () => {
     ]);
   });
 
-  // Deeper than H2 is not a section: `REPORT_MAX_DEPTH` is the kernel's own
-  // splitting rule, and an outline that listed H3s would promise a level the
-  // document does not have.
-  it('ignores headings deeper than the report max depth', () => {
+  // A legacy or partial report may begin at H2. Keeping those headings as
+  // top-level fallbacks preserves its only navigation; the desktop rail still
+  // renders a single level, and a later H1 restores the ordinary hierarchy.
+  it('keeps H2 headings navigable when the report has no preceding H1 and ignores H3', () => {
     const outline = deriveReportOutline(readTrackReport([card({
-      payload: { body: 'x', blocks: [prose('b-1', '# One\n\n### Deep\n')] },
+      payload: { body: 'x', blocks: [prose('b-1', '## One\n\n### Deep\n\n## Two\n')] },
     })])?.blocks ?? null);
-    expect(outline.map((item) => item.label)).toEqual(['One']);
+    expect(outline.map((item) => item.label)).toEqual(['One', 'Two']);
   });
 
   it('is empty for a v1 report, which has no block ids to anchor to', () => {

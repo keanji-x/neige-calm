@@ -4920,8 +4920,8 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1948-1957
-  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:520
+  source: fe/web/src/app/router/public.tsx:1954-1963
+  authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:529-556
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -4957,9 +4957,9 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-track/public.tsx:737-754;
-    fe/tools/architecture/directory-picker-hosts.mjs:56-64,81-102
-  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:1021
+  source: fe/web/src/features/area/new-track/public.tsx:757-774;
+    fe/tools/architecture/directory-picker-hosts.mjs:128-153,346-367
+  authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:1039-1063
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features

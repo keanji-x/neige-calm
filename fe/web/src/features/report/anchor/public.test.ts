@@ -22,9 +22,25 @@ describe('revealReportAnchor', () => {
     );
     revealReportAnchor('b-2');
     const target = document.getElementById('b-2');
-    expect(scrollIntoView).toHaveBeenCalled();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
     expect(target?.hasAttribute(ARRIVAL_ATTRIBUTE)).toBe(true);
     expect(document.getElementById('b-1')?.hasAttribute(ARRIVAL_ATTRIBUTE)).toBe(false);
+  });
+
+  it('honours a smooth outline transition request', () => {
+    const target = document.getElementById('b-2') as HTMLElement;
+    const scrollIntoView = vi.spyOn(target, 'scrollIntoView');
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 100, 20));
+    revealReportAnchor('b-2', document, 'smooth');
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+  });
+
+  it('downgrades a smooth transition when the reader reduces motion', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    const target = document.getElementById('b-2') as HTMLElement;
+    const scrollIntoView = vi.spyOn(target, 'scrollIntoView');
+    revealReportAnchor('b-2', document, 'smooth');
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
   });
 
   // A stale backlink, or a block the agent has since rewritten. An error about

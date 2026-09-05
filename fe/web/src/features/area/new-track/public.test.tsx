@@ -351,10 +351,11 @@ describe('NewTrackForm asks only what the track starts from', () => {
     const onRetryAsNewTrack = vi.fn();
     renderForm({
       error: 'This key belongs to different words.',
-      onRetryAsNewTrack,
+      errorAction: { label: 'Start as a new track', onClick: onRetryAsNewTrack },
     });
+    await fillMessage();
     await userEvent.click(screen.getByRole('button', { name: 'Start as a new track' }));
-    expect(onRetryAsNewTrack).toHaveBeenCalledTimes(1);
+    expect(onRetryAsNewTrack).toHaveBeenCalledWith({ message: 'Ship the thing' });
   });
 
   /*
@@ -588,7 +589,7 @@ describe('Start from — no template is the default and stays free', () => {
 });
 
 describe('Area creation defaults', () => {
-  it('submits the Area template and exact attached folder when the reader accepts both', async () => {
+  it('explains the Area template without blocking Enter-to-create', async () => {
     const { onSubmit } = renderForm({
       initialTemplateId: 'small-change',
       initialCwd: '/srv/area-default',
@@ -597,10 +598,25 @@ describe('Area creation defaults', () => {
     expect(screen.getByRole('button', { name: 'Folder: /srv/area-default' }).textContent)
       .toContain('area-default');
     await fillMessage();
-    await userEvent.click(submitButton());
+    expect(submitButton().disabled).toBe(false);
+    const notice = screen.getByRole('group', { name: 'Area default template' });
+    expect(notice.textContent).toContain('Area default: Small change');
+    expect(notice.textContent).toContain('3 preset tasks will be added');
+    expect(within(notice).queryByRole('button', { name: 'Use Small change' })).toBeNull();
+    await userEvent.keyboard('{Enter}');
     expect(onSubmit).toHaveBeenCalledWith({
       message: 'Ship the thing', template_id: 'small-change', cwd: '/srv/area-default',
     });
+  });
+
+  it('lets one Track reject the Area template without opening the picker', async () => {
+    const { onSubmit } = renderForm({ initialTemplateId: 'small-change' });
+    await fillMessage();
+    const notice = screen.getByRole('group', { name: 'Area default template' });
+    await userEvent.click(within(notice).getByRole('button', { name: 'Start without template' }));
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
   });
 
   it('lets one Track explicitly return to No template and a new managed folder', async () => {

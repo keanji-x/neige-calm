@@ -82,9 +82,12 @@ describe('ChatThread', () => {
     expect(screen.getByText('Nothing said yet.')).toBeTruthy();
   });
 
-  it('shows the live mark in an empty pending conversation', () => {
+  it('does not call a pending conversation empty while the agent is working', () => {
     render(<ChatThread conversation={conversation()} turns={[]} pending />);
     expect(screen.getByLabelText('Working')).toBeTruthy();
+    expect(screen.getByText('The agent is working.')).toBeTruthy();
+    expect(screen.getByText('Messages will appear here.')).toBeTruthy();
+    expect(screen.queryByText('Nothing said yet.')).toBeNull();
   });
 
   it('renders an operable system disclosure, not either speaker', async () => {

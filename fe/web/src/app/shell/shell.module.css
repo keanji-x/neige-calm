@@ -14,8 +14,9 @@
    * the rail and the page — and <body> is never one of them.
    */
   .shell {
+    --desktop-rail-w: calc(var(--rail-w) + var(--space-10) + var(--space-4) * 2);
     display: grid;
-    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-columns: var(--desktop-rail-w) minmax(0, 1fr);
     /* One flex-sized row so `.main` has a definite height. An implicit `auto`
        row is sized by content, so page-level `1fr` / `flex: 1` / `100%` all
        collapsed to the document's intrinsic height. */
@@ -38,7 +39,7 @@
   }
 
   .shellExpanded {
-    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-columns: var(--desktop-rail-w) minmax(0, 1fr);
   }
 
   /* Desktop keeps the existing rail as a direct grid child. The wrappers only
@@ -54,13 +55,15 @@
 
   .main {
     /*
-     * Container for `--panel-span` (25cqi). The trailing card and the
-     * conversation drawer both read this, so they stay the same fraction of
-     * the main column at every window width instead of a 280px / 1180px pair.
+     * The ordinary trailing panel stays compact. An open foreground
+     * conversation temporarily lends its wider measure to that grid track, so
+     * the report can trade left margin for right-side room and keep its reading
+     * column centred in what remains visible.
      */
     position: relative;
     container-type: inline-size;
     --panel-span: max(15rem, 25cqi);
+    --conversation-span: clamp(22rem, 40cqi, 40rem);
     display: flex;
     flex-direction: column;
     min-inline-size: 0;
@@ -91,11 +94,11 @@
    * offset by two pixels is not a design, it is a rendering artefact, and the
    * only card that is being read is the one on top.
    *
-   * `visibility`, not `display`: the panel keeps its box, so the document
-   * column beside it keeps its width and nothing in the report reflows when the
-   * conversation opens or closes — the same promise the drawer's `position:
-   * absolute` makes. It also drops out of the accessibility tree, which is
-   * right; it is not reachable while a card covers it either.
+   * `visibility`, not `display`: the panel keeps its box while the track below
+   * widens to `--conversation-span`. That one allocation intentionally reduces
+   * the report's left margin; its authored measure does not change, so the
+   * reading column stays centred beside the drawer. The panel also drops out
+   * of the accessibility tree, which is right while a card covers it.
    *
    * The selector crosses two CSS Modules, so neither end can be a local class:
    * `ui/drawer` stamps `data-nc-drawer` on its root, and every route that has a
@@ -107,8 +110,34 @@
    * to re-check when a fourth route grows a panel column. Settings has neither
    * and needs neither.
    */
+  .main:has([data-nc-drawer]) {
+    --panel-span: var(--conversation-span);
+  }
+
   .main:has([data-nc-drawer]) [data-nc-panel] {
     visibility: hidden;
+  }
+
+  /* The conversation is the foreground navigation while it is open. Hiding
+     the report rail here is state-based rather than width-based: at 1366px a
+     closed report has ample gutter, while at 1440px the 40% drawer consumes
+     that same gutter and would clip the rail's left-floating preview. */
+  .main:has([data-nc-drawer]) [data-nc-report-outline] {
+    display: none;
+  }
+
+  .main:has([data-nc-drawer]) [data-nc-report] {
+    --report-section-number-opacity: 1;
+  }
+
+  @container (inline-size >= 85rem) {
+    .main:has([data-nc-drawer]) [data-nc-report-outline] {
+      display: block;
+    }
+
+    .main:has([data-nc-drawer]) [data-nc-report]:has(> [data-nc-report-outline]) {
+      --report-section-number-opacity: 0;
+    }
   }
 
   .rail {
@@ -196,6 +225,7 @@
 
     .main {
       --panel-span: 100cqi;
+      --conversation-span: 100cqi;
     }
 
     .main[aria-hidden='true'] [data-nc-mobile-report-chat] {

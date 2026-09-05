@@ -220,6 +220,7 @@ import { useState } from '../../../ui/state/public.ts';
 import {
   FolderPill, NO_STARTING_POINT, StartingPointPill, type StartingPoint,
 } from '../default-pills/public.tsx';
+import { AreaDefaultNotice } from './area-default-notice.tsx';
 import styles from './new-track.module.css';
 
 /**
@@ -278,12 +279,15 @@ export type NewTrackFormProps = Readonly<{
   submitting: boolean;
   error: string | null;
   /**
-   * Offered when the server proved either that this key belongs to a different
-   * payload or that its legacy binding cannot prove equality. The callback
-   * changes no server state; it explicitly turns the retained draft into a new
-   * create before the reader presses Create again.
+   * One caller-owned recovery beside the create error. It may re-key an
+   * ambiguous retry or create the retained draft in the Area that owns its
+   * folder; the form only renders the action and preserves its own fields.
    */
-  onRetryAsNewTrack?: () => void;
+  errorAction?: Readonly<{
+    label: string;
+    isApplicable?: (draft: NewTrackDraft) => boolean;
+    onClick: (draft: NewTrackDraft) => void;
+  }>;
   /**
    * Templates the user may start from, from `GET /api/track-templates`. An
    * empty canonical roster is fully usable when the Area has no saved
@@ -383,7 +387,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 export function NewTrackForm({
   submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
-  onRetryAsNewTrack,
+  errorAction,
 }: NewTrackFormProps) {
   const fieldId = useId();
   // Creation preferences are a route-opening snapshot. Area events may update
@@ -441,6 +445,9 @@ export function NewTrackForm({
   const chosen = selected.kind === 'template'
     ? templates.find((template) => template.id === selected.id)
     : undefined;
+  const inheritedAreaDefault = openingTemplateId !== null
+    && selected.kind === 'template'
+    && selected.id === openingTemplateId;
   const chosenRecipe = selected.kind === 'recipe'
     ? recipes.find((recipe) => recipe.id === selected.id)
     : undefined;
@@ -495,13 +502,13 @@ export function NewTrackForm({
       ? { type: 'warning' as const, message: `${templatesError} You can still create a track without one.` }
       : undefined;
 
-  function submit(text: string): void {
+  function draftFor(text: string): NewTrackDraft | null {
     /* Blank refuses the submit; it does not *rewrite* it. `text` goes on to
        the caller exactly as typed — the draft is what the reader said, and the
        kernel forwards it to the agent untrimmed. An earlier cut passed
        `text.trim()` on, and `"  keep indentation  "` reached the agent with
        the indentation gone. */
-    if (isBlankForKernel(text) || inputBlocker || submitting) return;
+    if (isBlankForKernel(text) || inputBlocker || submitting) return null;
     /* Spread, not `cwd: cwd || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
@@ -509,7 +516,7 @@ export function NewTrackForm({
        non-empty path travels byte-for-byte: leading/trailing spaces are legal
        POSIX path characters, not form whitespace. */
     const base = { message: text, ...(cwd === '' ? {} : { cwd }) };
-    if (effectiveSelection.kind === 'none') { onSubmit(base); return; }
+    if (effectiveSelection.kind === 'none') return base;
     /* A recipe carries `recipe_id` and stops here. It can never also carry
        `template_id`: the union has one arm at a time, so the exclusivity the
        kernel enforces with a 400 is a property of this function's shape rather
@@ -517,20 +524,31 @@ export function NewTrackForm({
        `template_input` either — that field is only accepted alongside
        `template_id`. */
     if (effectiveSelection.kind === 'recipe') {
-      onSubmit({ ...base, recipe_id: effectiveSelection.id });
-      return;
+      return { ...base, recipe_id: effectiveSelection.id };
     }
-    if (parsedIssue === null) { onSubmit({ ...base, template_id: effectiveSelection.id }); return; }
+    if (parsedIssue === null) return { ...base, template_id: effectiveSelection.id };
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
-    onSubmit({
+    return {
       ...base,
       template_id: effectiveSelection.id,
       template_input: { ...parsedIssue, merge_policy: mergePolicy },
-    });
+    };
   }
+
+  function submit(text: string): void {
+    const draft = draftFor(text);
+    if (draft !== null) onSubmit(draft);
+  }
+
+  const actionDraft = draftFor(message);
+  const shownErrorAction = errorAction !== undefined
+    && actionDraft !== null
+    && (errorAction.isApplicable?.(actionDraft) ?? true)
+    ? errorAction
+    : undefined;
 
   return (
     <div className={styles.page}>
@@ -539,13 +557,15 @@ export function NewTrackForm({
           <Banner
             status="error"
             title={error}
-            endContent={onRetryAsNewTrack === undefined
+            endContent={shownErrorAction === undefined
               ? undefined
               : (
                 <Button
-                  label="Start as a new track"
+                  label={shownErrorAction.label}
                   variant="ghost"
-                  onClick={onRetryAsNewTrack}
+                  onClick={() => {
+                    if (actionDraft !== null) shownErrorAction.onClick(actionDraft);
+                  }}
                 />
               )}
             data-nc-new-track-error
@@ -697,6 +717,15 @@ export function NewTrackForm({
             )}
           />
         </div>
+
+        {inheritedAreaDefault && chosen !== undefined && (
+          <AreaDefaultNotice
+            template={chosen}
+            onClear={() => {
+              setSelected(NO_STARTING_POINT);
+            }}
+          />
+        )}
 
         {issueDev && (
           /* Under the chip that chose it, named by the template it belongs to.

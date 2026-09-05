@@ -94,6 +94,8 @@ function harness(options: {
   areaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   otherAreaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   trackCreate?: ApiTransportResponse;
+  /** Ordered create outcomes for retry/recovery paths that cross Area scope. */
+  trackCreateSequence?: readonly ApiTransportResponse[];
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
   /** Hold the detail read open until this resolves, to drive a slow landing. */
@@ -122,12 +124,18 @@ function harness(options: {
   path?: string;
 } = {}) {
   const sent: ApiRequest[] = [];
+  let trackCreateIndex = 0;
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
       const posted = request.body as { area_id?: string } | undefined;
       if (request.method === 'POST' && request.path === '/api/tracks' && options.trackCreate) {
         return Promise.resolve(options.trackCreate);
+      }
+      if (request.method === 'POST' && request.path === '/api/tracks' && options.trackCreateSequence) {
+        const response = options.trackCreateSequence[trackCreateIndex];
+        trackCreateIndex += 1;
+        if (response !== undefined) return Promise.resolve(response);
       }
       if (request.method === 'POST' && request.path === '/api/tracks' && options.heldCreate) {
         return options.heldCreate.then(() => ({
@@ -598,6 +606,118 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(alert.textContent).toContain('area “Work”');
     expect(alert.textContent).not.toContain('c1');
     expect(alert.textContent).not.toBe('Conflict');
+  });
+
+  it.each(['equal', 'descendant'] as const)(
+    'creates in the owning Area for a %s conflict without losing the draft',
+    async (conflictKind) => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: [
+        { status: 409, statusText: 'Conflict', body: { ...CONFLICT, conflict_kind: conflictKind } },
+        { status: 201, statusText: 'Created', body: { ...TRACK_ROW, area_id: 'c1' } },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    await userEvent.click(within(alert).getByRole('button', { name: 'Create in Work' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [failed, recovered] = createdTrackRequests(sent);
+    expect(failed?.body).toMatchObject({
+      area_id: 'c2', cwd: '/srv/app', attach_folder: true,
+      first_message: 'Read it', template_id: 'small-change',
+    });
+    expect(recovered?.body).toMatchObject({
+      area_id: 'c1', cwd: '/srv/app', attach_folder: true,
+      first_message: 'Read it', template_id: 'small-change',
+    });
+    expect(recovered?.headers?.['Idempotency-Key']).toBeDefined();
+    expect(recovered?.headers?.['Idempotency-Key']).not.toBe(failed?.headers?.['Idempotency-Key']);
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    },
+  );
+
+  it('does not offer an owning-Area retry for an ancestor conflict that moving cannot resolve', async () => {
+    harness({
+      templates: TEMPLATES,
+      trackCreate: {
+        status: 409,
+        statusText: 'Conflict',
+        body: { ...CONFLICT, conflict_kind: 'ancestor' },
+      },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    expect(within(alert).queryByRole('button', { name: 'Create in Work' })).toBeNull();
+  });
+
+  it('uses the visible current draft when the owning-Area recovery is clicked', async () => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: [
+        { status: 409, statusText: 'Conflict', body: CONFLICT },
+        { status: 201, statusText: 'Created', body: { ...TRACK_ROW, area_id: 'c1' } },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    const field = screen.getByLabelText(TASK_LABEL);
+    await userEvent.type(field, 'Old message');
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Current message');
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^No template/ }));
+    await userEvent.click(within(alert).getByRole('button', { name: 'Create in Work' }));
+
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const recovered = createdTrackRequests(sent)[1];
+    expect(recovered?.body).toMatchObject({ area_id: 'c1', first_message: 'Current message' });
+    expect(recovered?.body).not.toHaveProperty('template_id');
+    expect(recovered?.body).toMatchObject({ cwd: '/srv/app', attach_folder: true });
+  });
+
+  it('withdraws the owning-Area recovery when the conflicting folder changes', async () => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: [
+        { status: 409, statusText: 'Conflict', body: CONFLICT },
+        { status: 201, statusText: 'Created', body: { ...TRACK_ROW, area_id: 'c2' } },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    expect(within(alert).getByRole('button', { name: 'Create in Work' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
+    expect(within(alert).queryByRole('button', { name: 'Create in Work' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const retried = createdTrackRequests(sent)[1];
+    expect(retried?.body).toMatchObject({ area_id: 'c2', first_message: 'Read it' });
+    expect(retried?.body).not.toHaveProperty('cwd');
+    expect(retried?.body).not.toHaveProperty('attach_folder');
   });
 
   /*

@@ -438,8 +438,8 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
   if (turns.length === 0) {
     return (
       <div className={styles.empty} data-nc-thread-empty="">
-        <p className={styles.emptyLead}>Nothing said yet.</p>
-        <p className={styles.emptyHint}>Write below and it starts here.</p>
+        <p className={styles.emptyLead}>{live ? 'The agent is working.' : 'Nothing said yet.'}</p>
+        <p className={styles.emptyHint}>{live ? 'Messages will appear here.' : 'Write below and it starts here.'}</p>
         {live && <span className={styles.live} aria-label="Working" />}
       </div>
     );
@@ -563,8 +563,8 @@ const NOTHING_TO_REPAINT = () => {};
  *
  * **It is not a table of contents, and it no longer costs the column
  * anything.** The whole of the thread stylesheet's argument is about holding a
- * reading measure inside a drawer that can be as narrow as `--panel-span`'s
- * 240px floor — the reply gives up a type step for it and the bubble gave up
+ * reading measure inside a drawer that can be as narrow as the conversation
+ * span's 352px desktop floor — the reply gives up a type step for it and the bubble gave up
  * its existence — so a rail that spent even 60px of the column on labels would
  * be undoing, for navigation, exactly what the transcript gave up for reading.
  *

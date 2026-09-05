@@ -105,8 +105,8 @@ export function TrackRow({
    * The rail moves the status dot to the *trailing* edge and lets the delete
    * take its place on hover. §3.1 already assigns that edge to status ("右边缘
    * = 状态"), so this is the row finally obeying it — and it buys three things
-   * at once: the title starts 10px further left (116px of text in a 200px rail
-   * became 126px), the area row stops having to reserve an empty 6px cell for a
+   * at once: the title starts 10px further left (156px of text in a 240px rail
+   * became 166px), the area row stops having to reserve an empty 6px cell for a
    * status it does not have, and the trailing zone holds exactly one thing at a
    * time instead of two.
    *

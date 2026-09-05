@@ -18,12 +18,20 @@
      * a section title.
      *
      *   leftover = (100cqi − 3×24 − panel-span − 568) / 2
-     *   at 1440 / rail 200: (1240 − 72 − 310 − 568) / 2 = 145
+     *   at 1440 / rail 240: (1200 − 72 − 300 − 568) / 2 = 130
      *
      * `ui/page-header` reads `--document-start` too, which is what puts the
      * page title on the first character of the prose.
      */
-    --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
+    --document-measure-max: calc(var(--measure-prose) + var(--space-12) * 2);
+    /* Preserve the authored 568px measure whenever it fits. A wide
+       conversation may consume the margin before the shell reaches compact
+       mode; then the measure shrinks to the real first grid track instead of
+       painting underneath the drawer. */
+    --document-measure: min(
+      var(--document-measure-max),
+      max(0px, calc(100cqi - var(--space-10) * 3 - var(--panel-span)))
+    );
     /* Leftover in the document track, not (1180 − 280) / 2. 100cqi is `.main`. */
     --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
 
@@ -249,7 +257,7 @@
   }
 
   /* Main column plus the `--panel-span` track, separated by the standard
-     24px gutter. At 1440 / rail 200 that is leftover / 24 / 310. */
+     24px gutter. At 1440 / rail 240 that is leftover / 24 / 300. */
   /*
    * One row, and it fills. Left implicit, the row is sized by its tallest item
    * — the panel card — so the document column ended where the card ended and an
@@ -976,6 +984,8 @@
      selected card becomes a second list-detail page without loading Grid. */
   @media (width < 60rem) {
     .page {
+      /* The mobile panel overlays the report instead of sharing its grid. */
+      --document-measure: var(--document-measure-max);
       --document-start: 0px;
       gap: var(--space-6);
       padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-10));
