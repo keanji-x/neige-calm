@@ -129,7 +129,12 @@ async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
 }
 
 const OBSERVATION_BUFFER: usize = 256;
-const MAX_PENDING_QUEUE_LEN: usize = 256;
+/// Hard cap on queued observations. Public because it is a wire-visible
+/// constant: at this length an incoming user message folds into the tail
+/// instead of taking a slot, which is the one accepted way `POST
+/// /planner/input` answers with `entry_id: null`. A test that hardcoded 256
+/// would be restating this rather than checking it.
+pub const MAX_PENDING_QUEUE_LEN: usize = 256;
 const RECENT_HOOK_KEY_CACHE_LEN: usize = 256;
 /// #615 F3 fold-in: upper bound on the size of a folded `UserMessage` tail
 /// entry. Each individual `/planner/input` body is capped at 32_768 chars at the
@@ -174,9 +179,10 @@ pub(super) struct Inner {
     observations: ObservationIngress,
     state: Mutex<HarnessState>,
     last_phase: Mutex<HarnessPhaseTag>,
-    /// #1505 PR1 — one queue, not two parallel arrays. `QueueEntry` carries
-    /// the envelope id and (for user input) the stable entry id, so there is no
-    /// second array that can drift out of step with this one.
+    /// #1505 PR1 — one queue, not a bundle of parallel arrays. `QueueEntry`
+    /// carries the envelope id, the #1449 message ids and (for user input) the
+    /// stable entry id, so there is no second array that can drift out of step
+    /// with this one.
     pending_queue: Mutex<VecDeque<QueueEntry>>,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
@@ -287,6 +293,15 @@ async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMess
 /// The other `None` paths the client sees are refusals, not acks: a dormant
 /// harness (no runtime at all), a 503 from a saturated observation channel,
 /// and a 409 from a harness that is shutting down.
+///
+/// A batch carries at most one user-authored delivery today
+/// (`observe_user_message_durable` sends exactly one), so the ack is exact.
+/// The rule if that ever changes is written into the loops that fill this in:
+/// the LAST user-authored delivery wins, `None` included. Skipping the
+/// assignment when the id happens to be `None` would be worse than arbitrary —
+/// a batch whose final message folded onto a legacy tail would report the
+/// id of an EARLIER message, i.e. name the wrong entry rather than admit to
+/// naming none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DurableAck {
     pub entry_id: Option<QueueEntryId>,
@@ -417,9 +432,10 @@ impl PlannerHarness {
                 let checkpoint = checkpoint_durable_user_message(&self.inner).await;
                 let mut ack = DurableAck { entry_id: None };
                 for delivery in deliveries {
+                    let user_authored = delivery.entry.is_user_authored();
                     match on_observation(&self.inner, delivery.entry).await {
                         EnqueueOutcome::Accepted { entry_id } => {
-                            if entry_id.is_some() {
+                            if user_authored {
                                 ack.entry_id = entry_id;
                             }
                         }
@@ -877,9 +893,10 @@ async fn run_loop(
                         let mut accepted = true;
                         let mut ack = DurableAck { entry_id: None };
                         for delivery in deliveries {
+                            let user_authored = delivery.entry.is_user_authored();
                             match on_observation(&inner, delivery.entry).await {
                                 EnqueueOutcome::Accepted { entry_id } => {
-                                    if entry_id.is_some() {
+                                    if user_authored {
                                         ack.entry_id = entry_id;
                                     }
                                 }

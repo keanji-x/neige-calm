@@ -2314,6 +2314,14 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     );
     assert_eq!(new_snapshot.push_watermark, 3);
     assert_eq!(new_snapshot.pending_observations().len(), 3);
+    // #1505 PR1 — this test cannot also pin that the inherited entries keep
+    // their ids, and the reason is a property of the product rather than a
+    // gap in the fixture: only `TrackGoal`s survive this window. A user entry
+    // hard-fires, so the harness the reset starts drains it inside the same
+    // request, and a `LegacyUser` (what a lost-id inherit would produce)
+    // drains identically. See the note at
+    // `planner_harness_start_adapter.rs`'s inherit for what does and does not
+    // hold this line.
     assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();

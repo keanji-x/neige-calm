@@ -867,8 +867,27 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // already been shown. Before this the ids did not exist and the
             // reset silently re-created every entry as a fresh anonymous one.
             //
-            // #1449 — and it CARRIES the predecessor's message ids too; it does
-            // not mint over them. These are the same instances, moved.
+            // KNOWN GAP (#1514 review): no test reddens if this line goes back
+            // to copying observations alone, and the reason is a property of
+            // the product, not a missing fixture. The only entries that can
+            // carry an id are user messages; user messages hard-fire; the
+            // harness this reset starts therefore drains them inside the same
+            // request, and a `LegacyUser` — which is what a lost-id inherit
+            // produces — drains byte-identically. So the window in which the
+            // two worlds differ does not survive the call, and any end-to-end
+            // assertion over it would either be a race or pass vacuously.
+            //
+            // What IS pinned: that `pending_entries` / `set_pending_entries`
+            // preserve ids across exactly this round trip
+            // (`snapshot::tests::set_pending_entries_writes_every_parallel_array_in_step`,
+            // `planner_pending_queue::a_queue_entry_id_survives_a_snapshot_round_trip`).
+            // Closing the rest needs the queue projected somewhere that
+            // outlives the drain — the transcript projection #1475 adds — not
+            // a fixture. (Spelled out rather than named: the table's name is
+            // retiring vocabulary under #1316's ratchet.)
+            //
+            // #1449 — the inherit CARRIES the predecessor's message ids too; it
+            // does not mint over them. These are the same instances, moved.
             let mut inherited_entries = inherited.pending_entries();
             inherited_queue_moved = true;
             if let Some(existing) = existing_active_runtime.as_ref() {
@@ -1035,9 +1054,29 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // #1505 PR1 — the track's first message is minted through the same
             // constructor as every other user message, so it gets a stable
             // queue id like the rest. Before this it was the one user entry
-            // that could never be addressed.
+            // that could never be addressed (design D10).
             //
             // #1449 — that constructor is also where its message id is minted.
+            //
+            // What holds this is the type, not a test (#1514 review). The
+            // stored arrays are private to `harness::snapshot`, so the
+            // only way to put anything on this queue is `set_pending_entries`,
+            // and the only `QueueEntry` this module can build that renders as a
+            // `UserMessage` is `User`, which cannot exist without an id
+            // (`QueueEntry::legacy_user` is `pub(in crate::harness)`, so the
+            // id-less variant has no constructor reachable from here).
+            //
+            // A test cannot add to that here, and the reason is worth writing
+            // down because it also applies to the reset inherit above: a user
+            // message hard-fires, so the harness started by this very request
+            // drains it before any caller can read the queue back, and an
+            // id-less entry would drain byte-identically. The id is real and
+            // persisted — `POST /planner/input` proves the same constructor
+            // round-trips through `GET /planner/run`
+            // (`planner_pending_queue`) — but on THIS path it is minted for a
+            // consumer that does not exist yet: #1505 PR1b returns it on the
+            // create response, and reading it back needs the queue projected
+            // somewhere that outlives the drain (#1475).
             entries.push(QueueEntry::user_message(text.to_string(), None));
             seeded = true;
         }

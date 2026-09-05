@@ -1,14 +1,28 @@
 //! #1505 PR1 — identity for entries sitting in the harness pending queue.
 //!
-//! Before this module the queue was three parallel arrays kept in step by hand
-//! (`pending_queue` / `pending_envelope_ids`, plus the alignment pass that
-//! papered over any head-side drift). Every mutation site had to touch each
-//! array in the same way, and the failure mode was silent: a head-side drain on
-//! one array only was re-lengthened by the alignment pass, so ids shifted by one
-//! and a later delete-by-id would hit somebody else's message.
+//! Before this module the queue was several parallel arrays kept in step by
+//! hand (`pending_queue` / `pending_envelope_ids` / `pending_message_ids`,
+//! plus the alignment pass that papered over any head-side drift). Every
+//! mutation site had to touch each array in the same way, and the failure mode
+//! was silent: a head-side drain on one array only was re-lengthened by the
+//! alignment pass, so ids shifted by one and a later delete-by-id would hit
+//! somebody else's message.
 //!
 //! [`QueueEntry`] fuses them into one value, so there is a single write point
 //! and a single ordering.
+//!
+//! # A constraint on PR2's mutation path
+//!
+//! Address-by-id is only unambiguous while one id names one entry. Minting
+//! cannot break that (uuid v4), and
+//! `HarnessSnapshot::deserialize_pending_entry_meta` demotes a duplicate that
+//! serde smuggles in, so today the queue holds no two entries with the same
+//! id. That is a property of the READ boundary, not a property this type
+//! enforces. When PR2 adds `apply_mutation`, its lookup must therefore choose
+//! deliberately — first match, or refuse on more than one — and say which in
+//! code. What it must not do is scan for "the" match and rely on there being
+//! exactly one, because that reintroduces "delete hits somebody else's
+//! message" by coincidence rather than by construction.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -51,8 +65,14 @@ impl std::fmt::Display for QueueEntryId {
 ///   carries an id, so it can be shown, addressed and (from PR2) edited or
 ///   deleted.
 /// - [`QueueEntry::System`] — everything the dispatcher enqueues. Never
-///   addressable, never carries an id; [`QueueEntry::system`] refuses a
-///   `UserMessage` so the two cannot be confused.
+///   addressable, never carries an id. [`QueueEntry::system`] refuses a
+///   `UserMessage`, which is a guard on that constructor and nothing wider:
+///   the variants are `pub`, so `QueueEntry::System { observation:
+///   Observation::UserMessage { .. }, .. }` can be written literally, and it
+///   would be a user message that `is_user_authored` and `user_view` both deny
+///   exists. No such literal exists in this repo, and the state is bounded —
+///   the first `set_pending_entries` writes its meta slot as `None`, so the
+///   next read returns it as a `LegacyUser` and it rejoins the count.
 /// - [`QueueEntry::LegacyUser`] — a `UserMessage` read back from a snapshot
 ///   whose parallel `pending_entry_meta` slot is `None`. It has **no
 ///   `QueueEntryId` field at all**, and that structural fact — not a runtime
@@ -328,16 +348,26 @@ impl QueueEntry {
         matches!(self, Self::User { .. } | Self::LegacyUser { .. })
     }
 
+    /// Delegates to [`Observation::is_hard_fire`] for every variant, user
+    /// entries included.
+    ///
+    /// The user arms could hardcode `true` and be right today, but that would
+    /// be a restatement of somebody else's answer: moving `UserMessage` into
+    /// the soft list would change the queue's behaviour and leave this
+    /// function silently disagreeing. Asking costs an empty `String`, which
+    /// does not allocate — the text is not needed to classify the variant.
     pub fn is_hard_fire(&self) -> bool {
         match self {
-            // `Observation::UserMessage` hard-fires; rebuilding the
-            // observation just to ask would clone the text on every queue
-            // scan.
-            Self::User { .. } | Self::LegacyUser { .. } => true,
+            Self::User { .. } | Self::LegacyUser { .. } => Observation::UserMessage {
+                text: String::new(),
+            }
+            .is_hard_fire(),
             Self::System { observation, .. } => observation.is_hard_fire(),
         }
     }
 
+    /// Same delegation as [`Self::is_hard_fire`]: a user entry's answer comes
+    /// from `Observation`, not from a second opinion written here.
     pub fn report_sha256(&self) -> Option<&str> {
         match self {
             Self::User { .. } | Self::LegacyUser { .. } => None,
@@ -378,6 +408,13 @@ pub enum FoldOutcome {
 /// Text-bearing folds bump the survivor's `rev` so a client that had already
 /// read the old text gets a 409 out of a later CAS write: the body it was
 /// editing genuinely changed.
+///
+/// `queued_at_ms` is deliberately NOT advanced. The survivor keeps the moment
+/// it reached the queue, so a folded entry carries text newer than its own
+/// timestamp — a queue UI ordering or labelling by it will show the older
+/// time. That is the right of the two available lies: the entry has been
+/// waiting since that moment, and re-stamping it would let a stream of folds
+/// keep an entry looking permanently fresh.
 pub fn try_fold_tail(
     queue: &mut VecDeque<QueueEntry>,
     incoming: &QueueEntry,

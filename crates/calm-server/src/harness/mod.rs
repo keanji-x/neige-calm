@@ -28,7 +28,7 @@ pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
-pub use run_loop::{PlannerHarness, PlannerHarnessParams};
+pub use run_loop::{MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams};
 pub use snapshot::{
     HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
 };
@@ -348,12 +348,22 @@ async fn replay_harness_events_since(
             continue;
         };
         // #1505 PR1 — a dispatcher observation can never be a `UserMessage`
-        // (the dispatcher has no path that mints one), and `QueueEntry::system`
-        // is the runtime fence that says so. That is also why a replayed entry
-        // needs no #1449 message id: it has no instance to identify, and
-        // `QueueEntry::system` gives it an empty set by construction. If that ever stops holding, this
-        // replay warns and skips rather than silently enqueuing an unaddressable
-        // user message that the queue UI could neither show nor delete.
+        // (`harness_observation_from_event` has no arm that builds one), and
+        // `QueueEntry::system` is the runtime fence that says so. That is also
+        // why a replayed entry needs no #1449 message id: it has no instance to
+        // identify, and `QueueEntry::system` gives it an empty set by
+        // construction. If that ever stops holding, this replay warns and skips
+        // rather than silently enqueuing an unaddressable user message that the
+        // queue UI could neither show nor delete.
+        //
+        // Skipping is not free, and the cost belongs here rather than in a
+        // report nobody reads: `continue` also skips `push_watermark` and
+        // `replayed`, and the live push path (`dispatcher::…`) returns on the
+        // same `Err` BEFORE bumping its cursor. So one such row pins the
+        // watermark and is re-attempted on every boot until a later row raises
+        // the max. That is the fail-closed direction — a stuck cursor is
+        // visible and recoverable, an unaddressable queued message is not —
+        // and it is unreachable today.
         let entry = match queue::QueueEntry::system(obs, Some(row.id)) {
             Ok(entry) => entry,
             Err(error) => {

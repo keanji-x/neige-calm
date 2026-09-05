@@ -833,6 +833,18 @@ pub struct GetPlannerRunResponse {
     /// and neither do user entries from pre-PR1 snapshots, which have no id to
     /// address them by; both kinds of omission are counted in
     /// `pending_overflow` only for the user-authored ones.
+    // Cost, paid now and collected in PR4 (#1514 review) — kept off the wire
+    // description because it is a note to this repo, not to an API consumer.
+    // This ships unconditionally, with full bodies, and nothing reads it yet:
+    // `fe`'s non-strict zod object strips it and the legacy `web` tree casts
+    // past it. The endpoint is invalidated after every send and every
+    // interrupt, and the server clones the texts three times on the way out
+    // (`snapshot()`, `pending_entries()`, then `to_string()` per entry). The
+    // bound is the page budget below, and a normal queue holds nought to two
+    // short entries, so this is charged rather than fixed. If it ever needs
+    // fixing the shape is an opt-in (`?include=pending`) — deliberately not
+    // done here, because a query parameter that exactly one future consumer
+    // will set is a wire change made on speculation.
     pub pending: Vec<PendingQueueEntry>,
     /// User-authored entries that exist in the queue but are NOT in `pending`:
     /// pre-PR1 entries with no id, plus anything past the page budget. The UI
@@ -843,8 +855,13 @@ pub struct GetPlannerRunResponse {
 /// #1505 PR1 — one addressable user entry from the harness pending queue.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingQueueEntry {
-    /// Stable identity; never empty, because only entries that HAVE an id
-    /// reach this page.
+    /// Stable identity. Never empty, and unique within one response.
+    // The reason is the read boundary, not this page: what reaches here is the
+    // `QueueEntry::User` variant, and the only way to get one is a minted uuid
+    // or a snapshot slot that `HarnessSnapshot::deserialize_pending_entry_meta`
+    // accepted — and that decoder refuses an empty or duplicated id, demoting
+    // the slot to `LegacyUser`. Without it a hand-edited `handle_state_json`
+    // could put `entry_id: ""`, or the same id twice, on the wire.
     pub entry_id: String,
     /// The complete text. Never truncated — an entry that would not fit the
     /// page budget is left out of the page entirely rather than shown in a
@@ -862,10 +879,12 @@ const PENDING_PAGE_MAX: usize = 64;
 
 /// Soft cap on the UTF-8 size of one `pending` page.
 ///
-/// The whole response is re-fetched on every `harness.queue.changed`, and a
-/// single `/planner/input` body may be 32_768 *characters* — up to ~96 KiB of
-/// UTF-8 — so 64 unbounded entries could reach ~6 MiB. Entries are packed whole
-/// until the next one would cross this line.
+/// The whole response is re-fetched whenever the queue changes, and a single
+/// `/planner/input` body may be `MAX_PLANNER_INPUT_CHARS` = 32_768
+/// *characters*. UTF-8 encodes a `char` in at most 4 bytes, so one body is at
+/// most `32_768 * 4` = 131_072 B = 128 KiB, and 64 of them would be
+/// `64 * 128` KiB = 8 MiB. Entries are packed whole until the next one would
+/// cross this line.
 ///
 /// This is a judgement about acceptable response size, not a measurement of any
 /// real queue.
@@ -874,13 +893,15 @@ const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
 /// Split the queue into one page of addressable entries plus a count of the
 /// user-authored entries that did not make it.
 ///
-/// The budget ALWAYS admits at least one entry. Today that rule is unreachable
-/// — the largest single entry the fold path can build is
-/// `4 * 32_768` characters, under 400 KiB, well below the budget — but it is
-/// written rather than argued, because the failure it prevents is severe and
-/// silent: a head entry over budget would make the whole queue unpageable, so
-/// the user could not even delete the thing that was blocking it, and the "the
-/// user can just delete it" answer that justifies the budget would be false.
+/// The budget ALWAYS admits at least one entry. Today that rule is unreachable:
+/// the largest single entry the fold path can build is
+/// `MAX_FOLDED_USER_MESSAGE_CHARS` = `4 * 32_768` = 131_072 characters, hence
+/// at most `131_072 * 4` = 524_288 B = 512 KiB of UTF-8, against a budget of
+/// 1.5 MiB. It is written rather than argued because the failure it prevents is
+/// severe and silent: a head entry over budget would make the whole queue
+/// unpageable, so the user could not even delete the thing that was blocking
+/// it, and the "the user can just delete it" answer that justifies the budget
+/// would be false.
 fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
     let mut page = Vec::new();
     let mut used_bytes = 0usize;

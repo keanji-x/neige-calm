@@ -6831,7 +6831,7 @@
         "properties": {
           "entry_id": {
             "type": "string",
-            "description": "Stable identity; never empty, because only entries that HAVE an id\nreach this page."
+            "description": "Stable identity. Never empty, and unique within one response."
           },
           "queued_at_ms": {
             "type": "integer",

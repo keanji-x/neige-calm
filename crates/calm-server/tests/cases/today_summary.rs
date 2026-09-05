@@ -729,11 +729,13 @@ impl Boot {
     /// depends on that staying true.
     ///
     /// Both the guard and the read-back cover the `pending_queue` half only;
-    /// the arrays that run parallel to it are cleared and never read back.
-    /// That is deliberate rather than an oversight: `HarnessSnapshot::
-    /// pending_entries` takes its length from `pending_queue` and pads or
-    /// ignores every side array against it, so a side-array slot with no
-    /// observation behind it is dropped and can deliver nothing.
+    /// the arrays beside it are cleared and never read back. That is
+    /// deliberate rather than an oversight: restoring a snapshot zips the
+    /// arrays positionally and pads the short sides
+    /// (`HarnessSnapshot::pending_entries`, which absorbed the old alignment
+    /// pass in #1505 PR1), so a leftover
+    /// envelope id, entry meta or message id with no observation behind it is
+    /// dropped and can deliver nothing.
     ///
     /// The clear itself is the same kind of surgical staging as the case's own
     /// `DELETE` of the enqueued rows: this card's state is being set to
@@ -765,6 +767,12 @@ impl Boot {
             let mut parsed: Value = serde_json::from_str(&state).unwrap();
             parsed["pending_queue"] = json!([]);
             parsed["pending_envelope_ids"] = json!([]);
+            // #1505 PR1 / #1449 — the queue is four parallel arrays, so "clear
+            // the queue" has to clear all four. Leaving one behind would
+            // still read back as an empty queue (`pending_entries` iterates
+            // `pending_queue`), but it would leave a hand-written row whose
+            // arrays disagree, and this fixture's whole job is to stage a
+            // state, not an oddity.
             parsed["pending_entry_meta"] = json!([]);
             parsed["pending_message_ids"] = json!([]);
             sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")

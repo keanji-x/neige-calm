@@ -2278,10 +2278,7 @@ export interface components {
         };
         /** @description #1505 PR1 — one addressable user entry from the harness pending queue. */
         PendingQueueEntry: {
-            /**
-             * @description Stable identity; never empty, because only entries that HAVE an id
-             *     reach this page.
-             */
+            /** @description Stable identity. Never empty, and unique within one response. */
             entry_id: string;
             /**
              * Format: int64

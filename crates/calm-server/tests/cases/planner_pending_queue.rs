@@ -19,8 +19,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
-    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, PlannerHarness,
-    PlannerHarnessParams, QueueEntry,
+    HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessSnapshot, MAX_PENDING_QUEUE_LEN,
+    Observation, PlannerHarness, PlannerHarnessParams, QueueEntry,
 };
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -153,6 +153,11 @@ async fn boot_with(snapshot: HarnessSnapshot) -> Boot {
         },
         snapshot,
     });
+    // Every test in this file asserts on what is IN the queue, and a user
+    // message hard-fires: it bypasses the debounce windows above entirely and
+    // would be drained by the first 50ms tick. Pausing issuance is what makes
+    // these assertions deterministic rather than a race against that tick.
+    harness.pause_issuance_for_dev();
     state
         .harness
         .insert(worker_session_id.clone(), harness.clone());
@@ -449,4 +454,75 @@ async fn two_sends_get_distinct_ids_in_queue_order() {
     assert_eq!(pending[0]["entry_id"], json!(first_id));
     assert_eq!(pending[1]["entry_id"], json!(second_id));
     assert_eq!(run["worker_session_id"], json!(boot.worker_session_id));
+}
+
+/// §11.5 #17 at the wire, not just in the unit tests — the one accepted way a
+/// caller is told `entry_id: null`.
+///
+/// PR4's placeholder rule keys on exactly this value, so where `null` can come
+/// from is an input to that design rather than an implementation detail: a
+/// dormant harness, a 503, a 409, and this — a send that folded into a queue
+/// entry written before #1505 PR1, which has no id and never gains one. The
+/// first three are refusals with their own status codes; this is the only
+/// `null` on a 200.
+#[tokio::test]
+async fn folding_onto_a_pre_1505_tail_answers_with_a_null_entry_id() {
+    // A full queue whose tail is a legacy entry: `pending_queue` holds user
+    // messages and `pending_entry_meta` is absent, exactly as a pre-PR1 binary
+    // wrote it.
+    let queued: Vec<Value> = (0..MAX_PENDING_QUEUE_LEN)
+        .map(|i| json!({"type": "user_message", "text": format!("queued before PR1 #{i}")}))
+        .collect();
+    let legacy = json!({
+        "schema_version": 1,
+        "mode": HARNESS_MODE,
+        "phase": "idle",
+        "push_watermark": 0,
+        "pending_queue": queued,
+        "pending_envelope_ids": vec![Value::Null; MAX_PENDING_QUEUE_LEN],
+        "last_thread_id": SEED_THREAD_ID,
+    });
+    let boot = boot_with(HarnessSnapshot::from_value_strict(legacy)).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+
+    let (status, posted) = post_input(boot.app.clone(), &card_id, "folded onto an old entry").await;
+
+    assert_eq!(status, StatusCode::OK, "body={posted}");
+    assert_eq!(
+        posted["entry_id"],
+        Value::Null,
+        "the surviving entry has no id to name, and naming the discarded one \
+         would point the client at an entry that does not exist"
+    );
+
+    let entries = boot.harness.snapshot().await.pending_entries();
+    assert_eq!(
+        entries.len(),
+        MAX_PENDING_QUEUE_LEN,
+        "the send folded into the tail rather than taking a slot of its own"
+    );
+    let tail = entries.last().expect("a full queue has a tail");
+    assert_eq!(tail.id(), None, "and the tail did not become addressable");
+    assert_eq!(
+        tail.observation(),
+        Observation::UserMessage {
+            text: format!(
+                "queued before PR1 #{}\n\nfolded onto an old entry",
+                MAX_PENDING_QUEUE_LEN - 1
+            )
+        },
+        "the text is preserved on both sides of the fold"
+    );
+
+    let (_, run) = get(
+        boot.app.clone(),
+        format!("/api/cards/{card_id}/planner/run"),
+    )
+    .await;
+    assert_eq!(run["pending"], json!([]), "none of them are addressable");
+    assert_eq!(
+        run["pending_overflow"],
+        json!(MAX_PENDING_QUEUE_LEN),
+        "but every one of them is counted"
+    );
 }
