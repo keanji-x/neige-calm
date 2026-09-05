@@ -29,6 +29,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 | Kernel and app responsibilities | [Kernel/app boundary](architecture/955-kernel-app-boundary.md) |
 | Reports as executable plans | [Doc-as-plan design](architecture/985-doc-as-plan.md) |
 | Worker evidence, verification directories, and deferred recovery work | [Long task reliability](architecture/long-task-reliability.md) |
+| Continuing task identity, recovery, and reliable delivery proposal | [Task continuity design](architecture/1501-task-continuity.md) |
 | Track-create retry identity | [Idempotency design](design-1384-track-idempotency.md) |
 | Permanent retry records and deleted-Track recovery | [Idempotency retention decision](design-1428-idempotency-retention.md) |
 
