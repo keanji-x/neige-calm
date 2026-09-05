@@ -37,12 +37,12 @@ use calm_server::model::{Task, TaskStatus};
 use calm_server::task_context::TaskContextMonitor;
 use serde_json::Value;
 
-fn declaration(key: &str, dependencies: &[&str]) -> Value {
+pub(super) fn declaration(key: &str, dependencies: &[&str]) -> Value {
     json!({"key": key, "kind": "terminal", "command": "true", "depends_on": dependencies,
         "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "ready": true})
 }
 
-async fn declare(boot: &Boot, payload: Value) -> (String, u64) {
+pub(super) async fn declare(boot: &Boot, payload: Value) -> (String, u64) {
     let report = call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
         .unwrap();
@@ -60,7 +60,7 @@ async fn declare(boot: &Boot, payload: Value) -> (String, u64) {
     )
 }
 
-async fn finish(boot: &Boot, task: &Task, success: bool) {
+pub(super) async fn finish(boot: &Boot, task: &Task, success: bool) {
     let monitor = TaskContextMonitor::new(
         boot.repo.clone(),
         boot.ctx.events.clone(),
@@ -115,7 +115,7 @@ async fn finish(boot: &Boot, task: &Task, success: bool) {
     tx.commit().await.unwrap();
 }
 
-async fn current(boot: &Boot, key: &str) -> Task {
+pub(super) async fn current(boot: &Boot, key: &str) -> Task {
     boot.repo
         .task_current_get(boot.track_id.as_str(), key)
         .await
@@ -123,7 +123,7 @@ async fn current(boot: &Boot, key: &str) -> Task {
         .unwrap()
 }
 
-fn recovery_args(task: &Task, request_key: &str) -> Value {
+pub(super) fn recovery_args(task: &Task, request_key: &str) -> Value {
     json!({"key": task.key, "expected_attempt_id": task.id, "idempotency_key": request_key, "reason": "Recover the failed task"})
 }
 
@@ -724,7 +724,7 @@ async fn task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverg
 }
 
 #[tokio::test]
-async fn task_recovery_terminal_requires_known_exit_and_accepts_reconciled_exit() {
+async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
@@ -738,23 +738,31 @@ async fn task_recovery_terminal_requires_known_exit_and_accepts_reconciled_exit(
         .await
         .unwrap();
     finish(&boot, &b, false).await;
-    boot.repo
-        .terminal_set_exit("recovery-terminal", Some(-1), false)
+    for (exit_code, signalled) in [(Some(-1), false), (Some(1), false), (None, true)] {
+        boot.repo
+            .terminal_set_exit("recovery-terminal", exit_code, signalled)
+            .await
+            .unwrap();
+        let denied = call_tool(
+            &boot,
+            "calm.plan.recover",
+            planner_identity(&boot),
+            recovery_args(&b, "known-exit"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(denied.code, -32409);
+        assert!(denied.message.contains("descendant write fence"));
+        let view = calm_server::task_recovery::task_recovery_view(
+            boot.repo.as_ref(),
+            boot.track_id.as_str(),
+            &b.key,
+            calm_server::ids::ActorId::User,
+        )
         .await
         .unwrap();
-    let denied = call_tool(
-        &boot,
-        "calm.plan.recover",
-        planner_identity(&boot),
-        recovery_args(&b, "known-exit"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(denied.code, -32409);
-    assert!(denied.message.contains("write-stop evidence"));
-    boot.repo
-        .terminal_set_exit("recovery-terminal", Some(1), false)
-        .await
-        .unwrap();
-    assert_eq!(recover(&boot, &b, "known-exit").await["generation"], 2);
+        assert!(!view.recovery.allowed);
+        assert_eq!(view.recovery.code, "predecessor_not_quiescent");
+        assert!(view.recovery.reason.contains("before worker preparation"));
+    }
 }

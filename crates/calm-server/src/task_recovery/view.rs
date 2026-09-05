@@ -112,7 +112,7 @@ pub(crate) async fn task_recovery_view_tx(
                     allowed: true,
                     code: "available".into(),
                     reason:
-                        "Recover the failed task as a new execution under its unchanged contract."
+                        "Retry the preparation failure as a new execution under its unchanged contract."
                             .into(),
                 },
                 Err(error @ (CalmError::Forbidden(_) | CalmError::Conflict(_))) => {

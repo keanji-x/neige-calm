@@ -107,7 +107,7 @@ pub(super) async fn admit_recovery_tx(
     };
     constraint.validate(&previous.track_id).map_err(conflict)?;
     check_constraint_tx(tx, track, &previous.key, &constraint).await?;
-    require_quiescence_tx(tx, previous).await?;
+    require_recoverable_predecessor_tx(tx, previous).await?;
     Ok(constraint)
 }
 
@@ -198,81 +198,84 @@ async fn check_constraint_tx(
     Ok(())
 }
 
-/// A failed task or released workspace alone is not proof that writes stopped.
-async fn require_quiescence_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
-    if task.gate_pid.is_some()
-        || task.status_detail.as_deref().is_some_and(|detail| {
-            detail.starts_with("gate-infra") || detail.starts_with("gate-timeout")
-        })
+/// S1 supports recovery only before a worker's preparation transaction committed.
+/// A PTY leader exit (including signal exit), session terminal state, or released
+/// lease cannot prove that descendants stopped writing. Post-preparation recovery
+/// needs a supported execution/write fence; no existing exit record supplies it.
+async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    if task.worker_card_id.is_some()
+        || task.gate_attempt != 0
+        || task.gate_pid.is_some()
+        || task.gate_result_json.is_some()
     {
-        return Err(conflict(
-            "predecessor verifier has uncertain write-stop evidence; reconcile it before recovery",
-        ));
+        return Err(conflict(PREDECESSOR_WRITE_FENCE_UNAVAILABLE));
     }
-    let operations: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT phase,target_type,target_id,spawn_artifacts_json FROM operations WHERE \
-         (idempotency_key=?1 AND kind IN ('codex-worker','claude-worker','terminal-worker')) \
+    if task
+        .status_detail
+        .as_deref()
+        .map(crate::db::sqlite::status_detail_class)
+        != Some("spawn-failed")
+    {
+        return Err(conflict(PREDECESSOR_WRITE_FENCE_UNAVAILABLE));
+    }
+    // Keyed Operation rows are permanent (migration 0093). Prepared targets and
+    // tx_output remain evidence even if worker cards/sessions were later deleted.
+    // Read every operation sharing the execution key, including a foreign kind
+    // that could have caused a scheduler payload collision; do not infer no work
+    // merely because the expected worker adapter cannot be found.
+    let operations: Vec<PredecessorOperation> = sqlx::query_as(
+        "SELECT kind,phase,phase_detail_json,target_type,target_id,tx_output_json,spawn_artifacts_json,compensation_state \
+         FROM operations WHERE idempotency_key=?1 \
          OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?1)",
-    )
-    .bind(&task.id)
-    .fetch_all(&mut **tx)
-    .await?;
-    let mut cards = std::collections::BTreeSet::new();
-    if let Some(card) = &task.worker_card_id {
-        cards.insert(card.clone());
-    }
-    for (phase, target_type, card, artifacts) in operations {
-        // Pending has not prepared anything. Its prepare fence will reject the
-        // obsolete attempt. Mid-spawn or compensation requires reconciliation.
-        if !matches!(phase.as_str(), "pending" | "failed" | "succeeded") {
-            return Err(conflict(
-                "predecessor operation has uncertain external effects; reconcile it before recovery",
-            ));
-        }
-        if phase == "failed" && card.is_none() && artifacts.is_some() {
-            return Err(conflict(
-                "predecessor operation has uncertain external effects; reconcile it before recovery",
-            ));
-        }
-        if target_type == "card"
-            && let Some(card) = card
+    ).bind(&task.id).fetch_all(&mut **tx).await?;
+    for operation in operations {
+        let worker_kind = matches!(
+            operation.kind.as_str(),
+            "codex-worker" | "claude-worker" | "terminal-worker"
+        );
+        let failed_before_prepare = operation.phase == "failed"
+            && operation
+                .phase_detail_json
+                .as_deref()
+                .and_then(|detail| serde_json::from_str::<serde_json::Value>(detail).ok())
+                .is_some_and(|detail| {
+                    detail.get("from_phase").and_then(serde_json::Value::as_str) == Some("pending")
+                });
+        // Before preparation the payload only identifies its parent Track.
+        // prepare_tx_and_advance atomically replaces that with the worker card
+        // target and tx_output; a missing card row must not erase this evidence.
+        let initial_target = operation.target_type == "track"
+            && operation.target_id.as_deref() == Some(task.track_id.as_str());
+        if !worker_kind
+            || !(operation.phase == "pending" || failed_before_prepare)
+            || !initial_target
+            || operation.tx_output_json.is_some()
+            || operation.spawn_artifacts_json.is_some()
+            || operation.compensation_state.is_some()
         {
-            cards.insert(card);
-        }
-    }
-    for card in cards {
-        let terminals: Vec<(Option<i64>, i64)> =
-            sqlx::query_as("SELECT exit_code,signal_killed FROM terminals WHERE card_id=?1")
-                .bind(&card)
-                .fetch_all(&mut **tx)
-                .await?;
-        let terminal_exited = !terminals.is_empty()
-            && terminals
-                .iter()
-                .all(|(exit, killed)| exit.is_some_and(|code| code >= 0) || *killed != 0);
-        let sessions: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT state,active_turn_id,handle_state_json FROM worker_sessions WHERE card_id=?1",
-        )
-        .bind(&card)
-        .fetch_all(&mut **tx)
-        .await?;
-        let sessions_quiet = !sessions.is_empty()
-            && sessions.iter().all(|(state, turn, handle)| {
-                let cleanup_pending = handle
-                    .as_deref()
-                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-                    .is_some_and(|value| value.get("timeout_cleanup").is_some());
-                matches!(state.as_str(), "exited" | "failed" | "superseded")
-                    && turn.is_none()
-                    && !cleanup_pending
-            });
-        if !(terminal_exited && (task.kind == crate::model::TaskKind::Terminal || sessions_quiet)) {
             return Err(conflict(
-                "predecessor has no verified write-stop evidence; stop/reconcile its provider before recovery",
+                "predecessor operation has uncertain external effects; recovery currently requires a failure before worker preparation",
             ));
         }
     }
+    // A still-pending predecessor Operation cannot race into a new process:
+    // prepare rechecks the failed terminal row/current generation under this
+    // same serialized writer boundary and refuses obsolete attempts.
     Ok(())
+}
+
+const PREDECESSOR_WRITE_FENCE_UNAVAILABLE: &str = "predecessor has no supported descendant write fence; leader exit and session completion do not prove all writes stopped. Recovery is currently limited to failures before worker preparation";
+
+#[derive(sqlx::FromRow)]
+struct PredecessorOperation {
+    kind: String,
+    phase: String,
+    phase_detail_json: Option<String>,
+    target_type: String,
+    target_id: Option<String>,
+    tx_output_json: Option<String>,
+    spawn_artifacts_json: Option<String>,
+    compensation_state: Option<String>,
 }
 
 /// Recovered pending rows may be deleted/rebuilt. Their original constraint and
@@ -316,7 +319,7 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
     };
     authorize_tx(tx, &actor, &scope, &event).await?;
     check_constraint_tx(tx, &track, &allocation.key, &constraint).await?;
-    require_quiescence_tx(tx, &previous).await
+    require_recoverable_predecessor_tx(tx, &previous).await
 }
 
 pub(crate) async fn require_attempt_startable_tx(tx: &mut Tx<'_>, task_id: &str) -> Result<()> {

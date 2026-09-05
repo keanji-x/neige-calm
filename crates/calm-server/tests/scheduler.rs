@@ -10277,3 +10277,197 @@ async fn task_recovery_claim_uses_crdt_when_only_payload_cache_changed() {
         "a cache-only change is not a changed task contract"
     );
 }
+
+#[tokio::test]
+async fn task_recovery_retries_real_operation_prepare_refusal_without_prior_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "prepare-refusal", TaskKind::Terminal, &[]);
+    let previous_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "prepare-refusal")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(
+        &mut tx,
+        &previous_id,
+        now_ms(),
+        &closure.refs,
+        false,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // Inject an admission veto while keeping the report itself unchanged. The
+    // actual TerminalWorkerAdapter/Operation driver must fail before preparation
+    // commits; the test never manufactures from_phase or a terminal operation.
+    mark_context_stale(&boot, &previous_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+    );
+    let previous = boot.repo.task_get(&previous_id).await.unwrap().unwrap();
+    let (kind, payload) = build_worker_payload(&previous).unwrap();
+    runtime
+        .submit(
+            kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(previous_id.clone()),
+                payload_hash: stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    scheduler.sweep_all().await;
+    let operation = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &previous_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(operation.phase.tag(), PhaseTag::Failed);
+    assert_eq!(
+        operation.phase_detail.as_ref().unwrap()["from_phase"],
+        "pending"
+    );
+    assert_eq!(operation.target_type, "track");
+    assert_eq!(operation.target_id.as_deref(), Some(boot.track_id.as_str()));
+    assert!(operation.tx_output.is_none() && operation.spawn_artifacts.is_none());
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        boot.repo
+            .task_get(&previous_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    let receipt = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({
+        "key":"prepare-refusal", "expected_attempt_id":previous_id, "idempotency_key":"prepare-refusal-retry", "reason":"Retry preparation after an obsolete veto"
+    })).await.unwrap();
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let replacement = boot
+        .repo
+        .task_get(receipt["attempt_id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.status, TaskStatus::Running);
+    assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        boot.repo
+            .task_get(&previous_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn task_recovery_refuses_live_verifier_descendant_after_gate_exit() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let temp = tempfile::tempdir().unwrap();
+    struct StopWriter(PathBuf);
+    impl Drop for StopWriter {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.0.join("stop"), "stop");
+        }
+    }
+    let _stop = StopWriter(temp.path().to_path_buf());
+    std::fs::write(
+        temp.path().join("writer.sh"),
+        r#"
+i=0
+printf ready > "$1/ready"
+while [ -d "$1" ] && [ ! -e "$1/stop" ] && [ "$i" -lt 1500 ]; do
+    if [ -e "$1/probe" ]; then printf after-gate > "$1/written"; fi
+    i=$((i+1)); sleep 0.02
+done
+printf stopped > "$1/stopped"
+"#,
+    )
+    .unwrap();
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "gate-descendant", TaskKind::Terminal, &[]);
+    task.gate_json = Some(json!({"cwd":temp.path(), "steps":[{"name":"detached-writer", "cmd":"task_root=$(pwd -P); setsid /bin/sh ./writer.sh \"$task_root\" & while [ ! -s ./ready ]; do sleep 0.02; done; exit 7"}]}).to_string());
+    let task_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "gate-descendant")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(
+        &mut tx,
+        &task_id,
+        now_ms(),
+        &closure.refs,
+        false,
+    )
+    .await
+    .unwrap();
+    calm_server::db::sqlite::task_report_success_from_worker_tx(
+        &mut tx,
+        &task_id,
+        boot.track_id.as_str(),
+        calm_server::db::sqlite::TaskReporter::Kernel,
+        now_ms(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(TaskVerifyAdapter::new(temp.path().join("logs")))],
+    );
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "gate-descendant", 10).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    assert!(
+        row.worker_card_id.is_none(),
+        "this witness isolates verifier effects from worker-card evidence"
+    );
+    assert_eq!(row.gate_attempt, 1);
+    std::fs::write(temp.path().join("probe"), "write after gate exit").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !temp.path().join("written").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("detached verifier child writes after persisted gate verdict");
+    let result = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({"key":"gate-descendant", "expected_attempt_id":task_id, "idempotency_key":"gate-descendant-recovery", "reason":"Recover task"})).await;
+    std::fs::write(temp.path().join("stop"), "stop").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !temp.path().join("stopped").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("owned verifier writer stops before assertion");
+    let error =
+        result.expect_err("normal gate exit cannot authorize recovery without a descendant fence");
+    assert_eq!(error.code, -32409);
+    assert!(error.message.contains("descendant write fence"));
+}

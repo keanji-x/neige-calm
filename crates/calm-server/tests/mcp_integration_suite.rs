@@ -24,3 +24,6 @@ mod report_write_characterization;
 mod task_projection_acceptance;
 #[path = "cases/task_recovery.rs"]
 mod task_recovery;
+
+#[path = "cases/task_recovery_preparation.rs"]
+mod task_recovery_preparation;

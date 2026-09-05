@@ -869,7 +869,7 @@ fn task_list_entry(t: &Task) -> Value {
 fn plan_recover_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_RECOVER.into(),
-        description: "Recover one failed auto-declare Planner task under its unchanged contract. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Read attempt_id from calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started.".into(),
+        description: "Retry a preparation failure of an auto-declare Planner task under its unchanged contract. Already executed work requires a supported descendant write fence and is currently refused. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Read attempt_id from calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started.".into(),
         input_schema: json!({"type": "object", "additionalProperties": false,
             "required": ["key", "expected_attempt_id", "idempotency_key", "reason"],
             "properties": {

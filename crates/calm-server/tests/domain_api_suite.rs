@@ -75,3 +75,5 @@ mod version;
 
 #[path = "cases/area_create_idempotency.rs"]
 mod area_create_idempotency;
+#[path = "cases/task_recovery_quiescence.rs"]
+mod task_recovery_quiescence;
