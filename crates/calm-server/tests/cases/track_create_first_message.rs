@@ -95,7 +95,11 @@ struct Boot {
     state: AppState,
     area_id: String,
     repo: Arc<SqlxRepo>,
-    tmp: TempDir,
+    /// `Arc` so two instances of the same database can share one sandbox: the
+    /// `workspace_root` a track's managed path is derived from must be the SAME
+    /// directory on both, or the loser of the primary-key race would be racing
+    /// against a track it could never collide with on disk.
+    tmp: Arc<TempDir>,
 }
 
 /// A real git repository the user owns, the shape `PATCH /api/tracks/{id}`
@@ -156,7 +160,7 @@ fn app_for_state(state: AppState) -> axum::Router {
 }
 
 async fn boot_with_daemon(daemon_running: bool) -> Boot {
-    let tmp = TempDir::new().unwrap();
+    let tmp = Arc::new(TempDir::new().unwrap());
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -166,6 +170,60 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
         })
         .await
         .unwrap();
+    instance_on(tmp, repo, area.id.to_string(), daemon_running).await
+}
+
+/// #1430 — **two `AppState`s over one on-disk SQLite file, in one process.**
+///
+/// This is the degraded multi-instance deployment `state.rs` describes in the
+/// doc comment on `conversation_first_message_locks`: that map, and every other
+/// lock map, is a per-`AppState` field, so nothing here serializes two same-key
+/// creates. No second OS process is required to reach the primary key — the
+/// wall was never the process boundary.
+///
+/// `sqlite::memory:` cannot carry this: sqlx gives every parsed set of options
+/// its own named cache, so two `open("sqlite::memory:")` calls are two
+/// unrelated databases. The shared spelling is the one
+/// `tests/support/kernel_proc.rs` already uses, and `SqlxRepo::open` sets WAL
+/// and `busy_timeout` on every connection for any URL — nothing here is
+/// test-special.
+///
+/// What is deliberately NOT shared, because production instances do not share
+/// it either: the `EventBus`, the role/track caches, the `OperationRuntime`,
+/// the harness registry, the `db_instance_id`, the four lock maps, the
+/// `PluginHost` and the fake app-server. What IS shared: the database file and
+/// the `workspace_root` sandbox.
+async fn boot_two_instances_on_one_database() -> (Boot, Boot) {
+    let tmp = Arc::new(TempDir::new().unwrap());
+    let db_url = format!(
+        "sqlite://{}?mode=rwc",
+        tmp.path().join("calm.db").to_string_lossy()
+    );
+    let first = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let area = first
+        .area_create(NewArea {
+            name: "track-create-first-message".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let second = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let area_id = area.id.to_string();
+    let winner = instance_on(tmp.clone(), first, area_id.clone(), true).await;
+    let loser = instance_on(tmp, second, area_id, true).await;
+    (winner, loser)
+}
+
+/// One server instance over `repo`. Factored out of `boot_with_daemon` so a
+/// second instance is the same fixture with a different `repo`, rather than a
+/// parallel copy that could drift from it.
+async fn instance_on(
+    tmp: Arc<TempDir>,
+    repo: Arc<SqlxRepo>,
+    area_id: String,
+    daemon_running: bool,
+) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let events = EventBus::new();
     let roles = CardRoleCache::new();
@@ -201,7 +259,7 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
     Boot {
         app,
         state,
-        area_id: area.id.to_string(),
+        area_id,
         repo,
         tmp,
     }
@@ -2264,6 +2322,256 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
     );
     assert_eq!(b.card_count().await, 0);
     assert_eq!(b.binding_count().await, 0);
+}
+
+/// #1430 item 2a — the `Stuck` arm's mapping, which nothing pinned.
+///
+/// `response_for`'s `OperationOutcome::Stuck` branch
+/// (`routes/tracks/create.rs`) is the only thing standing between a create
+/// whose harness start left an operation stuck and a 201 that would claim a
+/// delivery nobody can prove. It was unreachable through the route only because
+/// `planner-harness-start` never parks in this fixture — not because anything
+/// serializes it. `retryable_operation_key` stops on **any** non-`Failed`
+/// phase, so writing that phase onto the operation this key already owns puts
+/// the next request straight onto the `Replay` arm and into `wait`, in one
+/// instance and with no harness of any kind.
+///
+/// The phase is written onto the row a real create produced, not onto a
+/// hand-assembled one: the point is that a *replay of this key* answers 500, so
+/// the binding row, the payload hash and the operation key all have to be the
+/// ones the route itself derived, or the replay would be joining something
+/// else.
+///
+/// Mutation that must redden it: make `response_for`'s `Stuck` arm `Ok(())`.
+#[tokio::test]
+async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
+    let b = boot().await;
+    let key = "idem-stuck-replay";
+    let (created, body) = b.create_track(Some(key), Some("the stuck sentence")).await;
+    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(b.operation_count().await, 1, "premise: exactly one attempt");
+    assert_eq!(b.binding_count().await, 1);
+    assert_eq!(b.copies_in_harness("the stuck sentence", 1).await, 1);
+    let deliveries_before = b.user_message_event_count().await;
+
+    // The phase compensation could not finish on. `retryable_operation_key`
+    // deliberately does not step over it (see its doc comment): the derived
+    // card may still exist, so the key keeps answering this operation's
+    // recorded failure until an operator clears the row.
+    let updated = sqlx::query(
+        "UPDATE operations \
+         SET phase = 'stuck', \
+             last_error = 'compensation step failed', \
+             phase_detail_json = ?1, \
+             lease_owner = NULL, \
+             lease_until_ms = NULL \
+         WHERE kind = 'planner-harness-start'",
+    )
+    .bind(
+        json!({
+            "reason": "compensation step failed",
+            "since": 1,
+            "from_phase": "spawn_started",
+        })
+        .to_string(),
+    )
+    .execute(b.repo.pool())
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(updated, 1, "premise: the create's own operation went stuck");
+
+    let (status, body) = b.create_track(Some(key), Some("the stuck sentence")).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a stuck predecessor replays its recorded failure; body={body}"
+    );
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("operation stuck in"),
+        "the 500 must name the stuck operation rather than a generic failure; body={body}"
+    );
+    assert!(
+        error.contains("creates no second track"),
+        "and must carry the harness-start failure text, which is what tells the caller the \
+         retry is safe; body={body}"
+    );
+
+    // What the 500 is worth: nothing new was written, and above all the
+    // sentence was not delivered a second time.
+    assert_eq!(b.track_count().await, 1);
+    assert_eq!(b.binding_count().await, 1);
+    assert_eq!(
+        b.operation_count().await,
+        1,
+        "the replay joins the stuck attempt; it does not open a `#N` one"
+    );
+    assert_eq!(b.user_message_event_count().await, deliveries_before);
+    assert_eq!(b.copies_in_harness("the stuck sentence", 1).await, 1);
+    let surviving: String = sqlx::query_scalar("SELECT id FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(surviving, track_id);
+    b.shutdown_harnesses().await;
+}
+
+/// #1430 item 1 — the cross-instance primary-key race, driven through the
+/// **route**, deterministically.
+///
+/// T-BIND-2 (`calm-truth/src/db/sqlite/track_create_idempotency_tests.rs`)
+/// pins the constraint itself, sequentially, at the database layer. Three
+/// things it cannot say, and this case does:
+///
+/// 1. the route maps that unique violation onto a 500 that names it, rather
+///    than letting a raw sqlx error out or — worse — recovering in place;
+/// 2. the loser leaves **no orphan track** behind that 500. Its mint had
+///    already inserted a track row when the binding INSERT failed; the answer
+///    is worth nothing unless that row went away with the transaction;
+/// 3. the loser's client retry resolves to the **winner's** track through
+///    `Resume`, which is the whole reason a fail-closed 500 is an acceptable
+///    answer to give a racer.
+///
+/// **Why this is not the vacuous test that was deleted.** The deleted
+/// `two_concurrent_same_key_creates_produce_one_track` fired two requests at
+/// one `AppState` and hoped; the in-process claim serialized them and the
+/// second took `Resume` without ever reaching the INSERT, so it was green with
+/// or without the mapping. Here the two requests are served by two
+/// `AppState`s that share nothing but the database file, and the loser is
+/// *held* at the mint rendezvous until the winner has committed — so "lookup 1
+/// missed, then the INSERT found the row" is constructed, not hoped for. The
+/// assertion that says so is the loser's status and message: had it taken
+/// `Resume`, it would be a 201.
+///
+/// Mutations that must redden it: swallow the binding-claim error in
+/// `routes/tracks.rs` (the loser then commits a second track — assertion 2), or
+/// widen the binding primary key per T-BIND-2 (same effect, one layer down).
+#[tokio::test]
+async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner() {
+    use calm_server::routes::tracks::TrackCreateMintGate;
+
+    let (winner, loser) = boot_two_instances_on_one_database().await;
+    let key = "idem-cross-instance-race";
+    let gate = Arc::new(TrackCreateMintGate::new());
+    let loser_app = app_for_state(
+        loser
+            .state
+            .clone()
+            .with_track_create_mint_rendezvous(gate.clone()),
+    );
+
+    // The loser starts first and parks after its lookup 1 missed, before its
+    // create transaction opens.
+    let loser_body = json!({
+        "area_id": loser.area_id,
+        "title": "",
+        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        "first_message": "one sentence, two instances",
+    });
+    let loser_request = tokio::spawn({
+        let app = loser_app.clone();
+        let key = key.to_string();
+        async move {
+            let builder = Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("content-type", "application/json")
+                .header("idempotency-key", key);
+            let response = app
+                .oneshot(builder.body(Body::from(loser_body.to_string())).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    });
+
+    // Bounded, like every wait in this case: a loser that never arrives fails
+    // this assertion instead of hanging the runner (#1453).
+    tokio::time::timeout(std::time::Duration::from_secs(30), gate.reached.wait())
+        .await
+        .expect("the loser must reach the mint window; without it this case is vacuous");
+    assert_eq!(
+        winner.binding_count().await,
+        0,
+        "premise: the loser passed lookup 1 with no binding row in the database, so it selected \
+         the minting arm"
+    );
+
+    let (winner_status, winner_body) = winner
+        .create_track(Some(key), Some("one sentence, two instances"))
+        .await;
+    assert_eq!(winner_status, StatusCode::CREATED, "body={winner_body}");
+    let winner_track = winner_body["id"].as_str().unwrap().to_string();
+    assert_eq!(winner.binding_count().await, 1);
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), gate.released.wait())
+        .await
+        .expect("release the loser onto the committed binding row");
+    let (loser_status, loser_error) =
+        tokio::time::timeout(std::time::Duration::from_secs(60), loser_request)
+            .await
+            .expect("the held request must finish")
+            .expect("the loser task must not panic");
+
+    // (1) the mapping.
+    assert_eq!(
+        loser_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the losing racer must fail closed, not resume and not mint; body={loser_error}"
+    );
+    assert!(
+        loser_error["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("claimed by a concurrent create")),
+        "and must say which wall it hit; body={loser_error}"
+    );
+
+    // (2) no orphan. This is the assertion the whole design exists for: the
+    // loser's transaction had already minted a track row when the binding
+    // INSERT raised, and it must have gone away with the rollback.
+    assert_eq!(
+        winner.track_count().await,
+        1,
+        "the loser's rolled-back mint must leave no orphan track behind its 500"
+    );
+    assert_eq!(winner.binding_count().await, 1);
+    let surviving: String = sqlx::query_scalar("SELECT id FROM tracks")
+        .fetch_one(winner.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(surviving, winner_track, "and the survivor is the winner's");
+
+    // (3) the retry, on the losing instance and with the rendezvous gone,
+    // resolves to the winner's track through `Resume`.
+    let (retry_status, retry_body) = loser
+        .post_create_on(
+            loser.app.clone(),
+            Some(key),
+            json!({
+                "area_id": loser.area_id,
+                "title": "",
+                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+                "first_message": "one sentence, two instances",
+            }),
+        )
+        .await;
+    assert_eq!(retry_status, StatusCode::CREATED, "body={retry_body}");
+    assert_eq!(
+        retry_body["id"].as_str(),
+        Some(winner_track.as_str()),
+        "the loser's retry must resolve to the track that won, not mint a second one"
+    );
+    assert_eq!(winner.track_count().await, 1);
+    assert_eq!(winner.binding_count().await, 1);
+    winner.shutdown_harnesses().await;
+    loser.shutdown_harnesses().await;
 }
 
 /// T-MAT-1 — `Resume` re-materializes the workspace.

@@ -100,6 +100,84 @@ use tokio::sync::Notify;
 mod create;
 mod fork_guard;
 
+/// #1430 — the injection point that makes the cross-instance primary-key race
+/// deterministic.
+///
+/// **Why an injection point at all.** `plan_first_message` takes
+/// `conversation_first_message_locks` before either lookup and holds it through
+/// the mint, so two same-key creates served by ONE `AppState` serialize and the
+/// second takes `Resume` without ever reaching
+/// `track_create_idempotency_claim_tx`. The lock map is a per-`AppState` field
+/// (`state.rs`), not a per-process one, so two `AppState`s over one on-disk
+/// SQLite file already race — but *racing* is not *ordering*. The loser's state
+/// is precisely "lookup 1 missed, and then the mint transaction's INSERT finds
+/// the row", and firing two requests and hoping cannot construct it: a
+/// scheduler that runs the second one to completion first, or that lets it
+/// reach lookup 1 after the winner committed, produces a `Resume` and a green
+/// run in which the mapping under test was never entered. That is the vacuity
+/// that got the earlier `two_concurrent_same_key_creates_produce_one_track`
+/// deleted, and it must not come back.
+///
+/// **Why not a `Repo` decorator.** The obvious alternative — wrap `Arc<dyn
+/// Repo>` in a type that parks inside `track_create_idempotency_get` — has to
+/// implement 109 methods across the four supertraits to forward one, for the
+/// single existing impl in the tree. It also parks at the wrong layer: the
+/// window this test needs is "after lookup 1, before the mint transaction
+/// opens", which is a statement about the *route*, not about any one repo call.
+///
+/// **The shape** is `routes::today`'s [`SystemAreaMintRendezvous`] with one
+/// difference: that race is symmetric and a single [`tokio::sync::Barrier`]
+/// releases both participants together, while this one needs the winner to
+/// *finish* while the loser is held, so it takes two barriers and the caller
+/// sits on both. The field is unconditional and the `if let Some(..)` is
+/// compiled into every build; only the builder that arms it is `fixtures`-gated
+/// (`AppState::with_track_create_mint_rendezvous`).
+///
+/// [`SystemAreaMintRendezvous`]: crate::routes::today::SystemAreaMintRendezvous
+pub type TrackCreateMintRendezvous = Option<std::sync::Arc<TrackCreateMintGate>>;
+
+/// The two meeting points of [`TrackCreateMintRendezvous`].
+///
+/// **Every wait is bounded by construction.** A held request resumes on its own
+/// if the peer never arrives, so a mis-driven test fails an assertion instead of
+/// hanging a runner forever (#1453).
+pub struct TrackCreateMintGate {
+    /// The minting request has passed lookup 1 and selected the `Mint` arm; it
+    /// has not opened the create transaction yet.
+    pub reached: tokio::sync::Barrier,
+    /// Released once the peer has committed its own mint.
+    pub released: tokio::sync::Barrier,
+}
+
+impl TrackCreateMintGate {
+    /// Both barriers admit exactly two participants: the held request and the
+    /// test task driving the winner.
+    pub fn new() -> Self {
+        Self {
+            reached: tokio::sync::Barrier::new(2),
+            released: tokio::sync::Barrier::new(2),
+        }
+    }
+
+    /// Park the minting request until the peer has committed, or until the
+    /// bound elapses.
+    ///
+    /// The bound is generous (30s) because it is a runaway guard, not a timing
+    /// assertion: no correct run reaches it, and a run that does resumes and
+    /// fails its assertions rather than wedging.
+    pub(crate) async fn hold(&self) {
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+        let _ = tokio::time::timeout(BOUND, self.reached.wait()).await;
+        let _ = tokio::time::timeout(BOUND, self.released.wait()).await;
+    }
+}
+
+impl Default for TrackCreateMintGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 use fork_guard::guard_forked_blocks;
 
 #[derive(Clone)]
