@@ -199,6 +199,7 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 # front of a reviewer, in the same PR, by editing this list.
 EXPECTED_INSERTS="${APPEND_SEAM_INSERT_BASELINE-crates/calm-server/src/activity_window.rs:1
 crates/calm-server/src/task_context.rs:1
+crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
 crates/calm-server/tests/cases/events_pruner.rs:4
 crates/calm-server/tests/cases/mcp_track_report.rs:1
 crates/calm-server/tests/cases/sync_engine.rs:5
