@@ -1861,6 +1861,11 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const [createKey, setCreateKey] = useState(mintIdempotencyKey);
   const [error, setError] = useState<string | null>(null);
   const [canRetryAsNewTrack, setCanRetryAsNewTrack] = useState(false);
+  const [folderConflictRecovery, setFolderConflictRecovery] = useState<Readonly<{
+    areaId: string;
+    areaName: string;
+    cwd: string;
+  }> | null>(null);
   const listDirectory = createDirectoryLister(transport, unauthorized);
   const area = areaId === undefined
     ? undefined
@@ -1902,14 +1907,15 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
    * delivered into that conversation, so the caret belongs where its answer
    * lands and where the next thing the reader says goes.
    */
-  const submit = (draft: NewTrackDraft) => {
-    if (areaId === undefined) return;
+  const submit = (draft: NewTrackDraft, targetAreaId = areaId, attemptKey = createKey) => {
+    if (targetAreaId === undefined) return;
     setCreating(true);
     setError(null);
     setCanRetryAsNewTrack(false);
+    setFolderConflictRecovery(null);
     const messageIsBlank = isBlankForKernel(draft.message);
     const body = {
-      area_id: areaId,
+      area_id: targetAreaId,
       /* No `title` (#1211): the sentence the reader typed is the track's intent,
          not its name. It rides on `first_message` below, and the landing still
          opens the planner composer — now for the *reply*, not for a retype. */
@@ -1962,10 +1968,10 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
      * message-less one cannot accidentally advertise idempotency it does not
      * have.
      */
-    const keyForAttempt = messageIsBlank ? undefined : createKey;
+    const keyForAttempt = messageIsBlank ? undefined : attemptKey;
     const creation = messageIsBlank
       ? trackMutations.create(body)
-      : trackMutations.create({ ...body, first_message: draft.message }, createKey);
+      : trackMutations.create({ ...body, first_message: draft.message }, attemptKey);
     void creation.then((track) => {
       /*
        * And only if the reader is still here.
@@ -1995,6 +2001,10 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
         // generic message below would be the bare word "Conflict".
         const owner = workspace.areas.find((candidate) => candidate.id === conflict.area_id);
         setError(folderConflictMessage(conflict, owner?.name ?? null));
+        if (owner !== undefined && owner.id !== targetAreaId
+          && conflict.conflict_kind !== 'ancestor' && draft.cwd !== undefined) {
+          setFolderConflictRecovery({ areaId: owner.id, areaName: owner.name, cwd: draft.cwd });
+        }
         return;
       }
       if (failure instanceof ApiError && keyForAttempt !== undefined && liveRef.current) {
@@ -2016,6 +2026,13 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
     setCreateKey(mintIdempotencyKey());
     setCanRetryAsNewTrack(false);
     setError(null);
+  };
+
+  const recoverFolderConflict = (draft: NewTrackDraft) => {
+    if (folderConflictRecovery === null || draft.cwd !== folderConflictRecovery.cwd) return;
+    const nextKey = mintIdempotencyKey();
+    setCreateKey(nextKey);
+    submit(draft, folderConflictRecovery.areaId, nextKey);
   };
 
   /*
@@ -2057,7 +2074,15 @@ function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPor
       templatesLoaded={templates.loaded}
       templatesError={templates.error}
       recipes={recipes.recipes}
-      onRetryAsNewTrack={canRetryAsNewTrack ? retryAsNewTrack : undefined}
+      errorAction={folderConflictRecovery === null
+        ? canRetryAsNewTrack
+          ? { label: 'Start as a new track', onClick: retryAsNewTrack }
+          : undefined
+        : {
+          label: `Create in ${folderConflictRecovery.areaName}`,
+          isApplicable: (draft) => draft.cwd === folderConflictRecovery.cwd,
+          onClick: recoverFolderConflict,
+        }}
       onManageRecipes={() => go({ name: 'recipes' })}
       initialTemplateId={area.defaultTemplateId}
       initialCwd={area.defaultCwd}

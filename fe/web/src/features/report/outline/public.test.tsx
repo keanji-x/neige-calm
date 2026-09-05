@@ -26,29 +26,29 @@ describe('ReportOutline', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('is one row per outline entry, in document order', () => {
+  it('renders only first-level sections, in document order', () => {
     render(<ReportOutline items={ITEMS} />);
     // No section numbers here: they are marginalia on the sections themselves,
     // in this same margin, and 130px cannot afford to print them twice.
     expect(screen.getAllByRole('button').map((row) => row.textContent)).toEqual([
       'Valuation conclusion',
-      'Comparables',
       'How the rate is taken',
     ]);
+    expect(screen.queryByRole('button', { name: /Comparables/ })).toBeNull();
   });
 
   // The label is in the DOM at rest and only *looks* like a dot: collapsing it
   // by not rendering it would take the accessible name away with it.
-  it('keeps every label readable to a screen reader while it looks like a dot', () => {
+  it('keeps every first-level label readable to a screen reader while it looks like a dot', () => {
     render(<ReportOutline items={ITEMS} />);
-    expect(screen.getByRole('button', { name: /Comparables/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Valuation conclusion/ })).toBeTruthy();
   });
 
   it('scrolls to the block it names', async () => {
     const onSelect = vi.fn();
     render(<ReportOutline items={ITEMS} onSelect={onSelect} />);
-    await userEvent.click(screen.getByRole('button', { name: /Comparables/ }));
-    expect(onSelect).toHaveBeenCalledWith('b-comps');
+    await userEvent.click(screen.getByRole('button', { name: /Valuation conclusion/ }));
+    expect(onSelect).toHaveBeenCalledWith('b-1-h1');
   });
 
   // One tab stop for the whole rail, then arrows inside it — the same roving

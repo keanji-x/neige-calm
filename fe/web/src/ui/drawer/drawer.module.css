@@ -18,8 +18,9 @@
    * page; this one now is.
    *
    * **The track, and why it stops being a track vertically.** Horizontally the
-   * card is still on the panel's rails: same inline track (`--panel-span`),
-   * same trailing page pad (`--space-10`). Vertically it is not, any more.
+   * card keeps the trailing page pad but deliberately grows beyond the compact
+   * side-panel track: a live conversation is the foreground, not another
+   * status card. Vertically it is not on the panel's rails either.
    *
    * It used to start at `--header-band + --header-h + --space-8` — the offset
    * `features/{area,track}/page` gives the sticky PanelCard — so that the two
@@ -70,9 +71,11 @@
    * Nothing here reads `--header-band` / `--header-h` any more, which is why
    * `ui/page-header`'s publisher went back to the child combinator.
    *
-   * **It still overlays.** Absolute inside `.main`, not a column in the page
-   * grid: opening it must not reflow the report, which is principle 3 ("在持续
-   * 变化中保持安静") broken by the app's own chrome.
+   * **It still overlays.** The card remains absolute inside `.main`; it never
+   * becomes report content. The shell does make one deliberate companion
+   * adjustment while it is open: the hidden panel track takes this wider span,
+   * spending the report's left whitespace so its reading column stays centred
+   * beside the conversation rather than disappearing underneath it.
    *
    * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
    * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
@@ -102,8 +105,8 @@
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
-    inline-size: var(--panel-span, 25cqi);
-    /* Both page pads, kept even when `--panel-span`'s 15rem floor is wider than
+    inline-size: var(--conversation-span, 40cqi);
+    /* Both page pads, kept even when the conversation's floor is wider than
        what is left of a narrow main region: a card may not slide under the
        rail on the side the page cannot pad. */
     max-inline-size: calc(100% - var(--space-10) * 2);

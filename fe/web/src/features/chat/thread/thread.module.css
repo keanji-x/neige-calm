@@ -789,9 +789,9 @@
    * **What bounds its width is CSS again, and the measurement it replaces is
    * deleted.** The cap used to be `--nc-rail-reach`, published per frame by
    * `public.tsx`: the distance from the track's inline-end edge to the frame's,
-   * measured because the drawer's width is `max(15rem, 25cqi)` of a flex
-   * ancestor and no rule could name it from inside the pane. From the seam it
-   * *can* be named. `--panel-span` is declared on `.main` — the same container
+   * measured because the drawer's width is a function of a flex ancestor and
+   * no rule could name it from inside the pane. From the seam it *can* be
+   * named. `--conversation-span` is declared on `.main` — the same container
    * `.drawer` reads its own `inline-size` from — and the card's own cap is
    * `calc(100% - var(--space-10) * 2)` of that container, which in the
    * container's own units is `100cqi - var(--space-10) * 2`. Taking the `min`
@@ -850,7 +850,7 @@
      */
     inline-size: max-content;
     max-inline-size: calc(
-      min(var(--panel-span, 15rem), 100cqi - var(--space-10) * 2) - var(--space-6)
+      min(var(--conversation-span, 22rem), 100cqi - var(--space-10) * 2) - var(--space-6)
     );
     padding: var(--space-3) var(--space-5);
     border-radius: var(--radius-md);
@@ -1007,24 +1007,10 @@
    * was the conclusion — the narrow column is a reason to drop a *step*, not a
    * reason to change families.
    *
-   * **The cost, measured rather than estimated.** The column is
-   * `--panel-span` (`max(15rem, 25cqi)` of `.main`, i.e. of the window minus
-   * the 200px rail) less the drawer's two `--nc-card-inset` pads, so it is
-   * `--panel-span − 16`. Rendered in Chromium against this serif stack the
-   * average advance is 0.394em per character, which gives:
-   *
-   *   window   --panel-span   column   15px serif   18px serif
-   *   1440           310        294       49.7         41.4
-   *   1512           328        312       52.8         44.0
-   *   1728           382        366       61.9         51.6
-   *   1920           430        414       70.0         58.4
-   *
-   * Only the widest window reaches the 65–75 band, and only at 15px; the
-   * report's own `--text-lg` is below the band at every width the drawer is
-   * ever opened at (the report gets 71.0 on its 504px measure). So the size
-   * stops one step short at `--text-md` and **the drawer runs short lines** —
-   * roughly 50 to 62 characters on a laptop. That is a knowingly accepted
-   * trade: same voice as the report, a measure the report would not accept.
+   * The column is the wider `--conversation-span` less the drawer's two
+   * insets. It reaches a useful reading measure on a laptop while the report
+   * stays visible behind it, and still stops one type step short of the report
+   * because this remains a working conversation rather than published prose.
    *
    * `--leading-loose` (1.65), the report's, not the `--leading-snug` your turn
    * uses: yours is usually one line, this is the paragraph that gets read, and

@@ -19,6 +19,7 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
 const CARD_B = { ...CARD, id: 'card-2', track_id: 'w2', title: 'Second chat' };
 const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
+const PLANNER_RUN_IDLE = { card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -59,7 +60,7 @@ function setup(reply?: Reply) {
         track: TRACK_B, can_resume: false, cards: [CARD_B], overlays: [],
       });
       if (request.path.includes('/harness/items')) return ok([]);
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' });
+      if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
       if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: CARD.id, runtime_id: 'runtime', stopped: true });
       if (request.path === '/api/settings') return ok({});
@@ -151,6 +152,15 @@ async function sendWithEnter(field: HTMLElement) {
 }
 
 describe('planner conversation regressions', () => {
+  it('does not repeat the run phase above the composer while the planner is working', async () => {
+    setupWithTurns((request) => request.path.endsWith('/planner/run')
+      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+      : undefined);
+    await openConversationWithTurns();
+    expect(screen.queryByText(/Turn complete|Still working|Stopping this turn/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+  });
+
   /*
    * Three tests used to stand here, all of them about *when* the reset control
    * appeared: it had to be labelled rather than a glyph, it had to be absent

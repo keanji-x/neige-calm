@@ -1,151 +1,162 @@
 @layer features {
-  /*
-   * The outline lives in the document's leading margin — the same margin the
-   * section numbers hang in — and it is **not a card**.
-   *
-   * A surface is what you need when a layer covers something; this one never
-   * does. It is the width of the margin, it stops at the margin's trailing
-   * edge, and the only thing it ever paints over is those numbers, which step
-   * aside for it (see `document.module.css`). So it is exactly what it looks
-   * like: a list of words in a margin.
-   *
-   * The whole margin is the hover zone. Six 6px dots would have been a poor
-   * target, and the margin has nothing else to do.
-   */
-  /*
-   * Absolute, not a grid item. `grid-row: 1 / -1` spans the *explicit* grid,
-   * and this document's rows are all implicit — the rail came out one block
-   * tall and the rest of the margin was not hoverable. Taking it out of the
-   * flow gives it the margin's full height, and its sticky child still tracks
-   * the scroll container above it.
-   */
+  /* One compact rail, four pixels before the report's reading edge. The
+     document keeps owning the margin; this navigator borrows only a dot-wide
+     strip of it. */
   .rail {
+    --outline-pitch: var(--row-h-sm);
+    --outline-pitch-aimed: var(--control-h);
+    --outline-dot: 4px;
+    --outline-dot-aimed: var(--dot-md);
+    --outline-track-max: 20rem;
+    --outline-ink: oklch(58% 0.01 250);
+
     position: absolute;
     inset-block: 0;
-    inset-inline-start: 0;
-    inline-size: var(--document-start);
-
-    /* The margin is not the target — the dots are. The whole margin opening the
-       outline meant it fired on any pointer that crossed the page's left half,
-       which is most of them. The list takes its events back below. */
+    inset-inline-start: max(
+      0px,
+      calc(var(--document-start) - var(--control-h) - var(--space-2))
+    );
+    inline-size: var(--control-h);
     pointer-events: none;
   }
 
-  .list {
-    position: sticky;
-    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
-    display: flex;
-    flex-direction: column;
-    margin: 0;
+  [data-theme="dark"] .rail {
+    --outline-ink: oklch(56% 0.012 245);
+  }
 
-    /* Stops short of the prose, but only just: the margin is 130 wide and the
-       titles need every pixel of it. */
-    padding-inline-end: var(--space-4);
+  /* The sticky box is centred in the viewport. The scrollport inside it owns
+     the 320px cap, so a hundred-section report keeps its first and last button
+     reachable instead of translating both beyond the screen. The preview is a
+     sibling of that scrollport and therefore is not clipped by it. */
+  .viewport {
+    position: sticky;
+    inset-block-start: 50vh;
+    inline-size: var(--control-h);
+    translate: 0 -50%;
+    pointer-events: none;
+  }
+
+  .track {
+    max-block-size: min(
+      var(--outline-track-max),
+      calc(100dvh - var(--header-band) - var(--header-h) - var(--space-10) * 2)
+    );
+    overflow: auto;
+    overflow-anchor: none;
+    scrollbar-width: none;
     pointer-events: auto;
   }
 
-  /*
-   * §6.0's small row, in the margin's register. No fill at rest: the list is
-   * text, and a background per row would rebuild the card this deliberately is
-   * not.
-   */
-  .row {
+  .list {
     display: flex;
-    align-items: baseline;
-    gap: var(--space-3);
-    /* At rest the row is the width of its dot, so the list's box — and with it
-       the hover target — is the dot column and nothing more. */
+    flex-direction: column;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .row {
+    position: relative;
+    display: grid;
+    place-items: center;
     inline-size: var(--control-h);
-    min-block-size: var(--row-h-sm);
-    padding-inline: var(--space-1);
-    transition: inline-size var(--motion-snappy) ease-out;
+    block-size: var(--outline-pitch);
+    min-block-size: var(--outline-pitch);
+    padding: 0;
     border-radius: var(--radius-sm);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     color: var(--text-3);
-    text-align: start;
     cursor: pointer;
   }
 
   .row:hover,
   .row:focus-visible {
-    background: var(--overlay-hover);
+    block-size: var(--outline-pitch-aimed);
     color: var(--text);
   }
 
-  /*
-   * At rest the row is its dot and nothing else. The words are in the DOM the
-   * whole time — it is their opacity that changes — so the outline is never
-   * hidden from anything that is not a mouse, and the accessible names do not
-   * come and go with a hover.
-   */
-  /* Its own element, so a long section name ends in an ellipsis rather than at
-     the margin's edge mid-word. A bare text node cannot be clipped. */
+  .row:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* The label remains in the button for its accessible name and textContent,
+     but the visual copy is the unclipped `.preview` sibling below. */
   .text {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
     overflow: hidden;
-    opacity: 0;
-    transition: opacity var(--motion-snappy) ease-out;
-    text-overflow: ellipsis;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
     white-space: nowrap;
   }
 
-  /*
-   * **Every dot is on one vertical line.** The two levels are told by the dot's
-   * size and by the label's indent, never by moving the dot: a column of dots
-   * that stepped in and out read as a ragged edge in a margin whose whole job
-   * is to be a quiet one.
-   */
-  .child .text {
-    padding-inline-start: var(--space-6);
+  /* Same grammar as the conversation exchange rail: the marker stays quiet,
+     and one transient preview appears on demand. It floats back into the
+     document margin rather than over the identically named heading. */
+  .preview {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: calc(100% + var(--space-2));
+    z-index: var(--z-raised);
+    inline-size: max-content;
+    max-inline-size: min(
+      18rem,
+      max(var(--space-12), calc(var(--document-start) - var(--control-h) - var(--space-10)))
+    );
+    overflow: hidden;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    pointer-events: none;
   }
 
-  .list:hover .row,
-  .list:focus-within .row {
-    inline-size: 100%;
-  }
-
-  .list:hover .text,
-  .list:focus-within .text {
-    opacity: 1;
-  }
-
-  /* The dot: §6.3's marker at its quietest. It has to read as texture at rest
-     — a louder dot would be a control nobody asked for, in a margin. */
   .dot {
-    flex: none;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
+    inline-size: var(--outline-dot);
+    block-size: var(--outline-dot);
     border-radius: var(--radius-pill);
-    background: var(--text-4);
-    transition: background-color var(--motion-quick) ease-out;
+    background: var(--outline-ink);
+    transition:
+      inline-size var(--motion-instant) linear,
+      block-size var(--motion-instant) linear,
+      background-color var(--motion-quick) ease-out;
   }
 
-  /* A child block's dot is smaller: the outline's two levels, legible at rest
-     as well as expanded. */
-  .child .dot {
-    inline-size: var(--space-2);
-    block-size: var(--space-2);
-    background: var(--hairline-strong);
-  }
-
-  .list:hover .dot,
-  .list:focus-within .dot {
+  .row:hover .dot,
+  .row:focus-visible .dot {
+    inline-size: var(--outline-dot-aimed);
+    block-size: var(--outline-dot-aimed);
     background: var(--accent);
   }
 
-  /* The desktop margin rail has no mobile analogue: at phone width it would
-     compete with the report for the same horizontal space. Mobile exposes the
-     same anchors as a full-width list from the Track actions menu instead. */
+  /* Mobile keeps its existing full-width outline panel. */
   @media (width < 60rem) {
     .rail {
       display: none;
     }
   }
 
+  /* Closed reports have a useful gutter once the main container reaches this
+     width. The shell separately hides the rail whenever a conversation opens,
+     because that state spends the gutter on the foreground drawer. */
+  @container (inline-size < 68rem) {
+    .rail {
+      display: none;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .row,
-    .text,
+    .preview,
     .dot {
       transition: none;
     }

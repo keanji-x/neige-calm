@@ -229,6 +229,41 @@
     min-block-size: 3lh;
   }
 
+  .areaDefault {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-6);
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--accent-soft);
+  }
+
+  .areaDefaultCopy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  .areaDefaultCopy strong {
+    font-weight: var(--weight-medium);
+    color: var(--text);
+  }
+
+  .areaDefaultActions {
+    display: flex;
+    flex-wrap: wrap;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   /* The settings row. `HStack` gives it the axis and the gap; what it cannot
      give is the wrap, and this row can hold a folder name of any length beside
      a template title of any length. It wraps rather than truncating either,

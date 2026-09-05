@@ -308,9 +308,9 @@ function blockLabel(block: ReportBlock): string {
 
 /**
  * Derive the outline (§6.16):
- *  1. every H1/H2 inside a prose block is a numbered top-level item, numbered
- *     continuously across blocks — a reader counts sections of the report, not
- *     sections of a block they cannot see;
+ *  1. every H1 is a numbered top-level item, while an H2 hangs beneath the H1
+ *     above it. An H2 with no preceding H1 remains a top-level fallback so a
+ *     legacy or partial report does not lose its only navigation;
  *  2. a non-prose block hangs under the numbered section above it, as a child:
  *     it is evidence inside that section, not a section;
  *  3. with no numbered section above it, a non-prose block becomes an unnumbered
@@ -323,6 +323,7 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
   const outline: ReportOutlineItem[] = [];
   let sectionNumber = 0;
   let lastNumbered: { children: ReportOutlineChild[] } | null = null;
+  let lastH1: { children: ReportOutlineChild[] } | null = null;
 
   for (const block of blocks) {
     if (block.kind === 'prose') {
@@ -336,10 +337,15 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
         traversal: 'recursive',
       });
       for (const heading of headings) {
+        if (heading.depth === 2 && lastH1 !== null) {
+          lastH1.children.push({ blockId: heading.id, label: heading.text });
+          continue;
+        }
         sectionNumber += 1;
         const children: ReportOutlineChild[] = [];
         outline.push({ blockId: heading.id, label: heading.text, number: sectionNumber, children });
         lastNumbered = { children };
+        if (heading.depth === 1) lastH1 = { children };
       }
       continue;
     }

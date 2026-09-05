@@ -26,11 +26,12 @@
    *
    * Three columns:
    *
-   *   `--document-start`  the outline gutter. The rail's dots hang at its
-   *                       leading edge and its expanded card fills it, so the
-   *                       card never covers a word. The page publishes the same
-   *                       distance to `ui/page-header`, which is what puts the
-   *                       title on the prose's first character.
+   *   `--document-start`  the outline gutter. The first-level dot rail hugs
+   *                       its trailing edge beside the prose; one label floats
+   *                       over the report only while its dot is hovered or
+   *                       focused. The page publishes the same distance to
+   *                       `ui/page-header`, which puts the title on the prose's
+   *                       first character.
    *   `--document-measure` every block, whatever its kind. The page owns the
    *                       number and the note explaining why it is not the
    *                       global prose measure; the fallback keeps this module
@@ -434,8 +435,8 @@
    * It used to sit inline, in front of the title, which made every heading two
    * things — a label and a counter — and left the leading margin with nothing
    * in it but air. Out here it is marginalia: it says what number this section
-   * is without taking a word of the heading's line, and it is what stops 162px
-   * of reserved margin from reading as a hole in the page.
+   * is without taking a word of the heading's line; the outline dots now share
+   * this trailing edge rather than occupying the margin's far side.
    *
    * Absolute, against the trailing edge of the margin, so the numbers line up
    * as a column of their own however wide they get.
@@ -450,21 +451,19 @@
     line-height: var(--leading-loose);
     letter-spacing: var(--tracking-wide);
     color: var(--accent);
+    opacity: var(--report-section-number-opacity, 1);
     transition: opacity var(--motion-quick) ease-out;
   }
 
-  /*
-   * While the outline is up, the numbers step aside. Both live in the same
-   * margin and both are transparent text — overlapping them would be text on
-   * text, the one combination that is never legible. The outline is the fuller
-   * answer to the same question, so it is the one that stays.
-   *
-   * Keyed on the *list*, not on the rail: the rail is the whole margin, and
-   * hovering the margin is not the gesture — hovering the dots is.
-   */
-  .doc:has(nav ol:hover) .h1::before,
-  .doc:has(nav ol:focus-within) .h1::before {
-    opacity: 0;
+  /* The outline's closed-state threshold is 68rem. Declare the default
+     relationship here: when that rail can paint, its dots are the section
+     markers and the numbers yield. The shell overrides this same property for
+     drawer states where the rail deliberately hides, then restores zero on an
+     ultrawide drawer where the rail returns. */
+  @container (inline-size >= 68rem) {
+    .doc:has(> nav) {
+      --report-section-number-opacity: 0;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
