@@ -181,7 +181,7 @@ describe('BoardHost lifecycle', () => {
       width: 100, height: bottom - top,
       toJSON: () => ({}),
     });
-    const geometry = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
+    const geometry = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function bounds(this: Element) {
       if ((this as HTMLElement).dataset.ncCardBoard !== undefined) return rect(0, 300);
       if ((this as HTMLElement).dataset.ncCardId === 'card-b') return rect(500, 700);
       return rect(0, 200);
