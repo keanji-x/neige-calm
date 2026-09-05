@@ -79,6 +79,39 @@ describe('optimistic conversation provenance', () => {
     ).map((turn) => turn.id)).toEqual(['echo-2']);
   });
 
+  /*
+   * ── #1449 review round 1, finding 1 ────────────────────────────────────────
+   *
+   * The caller re-runs reconciliation over the set the previous run returned
+   * (`useConversationStore`'s merge effect writes the result to state, and the
+   * registry write-through stores the survivors), so "one row confirms one
+   * echo" has to hold **across calls** and not only within one. It did not:
+   * the row that retired the create echo retired the send echo on the next
+   * pass, and the message the reader had just sent left the screen.
+   */
+  it('does not let one server row retire a second echo on a later pass', () => {
+    const rows = [serverTurn('5')];
+    const first = reconcileOptimisticConversationTurns(
+      rows, [echo('echo-create', 0), echo('echo-send', 0)],
+    );
+    expect(first.map((turn) => turn.id)).toEqual(['echo-send']);
+    expect(reconcileOptimisticConversationTurns(rows, first).map((turn) => turn.id))
+      .toEqual(['echo-send']);
+    /* And a third pass, because a fixed point reached at two is what the
+       caller's repeated effect actually depends on. */
+    expect(reconcileOptimisticConversationTurns(
+      rows, reconcileOptimisticConversationTurns(rows, first),
+    ).map((turn) => turn.id)).toEqual(['echo-send']);
+  });
+
+  it('still retires a survivor once a row it has not consumed arrives', () => {
+    const first = reconcileOptimisticConversationTurns(
+      [serverTurn('5')], [echo('echo-create', 0), echo('echo-send', 0)],
+    );
+    expect(reconcileOptimisticConversationTurns([serverTurn('5'), serverTurn('6')], first))
+      .toEqual([]);
+  });
+
   it('recognises only finite user turns carrying provenance', () => {
     const invalid = { ...echo('echo-2', 4), serverHighWaterBefore: Number.NaN };
     expect(isOptimisticConversationTurn(echo('echo-1', 4))).toBe(true);
@@ -784,5 +817,41 @@ describe('mergeTranscript', () => {
 
   it('keeps a completed tail thought until an echo exists', () => {
     expect(mergeTranscript([thought], [])).toEqual([thought]);
+  });
+
+  /*
+   * ── #1449 review round 1, finding 2 ────────────────────────────────────────
+   *
+   * An echo that is never coming back — the create's first sentence, stranded
+   * when its runtime was superseded — is not the newest thing in the
+   * conversation. Appended unconditionally it read `B → R → A`: the sentence
+   * that started the thread shown last, after the reply to the sentence that
+   * followed it, and counted as the newest exchange by everything downstream.
+   */
+  it('puts a stranded echo back in its own place in time', () => {
+    const stranded: ConversationTurn = { id: 'echo-a', author: 'you', text: 'A', atMs: 10 };
+    const said: ConversationTurn = { id: 'server-b', author: 'you', text: 'B', atMs: 20 };
+    const reply: ConversationTurn = { id: 'server-r', author: 'agent', text: 'R', atMs: 30 };
+    expect(mergeTranscript([said, reply], [stranded]).map((entry) => entry.id))
+      .toEqual(['echo-a', 'server-b', 'server-r']);
+  });
+
+  it('leaves an echo of something just said at the tail', () => {
+    const said: ConversationTurn = { id: 'server-b', author: 'you', text: 'B', atMs: 20 };
+    const reply: ConversationTurn = { id: 'server-r', author: 'agent', text: 'R', atMs: 30 };
+    const fresh: ConversationTurn = { id: 'echo-c', author: 'you', text: 'C', atMs: 40 };
+    expect(mergeTranscript([said, reply], [fresh]).map((entry) => entry.id))
+      .toEqual(['server-b', 'server-r', 'echo-c']);
+  });
+
+  /* `buildTranscript` pairs an action's start and end positionally, so a
+     completed action keeps the *started* row's place even when its end time is
+     later. Placing an echo must not re-sort the server's own account. */
+  it('does not reorder server entries whose times run backwards', () => {
+    const later: ConversationTurn = { id: 'server-1', author: 'agent', text: 'first', atMs: 90 };
+    const earlier: ConversationTurn = { id: 'server-2', author: 'agent', text: 'second', atMs: 20 };
+    const fresh: ConversationTurn = { id: 'echo', author: 'you', text: 'C', atMs: 100 };
+    expect(mergeTranscript([later, earlier], [fresh]).map((entry) => entry.id))
+      .toEqual(['server-1', 'server-2', 'echo']);
   });
 });
