@@ -199,10 +199,14 @@ where
             .map_err(Into::into)
     }
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
-        calm_truth::db::RepoRead::task_current_get(self, track_id, key).await.map_err(Into::into)
+        calm_truth::db::RepoRead::task_current_get(self, track_id, key)
+            .await
+            .map_err(Into::into)
     }
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>> {
-        calm_truth::db::RepoRead::task_history_by_key(self, track_id, key).await.map_err(Into::into)
+        calm_truth::db::RepoRead::task_history_by_key(self, track_id, key)
+            .await
+            .map_err(Into::into)
     }
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>> {
         calm_truth::db::RepoRead::tasks_nonterminal(self)
