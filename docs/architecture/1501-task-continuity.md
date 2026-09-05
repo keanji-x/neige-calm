@@ -323,11 +323,16 @@ verified; merging a design or backend foundation does not complete that outcome.
 
 | Slice | Acceptance | Status |
 | --- | --- | --- |
-| S0: protocol decisions | Reviewed identity, authorities, transitions, migration/caller map | In progress |
+| S0: protocol decisions | Reviewed identity, authorities, transitions, migration/caller map | Design merged in #1503; implementation findings refine this document |
 | S1: continuing task execution | Explicit recovery retains old attempts, preserves keys and sibling results; late messages fenced | Pending |
 | S2: reliable inputs | Sealed inputs, failure retention, exact recovery manifests and authorized repair-purpose binding; withdrawn output excluded | Pending |
 | S3: actionable task experience | Shared current/history view, recovery entry point and clear blockers; browser + product experiment | Pending |
 | S4: extended obligations and bounded supervision | General finding propagation/disposition and explicitly bounded intervention policies | Pending |
+
+Two internal foundations have shipped independently: owned process boundaries in
+#1510 and immutable artifact storage in #1511. Their module tests, independent
+reviews and applicable CI passed before merge. Neither foundation by itself enables
+post-execution repair, dedicated Codex delivery, or the integrated acceptance story.
 
 Tests must exercise production authoring, claim, reporting and recovery entry
 points. Critical invariants require production mutations with predicted complete

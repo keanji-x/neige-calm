@@ -1225,10 +1225,15 @@ async fn terminal_task_does_not_receive_in_flight_withdrawal_diagnostic() {
         .unwrap();
 
     for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+        assert!(
+            has_diagnostic_code(snapshot, "finished", "task_key_completed"),
+            "{}",
+            task_verdict(snapshot, "finished")
+        );
         assert!(diagnostic_contains(
             snapshot,
             "finished",
-            "task key has already completed"
+            "this task is complete"
         ));
         assert!(!diagnostic_contains(snapshot, "finished", "in flight"));
     }
@@ -1665,7 +1670,11 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "unchanged declaration bytes"
         );
         assert!(
-            !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+            !has_diagnostic_code(
+                &read(&boot).await,
+                "flight",
+                "declaration_changed_in_flight"
+            ),
             "unchanged declaration must not be stale"
         );
         let rev = read(&boot).await["blocks"]
@@ -1692,9 +1701,11 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             before,
             "{field} changed frozen task bytes"
         );
+        let snapshot = read(&boot).await;
         assert!(
-            diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
-            "{field}"
+            has_diagnostic_code(&snapshot, "flight", "declaration_changed_in_flight"),
+            "{field}: {}",
+            task_verdict(&snapshot, "flight")
         );
     }
 }
@@ -1753,7 +1764,11 @@ async fn canonical_gate_and_context_are_semantically_equal_to_block_declaration(
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     upsert(&boot, Some((&id, rev)), task("flight")).await;
     assert!(
-        !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+        !has_diagnostic_code(
+            &read(&boot).await,
+            "flight",
+            "declaration_changed_in_flight"
+        ),
         "equivalent JSON spelling must not create a stale diagnostic"
     );
 }
