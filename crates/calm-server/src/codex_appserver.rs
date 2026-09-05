@@ -340,6 +340,90 @@ pub struct ThreadLoadedListResponse {
 // Notification stream (server -> client).
 // ===========================================================================
 
+/// One page of `model/list` (`v2/model.rs` `ModelListResponse`). The server
+/// pages the catalog; [`crate::shared_codex_appserver::SharedCodexAppServer::model_list`]
+/// drains it in one call.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelListPage {
+    pub data: Vec<CodexModel>,
+    /// `None` (or an empty string) means "no further pages".
+    pub next_cursor: Option<String>,
+}
+
+/// One catalog entry (`v2/model.rs` `Model`), narrowed to the seven fields
+/// `GET /api/models` proxies.
+///
+/// Codex's own struct carries more (`upgradeInfo`, `availabilityNux`,
+/// `hidden`, `serviceTiers`, …). We deliberately do not vendor those: nothing
+/// in this kernel reads them, and every field we decode is a field we would
+/// have to keep in step with an `[experimental]` protocol.
+///
+/// `id` is the *preset* identifier and `model` is the slug the model is
+/// invoked by. Only `model` may ever reach `turn/start`, `cards.payload_json`
+/// or the REST wire.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModel {
+    pub id: String,
+    pub model: String,
+    pub display_name: String,
+    pub description: String,
+    pub supported_reasoning_efforts: Vec<CodexReasoningEffortOption>,
+    /// Wire type is a bare string, not a closed enum: codex's
+    /// `ReasoningEffort` has a `Custom(String)` variant and a hand-written
+    /// `Deserialize` that accepts any non-empty string
+    /// (`protocol/src/openai_models.rs`). A closed enum here would fail to
+    /// decode the whole catalog the first time codex ships a new effort.
+    pub default_reasoning_effort: String,
+    /// Codex's own notion of a catalog default. It answers "which entry does
+    /// the picker highlight", NOT "which model does this installation
+    /// currently follow" — the latter comes from `config/read`.
+    pub is_default: bool,
+}
+
+/// One selectable reasoning effort for a model (`v2/model.rs`
+/// `ReasoningEffortOption`). `description` is codex's copy; we never
+/// substitute our own.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexReasoningEffortOption {
+    /// Bare string for the same reason as
+    /// [`CodexModel::default_reasoning_effort`].
+    pub reasoning_effort: String,
+    pub description: String,
+}
+
+/// `config/read` response (`v2/config.rs` `ConfigReadResponse`), narrowed to
+/// the `config` member.
+///
+/// **The two levels do not share a serde convention.** The envelope is
+/// `rename_all = "camelCase"`, but the `Config` it wraps is
+/// `rename_all = "snake_case"` (`v2/config.rs`). So the keys inside `config`
+/// are `model` and `model_reasoning_effort` — writing `modelReasoningEffort`
+/// here parses to `None` forever, silently. (Contrast `WarningNotification`,
+/// whose `threadId` really is camelCase.)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigReadResponse {
+    pub config: CodexConfig,
+}
+
+/// The layer-merged effective config, narrowed to the two keys the model
+/// picker needs. Field names are snake_case verbatim — see
+/// [`ConfigReadResponse`].
+///
+/// Both values are genuinely optional on codex's side: "no model configured"
+/// is a state this server has to represent (`default.model: null`), not a
+/// missing required field.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct CodexConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub model_reasoning_effort: Option<String>,
+}
+
 /// A server→client notification, narrowed to the variants the push
 /// migration cares about. Anything else (the dozens of housekeeping /
 /// realtime / approval methods) lands in [`Notification::Other`] so codex
@@ -783,6 +867,33 @@ impl CodexAppServer {
             json!({ "threadId": thread_id, "input": input }),
         )
         .await
+    }
+
+    /// `model/list` — one page of codex's model catalog.
+    ///
+    /// `includeHidden` is pinned to `false`: the picker-visibility filter is
+    /// codex's (`preset.show_in_picker`), and a hidden preset is hidden for
+    /// the same reasons in our UI as in theirs.
+    pub async fn model_list(&self, cursor: Option<&str>) -> Result<ModelListPage> {
+        let mut params = json!({ "includeHidden": false });
+        if let Some(cursor) = cursor {
+            params["cursor"] = Value::String(cursor.to_string());
+        }
+        self.request("model/list", params).await
+    }
+
+    /// `config/read` — the layer-merged effective config.
+    ///
+    /// `cwd` decides which project layers are folded in. Pass the same path
+    /// the thread was started with, or `None` to read only the layers that
+    /// apply everywhere; the caller must not present a `None` read as if it
+    /// were that thread's effective default.
+    pub async fn config_read(&self, cwd: Option<&str>) -> Result<ConfigReadResponse> {
+        let mut params = json!({ "includeLayers": false });
+        if let Some(cwd) = cwd {
+            params["cwd"] = Value::String(cwd.to_string());
+        }
+        self.request("config/read", params).await
     }
 
     /// `turn/steer` — redirect an in-flight turn. `expected_turn_id` must

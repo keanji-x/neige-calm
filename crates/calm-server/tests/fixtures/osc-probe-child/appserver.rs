@@ -147,6 +147,7 @@ pub fn run_fake_app_server() {
         .expect("fake app-server: build tokio runtime");
     rt.block_on(async move {
         let control = WedgeControl::for_sock(&sock);
+        let reads = ReadFixtures::for_sock(&sock);
         let listener = UnixListener::bind(&sock).unwrap_or_else(|e| {
             // #1439: 把路径的字节数也打出来 —— sun_path 只有 107 字节可用，
             // 光看 "path must be shorter than SUN_LEN" 判不出是长了多少。
@@ -182,8 +183,9 @@ pub fn run_fake_app_server() {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let control = control.clone();
+                    let reads = reads.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = serve_conn(stream, control).await {
+                        if let Err(e) = serve_conn(stream, control, reads).await {
                             eprintln!("fake app-server: connection ended: {e}");
                         }
                     });
@@ -237,7 +239,46 @@ impl WedgeControl {
     }
 }
 
-async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Result<(), String> {
+/// #1505 S4-2 — sidecar files, addressed off the listen socket path, that let
+/// a test script `model/list` and `config/read` without touching process env
+/// (env is per test *binary*, so an env knob would need a global lock and
+/// would leak between the tests in one binary):
+///
+///   * `<sock>.model-list`   — verbatim JSON-RPC `result` for `model/list`.
+///   * `<sock>.config-read`  — verbatim JSON-RPC `result` for `config/read`.
+///   * `<sock>.model-list-no-answer` — present ⇒ `model/list` is read and then
+///     never answered, modelling a daemon that has accepted the request and
+///     stalled. Every other method keeps working.
+#[derive(Clone)]
+struct ReadFixtures {
+    model_list: PathBuf,
+    config_read: PathBuf,
+    model_list_no_answer: PathBuf,
+}
+
+impl ReadFixtures {
+    fn for_sock(sock: &std::path::Path) -> Self {
+        Self {
+            model_list: sock.with_extension("model-list"),
+            config_read: sock.with_extension("config-read"),
+            model_list_no_answer: sock.with_extension("model-list-no-answer"),
+        }
+    }
+
+    fn result_or(path: &std::path::Path, fallback: Value) -> Value {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("fake app-server: {} is not JSON: {e}", path.display())),
+            Err(_) => fallback,
+        }
+    }
+}
+
+async fn serve_conn(
+    stream: tokio::net::UnixStream,
+    control: WedgeControl,
+    reads: ReadFixtures,
+) -> Result<(), String> {
     let ws = tokio_tungstenite::accept_async(stream)
         .await
         .map_err(|e| format!("ws accept: {e}"))?;
@@ -368,6 +409,23 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
                     )
                     .await?;
                 }
+            }
+            "model/list" => {
+                if reads.model_list_no_answer.exists() {
+                    continue;
+                }
+                let result = ReadFixtures::result_or(
+                    &reads.model_list,
+                    json!({ "data": [], "nextCursor": null }),
+                );
+                send_result(&mut write, &id, result).await?;
+            }
+            "config/read" => {
+                let result = ReadFixtures::result_or(
+                    &reads.config_read,
+                    json!({ "config": {}, "origins": {} }),
+                );
+                send_result(&mut write, &id, result).await?;
             }
             // Anything else (turn/steer, thread/inject_items, …) — ack with
             // an empty object so a caller never wedges on a missing response.

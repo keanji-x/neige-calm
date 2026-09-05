@@ -1578,6 +1578,60 @@
         }
       }
     },
+    "/api/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "query",
+            "description": "Resolve the default against this card's workspace.\n\nConfig layers are per-directory: a project layer under the card's\nworkspace can override `model`. Without a card there is no workspace,\nso the read is made without a `cwd` and `default_source` is `unknown`\nrather than a global-layer value dressed up as this card's default.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model catalog and the default this installation follows. Answered with `source: \"unavailable\"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`card_id` names a card that does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/overlays": {
       "get": {
         "tags": [
@@ -5722,6 +5776,15 @@
         },
         "additionalProperties": false
       },
+      "DefaultSource": {
+        "type": "string",
+        "description": "Where [`ModelsResponse::default`] came from. Always present, including\nwhen the catalog is unavailable — the picker's own disabled state depends\non being told which answer it is looking at.",
+        "enum": [
+          "config_read",
+          "config_toml",
+          "unknown"
+        ]
+      },
       "DeleteReportBlockBody": {
         "type": "object",
         "required": [
@@ -6222,6 +6285,121 @@
           "path": {
             "type": "string",
             "description": "Canonical absolute path of the listed directory."
+          }
+        }
+      },
+      "Model": {
+        "type": "object",
+        "description": "One entry of the model catalog.",
+        "required": [
+          "id",
+          "model",
+          "display_name",
+          "description",
+          "is_default",
+          "supported_reasoning_efforts",
+          "default_reasoning_effort"
+        ],
+        "properties": {
+          "default_reasoning_effort": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Codex's *preset* identifier. Presentation only — a React key. It must\nnever be sent back as a model selection; the slug is [`Model::model`]."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Codex's catalog-level default marker. Useful for ordering and\nhighlighting the list; **not** an answer to \"what am I following now\"."
+          },
+          "model": {
+            "type": "string",
+            "description": "The slug codex is invoked by. This is the value that travels to\n`turn/start`, into `cards.payload_json`, and in a selection request."
+          },
+          "supported_reasoning_efforts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffortOption"
+            }
+          }
+        }
+      },
+      "ModelDefaults": {
+        "type": "object",
+        "description": "What a card that has selected nothing currently runs. `null` means \"not\nconfigured anywhere we could read\".",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ModelSource": {
+        "type": "string",
+        "description": "Whether `models` reflects a live catalog.",
+        "enum": [
+          "live",
+          "unavailable"
+        ]
+      },
+      "ModelsQuery": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resolve the default against this card's workspace.\n\nConfig layers are per-directory: a project layer under the card's\nworkspace can override `model`. Without a card there is no workspace,\nso the read is made without a `cwd` and `default_source` is `unknown`\nrather than a global-layer value dressed up as this card's default."
+          }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "description": "Response body for `GET /api/models`.",
+        "required": [
+          "models",
+          "default",
+          "default_source",
+          "source"
+        ],
+        "properties": {
+          "default": {
+            "$ref": "#/components/schemas/ModelDefaults"
+          },
+          "default_source": {
+            "$ref": "#/components/schemas/DefaultSource"
+          },
+          "fetched_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Wall-clock ms at which the catalog was fetched, or `null` when it was\nnot fetched at all. There is no server-side cache — codex keeps its own\n300 s disk cache — so this is the age of this response, nothing else."
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          },
+          "source": {
+            "$ref": "#/components/schemas/ModelSource"
           }
         }
       },
@@ -6886,6 +7064,23 @@
           },
           "truncated": {
             "type": "boolean"
+          }
+        }
+      },
+      "ReasoningEffortOption": {
+        "type": "object",
+        "description": "One selectable reasoning effort for a model. `description` is codex's own\ncopy, passed through verbatim.",
+        "required": [
+          "reasoning_effort",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "description": "A bare string, never a closed enum: codex's `ReasoningEffort` carries a\n`Custom(String)` variant and accepts any non-empty string on the wire."
           }
         }
       },
@@ -8664,6 +8859,10 @@
     {
       "name": "plugins",
       "description": "Plugin lifecycle, config, MCP fan-out"
+    },
+    {
+      "name": "models",
+      "description": "Codex model catalog and the default model/reasoning-effort this installation follows"
     },
     {
       "name": "version",

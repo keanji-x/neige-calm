@@ -24,8 +24,8 @@ use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
-    ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
-    redact_thread_start_config,
+    ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
+    ThreadStartParams, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -619,6 +619,11 @@ pub fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u6
     initial.saturating_mul(factor).min(max)
 }
 
+/// Pagination guard for [`SharedCodexAppServer::model_list`]. Codex answers
+/// the whole catalog in one page today; this only bounds a peer that never
+/// clears `nextCursor`.
+const MODEL_LIST_MAX_PAGES: usize = 20;
+
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
 pub struct SharedCodexAppServer {
@@ -1026,6 +1031,12 @@ impl SharedCodexAppServer {
         })
     }
 
+    /// The shared CODEX_HOME handle. `GET /api/models` reads its
+    /// `config.toml` directly when no daemon connection exists.
+    pub fn shared_home(&self) -> &SharedCodexHome {
+        &self.home
+    }
+
     pub fn codex_home_path(&self) -> &std::path::Path {
         self.home.path()
     }
@@ -1330,6 +1341,42 @@ impl SharedCodexAppServer {
             )));
         }
         Ok(turn_id)
+    }
+
+    /// `model/list`, drained across codex's pagination cursor.
+    ///
+    /// Read-only and connection-only: it never spawns or heals the daemon. A
+    /// dormant installation must answer `GET /api/models` with
+    /// `source: "unavailable"`, not by booting a codex process behind a GET.
+    pub async fn model_list(&self) -> Result<Vec<CodexModel>> {
+        let client = self.connected_client().await?;
+        let mut models: Vec<CodexModel> = Vec::new();
+        let mut cursor: Option<String> = None;
+        // A server that echoes a cursor forever would otherwise pin this loop.
+        // The real catalog is a few dozen entries in one page; the cap only
+        // ever fires on a misbehaving peer, and truncating beats hanging.
+        for _ in 0..MODEL_LIST_MAX_PAGES {
+            let page = client.model_list(cursor.as_deref()).await?;
+            models.extend(page.data);
+            match page.next_cursor {
+                Some(next) if !next.is_empty() => cursor = Some(next),
+                _ => return Ok(models),
+            }
+        }
+        tracing::warn!(
+            target = "shared_codex_daemon::model_list",
+            pages = MODEL_LIST_MAX_PAGES,
+            "model/list did not terminate its pagination; returning a truncated catalog"
+        );
+        Ok(models)
+    }
+
+    /// `config/read` — the layer-merged effective config, narrowed to the
+    /// model defaults. `cwd` selects the project layers; see
+    /// [`CodexAppServer::config_read`].
+    pub async fn config_read(&self, cwd: Option<&str>) -> Result<CodexConfig> {
+        let client = self.connected_client().await?;
+        Ok(client.config_read(cwd).await?.config)
     }
 
     pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {

@@ -400,6 +400,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/overlays": {
         parameters: {
             query?: never;
@@ -1718,6 +1734,13 @@ export interface components {
              */
             title?: string;
         };
+        /**
+         * @description Where [`ModelsResponse::default`] came from. Always present, including
+         *     when the catalog is unavailable — the picker's own disabled state depends
+         *     on being told which answer it is looking at.
+         * @enum {string}
+         */
+        DefaultSource: "config_read" | "config_toml" | "unknown";
         DeleteReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -1921,6 +1944,66 @@ export interface components {
             parent?: string | null;
             /** @description Canonical absolute path of the listed directory. */
             path: string;
+        };
+        /** @description One entry of the model catalog. */
+        Model: {
+            default_reasoning_effort: string;
+            description: string;
+            display_name: string;
+            /**
+             * @description Codex's *preset* identifier. Presentation only — a React key. It must
+             *     never be sent back as a model selection; the slug is [`Model::model`].
+             */
+            id: string;
+            /**
+             * @description Codex's catalog-level default marker. Useful for ordering and
+             *     highlighting the list; **not** an answer to "what am I following now".
+             */
+            is_default: boolean;
+            /**
+             * @description The slug codex is invoked by. This is the value that travels to
+             *     `turn/start`, into `cards.payload_json`, and in a selection request.
+             */
+            model: string;
+            supported_reasoning_efforts: components["schemas"]["ReasoningEffortOption"][];
+        };
+        /**
+         * @description What a card that has selected nothing currently runs. `null` means "not
+         *     configured anywhere we could read".
+         */
+        ModelDefaults: {
+            model?: string | null;
+            reasoning_effort?: string | null;
+        };
+        /**
+         * @description Whether `models` reflects a live catalog.
+         * @enum {string}
+         */
+        ModelSource: "live" | "unavailable";
+        ModelsQuery: {
+            /**
+             * @description Resolve the default against this card's workspace.
+             *
+             *     Config layers are per-directory: a project layer under the card's
+             *     workspace can override `model`. Without a card there is no workspace,
+             *     so the read is made without a `cwd` and `default_source` is `unknown`
+             *     rather than a global-layer value dressed up as this card's default.
+             */
+            card_id?: string | null;
+        };
+        /** @description Response body for `GET /api/models`. */
+        ModelsResponse: {
+            default: components["schemas"]["ModelDefaults"];
+            default_source: components["schemas"]["DefaultSource"];
+            /**
+             * Format: int64
+             * @description Wall-clock ms at which the catalog was fetched, or `null` when it was
+             *     not fetched at all. There is no server-side cache — codex keeps its own
+             *     300 s disk cache — so this is the age of this response, nothing else.
+             */
+            fetched_at_ms?: number | null;
+            models: components["schemas"]["Model"][];
+            source: components["schemas"]["ModelSource"];
         };
         MoveReportBlockBody: {
             /** Format: int64 */
@@ -2396,6 +2479,18 @@ export interface components {
             size: number;
             text: string;
             truncated: boolean;
+        };
+        /**
+         * @description One selectable reasoning effort for a model. `description` is codex's own
+         *     copy, passed through verbatim.
+         */
+        ReasoningEffortOption: {
+            description: string;
+            /**
+             * @description A bare string, never a closed enum: codex's `ReasoningEffort` carries a
+             *     `Custom(String)` variant and accepts any non-empty string on the wire.
+             */
+            reasoning_effort: string;
         };
         /** @description A derived, addressable slice of a track report. */
         ReportBlock: {
@@ -4630,6 +4725,54 @@ export interface operations {
             };
             /** @description Read permission denied */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_models: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Resolve the default against this card's workspace.
+                 *
+                 *     Config layers are per-directory: a project layer under the card's
+                 *     workspace can override `model`. Without a card there is no workspace,
+                 *     so the read is made without a `cwd` and `default_source` is `unknown`
+                 *     rather than a global-layer value dressed up as this card's default.
+                 */
+                card_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Model catalog and the default this installation follows. Answered with `source: "unavailable"` and an empty catalog when codex cannot be reached, never with an error and never with a hardcoded catalog */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelsResponse"];
+                };
+            };
+            /** @description `card_id` names a card that does not exist */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
