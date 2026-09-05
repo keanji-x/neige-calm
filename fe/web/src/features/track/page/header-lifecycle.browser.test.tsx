@@ -75,15 +75,41 @@ describe('the track lifecycle status in the page header', () => {
     expect(paintedRgb(getComputedStyle(actions).color)).toEqual(paintedRgb(text2));
   });
 
-  it('makes a worker input request directly reviewable with a full row-height target', async () => {
+  it('floats a worker input request at the viewport corner with a direct action', async () => {
     await browserPage.viewport(1200, 800);
     const onReviewNeedsInput = vi.fn();
     renderPage({ track: track({ anyCardNeedsInput: true }), onReviewNeedsInput });
 
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
     const review = document.querySelector<HTMLButtonElement>('[aria-label="Review input request"]')!;
+    const noticeBox = notice.getBoundingClientRect();
     expect(review.innerText).toBe('Review');
-    expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
+    expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(32);
+    expect(window.innerWidth - noticeBox.right).toBeGreaterThanOrEqual(20);
+    expect(window.innerWidth - noticeBox.right).toBeLessThanOrEqual(28);
+    expect(window.innerHeight - noticeBox.bottom).toBeGreaterThanOrEqual(20);
+    expect(window.innerHeight - noticeBox.bottom).toBeLessThanOrEqual(28);
     await userEvent.click(review);
+    expect(onReviewNeedsInput).toHaveBeenCalledOnce();
+  });
+
+  it('compacts an input notification beside an open conversation drawer', async () => {
+    await browserPage.viewport(1200, 800);
+    const onReviewNeedsInput = vi.fn();
+    renderPage({
+      track: track({ anyCardNeedsInput: true }),
+      conversationOpen: true,
+      onReviewNeedsInput,
+    });
+
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
+    const launcher = document.querySelector<HTMLButtonElement>('[data-nc-notification-launcher]')!;
+    const box = notice.getBoundingClientRect();
+    expect(notice.dataset.ncNotificationMode).toBe('compact');
+    expect(box.width).toBe(40);
+    expect(window.innerWidth - box.right).toBeGreaterThan(250);
+    expect(notice.querySelector('strong')).toBeNull();
+    await userEvent.click(launcher);
     expect(onReviewNeedsInput).toHaveBeenCalledOnce();
   });
 
@@ -151,7 +177,7 @@ describe('the track lifecycle status in the page header', () => {
     expect(popover()?.matches(':popover-open')).toBe(false);
   });
 
-  it('truncates a long title before the label can overlap trailing actions', async () => {
+  it('truncates a long title while the input notice stays out of the header', async () => {
     /* Stay just above the 60rem mobile navigation cutover: below it the
        desktop PageHeader is intentionally replaced by MobileHeader. */
     await browserPage.viewport(1000, 600);
@@ -167,15 +193,15 @@ describe('the track lifecycle status in the page header', () => {
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
     const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
-    const review = document.querySelector<HTMLElement>('[aria-label="Review input request"]')!;
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
     const titleBox = title.getBoundingClientRect();
     const statusBox = status.getBoundingClientRect();
 
     expect(title.scrollWidth).toBeGreaterThan(title.clientWidth);
     expect(statusBox.left - titleBox.right).toBeGreaterThanOrEqual(4);
     expect(statusBox.left - titleBox.right).toBeLessThanOrEqual(12);
-    expect(review.getBoundingClientRect().right).toBeLessThan(actions.getBoundingClientRect().left);
     expect(statusBox.right).toBeLessThan(actions.getBoundingClientRect().left);
+    expect(notice.getBoundingClientRect().top).toBeGreaterThan(actions.getBoundingClientRect().bottom);
   });
 
   it('keeps the subdued running colour readable in both themes', async () => {

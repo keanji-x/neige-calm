@@ -252,6 +252,9 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Review input request' }));
     expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    expect(screen.getByRole('region', { name: 'Notifications' })
+      .getAttribute('data-nc-notification-mode')).toBe('compact');
+    expect(screen.getByRole('region', { name: 'Notifications' }).querySelector('strong')).toBeNull();
   });
 
   it('keeps the name derived from confirmed turns after the drawer closes', async () => {

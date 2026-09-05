@@ -88,7 +88,7 @@ describe('degraded workspace reads stay usable', () => {
       id: 'o1', plugin_id: 'cards', entity_kind: 'track', entity_id: 'w1',
       kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
     }] }));
-    expect(await screen.findByText('Needs input')).toBeTruthy();
+    expect(await screen.findByRole('status', { name: 'Planner needs input' })).toBeTruthy();
   });
 
   it('uses a successful neutral detail read instead of stale workspace activity', async () => {
@@ -105,7 +105,7 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     await screen.findByRole('button', { name: 'Rename track' });
-    expect(screen.queryByText('Needs input')).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Planner needs input' })).toBeNull();
   });
 });
 

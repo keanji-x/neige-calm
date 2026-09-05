@@ -203,47 +203,143 @@
     clip-path: inset(0);
   }
 
-  /* `any_card_needs_input` is a field the kernel really writes, so it can carry
-     a page's attention — unlike progress/eta/now, which have no writer at all. */
-  .needsInputCluster,
-  .needsInput {
+  /* A user-input request is an event, not permanent page metadata. Keep the
+     title row calm and surface the kernel-owned bit as one actionable toast. */
+  .needsInputNotice {
+    position: fixed;
+    inset-inline-end: var(--space-10);
+    inset-block-end: var(--space-10);
+    z-index: var(--z-toast);
+  }
+
+  .needsInputNoticeExpanded {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+    inline-size: min(22rem, calc(100vw - var(--space-10) * 2));
+    padding: var(--space-5);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+  }
+
+  .needsInputNoticeCompact {
+    display: grid;
+    inline-size: calc(var(--control-h-lg) + var(--space-4));
+    block-size: calc(var(--control-h-lg) + var(--space-4));
+  }
+
+  /* The drawer occupies the trailing panel track. Its compact notification
+     sits just outside the card instead of covering the composer or vanishing. */
+  .needsInputNoticeBesideDrawer {
+    inset-inline-end: calc(var(--space-10) + var(--panel-span, 25cqi) + var(--space-4));
+    inset-block-end: var(--space-11);
+  }
+
+  .needsInputNoticeIcon {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-lg);
+    block-size: var(--control-h-lg);
+    border-radius: var(--radius-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .needsInputNoticeCopy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .needsInputNoticeTitle {
+    color: var(--text);
+    font-size: var(--text-base);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+  }
+
+  .needsInputNoticeDetail {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+  }
+
+  .needsInputNoticeActions {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
   }
 
-  .needsInput {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
-    color: var(--warn-text);
-  }
-
-  .needsInputDot {
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-    background: var(--warn);
-  }
-
   .needsInputAction {
     display: inline-flex;
     align-items: center;
-    min-block-size: var(--row-h-sm);
-    padding: var(--space-1) var(--space-2);
+    justify-content: center;
+    min-block-size: var(--control-h-lg);
+    padding-inline: var(--space-5);
     border-radius: var(--radius-sm);
-    color: var(--warn-text);
+    background: var(--accent);
+    color: var(--text-on-accent);
     font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-semibold);
     line-height: var(--leading-none);
-    text-decoration: underline;
-    text-underline-offset: 2px;
     cursor: pointer;
   }
 
   .needsInputAction:hover,
   .needsInputAction:focus-visible {
-    background: var(--warn-soft);
+    background: color-mix(in oklab, var(--accent) 88%, var(--text));
+  }
+
+  .needsInputCollapse,
+  .needsInputLauncher {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    border-radius: var(--radius-pill);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .needsInputCollapse {
+    inline-size: var(--control-h-lg);
+    block-size: var(--control-h-lg);
+  }
+
+  .needsInputCollapse:hover,
+  .needsInputCollapse:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  .needsInputLauncher {
+    inline-size: 100%;
+    block-size: 100%;
+    border: 1px solid var(--hairline);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    color: var(--accent);
+  }
+
+  .needsInputLauncher:hover,
+  .needsInputLauncher:focus-visible {
+    background: color-mix(in oklab, var(--paper) 92%, var(--accent-soft));
+  }
+
+  .needsInputIndicator {
+    position: absolute;
+    inset-block-start: var(--space-2);
+    inset-inline-end: var(--space-2);
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border: 1px solid var(--paper);
+    border-radius: var(--radius-pill);
+    background: var(--warn);
   }
 
   /* Track-level mutations live behind one conventional overflow trigger. The
@@ -802,7 +898,7 @@
       box-shadow: none !important;
     }
 
-    .needsInputCluster {
+    .needsInputNotice {
       display: none;
     }
 

@@ -1253,6 +1253,7 @@ function useConversationPanel(
   const draftOpen = openTarget?.kind === 'draft' && draft !== null;
 
   return {
+    isOpen: open !== null || draftOpen,
     list: (
       <ChatList
         conversations={store.conversations}
@@ -2800,6 +2801,7 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
+      conversationOpen={chat.isOpen}
       onReviewNeedsInput={plannerCard === undefined
         ? undefined
         : () => registry.requestOpen(plannerCard.id, { focusComposer: true })}

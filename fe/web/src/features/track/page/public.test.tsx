@@ -109,13 +109,22 @@ describe('TrackPage header', () => {
     expect(onCloseBoard).toHaveBeenCalledOnce();
   });
 
-  it('turns a card input request into a direct review action', async () => {
+  it('turns a card input request into a bottom-right notification action', async () => {
     const onReviewNeedsInput = vi.fn();
     renderPage({
       track: track({ anyCardNeedsInput: true }),
       onReviewNeedsInput,
     });
-    expect(screen.getByText('Needs input')).toBeTruthy();
+    const notice = screen.getByRole('region', { name: 'Notifications' });
+    expect(screen.getByRole('status', { name: 'Planner needs input' })).toBeTruthy();
+    expect(notice.textContent).toContain('Planner needs your input');
+    expect(notice.textContent).toContain('Review the latest request to keep work moving.');
+    expect(screen.queryByText('Needs input')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse notifications' }));
+    expect(notice.getAttribute('data-nc-notification-mode')).toBe('compact');
+    expect(notice.querySelector('strong')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Open notifications' }));
+    expect(notice.getAttribute('data-nc-notification-mode')).toBe('expanded');
     await userEvent.click(screen.getByRole('button', { name: 'Review input request' }));
     expect(onReviewNeedsInput).toHaveBeenCalledOnce();
   });

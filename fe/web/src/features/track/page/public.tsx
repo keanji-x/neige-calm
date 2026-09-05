@@ -18,6 +18,7 @@ import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -86,6 +87,9 @@ export type TrackPageProps = Readonly<{
   conversationAction?: ReactNode;
   /** Opens the track's coordinating conversation when a worker requests input. */
   onReviewNeedsInput?: () => void;
+  /** The route's conversation drawer is open. Input notifications compact
+   *  beside it instead of covering its composer. */
+  conversationOpen?: boolean;
   /** Starts Chat from the mobile Report's dedicated floating action. */
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
@@ -181,7 +185,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
-  onStartConversation,
+  onStartConversation, conversationOpen = false,
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel, onReviewNeedsInput,
   mobileBackLabel = 'Pages', onMobileBack,
@@ -190,7 +194,9 @@ export function TrackPage({
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
   const resumeFeedback = useOperationFeedback();
   const [resumePending, setResumePending] = useState(false);
+  const [noticeExpanded, setNoticeExpanded] = useState(track.anyCardNeedsInput);
   const resumePendingRef = useRef(false);
+  const noticePreviouslyNeededRef = useRef(track.anyCardNeedsInput);
   useEffect(() => {
     // The PATCH promise settles before its invalidation refetch. Keep Resume
     // fenced after a successful response until the authoritative capability
@@ -199,8 +205,13 @@ export function TrackPage({
     resumePendingRef.current = false;
     setResumePending(false);
   }, [canResumeTrack]);
+  useEffect(() => {
+    if (track.anyCardNeedsInput && !noticePreviouslyNeededRef.current) setNoticeExpanded(true);
+    noticePreviouslyNeededRef.current = track.anyCardNeedsInput;
+  }, [track.anyCardNeedsInput]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
+  const noticePanelOpen = noticeExpanded && !conversationOpen;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
   /** The drill-down page's entrance animation — a *panel* fact, not a card one:
    *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
@@ -463,22 +474,6 @@ export function TrackPage({
             </div>
           </>
         }
-        meta={track.anyCardNeedsInput ? (
-          <span className={styles.needsInputCluster}>
-            <span className={styles.needsInput}>
-              <span className={styles.needsInputDot} aria-hidden="true" />
-              Needs input
-            </span>
-            {onReviewNeedsInput !== undefined && (
-              <button
-                type="button"
-                className={styles.needsInputAction}
-                aria-label="Review input request"
-                onClick={onReviewNeedsInput}
-              >Review</button>
-            )}
-          </span>
-        ) : undefined}
         actions={(
           <span className={styles.headerActions}>
             <AstryxDropdownMenu
@@ -741,6 +736,67 @@ export function TrackPage({
           icon={<Icon name="chat" />}
           onClick={onStartConversation}
         />
+      )}
+
+      {track.anyCardNeedsInput && (
+        <aside
+          className={`${styles.needsInputNotice} ${noticePanelOpen
+            ? styles.needsInputNoticeExpanded
+            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}`}
+          data-nc-needs-input-notice=""
+          data-nc-notification-mode={noticePanelOpen ? 'expanded' : 'compact'}
+          role="region"
+          aria-label="Notifications"
+        >
+          <VisuallyHidden
+            role="status"
+            aria-label="Planner needs input"
+            aria-live="polite"
+            aria-atomic="true"
+          >Planner needs your input</VisuallyHidden>
+          {noticePanelOpen ? (
+            <>
+              <span className={styles.needsInputNoticeIcon}><Icon name="notification" /></span>
+              <span className={styles.needsInputNoticeCopy}>
+                <strong className={styles.needsInputNoticeTitle}>Planner needs your input</strong>
+                <span className={styles.needsInputNoticeDetail}>Review the latest request to keep work moving.</span>
+              </span>
+              <span className={styles.needsInputNoticeActions}>
+                {onReviewNeedsInput !== undefined && (
+                  <button
+                    type="button"
+                    className={styles.needsInputAction}
+                    aria-label="Review input request"
+                    onClick={onReviewNeedsInput}
+                  >Review</button>
+                )}
+                <button
+                  type="button"
+                  className={styles.needsInputCollapse}
+                  aria-label="Collapse notifications"
+                  title="Collapse notifications"
+                  onClick={() => setNoticeExpanded(false)}
+                ><Icon name="chevron-right" size="sm" /></button>
+              </span>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={styles.needsInputLauncher}
+              data-nc-notification-launcher=""
+              aria-label={conversationOpen ? 'Review input request' : 'Open notifications'}
+              title={conversationOpen ? 'Review input request' : 'Open notifications'}
+              disabled={conversationOpen && onReviewNeedsInput === undefined}
+              onClick={() => {
+                if (conversationOpen) onReviewNeedsInput?.();
+                else setNoticeExpanded(true);
+              }}
+            >
+              <Icon name="notification" />
+              <span className={styles.needsInputIndicator} aria-hidden="true" />
+            </button>
+          )}
+        </aside>
       )}
 
       <ConfirmDialog
