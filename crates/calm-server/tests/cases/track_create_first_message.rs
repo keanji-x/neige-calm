@@ -4411,16 +4411,31 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     // The replacement moves it forward; the evidence row keeps naming the
     // runtime that was replaced.
     b.retire_runtime_in_the_database(&runtime).await;
+    // The successor's own drain, parked before it exists.
+    //
+    // "The sentence is on the successor's queue" is a state the successor is
+    // in the business of ending: its run loop takes the queue as soon as it
+    // has one. Reading the row and hoping to win that race is a test whose
+    // premise holds or not depending on machine load, and it did not hold on
+    // CI. So the hook is installed BEFORE the mint that creates the successor,
+    // which is what makes "not drained yet" a held state rather than a window:
+    // there is no instant at which the successor could have run past it.
+    //
+    // Installed while the predecessor is still parked past its own hook, so
+    // this one cannot be the hook that predecessor takes. Its queue is empty
+    // by now anyway — the harvest moved it — and a retired runtime turns back
+    // at the carrier check above the hook.
+    let (successor_entered, successor_release) = b.hold_the_next_drain();
     let (second, second_body) = b.ensure_launchpad().await;
     assert_eq!(
         second,
         StatusCode::OK,
         "premise: the second ensure must resolve the existing launchpad: body={second_body}"
     );
-    release.notify_one();
 
     let successor = b.active_runtime_of_card(&planner_card_id).await;
     assert_ne!(successor, runtime, "premise: a replacement really happened");
+    successor_entered.notified().await;
     let carried = b
         .persisted_queue(&successor)
         .await
@@ -4431,6 +4446,8 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
         carried, 1,
         "premise: the harvest carried the undrained standing instruction to the successor"
     );
+    release.notify_one();
+    successor_release.notify_one();
 
     // The mechanism behind the accepted duplicate, asserted directly: the
     // message is on the successor, and the only evidence row names the runtime
