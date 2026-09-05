@@ -35,6 +35,7 @@ pub(crate) enum CapturePoint {
     Staged,
     Frozen,
     Published,
+    RedundantCleanup,
 }
 
 impl ArtifactStore {
@@ -60,43 +61,70 @@ impl ArtifactStore {
             limits,
             git,
         };
-        // Refuse unrelated data before creating even our lock file there.
-        if fs::symlink_metadata(store.root.join("FORMAT")).is_err() {
-            for entry in fs::read_dir(&store.root)? {
-                let name = entry?.file_name();
-                if name != ".lock" && name != "FORMAT" {
-                    return Err(Error::Invalid(
-                        "refusing to adopt a nonempty directory".into(),
-                    ));
+        // An existing lock may belong to an initializer that has not committed
+        // FORMAT yet. Wait for it, then decide from the locked state. Without a
+        // lock, refuse unrelated data before creating anything inside the root.
+        match fs::symlink_metadata(store.root.join("FORMAT")) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(store.root.join(".lock")) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        store.require_empty_initialization()?;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
+            Err(e) => return Err(e.into()),
         }
         let _lock = store.lock()?;
         let root_handle = disk::open_dir(&store.root)?;
-        match disk::open_beneath(&root_handle, "FORMAT") {
-            Ok(file) => {
-                if disk::read_bounded(file, FORMAT.len() as u64)? != FORMAT {
-                    return Err(Error::Unsupported("store format".into()));
-                }
-            }
+        let format = match disk::open_beneath(&root_handle, "FORMAT") {
+            Ok(file) => file,
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                for entry in fs::read_dir(&store.root)? {
-                    if entry?.file_name() != ".lock" {
-                        return Err(Error::Invalid(
-                            "refusing to adopt a nonempty directory".into(),
-                        ));
-                    }
+                store.require_empty_initialization()?;
+                // FORMAT is the initialization commit: create and persist the
+                // complete control layout before making that marker visible.
+                for name in ["staging", "captures", "snapshots"] {
+                    disk::private_dir(&store.root.join(name))?;
                 }
                 disk::write_new(&store.root.join("FORMAT"), FORMAT)?;
-                disk::sync_dir(&store.root)?;
+                disk::open_beneath(&root_handle, "FORMAT")?
             }
             Err(e) => return Err(e),
+        };
+        if disk::read_bounded(format.try_clone()?, FORMAT.len() as u64)? != FORMAT {
+            return Err(Error::Unsupported("store format".into()));
         }
         for name in ["staging", "captures", "snapshots"] {
-            disk::private_dir(&store.root.join(name))?;
+            match disk::require_private_dir(&store.root.join(name)) {
+                Ok(()) => {}
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(Error::Integrity(format!(
+                        "initialized store is missing {name} control directory"
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
         }
+        // Repeat initialization barriers on reopen after an uncertain fsync.
+        format.sync_all()?;
+        disk::sync_dir(&store.root)?;
+        disk::sync_dir(store.root.parent().expect("absolute store has a parent"))?;
         disk::clean_staging(&store.root.join("staging"))?;
         Ok(store)
+    }
+
+    fn require_empty_initialization(&self) -> Result<()> {
+        for entry in fs::read_dir(&self.root)? {
+            if entry?.file_name() != ".lock" {
+                return Err(Error::Invalid(
+                    "refusing nonempty store without FORMAT; initialization may be incomplete"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn lock(&self) -> Result<Flock<File>> {
@@ -113,8 +141,8 @@ impl ArtifactStore {
     }
 
     /// Freeze raw candidate bytes and declared slots. Once the request is frozen,
-    /// repeating its key/spec returns that original snapshot without re-reading
-    /// the source, even after source deletion. A changed boundary/spec conflicts.
+    /// repeating its key/request returns that original snapshot without re-reading
+    /// the source, even after source deletion. A changed boundary/output contract conflicts.
     /// A failure after durable freeze is recoverable by retrying the same request.
     pub fn capture(&self, request: CaptureRequest<'_>) -> Result<CaptureReceipt> {
         self.capture_inner(request, |_| Ok(()))
@@ -156,7 +184,7 @@ impl ArtifactStore {
                 if record.fingerprint != fingerprint {
                     return Err(Error::Conflict);
                 }
-                self.finish_capture(&request_dir, &record)?;
+                self.finish_capture(&request_dir, &record, &mut checkpoint)?;
                 return self.receipt(&record.snapshot, true);
             }
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -185,28 +213,28 @@ impl ArtifactStore {
         // This directory is the durable request intent. It precedes snapshot
         // publication, so a lost response can never select a new source version.
         disk::rename_new(stage.path(), &request_dir)?;
-        disk::sync_dir(&self.root.join("captures"))?;
-        disk::sync_dir(&self.root.join("staging"))?;
-        checkpoint(CapturePoint::Frozen)?;
-        self.finish_capture(&request_dir, &record)?;
+        self.finish_capture(&request_dir, &record, &mut checkpoint)?;
         checkpoint(CapturePoint::Published)?;
         self.receipt(&record.snapshot, false)
     }
 
-    fn finish_capture(&self, request_dir: &Path, record: &CaptureRecord) -> Result<()> {
+    fn finish_capture(
+        &self,
+        request_dir: &Path,
+        record: &CaptureRecord,
+        checkpoint: &mut impl FnMut(CapturePoint) -> Result<()>,
+    ) -> Result<()> {
+        // A visible request rename may have returned an fsync error. Both
+        // first publication and replay must durably bind the key before moving
+        // any snapshot bytes or acknowledging even an already-published result.
+        disk::sync_dir(&self.root.join("captures"))?;
+        disk::sync_dir(&self.root.join("staging"))?;
+        checkpoint(CapturePoint::Frozen)?;
         let staged = request_dir.join("snapshot");
         let published = self.snapshot_path(&record.snapshot);
         match disk::open_dir(&published) {
             Ok(_) => {
                 self.load_snapshot(&published, &record.snapshot)?;
-                match disk::open_dir(&staged) {
-                    Ok(_) => {
-                        self.load_snapshot(&staged, &record.snapshot)?;
-                        fs::remove_dir_all(&staged)?;
-                    }
-                    Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
-                }
             }
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.load_snapshot(&staged, &record.snapshot)?;
@@ -215,6 +243,17 @@ impl ArtifactStore {
             Err(e) => return Err(e),
         }
         disk::sync_dir(&self.root.join("snapshots"))?;
+        // Only the verified, durable canonical copy permits disposal. An earlier
+        // recursive deletion may have left arbitrary portions of this redundant
+        // copy absent; those bytes no longer decide whether replay can complete.
+        match disk::open_dir(&staged) {
+            Ok(_) => {
+                checkpoint(CapturePoint::RedundantCleanup)?;
+                fs::remove_dir_all(&staged)?;
+            }
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         disk::sync_dir(request_dir)?;
         Ok(())
     }

@@ -152,6 +152,24 @@ fails closed; it never falls back to the present source. A returned success mean
 publication/fsync completed. An I/O error after a rename is an uncertain response;
 retry the same capture key to reconcile.
 
+First creation persists all three control directories before committing `FORMAT`.
+A nonempty directory without that marker is an incomplete or unknown store and
+is refused without cleanup or adoption. A visible, valid marker with the complete
+layout can resume after an uncertain initialization fsync: open repeats the file,
+root and root-parent durability barriers. An initialized store missing `captures/`,
+`staging/` or `snapshots/` fails with an integrity error; open never creates a new
+empty replay ledger over lost metadata.
+
+Every capture replay repeats the `captures/` and `staging/` parent fsyncs before
+publication or acknowledgement, including when its snapshot is already present.
+A failed barrier leaves the frozen key bound and returns an error. When the
+canonical snapshot already exists, its exact manifest and every object must
+verify, and its publication parent must sync, before the redundant staged copy
+is discarded. Interrupted deletion of that duplicate can then resume without
+requiring the partially deleted bytes to verify. Missing or corrupt canonical
+content is never ignored; when canonical content is absent, the staged copy must
+still verify completely before publication.
+
 Store open serializes with writers and removes only store-issued unpublished
 `capture-`/`prepare-` staging directories. Unexpected staging names fail explicitly.
 Frozen captures and retained snapshots are never scanned for deletion. No global
@@ -181,10 +199,14 @@ provider stop proof, persistence bindings, ordinary/repair eligibility and the
 A/B/C product experiment. This crate alone does not establish reliable recovery
 or complete S2.
 
-Validation recorded for this implementation:
+Validation recorded for this implementation (original identity/link mutations
+below predate the persistence fixes):
 
-- `cargo nextest run --locked --offline -p calm-task-artifacts --test-threads 8`:
-  24 passed, no skips, across library and two integration binaries.
+- `cargo nextest run --locked --offline -p calm-task-artifacts --test-threads 8 --no-fail-fast`:
+  32 passed, no skips, across library and two integration binaries. The eight new
+  persistence regressions use the real capture/open paths: seven reproduced the
+  reviewed failures before the fix; the canonical-corruption negative control
+  and all original 24 tests already passed.
 - `cargo clippy --locked --offline -p calm-task-artifacts --all-targets -- -D warnings`:
   passed. `cargo fmt -p calm-task-artifacts` ran.
 - Production mutation removing the digest comparison from `verify_identity`:
@@ -202,3 +224,23 @@ Commands used `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6`
 and `CARGO_TARGET_DIR=/mnt/data2/kenji/neige-calm/target` under
 `flock /tmp/neige-1501-cargo.lock`. No real Codex, workspace-wide suite, generated
 API changes or dependency upgrades were involved.
+
+The persistence regressions inject directory-fsync errors at the production I/O
+boundary using a per-thread, `cfg(test)` hook, and interrupt the real duplicate
+cleanup phase after removing an object. They cover both interrupted key parents,
+replay after publication, missing control directories, incomplete initialization,
+an uncertain `FORMAT` commit, and partial duplicate deletion with valid, corrupt
+or absent canonical content. These are deterministic failure/order checks, not
+physical power-loss experiments.
+
+Five single-factor persistence mutations ran the full 32-test suite with
+`--no-fail-fast`; each complete failure set matched its prediction, and restoring
+the exact production bytes returned all 32 tests to green under the same lock:
+
+| Mutation | Complete failing test set (`store::tests::` prefix) |
+| --- | --- |
+| Remove `captures/` fsync | `capture_replay_repairs_interrupted_key_sync_before_publication`, `capture_replay_requires_key_sync_even_after_publication` |
+| Remove `staging/` fsync | Same two key-sync tests |
+| Recreate missing initialized control directories | `open_rejects_initialized_store_missing_control_directory` |
+| Require the redundant staged snapshot to verify again | `duplicate_cleanup_replays_after_partial_removal` |
+| Delete the redundant copy before syncing canonical publication | `duplicate_cleanup_preserves_stage_until_published_sync_succeeds` |

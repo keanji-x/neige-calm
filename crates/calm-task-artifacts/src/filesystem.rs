@@ -85,6 +85,11 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),
     }
+    require_private_dir(path)
+}
+
+/// Validate existing store metadata without creating a replacement directory.
+pub(crate) fn require_private_dir(path: &Path) -> Result<()> {
     let meta = open_dir(path)?.metadata()?;
     // SAFETY: geteuid has no pointer arguments or side effects.
     if meta.uid() != unsafe { nix::libc::geteuid() } || meta.mode() & 0o077 != 0 {
@@ -95,6 +100,8 @@ pub(crate) fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 pub(crate) fn sync_dir(path: &Path) -> Result<()> {
+    #[cfg(test)]
+    faults::before_sync(path)?;
     open_dir(path)?.sync_all()?;
     Ok(())
 }
@@ -219,3 +226,7 @@ pub(crate) fn clean_staging(staging: &Path) -> Result<()> {
     }
     sync_dir(staging)
 }
+
+#[cfg(test)]
+#[path = "filesystem_faults.rs"]
+pub(crate) mod faults;
