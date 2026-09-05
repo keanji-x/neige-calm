@@ -408,7 +408,7 @@ pub const DEV_FORCED_THREAD_ID: &str = "dev-forced-thread";
 #[derive(Debug, serde::Serialize)]
 pub struct ForcePlannerPhaseOutcome {
     pub card_id: String,
-    pub runtime_id: String,
+    pub worker_session_id: String,
     pub old_phase: crate::harness::HarnessPhaseTag,
     pub new_phase: crate::harness::HarnessPhaseTag,
 }
@@ -651,7 +651,7 @@ pub async fn force_planner_phase(
     let (old_phase, new_phase) = harness.force_phase_for_dev(to).await?;
     Ok(ForcePlannerPhaseOutcome {
         card_id: card_id_string,
-        runtime_id: runtime.id,
+        worker_session_id: runtime.id,
         old_phase,
         new_phase,
     })

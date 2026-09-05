@@ -8,5 +8,7 @@ mod migration_0017_backfill;
 mod migration_0037_drop_plain_role;
 #[path = "cases/migration_0055_drop_runtimes.rs"]
 mod migration_0055_drop_runtimes;
+#[path = "cases/migration_0094_worker_session_id.rs"]
+mod migration_0094_worker_session_id;
 #[path = "cases/migration_replay_harness.rs"]
 mod migration_replay_harness;

@@ -218,7 +218,7 @@ async fn reset_planner_card_clears_persisted_harness_items() {
                 (
                     EventScope::Card { card, track, .. },
                     Event::HarnessTranscriptCleared {
-                        runtime_id,
+                        worker_session_id: runtime_id,
                         card_id,
                         track_id,
                         cleared_item_count,

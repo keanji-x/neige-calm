@@ -59,8 +59,8 @@ async fn worker_flow_driver_card_added_race_attaches_on_later_status() {
 
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStatusChanged {
-            runtime_id: runtime.id.clone(),
+        Event::WorkerSessionStatusChanged {
+            worker_session_id: runtime.id.clone(),
             card_id: runtime.card_id.clone(),
             old_status: WorkerSessionState::Starting,
             new_status: WorkerSessionState::Running,

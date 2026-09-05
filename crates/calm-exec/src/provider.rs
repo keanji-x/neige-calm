@@ -15,7 +15,7 @@ pub enum SpawnHandle {
         renderer_id: String,
     },
     Harness {
-        runtime_id: String,
+        worker_session_id: String,
     },
     NoOp,
 }

@@ -16,14 +16,14 @@
   {
     "description": "Hook carveout: AiCodex(planner card) may emit harness.user_message.enqueued scoped to its own card home",
     "actor": { "kind": "AiCodex", "id": "$PLANNER_CARD" },
-    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "rt-vec-38", "card_id": "$PLANNER_CARD", "track_id": "$HOME_TRACK", "char_count": 3 } },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "worker_session_id": "rt-vec-38", "card_id": "$PLANNER_CARD", "track_id": "$HOME_TRACK", "char_count": 3 } },
     "scope": { "kind": "Card", "id": { "card": "$PLANNER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
     "description": "Hook carveout: AiClaude(planner card) may emit harness.user_message.enqueued scoped to its own card home",
     "actor": { "kind": "AiClaude", "id": "$PLANNER_CARD" },
-    "event": { "ev": "harness.user_message.enqueued", "data": { "runtime_id": "rt-vec-39", "card_id": "$PLANNER_CARD", "track_id": "$HOME_TRACK", "char_count": 3 } },
+    "event": { "ev": "harness.user_message.enqueued", "data": { "worker_session_id": "rt-vec-39", "card_id": "$PLANNER_CARD", "track_id": "$HOME_TRACK", "char_count": 3 } },
     "scope": { "kind": "Card", "id": { "card": "$PLANNER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },

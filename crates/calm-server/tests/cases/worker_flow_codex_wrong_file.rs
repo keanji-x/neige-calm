@@ -55,8 +55,8 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
 
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStatusChanged {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStatusChanged {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             old_status: WorkerSessionState::Idle,
             new_status: WorkerSessionState::Running,

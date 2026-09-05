@@ -3,7 +3,7 @@
   "wire": {
     "ev": "harness.phase.changed",
     "data": {
-      "runtime_id": "rt-01",
+      "worker_session_id": "rt-01",
       "card_id": "card-01",
       "track_id": "track-01",
       "old_phase": "pending_thread_start",

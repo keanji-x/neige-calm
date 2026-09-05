@@ -22,7 +22,7 @@ import { ThemeProvider } from '../theme/public.tsx';
  * 22 -> 23: #1456 replaces terminal task `goal` with `command`; cached bundles
  * must refresh before parsing the new block shape.
  */
-export const WEB_COMPAT_VERSION = 23;
+export const WEB_COMPAT_VERSION = 24;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

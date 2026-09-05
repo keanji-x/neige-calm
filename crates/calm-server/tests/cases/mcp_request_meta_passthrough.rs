@@ -170,7 +170,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
             &mut tx,
             &runtime.id,
             ThreadAttribution {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
                 provider: AgentProvider::Codex,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,

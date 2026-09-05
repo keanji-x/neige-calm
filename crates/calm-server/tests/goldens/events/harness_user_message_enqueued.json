@@ -3,7 +3,7 @@
   "wire": {
     "ev": "harness.user_message.enqueued",
     "data": {
-      "runtime_id": "rt-01",
+      "worker_session_id": "rt-01",
       "card_id": "card-01",
       "track_id": "track-01",
       "char_count": 280

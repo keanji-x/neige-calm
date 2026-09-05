@@ -206,7 +206,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
             &mut tx,
             &runtime.id,
             ThreadAttribution {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
                 provider: AgentProvider::Codex,
                 thread_id: Some(thread_id.to_string()),
                 session_id: None,

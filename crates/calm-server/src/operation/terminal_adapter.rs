@@ -141,7 +141,15 @@ impl TerminalWorkerAdapter {
 pub struct TerminalCreateOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    pub runtime_id: Option<String>,
+    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
+    /// but leaves `operations.payload_json` alone — see that migration's §4.
+    /// The `rename` is the load-bearing half: an operation parked across a
+    /// restart is resumed by re-reading its stored payload, and without the
+    /// rename a row that stores a real id under the frozen key would
+    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
+    /// a FRESH session id for a row that already had one.
+    #[serde(rename = "runtime_id")]
+    pub worker_session_id: Option<String>,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -266,7 +274,7 @@ impl ProviderAdapter for TerminalAdapter {
         let program = payload.request.program.clone();
         let env = payload.request.env.clone();
         let card_id = new_id();
-        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
+        let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
         // #1147 S6 — an empty request `cwd` means "the track's workspace". It is
         // resolved here rather than in `normalize_terminal_create_request` for
@@ -303,8 +311,8 @@ impl ProviderAdapter for TerminalAdapter {
         )
         .await?;
         let event = Event::CardAdded(card.clone());
-        let runtime_event = Event::RuntimeStarted {
-            runtime_id: runtime_id.clone(),
+        let runtime_event = Event::WorkerSessionStarted {
+            worker_session_id: runtime_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::Terminal,
             agent_provider: None,
@@ -426,8 +434,8 @@ impl ProviderAdapter for TerminalAdapter {
                                     (),
                                     vec![(
                                         scope,
-                                        Event::RuntimeStatusChanged {
-                                            runtime_id,
+                                        Event::WorkerSessionStatusChanged {
+                                            worker_session_id: runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
                                             new_status: WorkerSessionState::Running,

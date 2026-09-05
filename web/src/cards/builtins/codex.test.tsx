@@ -273,7 +273,7 @@ describe('Codex card controller behavior', () => {
         payload: {},
         runtime: {
           kind: 'claude',
-          runtime_id: 'rt1',
+          worker_session_id: 'rt1',
           status: 'exited',
           terminal_id: null,
         },
@@ -298,7 +298,7 @@ describe('Codex card controller behavior', () => {
         payload: {},
         runtime: {
           kind: 'codex',
-          runtime_id: 'rt2',
+          worker_session_id: 'rt2',
           status: 'failed',
           terminal_id: null,
         },
@@ -325,7 +325,7 @@ describe('Codex card controller behavior', () => {
         payload: {},
         runtime: {
           kind: 'claude',
-          runtime_id: 'rt3',
+          worker_session_id: 'rt3',
           status: 'starting',
           terminal_id: null,
         },

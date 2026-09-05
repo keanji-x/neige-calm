@@ -293,7 +293,7 @@ export interface paths {
          * @description Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike
          *     the write routes a dormant harness is a normal answer for a read: no
          *     active runtime row, or an active row with no registered harness, is
-         *     `200 {runtime_id: null, phase: null}` rather than a 409.
+         *     `200 {worker_session_id: null, phase: null}` rather than a 409.
          */
         get: operations["get_planner_run"];
         put?: never;
@@ -1500,13 +1500,13 @@ export interface components {
         CardRuntimeView: {
             kind: components["schemas"]["WorkerSessionKind"];
             provider?: null | components["schemas"]["AgentProvider"];
-            runtime_id: string;
             session_id?: string | null;
             source?: string | null;
             status: components["schemas"]["WorkerSessionState"];
             terminal_id?: string | null;
             thread_id?: string | null;
             thread_status?: string | null;
+            worker_session_id: string;
         };
         /**
          * @description The operator-supplied half of an `mcp-http` connector install.
@@ -1792,14 +1792,14 @@ export interface components {
          *     mid-turn would otherwise sit on `phase: null` until the next transition.
          *     This read endpoint lets the client seed its initial phase. Dormancy (no
          *     active runtime row, or no registered harness) is NOT an error here —
-         *     it's the `{runtime_id: null, phase: null}` answer.
+         *     it's the `{worker_session_id: null, phase: null}` answer.
          */
         GetPlannerRunResponse: {
             card_id: string;
             phase?: null | components["schemas"]["HarnessPhaseTag"];
-            /** @description Active runtime id, or null when the harness is dormant. */
-            runtime_id?: string | null;
             token_usage?: null | components["schemas"]["PlannerRunTokenUsage"];
+            /** @description Active worker-session id, or null when the harness is dormant. */
+            worker_session_id?: string | null;
         };
         GitChangedFile: {
             /** @description Previous path for renamed files, relative to the repository root. */
@@ -1854,10 +1854,10 @@ export interface components {
             item_uuid?: string | null;
             method: string;
             params: string;
-            runtime_id: string;
             thread_id: string;
             track_id: string;
             turn_id?: string | null;
+            worker_session_id: string;
         };
         /** @enum {string} */
         HarnessItemsDirection: "asc" | "desc";
@@ -1893,7 +1893,6 @@ export interface components {
         };
         InterruptPlannerCardResponse: {
             card_id: string;
-            runtime_id: string;
             /**
              * @description True when a turn was actually running and an interrupt was
              *     dispatched at it; false when the harness was idle (graceful no-op)
@@ -1904,6 +1903,7 @@ export interface components {
              *     FSM, with an interrupt-timeout watchdog as backstop).
              */
             stopped: boolean;
+            worker_session_id: string;
         };
         ListdirResponse: {
             /**
@@ -2446,7 +2446,7 @@ export interface components {
         };
         SendPlannerInputResponse: {
             card_id: string;
-            runtime_id: string;
+            worker_session_id: string;
         };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
@@ -4280,7 +4280,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read) */
+            /** @description Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read) */
             200: {
                 headers: {
                     [name: string]: unknown;

@@ -371,9 +371,9 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
             delta.add("report.md");
             delta.add_run_card_id(id.as_str());
         }
-        Event::RuntimeStarted { card_id, .. }
-        | Event::RuntimeStatusChanged { card_id, .. }
-        | Event::RuntimeSuperseded { card_id, .. } => {
+        Event::WorkerSessionStarted { card_id, .. }
+        | Event::WorkerSessionStatusChanged { card_id, .. }
+        | Event::WorkerSessionSuperseded { card_id, .. } => {
             add_card_runtime_paths(&mut delta, card_id);
             delta.add_run_card_id(card_id);
         }

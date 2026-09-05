@@ -816,6 +816,7 @@
           "columns": {
             "id": 1,
             "runtime_id": "rt-codex-w",
+            "worker_session_id": "rt-codex-w",
             "card_id": "card-codex-w",
             "track_id": "track-working",
             "thread_id": "thread-w1",

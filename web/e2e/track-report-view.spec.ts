@@ -80,7 +80,7 @@ async function writeReport(page: Page, trackId: string, body: string): Promise<v
 function harnessUserRow(id: number, text: string) {
   return {
     id,
-    runtime_id: 'runtime',
+    worker_session_id: 'runtime',
     card_id: 'card_planner',
     track_id: 'track',
     thread_id: 'thread',

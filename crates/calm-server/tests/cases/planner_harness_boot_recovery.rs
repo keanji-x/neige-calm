@@ -607,7 +607,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     // The user's harness, built but NOT registered yet — the hook lands it
     // inside the eligibility→claim window.
     let user_handle = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: TrackId::from(
             repo.card_get(&runtime.card_id)
                 .await

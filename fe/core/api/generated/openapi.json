@@ -1111,7 +1111,7 @@
           "cards"
         ],
         "summary": "Issue #668 fix — read the current planner-harness phase for a card.",
-        "description": "Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {runtime_id: null, phase: null}` rather than a 409.",
+        "description": "Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike\nthe write routes a dormant harness is a normal answer for a read: no\nactive runtime row, or an active row with no registered harness, is\n`200 {worker_session_id: null, phase: null}` rather than a 409.",
         "operationId": "get_planner_run",
         "parameters": [
           {
@@ -1126,7 +1126,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
+            "description": "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5404,7 +5404,7 @@
         "type": "object",
         "description": "Live runtime projection read from `worker_sessions` when a card is fetched\nor serialized.\n\nThis view is not part of the idempotency contract: across retries the\nworker session may have advanced, so `Card.runtime` may differ between the\nfirst POST response and a retry POST response returning the same operation\nresult. Future cleanup (#581 item 4) will remove the legacy payload-key\nprojection; this typed view is the forward-compatible reader path.",
         "required": [
-          "runtime_id",
+          "worker_session_id",
           "kind",
           "status"
         ],
@@ -5421,9 +5421,6 @@
                 "$ref": "#/components/schemas/AgentProvider"
               }
             ]
-          },
-          "runtime_id": {
-            "type": "string"
           },
           "session_id": {
             "type": [
@@ -5457,6 +5454,9 @@
               "string",
               "null"
             ]
+          },
+          "worker_session_id": {
+            "type": "string"
           }
         }
       },
@@ -5852,7 +5852,7 @@
       },
       "GetPlannerRunResponse": {
         "type": "object",
-        "description": "Issue #668 fix — current planner-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{runtime_id: null, phase: null}` answer.",
+        "description": "Issue #668 fix — current planner-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{worker_session_id: null, phase: null}` answer.",
         "required": [
           "card_id"
         ],
@@ -5871,13 +5871,6 @@
               }
             ]
           },
-          "runtime_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Active runtime id, or null when the harness is dormant."
-          },
           "token_usage": {
             "oneOf": [
               {
@@ -5888,6 +5881,13 @@
                 "description": "#1255 S3 — latest context-window usage, or null when the harness is\ndormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.\n\nKnown consequence, recorded rather than fixed in this commit: a dormant\nconversation reports `null` here even though the reading IS on disk in\n`worker_sessions.handle_state`. This whole endpoint reads the live\nin-memory harness (registry hit on the active runtime row) and answers\n`phase: null` when there is none — see the handler. Token usage\ninherits that exactly, so a card whose harness has been shut down shows\nno meter until something respawns it. The UI slice decides whether\nthat is acceptable or whether the dormant path should fall back to the\npersisted snapshot; the kernel slice does not pick for it."
               }
             ]
+          },
+          "worker_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Active worker-session id, or null when the harness is dormant."
           }
         }
       },
@@ -5998,7 +5998,7 @@
         "type": "object",
         "required": [
           "id",
-          "runtime_id",
+          "worker_session_id",
           "card_id",
           "track_id",
           "thread_id",
@@ -6045,9 +6045,6 @@
           "params": {
             "type": "string"
           },
-          "runtime_id": {
-            "type": "string"
-          },
           "thread_id": {
             "type": "string"
           },
@@ -6059,6 +6056,9 @@
               "string",
               "null"
             ]
+          },
+          "worker_session_id": {
+            "type": "string"
           }
         }
       },
@@ -6182,19 +6182,19 @@
         "type": "object",
         "required": [
           "card_id",
-          "runtime_id",
+          "worker_session_id",
           "stopped"
         ],
         "properties": {
           "card_id": {
             "type": "string"
           },
-          "runtime_id": {
-            "type": "string"
-          },
           "stopped": {
             "type": "boolean",
             "description": "True when a turn was actually running and an interrupt was\ndispatched at it; false when the harness was idle (graceful no-op)\nor a `turn/start` was still in flight (interrupt dispatched\nbest-effort, but not guaranteed to land — press Stop again once the\nturn is running). \"stopped: true\" means the interrupt was *issued* —\ncompletion is asynchronous (`turn/aborted` lands via the harness\nFSM, with an interrupt-timeout watchdog as backstop)."
+          },
+          "worker_session_id": {
+            "type": "string"
           }
         }
       },
@@ -7054,13 +7054,13 @@
         "type": "object",
         "required": [
           "card_id",
-          "runtime_id"
+          "worker_session_id"
         ],
         "properties": {
           "card_id": {
             "type": "string"
           },
-          "runtime_id": {
+          "worker_session_id": {
             "type": "string"
           }
         }

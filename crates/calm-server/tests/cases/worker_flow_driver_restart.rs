@@ -102,8 +102,8 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
     tokio::time::sleep(Duration::from_millis(20)).await;
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStarted {
-            runtime_id: replacement.id.clone(),
+        Event::WorkerSessionStarted {
+            worker_session_id: replacement.id.clone(),
             card_id: replacement.card_id.clone(),
             kind: replacement.kind.clone(),
             agent_provider: replacement.agent_provider.clone(),
@@ -129,8 +129,8 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
 
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStarted {
-            runtime_id: replacement.id.clone(),
+        Event::WorkerSessionStarted {
+            worker_session_id: replacement.id.clone(),
             card_id: replacement.card_id.clone(),
             kind: replacement.kind.clone(),
             agent_provider: replacement.agent_provider.clone(),

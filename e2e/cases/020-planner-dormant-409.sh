@@ -79,10 +79,10 @@ case_run() {
 
   case "$status" in
     200)
-      runtime_id="$(planner_dormant_json_string_or_empty "$API_BODY" runtime_id)"
+      runtime_id="$(planner_dormant_json_string_or_empty "$API_BODY" worker_session_id)"
       [[ -n "$runtime_id" ]] \
-        || fail "POST planner/input returned 200 without runtime_id: $(body_preview "$API_BODY")"
-      skip "harness live, dormant path not reachable (runtime_id=$runtime_id)"
+        || fail "POST planner/input returned 200 without worker_session_id: $(body_preview "$API_BODY")"
+      skip "harness live, dormant path not reachable (worker_session_id=$runtime_id)"
       ;;
     409)
       [[ "$code" == "planner_harness_dormant" ]] \

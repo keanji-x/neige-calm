@@ -566,7 +566,7 @@ async fn dev_force_track_lifecycle(
 // (`idle`, `issuing_turn`, `turn_running`, ...). `wedged` is rejected
 // with 400 — persisting it marks the runtime failed, which the active-
 // runtime read path no longer projects (review finding, #684). Response:
-// `{ok, card_id, runtime_id, old_phase, new_phase}`.
+// `{ok, card_id, worker_session_id, old_phase, new_phase}`.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -584,7 +584,7 @@ async fn dev_force_planner_phase(
         Ok(outcome) => Ok(axum::Json(serde_json::json!({
             "ok": true,
             "card_id": outcome.card_id,
-            "runtime_id": outcome.runtime_id,
+            "worker_session_id": outcome.worker_session_id,
             "old_phase": outcome.old_phase,
             "new_phase": outcome.new_phase,
         }))),

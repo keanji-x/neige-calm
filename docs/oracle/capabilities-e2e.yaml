@@ -581,7 +581,7 @@
   statement: >
     `POST /dev/force-planner-phase {card_id, to}` must stand a paused harness up on registry
     miss and force the FSM through the regular `persist_snapshot` path, returning
-    `{ok, card_id, runtime_id, old_phase, new_phase}`.
+    `{ok, card_id, worker_session_id, old_phase, new_phase}`.
   why: >
     helpers/planner-chat.ts:1-12 (#682 PR-1) — the codex app-server is stubbed in replay so the
     `planner-harness-start` op fails at validate; the hook is what makes `GET /planner/run`, the
@@ -3298,8 +3298,8 @@
   kind: capability
   family: run-snapshot
   statement: >
-    `GET /api/cards/{id}/planner/run` must answer `{card_id, runtime_id, phase}` and a dormant card
-    (no harness stood up yet) must answer `{runtime_id: null, phase: null}`.
+    `GET /api/cards/{id}/planner/run` must answer `{card_id, worker_session_id, phase}` and a dormant card
+    (no harness stood up yet) must answer `{worker_session_id: null, phase: null}`.
   why: >
     helpers/planner-chat.ts:130-140 — the null shape is what drives the FE's overlay-derived
     'Starting' fallback.
@@ -3373,7 +3373,7 @@
   kind: gate
   family: wire-shape
   statement: >
-    `harness.phase.changed` payloads must be snake_case — `card_id`, `new_phase`, `runtime_id`
+    `harness.phase.changed` payloads must be snake_case — `card_id`, `new_phase`, `worker_session_id`
     all present as strings, and `newPhase` / `cardId` must be ABSENT.
   why: >
     a11y-planner-chat-live.spec.ts:81-98 — a camelCase drift leaves `ev.data.new_phase` undefined and
@@ -3978,7 +3978,7 @@
   family: harness-items
   statement: >
     `GET /api/cards/*/harness/items` must return rows shaped
-    `{id, runtime_id, card_id, track_id, thread_id, turn_id, item_uuid, item_type, method,
+    `{id, worker_session_id, card_id, track_id, thread_id, turn_id, item_uuid, item_type, method,
     params (JSON string), created_at_ms}` with `method: "item/completed"` and a
     `params.item.content[].text` payload.
   why: >

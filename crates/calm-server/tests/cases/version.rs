@@ -130,12 +130,17 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     // #1450: "4" -> "5" because Track detail now requires `can_resume`.
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "5");
+    // #1316 S4b: "5" -> "6" when three planner REST responses renamed
+    // `runtime_id` to `worker_session_id`.
+    assert_eq!(v["apiVersion"].as_str().unwrap(), "6");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 15);
+    // #1316 S4b: 15 -> 16 alongside migration 0094, which stamps the rows it
+    // rewrites with 16. `scripts/gate-sync-event-version-lockstep.sh` binds
+    // the constant to that literal.
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 16);
 
     // minWebCompatVersion must echo the in-process constant — the whole
     // point of the field is to bind frontend expectations to a value the
@@ -148,12 +153,15 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     );
     // #1456: 22 -> 23 so a cached bundle that only understands terminal task
     // `goal` gets the refresh curtain before receiving `command`.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 23);
+    // #1316 S4b: 23 -> 24 so a cached bundle reading `runtime_id` off the
+    // planner REST responses and the rewritten event payloads gets the refresh
+    // curtain instead of rendering an undefined-shaped conversation.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 24);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 23);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 24);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

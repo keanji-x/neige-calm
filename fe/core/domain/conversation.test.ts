@@ -215,7 +215,7 @@ describe('CONVERSATION_STATE_SOURCE', () => {
 
 function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
   return {
-    id: 7, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
+    id: 7, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
     turn_id: 'turn', item_uuid: 'item', item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ completedAtMs: 99, item: { text: 'answer' } }), created_at_ms: 50,
     ...overrides,
@@ -348,7 +348,7 @@ describe('transcriptRowToMessages', () => {
 
 describe('harnessItemToActivity', () => {
   const row = (overrides: Partial<HarnessItem>): HarnessItem => ({
-    id: 7, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
+    id: 7, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
     turn_id: 'turn', item_uuid: 'uuid', item_type: 'commandExecution', method: 'item/completed',
     params: '{}', created_at_ms: 50, ...overrides,
   });
@@ -638,7 +638,7 @@ describe('harnessItemToActivity', () => {
 
 describe('buildTranscript', () => {
   const row = (id: number, itemType: string, method: string, item: unknown, uuid = `u${id}`): HarnessItem => ({
-    id, runtime_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
+    id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
     item_uuid: uuid, item_type: itemType, method,
     params: JSON.stringify({ completedAtMs: 1000 + id, item }), created_at_ms: 1000 + id,
   });
@@ -730,7 +730,7 @@ describe('buildTranscript', () => {
      so making one of them load-bearing here would mean weakening the other. */
   it('renders nothing for a method the transcript does not understand', () => {
     const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
-      id: 2, runtime_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
+      id: 2, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
       item_uuid: null, item_type: null, method,
       params: JSON.stringify({
         threadId: 't', turnId: 'turn-plan-1', explanation: null,

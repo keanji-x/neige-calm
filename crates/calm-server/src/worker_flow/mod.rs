@@ -43,7 +43,7 @@ pub struct WorkerFlowDriver {
 }
 
 struct SourceTask {
-    runtime_id: String,
+    worker_session_id: String,
     stop: CancellationToken,
     join: JoinHandle<()>,
 }
@@ -163,7 +163,10 @@ impl WorkerFlowDriver {
     #[cfg(any(test, feature = "fixtures"))]
     pub async fn task_runtime_ids_for_test(&self) -> Vec<String> {
         let tasks = self.tasks.lock().await;
-        tasks.values().map(|task| task.runtime_id.clone()).collect()
+        tasks
+            .values()
+            .map(|task| task.worker_session_id.clone())
+            .collect()
     }
 
     #[cfg(any(test, feature = "fixtures"))]
@@ -211,8 +214,8 @@ impl WorkerFlowDriver {
 
     async fn handle_event(&self, event: Event) {
         match event {
-            Event::RuntimeStarted {
-                runtime_id,
+            Event::WorkerSessionStarted {
+                worker_session_id: runtime_id,
                 kind,
                 agent_provider,
                 ..
@@ -238,7 +241,7 @@ impl WorkerFlowDriver {
                     ),
                 }
             }
-            Event::RuntimeStatusChanged {
+            Event::WorkerSessionStatusChanged {
                 card_id,
                 new_status:
                     WorkerSessionState::Exited
@@ -248,8 +251,8 @@ impl WorkerFlowDriver {
             } => {
                 self.cancel_card(&card_id).await;
             }
-            Event::RuntimeStatusChanged {
-                runtime_id,
+            Event::WorkerSessionStatusChanged {
+                worker_session_id: runtime_id,
                 new_status:
                     WorkerSessionState::Running
                     | WorkerSessionState::Idle
@@ -296,8 +299,8 @@ impl WorkerFlowDriver {
                     ),
                 }
             }
-            Event::RuntimeSuperseded {
-                new_runtime_id,
+            Event::WorkerSessionSuperseded {
+                new_worker_session_id: new_runtime_id,
                 card_id,
                 ..
             } => {
@@ -370,7 +373,7 @@ impl WorkerFlowDriver {
             let mut tasks = self.tasks.lock().await;
             tasks.retain(|_, task| !task.join.is_finished() && !task.stop.is_cancelled());
             match tasks.get(&runtime.card_id) {
-                Some(task) if task.runtime_id == runtime.id => return Ok(()),
+                Some(task) if task.worker_session_id == runtime.id => return Ok(()),
                 Some(_) => {
                     let task = tasks
                         .remove(&runtime.card_id)
@@ -378,7 +381,7 @@ impl WorkerFlowDriver {
                     task.stop.cancel();
                     tracing::info!(
                         card_id = %runtime.card_id,
-                        old_runtime_id = %task.runtime_id,
+                        old_runtime_id = %task.worker_session_id,
                         new_runtime_id = %runtime.id,
                         "worker-flow card runtime changed; cancelling stale tail task before attaching new one"
                     );
@@ -435,7 +438,7 @@ impl WorkerFlowDriver {
         tasks.insert(
             runtime.card_id.clone(),
             SourceTask {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
                 stop,
                 join,
             },

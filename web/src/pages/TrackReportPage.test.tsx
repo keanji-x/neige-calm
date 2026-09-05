@@ -1690,7 +1690,7 @@ describe('TrackReportPage', () => {
       'cards/card_runtime/runtime.json': {
         content_type: 'application/json',
         content: JSON.stringify({
-          runtime_id: 'runtime_page_1',
+          worker_session_id: 'runtime_page_1',
           kind: 'claude',
           status: 'turn_pending',
           provider: 'claude',

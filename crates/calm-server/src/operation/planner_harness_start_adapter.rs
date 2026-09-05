@@ -981,7 +981,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // write.
             let scope = card_scope_tx(tx, card.id.clone(), card.track_id.clone()).await?;
             let event = Event::HarnessUserMessageEnqueued {
-                runtime_id: runtime_id.clone(),
+                worker_session_id: runtime_id.clone(),
                 card_id: card.id.clone(),
                 track_id: card.track_id.clone(),
                 char_count,
@@ -1314,7 +1314,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             tx,
                             &runtime_id,
                             ThreadAttribution {
-                                runtime_id: runtime_id.clone(),
+                                worker_session_id: runtime_id.clone(),
                                 provider: AgentProvider::Codex,
                                 thread_id: Some(thread_for_tx.clone()),
                                 session_id: None,
@@ -1401,7 +1401,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     &self.card_role_cache,
                     &self.track_area_cache,
                     Event::HarnessTranscriptCleared {
-                        runtime_id: transcript_runtime_id,
+                        worker_session_id: transcript_runtime_id,
                         card_id: transcript_card_id,
                         track_id: transcript_track_id,
                         // Always `Some(..)` — the `Option` on the event exists
@@ -1444,7 +1444,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             existing.shutdown().await?;
         }
         let handle = PlannerHarness::run(PlannerHarnessParams {
-            runtime_id: runtime_id.clone(),
+            worker_session_id: runtime_id.clone(),
             track_id: TrackId::from(track_id),
             card_id: CardId::from(card_id),
             thread_id,
@@ -1467,7 +1467,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )));
         }
         handle.persist_snapshot().await?;
-        Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
+        Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
+            worker_session_id: runtime_id,
+        }))
     }
 
     /// Boundary this compensation inherits (pre-existing driver semantics, NOT

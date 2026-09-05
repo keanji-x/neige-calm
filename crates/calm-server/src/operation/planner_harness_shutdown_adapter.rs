@@ -43,7 +43,15 @@ impl PlannerHarnessShutdownAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessShutdownOperationPayload {
-    pub runtime_id: String,
+    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
+    /// but leaves `operations.payload_json` alone — see that migration's §4.
+    /// The `rename` is the load-bearing half: an operation parked across a
+    /// restart is resumed by re-reading its stored payload, and this field is
+    /// a bare `String` with no default — without the rename a row that stores
+    /// a real id under the frozen key would fail to deserialize at all,
+    /// wedging the parked operation instead of resuming it.
+    #[serde(rename = "runtime_id")]
+    pub worker_session_id: String,
 }
 
 #[async_trait]
@@ -59,7 +67,7 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: PlannerHarnessShutdownOperationPayload =
             serde_json::from_value(input.clone())?;
-        if payload.runtime_id.trim().is_empty() {
+        if payload.worker_session_id.trim().is_empty() {
             return Err(CalmError::BadRequest("runtime_id is required".into()));
         }
         Ok(())
@@ -73,10 +81,10 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
     ) -> Result<TxOutput> {
         let payload: PlannerHarnessShutdownOperationPayload =
             serde_json::from_value(input.clone())?;
-        let runtime = session_projection_by_id_tx(tx, &payload.runtime_id)
+        let runtime = session_projection_by_id_tx(tx, &payload.worker_session_id)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.runtime_id)))?;
-        session_mark_superseded_runtime_tx(tx, &payload.runtime_id).await?;
+            .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.worker_session_id)))?;
+        session_mark_superseded_runtime_tx(tx, &payload.worker_session_id).await?;
         let mut output = TxOutput::new(
             "runtime",
             Some(runtime.id.clone()),

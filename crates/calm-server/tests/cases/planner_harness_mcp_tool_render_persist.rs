@@ -84,7 +84,7 @@ async fn seed_harness(
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id,
+        worker_session_id: runtime_id,
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),

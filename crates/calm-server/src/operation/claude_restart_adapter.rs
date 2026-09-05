@@ -92,7 +92,15 @@ impl ClaudeRestartAdapter {
 pub struct ClaudeRestartOperationPayload {
     pub actor: ActorId,
     #[serde(default)]
-    pub runtime_id: Option<String>,
+    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
+    /// but leaves `operations.payload_json` alone — see that migration's §4.
+    /// The `rename` is the load-bearing half: an operation parked across a
+    /// restart is resumed by re-reading its stored payload, and without the
+    /// rename a row that stores a real id under the frozen key would
+    /// deserialize to `None`, so the `unwrap_or_else(new_id)` below would mint
+    /// a FRESH session id for a row that already had one.
+    #[serde(rename = "runtime_id")]
+    pub worker_session_id: Option<String>,
     pub card_id: String,
 }
 
@@ -212,7 +220,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 .await?
             }
         };
-        let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
+        let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         session_start_runtime_tx(
             tx,
             WorkerSessionInit {
@@ -238,8 +246,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         // scope through the pool would deadlock the task against itself. See
         // `card_scope_tx`'s doc comment for the measurement.
         let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.track_id.clone()).await?;
-        let runtime_event = Event::RuntimeStarted {
-            runtime_id: runtime_id.clone(),
+        let runtime_event = Event::WorkerSessionStarted {
+            worker_session_id: runtime_id.clone(),
             card_id: card_id.clone(),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
@@ -392,8 +400,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                                     (),
                                     vec![(
                                         scope,
-                                        Event::RuntimeStatusChanged {
-                                            runtime_id,
+                                        Event::WorkerSessionStatusChanged {
+                                            worker_session_id: runtime_id,
                                             card_id: card_id_for_tx,
                                             old_status,
                                             new_status: WorkerSessionState::Running,

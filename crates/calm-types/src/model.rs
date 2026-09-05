@@ -500,7 +500,7 @@ pub struct Track {
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CardRuntimeView {
-    pub runtime_id: String,
+    pub worker_session_id: String,
     pub kind: WorkerSessionKind,
     pub status: WorkerSessionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -638,7 +638,7 @@ pub struct HarnessInputSegment {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessItem {
     pub id: i64,
-    pub runtime_id: String,
+    pub worker_session_id: String,
     #[schema(value_type = String)]
     pub card_id: CardId,
     #[schema(value_type = String)]

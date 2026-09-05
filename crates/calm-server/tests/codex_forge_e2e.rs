@@ -2526,7 +2526,7 @@ async fn capstone_oracle(
             RequiredEvent::new("task.dispatched", |r| r.payload["kind"] == json!("codex")),
             RequiredEvent::any("workspace.leased"),
             RequiredEvent::any("worktree.provisioned"),
-            RequiredEvent::any("runtime.started"),
+            RequiredEvent::any("worker_session.started"),
             RequiredEvent::any("task.completed"),
             RequiredEvent::any("worktree.committed"),
             RequiredEvent::new("task.gate_result", |r| r.payload["passed"] == json!(true)),
@@ -2589,8 +2589,8 @@ async fn capstone_oracle(
     )
     .await;
     // Ordering 3 (kernel-forced, HARD, per card): worktree.provisioned
-    // precedes runtime.started for every card that has both.
-    assert_provisioned_before_runtime_started_per_card(fx).await;
+    // precedes worker_session.started for every card that has both.
+    assert_provisioned_before_worker_session_started_per_card(fx).await;
 
     // Fence 6: subject-keyed cap enforcement + 6a existence (converged
     // subject must actually have a head-matching merge). 6a keys merges by
@@ -2755,11 +2755,12 @@ async fn capstone_oracle(
 }
 
 /// Ordering 3 (kernel-forced): for every card that has BOTH events, the first
-/// `worktree.provisioned` precedes the first `runtime.started` (the planner card
-/// has runtime.started but no worktree — vacuously skipped).
-async fn assert_provisioned_before_runtime_started_per_card(fx: &Fixture) {
+/// `worktree.provisioned` precedes the first `worker_session.started` (the
+/// planner card has worker_session.started but no worktree — vacuously
+/// skipped).
+async fn assert_provisioned_before_worker_session_started_per_card(fx: &Fixture) {
     let provisioned = event_rows(&fx.repo, "worktree.provisioned").await;
-    let started = event_rows(&fx.repo, "runtime.started").await;
+    let started = event_rows(&fx.repo, "worker_session.started").await;
     let mut checked = 0usize;
     for p in &provisioned {
         let card_id = p.payload["card_id"]
@@ -2780,14 +2781,15 @@ async fn assert_provisioned_before_runtime_started_per_card(fx: &Fixture) {
             assert!(
                 first_provisioned < first_started,
                 "card {card_id}: worktree.provisioned (id {first_provisioned}) must precede \
-                 runtime.started (id {first_started})"
+                 worker_session.started (id {first_started})"
             );
             checked += 1;
         }
     }
     assert!(
         checked > 0,
-        "ordering-3 check matched no card with both worktree.provisioned and runtime.started"
+        "ordering-3 check matched no card with both worktree.provisioned and \
+         worker_session.started"
     );
 }
 

@@ -14,7 +14,7 @@ function mountCard(kind: string, runtime?: { status: string; terminal_id?: strin
   const wire = cardWireSchema.parse({
     id: 'card-1', track_id: 'track-1', kind, title: null, sort: 1,
     payload, deletable: true, created_at: 1, updated_at: 2,
-    ...(runtime === undefined ? {} : { runtime: { runtime_id: 'run-1', kind: 'terminal', ...runtime } }),
+    ...(runtime === undefined ? {} : { runtime: { worker_session_id: 'run-1', kind: 'terminal', ...runtime } }),
   });
   const registry = createCardRegistry();
   registerAvailableBuiltinCards(registry);

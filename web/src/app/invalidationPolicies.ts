@@ -52,9 +52,9 @@ function cardOverlayContextKeys(
 }
 
 type RuntimeCardEvent =
-  | EventOf<'runtime.started'>
-  | EventOf<'runtime.status_changed'>
-  | EventOf<'runtime.superseded'>;
+  | EventOf<'worker_session.started'>
+  | EventOf<'worker_session.status_changed'>
+  | EventOf<'worker_session.superseded'>;
 
 function runtimeCardContextKeys(
   ev: RuntimeCardEvent,
@@ -160,18 +160,18 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'card.deleted': {
     keys: cardMutationKeys,
   },
-  'runtime.started': {
+  'worker_session.started': {
     requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
   },
-  'runtime.status_changed': {
+  'worker_session.status_changed': {
     requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
   },
-  'runtime.superseded': {
+  'worker_session.superseded': {
     requiresContext: runtimeContextKeys,
     keys: () => [queryKeys.overlaysByKind('card')],
-    // No runtime-detail cache key exists yet; old runtime id removal is a
+    // No worker-session-detail cache key exists yet; old worker-session id removal is a
     // no-op for now. The registry can refine this when a consumer appears.
   },
   'harness.item.added': noop(

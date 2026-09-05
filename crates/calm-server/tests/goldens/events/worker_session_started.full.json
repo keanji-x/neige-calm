@@ -1,0 +1,13 @@
+{
+  "description": "worker_session.started with agent_provider present (RuntimeKind::ClaudeCard serializes as \"claude\").",
+  "wire": {
+    "ev": "worker_session.started",
+    "data": {
+      "worker_session_id": "rt-01",
+      "card_id": "card-01",
+      "kind": "claude",
+      "agent_provider": "claude",
+      "status": "starting"
+    }
+  }
+}

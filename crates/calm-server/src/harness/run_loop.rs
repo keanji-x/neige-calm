@@ -42,7 +42,7 @@ pub struct PlannerHarness {
 }
 
 pub struct PlannerHarnessParams {
-    pub runtime_id: String,
+    pub worker_session_id: String,
     pub track_id: TrackId,
     pub card_id: CardId,
     pub thread_id: Option<String>,
@@ -56,7 +56,7 @@ pub struct PlannerHarnessParams {
 }
 
 pub(super) struct Inner {
-    runtime_id: String,
+    worker_session_id: String,
     track_id: TrackId,
     card_id: CardId,
     thread_id: RwLock<Option<String>>,
@@ -589,7 +589,7 @@ fn inner_from_params(
     let (recent_hook_keys, recent_hook_key_set) =
         recent_hook_keys_from_pending_queue(&pending_queue);
     Arc::new(Inner {
-        runtime_id: params.runtime_id,
+        worker_session_id: params.worker_session_id,
         track_id: params.track_id,
         card_id: params.card_id,
         thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
@@ -639,7 +639,7 @@ fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
         Some(area) => EventScope::Card { card, track, area },
         None => {
             tracing::warn!(
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %card,
                 track_id = %track,
                 event_name,
@@ -1130,7 +1130,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             };
             let Some(thread_id) = inner.thread_id.read().await.clone() else {
                 tracing::warn!(
-                    runtime_id = %inner.runtime_id,
+                    runtime_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
                     method,
                     "planner harness item notification arrived before thread id was known"
@@ -1164,7 +1164,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             let item_db_id = inner
                 .repo
                 .harness_item_insert(
-                    &inner.runtime_id,
+                    &inner.worker_session_id,
                     inner.card_id.as_str(),
                     inner.track_id.as_str(),
                     &thread_id,
@@ -1187,7 +1187,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     &inner.card_role_cache,
                     &inner.track_area_cache,
                     Event::HarnessItemAdded {
-                        runtime_id: inner.runtime_id.clone(),
+                        worker_session_id: inner.worker_session_id.clone(),
                         card_id: inner.card_id.clone(),
                         track_id: inner.track_id.clone(),
                         item_db_id,
@@ -1229,7 +1229,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             // loss ever needs to be observable, that is where to look.
             let Some(thread_id) = inner.thread_id.read().await.clone() else {
                 tracing::warn!(
-                    runtime_id = %inner.runtime_id,
+                    runtime_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
                     method,
                     "planner harness dropping turn/plan/updated: the frame carries no threadId \
@@ -1246,7 +1246,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             inner
                 .repo
                 .harness_item_insert(
-                    &inner.runtime_id,
+                    &inner.worker_session_id,
                     inner.card_id.as_str(),
                     inner.track_id.as_str(),
                     &thread_id,
@@ -1359,7 +1359,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     if merged.exceeds_window() {
                         tracing::warn!(
                             target: "planner.harness.token_usage",
-                            runtime_id = %inner.runtime_id,
+                            runtime_id = %inner.worker_session_id,
                             card_id = %inner.card_id,
                             used_tokens = merged.used_tokens,
                             context_window = ?merged.context_window,
@@ -1378,7 +1378,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 // in place instead. See `TokenUsage::from_params`.
                 None => tracing::warn!(
                     target: "planner.harness.token_usage",
-                    runtime_id = %inner.runtime_id,
+                    runtime_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
                     method,
                     "planner harness dropping thread/tokenUsage/updated: no usable \
@@ -1447,7 +1447,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // the "calling daemon.turn_start" → "daemon.turn_start ok" pair.
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
-        runtime_id = %inner.runtime_id,
+        runtime_id = %inner.worker_session_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
         queue_len,
@@ -1462,7 +1462,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let Some(first) = first_pending_at else {
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 hard_fire,
@@ -1473,7 +1473,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let Some(last) = last_pending_at else {
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 hard_fire,
@@ -1487,7 +1487,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if !should_issue {
         tracing::debug!(
             target: "calm_server::planner_harness_issue",
-            runtime_id = %inner.runtime_id,
+            runtime_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             hard_fire,
@@ -1505,7 +1505,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         if !state.can_issue_turn() {
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 state = ?*state,
@@ -1614,7 +1614,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 })
             }),
             TRANSCRIPT_REFRESH_TIMEOUT,
-            &inner.runtime_id,
+            &inner.worker_session_id,
             inner.card_id.as_str(),
             inner.track_id.as_str(),
         )
@@ -1622,7 +1622,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
-        runtime_id = %inner.runtime_id,
+        runtime_id = %inner.worker_session_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
         last_seen_head = ?last_seen_head_snapshot,
@@ -1640,7 +1640,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
-        runtime_id = %inner.runtime_id,
+        runtime_id = %inner.worker_session_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
         block_some = diff.block.is_some(),
@@ -1653,7 +1653,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         if !state.can_issue_turn() {
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 state = ?*state,
@@ -1710,7 +1710,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let text = prepend_diff_block(diff.block, joined_observation_text);
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
-        runtime_id = %inner.runtime_id,
+        runtime_id = %inner.worker_session_id,
         card_id = %inner.card_id,
         track_id = %inner.track_id,
         thread_id = %thread_id,
@@ -1725,7 +1725,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         Ok(turn_id) => {
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 thread_id = %thread_id,
@@ -1804,7 +1804,7 @@ async fn diff_with_timeout(
     diff_or_fallback_on_timeout(
         since_last_turn_diff_block(inner, current_override),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
-        &inner.runtime_id,
+        &inner.worker_session_id,
         inner.card_id.as_str(),
         inner.track_id.as_str(),
         || async {
@@ -2157,7 +2157,7 @@ async fn persist_snapshot_inner(
         snapshot.last_seen_head = Some(head);
         snapshot.issued_turn_head = None;
     }
-    let runtime_id = inner.runtime_id.clone();
+    let runtime_id = inner.worker_session_id.clone();
     let thread_id = snapshot.last_thread_id.clone();
     let active_turn_id = match snapshot.phase {
         HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingInterrupt => {
@@ -2206,7 +2206,7 @@ async fn persist_snapshot_inner(
                 &inner.card_role_cache,
                 &inner.track_area_cache,
                 Event::HarnessPhaseChanged {
-                    runtime_id: event_runtime_id,
+                    worker_session_id: event_runtime_id,
                     card_id: event_card_id,
                     track_id: event_track_id,
                     old_phase,
@@ -2216,7 +2216,7 @@ async fn persist_snapshot_inner(
             .await
         {
             tracing::warn!(
-                runtime_id = %inner.runtime_id,
+                runtime_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
                 track_id = %inner.track_id,
                 ?old_phase,

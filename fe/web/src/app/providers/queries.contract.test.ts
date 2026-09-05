@@ -403,7 +403,7 @@ describe('delete mutation wiring', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries')
       .mockRejectedValue(new Error('history refresh failed'));
     const transport: ApiTransportPort = {
-      send: () => Promise.resolve(ok({ card_id: 'card-1', runtime_id: 'runtime-1' })),
+      send: () => Promise.resolve(ok({ card_id: 'card-1', worker_session_id: 'runtime-1' })),
     };
     const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', unauthorized), {
       wrapper: mutationWrapper(client),
@@ -573,7 +573,7 @@ describe('track create folders cache', () => {
 describe('planner history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
     const firstPage = Array.from({ length: 300 }, (_, index) => ({
-      id: 701 + index, runtime_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
+      id: 701 + index, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
       turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: '{}', created_at_ms: index,
     }));

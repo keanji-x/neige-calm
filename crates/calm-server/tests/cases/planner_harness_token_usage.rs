@@ -197,7 +197,7 @@ async fn boot() -> Boot {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: runtime_id.clone(),
+        worker_session_id: runtime_id.clone(),
         track_id: planner_card.track_id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
@@ -313,7 +313,7 @@ async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["runtime_id"], json!(boot.runtime_id));
+    assert_eq!(body["worker_session_id"], json!(boot.runtime_id));
     assert_eq!(body["phase"], json!("idle"));
 
     let wire = &body["token_usage"];
@@ -459,7 +459,7 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
 
     let snapshot = HarnessSnapshot::from_value_strict(stored);
     let rehydrated = PlannerHarness::run(PlannerHarnessParams {
-        runtime_id: boot.runtime_id.clone(),
+        worker_session_id: boot.runtime_id.clone(),
         track_id: boot.planner_card.track_id.clone(),
         card_id: boot.planner_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),

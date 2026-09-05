@@ -21,7 +21,7 @@ test('refreshing an exited terminal shows its final state while secondary reads 
         body = { userId: 'user-1', displayName: 'Test', role: 'admin', sessionId: 'session-1' };
         break;
       case '/api/version':
-        body = { webCompatVersion: 23, minWebCompatVersion: 23, syncEventVersion: 1, dbInstanceId: '00000000-0000-4000-8000-000000000001' };
+        body = { webCompatVersion: 24, minWebCompatVersion: 24, syncEventVersion: 16, dbInstanceId: '00000000-0000-4000-8000-000000000001' };
         break;
       case '/api/areas': body = [area]; break;
       case '/api/areas/area-1/tracks': body = [track]; break;
@@ -30,7 +30,7 @@ test('refreshing an exited terminal shows its final state while secondary reads 
         body = { track, can_resume: false, overlays: [], cards: [{
           id: 'card-1', track_id: track.id, kind: 'terminal', title: 'Terminal', sort: 1,
           payload: {}, deletable: true, created_at: 1, updated_at: 1,
-          runtime: { runtime_id: 'run-1', kind: 'terminal', status },
+          runtime: { worker_session_id: 'run-1', kind: 'terminal', status },
         }] };
         break;
       case '/api/tracks/track-1/report':

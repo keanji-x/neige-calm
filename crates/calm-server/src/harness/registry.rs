@@ -50,7 +50,7 @@ impl Default for HarnessRegistry {
 /// inert and can never stomp a newer claim.
 pub struct HarnessReservation {
     registry: HarnessRegistry,
-    runtime_id: String,
+    worker_session_id: String,
     id: ReservationId,
     /// Set by `install` so the consuming call suppresses the Drop release.
     done: bool,
@@ -69,7 +69,7 @@ impl HarnessReservation {
     #[must_use = "a false install means the caller must shut down the handle it built"]
     pub fn install(mut self, handle: PlannerHarness) -> bool {
         self.done = true;
-        match self.registry.0.map.entry(self.runtime_id.clone()) {
+        match self.registry.0.map.entry(self.worker_session_id.clone()) {
             Entry::Occupied(mut occupied) => {
                 if matches!(occupied.get(), Slot::Reserved(id) if *id == self.id) {
                     occupied.insert(Slot::Live(handle));
@@ -88,7 +88,7 @@ impl HarnessReservation {
     pub fn duplicate_for_test(&self) -> HarnessReservation {
         HarnessReservation {
             registry: self.registry.clone(),
-            runtime_id: self.runtime_id.clone(),
+            worker_session_id: self.worker_session_id.clone(),
             id: self.id,
             done: false,
         }
@@ -100,7 +100,7 @@ impl Drop for HarnessReservation {
         if self.done {
             return;
         }
-        if let Entry::Occupied(occupied) = self.registry.0.map.entry(self.runtime_id.clone())
+        if let Entry::Occupied(occupied) = self.registry.0.map.entry(self.worker_session_id.clone())
             && matches!(occupied.get(), Slot::Reserved(id) if *id == self.id)
         {
             // Release through the occupied entry's own remove — never
@@ -146,7 +146,7 @@ impl HarnessRegistry {
                 vacant.insert(Slot::Reserved(id));
                 Some(HarnessReservation {
                     registry: self.clone(),
-                    runtime_id,
+                    worker_session_id: runtime_id,
                     id,
                     done: false,
                 })
@@ -177,7 +177,7 @@ impl HarnessRegistry {
         (
             HarnessReservation {
                 registry: self.clone(),
-                runtime_id,
+                worker_session_id: runtime_id,
                 id,
                 done: false,
             },
@@ -297,7 +297,7 @@ mod tests {
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let (handle, _obs_rx) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
-                runtime_id: runtime_id.to_string(),
+                worker_session_id: runtime_id.to_string(),
                 track_id: TrackId::from("track-registry-test".to_string()),
                 card_id: CardId::from("card-registry-test".to_string()),
                 thread_id: None,

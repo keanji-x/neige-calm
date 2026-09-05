@@ -291,7 +291,7 @@ pub fn user_message_enqueued_on_active_runtime_sql() -> String {
               AND e.scope_card = ?1
               AND e.scope_track = ?2
               AND (CASE WHEN json_valid(e.payload)
-                        THEN json_extract(e.payload, '$.runtime_id') END)
+                        THEN json_extract(e.payload, '$.worker_session_id') END)
                   = ({ACTIVE_CARD_RUNTIME_SELECT})
             LIMIT 1"#,
     )

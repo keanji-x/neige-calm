@@ -938,7 +938,7 @@ async fn runtime_entrances_dual_write_worker_session() {
         &mut tx,
         &runtime.id,
         ThreadAttribution {
-            runtime_id: runtime.id.clone(),
+            worker_session_id: runtime.id.clone(),
             provider: AgentProvider::Codex,
             thread_id: Some("thread-dual-write".into()),
             session_id: Some("agent-session-dual-write".into()),
@@ -1952,7 +1952,7 @@ async fn runtime_bind_attribution_transitions_pending_to_running() {
         &mut tx,
         &runtime.id,
         ThreadAttribution {
-            runtime_id: runtime.id.clone(),
+            worker_session_id: runtime.id.clone(),
             provider: AgentProvider::Codex,
             thread_id: Some("thread-pending-bind".into()),
             session_id: None,
@@ -2089,7 +2089,7 @@ async fn session_start_runtime_tx_claude_records_session_when_present() {
         .await
         .unwrap();
     let runtime = stored.runtime.as_ref().expect("projected card runtime");
-    assert_eq!(runtime.runtime_id, active.id);
+    assert_eq!(runtime.worker_session_id, active.id);
     assert_eq!(runtime.kind, WorkerSessionKind::ClaudeCard);
     assert_eq!(runtime.status, WorkerSessionState::Starting);
     assert_eq!(runtime.provider, Some(AgentProvider::Claude));

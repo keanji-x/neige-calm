@@ -15,7 +15,7 @@ describe('CardRuntimeViewer', () => {
         path="cards/card_1/runtime.json"
         raw="{}"
         data={{
-          runtime_id: 'runtime_1',
+          worker_session_id: 'runtime_1',
           kind: 'codex',
           status: 'running',
           provider: 'codex',
@@ -67,7 +67,7 @@ describe('CardRuntimeViewer', () => {
         path="cards/card_1/runtime.json"
         raw="{}"
         data={{
-          runtime_id: 'runtime_min',
+          worker_session_id: 'runtime_min',
           kind: 'terminal',
           status: 'idle',
         }}
@@ -92,7 +92,7 @@ describe('CardRuntimeViewer', () => {
     expect(() =>
       CardRuntimeViewer.parse(
         JSON.stringify({
-          runtime_id: 'runtime_1',
+          worker_session_id: 'runtime_1',
           kind: 'codex',
           status: null,
         }),

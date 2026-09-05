@@ -254,7 +254,7 @@ export const workerSessionStateSchema = z.enum([
 export type WorkerSessionState = z.infer<typeof workerSessionStateSchema>;
 
 export const cardRuntimeViewSchema = z.object({
-  runtime_id: z.string(),
+  worker_session_id: z.string(),
   kind: runtimeKindSchema,
   status: workerSessionStateSchema,
   provider: agentProviderSchema.optional(),
@@ -364,9 +364,9 @@ export const cardDeletedSchema = z.object({
 });
 
 export const runtimeStartedSchema = z.object({
-  ev: z.literal('runtime.started'),
+  ev: z.literal('worker_session.started'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     kind: runtimeKindSchema,
     agent_provider: agentProviderSchema.nullable(),
@@ -375,9 +375,9 @@ export const runtimeStartedSchema = z.object({
 });
 
 export const runtimeStatusChangedSchema = z.object({
-  ev: z.literal('runtime.status_changed'),
+  ev: z.literal('worker_session.status_changed'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     old_status: workerSessionStateSchema,
     new_status: workerSessionStateSchema,
@@ -385,10 +385,10 @@ export const runtimeStatusChangedSchema = z.object({
 });
 
 export const runtimeSupersededSchema = z.object({
-  ev: z.literal('runtime.superseded'),
+  ev: z.literal('worker_session.superseded'),
   data: z.object({
-    old_runtime_id: z.string(),
-    new_runtime_id: z.string(),
+    old_worker_session_id: z.string(),
+    new_worker_session_id: z.string(),
     card_id: z.string(),
   }),
 });
@@ -408,7 +408,7 @@ export type HarnessPhaseTag = z.infer<typeof harnessPhaseTagSchema>;
 export const harnessItemAddedSchema = z.object({
   ev: z.literal('harness.item.added'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     track_id: z.string(),
     item_db_id: z.number(),
@@ -422,7 +422,7 @@ export const harnessItemAddedSchema = z.object({
 export const harnessPhaseChangedSchema = z.object({
   ev: z.literal('harness.phase.changed'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     track_id: z.string(),
     old_phase: harnessPhaseTagSchema,
@@ -433,7 +433,7 @@ export const harnessPhaseChangedSchema = z.object({
 export const harnessTranscriptClearedSchema = z.object({
   ev: z.literal('harness.transcript.cleared'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     track_id: z.string(),
     // #1252 S0-2 — the reset hard-deletes the transcript, so these are the
@@ -452,7 +452,7 @@ export const harnessTranscriptClearedSchema = z.object({
 export const harnessUserMessageEnqueuedSchema = z.object({
   ev: z.literal('harness.user_message.enqueued'),
   data: z.object({
-    runtime_id: z.string(),
+    worker_session_id: z.string(),
     card_id: z.string(),
     track_id: z.string(),
     char_count: z.number(),

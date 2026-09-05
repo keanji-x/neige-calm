@@ -1044,7 +1044,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let runtime: Option<CardRuntimeView> =
         serde_json::from_value(content_json(&out)).expect("runtime projection is typed");
     let runtime = runtime.expect("runtime row is projected");
-    assert_eq!(runtime.runtime_id, runtime_id);
+    assert_eq!(runtime.worker_session_id, runtime_id);
     assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
     assert_eq!(runtime.status, WorkerSessionState::Running);
     assert_eq!(runtime.provider, Some(AgentProvider::Codex));

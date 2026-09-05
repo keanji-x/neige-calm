@@ -31,7 +31,15 @@ impl PlannerHarnessInterruptAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlannerHarnessInterruptOperationPayload {
-    pub runtime_id: String,
+    /// Wire key frozen as `runtime_id`: migration 0094 renames the Rust field
+    /// but leaves `operations.payload_json` alone — see that migration's §4.
+    /// The `rename` is the load-bearing half: an operation parked across a
+    /// restart is resumed by re-reading its stored payload, and this field is
+    /// a bare `String` with no default — without the rename a row that stores
+    /// a real id under the frozen key would fail to deserialize at all,
+    /// wedging the parked operation instead of resuming it.
+    #[serde(rename = "runtime_id")]
+    pub worker_session_id: String,
     pub reason: String,
 }
 
@@ -48,7 +56,7 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: PlannerHarnessInterruptOperationPayload =
             serde_json::from_value(input.clone())?;
-        if payload.runtime_id.trim().is_empty() {
+        if payload.worker_session_id.trim().is_empty() {
             return Err(CalmError::BadRequest("runtime_id is required".into()));
         }
         if payload.reason.len() > MAX_INTERRUPT_REASON_LEN {
@@ -67,13 +75,17 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
     ) -> Result<TxOutput> {
         let payload: PlannerHarnessInterruptOperationPayload =
             serde_json::from_value(input.clone())?;
-        let runtime = session_projection_by_id_tx(tx, &payload.runtime_id)
+        let runtime = session_projection_by_id_tx(tx, &payload.worker_session_id)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.runtime_id)))?;
-        if self.harness_registry.get(&payload.runtime_id).is_none() {
+            .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.worker_session_id)))?;
+        if self
+            .harness_registry
+            .get(&payload.worker_session_id)
+            .is_none()
+        {
             return Err(CalmError::NotFound(format!(
                 "harness {}",
-                payload.runtime_id
+                payload.worker_session_id
             )));
         }
         let mut output = TxOutput::new(

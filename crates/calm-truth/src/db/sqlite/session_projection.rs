@@ -242,10 +242,10 @@ pub async fn session_bind_attribution_tx(
     id: &String,
     attr: ThreadAttribution,
 ) -> WorkerSessionProjectionResult<()> {
-    if &attr.runtime_id != id {
+    if &attr.worker_session_id != id {
         return Err(runtime_message(format!(
             "runtime attribution id mismatch: arg={id}, attr={}",
-            attr.runtime_id
+            attr.worker_session_id
         )));
     }
 

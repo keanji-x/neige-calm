@@ -73,7 +73,7 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['track-report', id]` | `queryKeys.trackReport(id)` | the track's task verdicts (TASKS panel) |
 | `['track-report']` | `queryKeys.trackReportPrefix()` | prefix; the four `task.*` events carry no track-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
 | `['track-conversations', id]` | `queryKeys.trackConversations(id)` | the endpoint is per-track (#1189 §4.1) and the plan names the track whenever `derivedTrackId` resolves one |
-| `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
+| `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `worker_session.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
 | `['tracks-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
 | `['track-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
 
@@ -90,7 +90,7 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `card.added` | invalidate track detail + both conversation lists + all task verdicts | card existence may satisfy a cross-track `neige://card/*` reference |
 | `card.updated` | invalidate track detail + both conversation lists | |
 | `card.deleted` | invalidate track detail + all task verdicts | card disappearance may break a cross-track reference; knowingly no conversation-list key (dropping the deleted row is #1140's) |
-| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
+| `worker_session.started` / `worker_session.status_changed` / `worker_session.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
 | `track.report_edited` | invalidate all task verdicts (cross-track refs can change dependents) | `track-files` and `track-backlinks` are still stubs |
 | `plan.updated` with string `agent_message` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | standalone pending-task cancellation carries the message and pending rows do not poll; projection companion events omit it and are no-ops here because their paired event already refreshes |
@@ -129,7 +129,7 @@ the TASKS panel went live without a line of new invalidation policy.
 **Events are not sufficient for that panel, and the gap is on the kernel side.**
 `scheduler::mark_running` stamps `worker_card_id` with no event at all —
 `task.dispatched` fired before the spawn (column still NULL) and every
-`runtime.*` a worker adapter emits is emitted during the spawn, also before the
+`worker_session.*` a worker adapter emits is emitted during the spawn, also before the
 stamp. Between spawn and completion a terminal worker therefore emits nothing
 that reaches this key, and an agent worker emits only hooks, which are excluded
 above for cost. The panel closes that window with a bounded refresh timer on the

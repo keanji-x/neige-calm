@@ -47,7 +47,7 @@ impl Error for WorkerSessionProjectionRepoError {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadAttribution {
-    pub runtime_id: String,
+    pub worker_session_id: String,
     pub provider: AgentProvider,
     pub thread_id: Option<String>,
     pub session_id: Option<String>,

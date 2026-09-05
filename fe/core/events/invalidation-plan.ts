@@ -52,7 +52,7 @@ function trackFilesDerived(trackId: string | null): readonly QueryKey[] {
 }
 
 export type TrackFilesDerivedKind =
-  | 'runtime.started' | 'runtime.status_changed' | 'runtime.superseded'
+  | 'worker_session.started' | 'worker_session.status_changed' | 'worker_session.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
   | 'codex.worker_requested' | 'terminal.worker_requested'
   | 'task.completed' | 'task.failed' | 'task.dispatched' | 'task.gate_result';
@@ -64,7 +64,7 @@ export type TrackFilesDerivedKind =
  * `taskVerdictInvalidatingKinds`, which is this list minus the two hooks.
  */
 export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
-  'runtime.started', 'runtime.status_changed', 'runtime.superseded',
+  'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
   'codex.worker_requested', 'terminal.worker_requested',
   'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',
@@ -80,7 +80,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
  * every runtime tick would refetch the list of every track the user has open.
  *
  * The prefix is still what comes back when the track genuinely cannot be
- * resolved (a `runtime.*` event for a card no cached track owns). That is the
+ * resolved (a `worker_session.*` event for a card no cached track owns). That is the
  * honest answer to "some track's list may have changed", and it costs nothing
  * when no wave-conversation query is mounted: invalidating a key with no
  * active observer only marks cache entries stale.
@@ -91,8 +91,8 @@ function trackConversations(trackId: string | null): QueryKey {
 
 /**
  * The conversation list's `state` is read from `worker_sessions.state`. The
- * three `runtime.*`
- * kinds are what actually move that column, `runtime.started` being the
+ * three `worker_session.*`
+ * kinds are what actually move that column, `worker_session.started` being the
  * `null → starting` transition that turns the dot on at all, so a session
  * could start, change status and be superseded with the list still showing
  * whatever it had. Adding the track list without fixing the area one would have
@@ -100,7 +100,7 @@ function trackConversations(trackId: string | null): QueryKey {
  *
  * `track.lifecycle_changed` is deliberately NOT a caller. It does not write
  * `worker_sessions.state`; a track reaching a terminal lifecycle ends its
- * sessions by superseding their runtimes, which emits `runtime.superseded` —
+ * sessions by superseding their worker sessions, which emits `worker_session.superseded` —
  * already here. A second trigger for one change buys a duplicate refetch of a
  * wholesale list and makes it impossible to prove either one does the work.
  *
@@ -170,7 +170,7 @@ export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
 }
 
 /**
- * The three `runtime.*` kinds share one plan, because they are one statement:
+ * The three `worker_session.*` kinds share one plan, because they are one statement:
  * this card's session moved. They were already identical; they are now
  * identical *and* carrying the conversation lists, so a third copy that drifted
  * would silently drop a list from one transition only.
@@ -229,9 +229,9 @@ function policies(): PolicyMap {
   'card.deleted': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id], ['track-report'],
   ])),
-  'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
-  'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
-  'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ...conversationLists(event.data.track_id),

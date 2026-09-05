@@ -43,7 +43,7 @@ function CardRuntimeViewerComponent({
     <section className="track-fs-viewer-info-card">
       <h2 className="track-fs-viewer-primary">{data.kind}</h2>
       <div className="track-fs-viewer-row">
-        <span className="track-fs-viewer-mono">{data.runtime_id}</span>
+        <span className="track-fs-viewer-mono">{data.worker_session_id}</span>
         <ViewerChip label={data.status} tone={runtimeStatusTones[data.status]} />
         {data.provider ? <ViewerChip label={data.provider} /> : null}
       </div>

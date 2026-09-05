@@ -770,14 +770,14 @@ pub struct RatifyCardResponse {
 pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
-    pub runtime_id: String,
+    pub worker_session_id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InterruptPlannerCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
-    pub runtime_id: String,
+    pub worker_session_id: String,
     /// True when a turn was actually running and an interrupt was
     /// dispatched at it; false when the harness was idle (graceful no-op)
     /// or a `turn/start` was still in flight (interrupt dispatched
@@ -794,13 +794,13 @@ pub struct InterruptPlannerCardResponse {
 /// mid-turn would otherwise sit on `phase: null` until the next transition.
 /// This read endpoint lets the client seed its initial phase. Dormancy (no
 /// active runtime row, or no registered harness) is NOT an error here —
-/// it's the `{runtime_id: null, phase: null}` answer.
+/// it's the `{worker_session_id: null, phase: null}` answer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GetPlannerRunResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
-    /// Active runtime id, or null when the harness is dormant.
-    pub runtime_id: Option<String>,
+    /// Active worker-session id, or null when the harness is dormant.
+    pub worker_session_id: Option<String>,
     /// Current harness phase, or null when the harness is dormant.
     pub phase: Option<HarnessPhaseTag>,
     /// #1255 S3 — latest context-window usage, or null when the harness is
@@ -991,7 +991,7 @@ pub(crate) async fn send_planner_input(
             s.write.role_cache(),
             s.write.area_cache(),
             Event::HarnessUserMessageEnqueued {
-                runtime_id: runtime.id.clone(),
+                worker_session_id: runtime.id.clone(),
                 card_id: card.id.clone(),
                 track_id: card.track_id.clone(),
                 char_count: char_count as u32,
@@ -1013,7 +1013,7 @@ pub(crate) async fn send_planner_input(
 
     Ok(Json(SendPlannerInputResponse {
         card_id: card.id,
-        runtime_id: runtime.id.clone(),
+        worker_session_id: runtime.id.clone(),
     }))
 }
 
@@ -1206,7 +1206,7 @@ pub(crate) async fn interrupt_planner_card(
     let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
     if dispatch {
         let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
-            runtime_id: runtime.id.clone(),
+            worker_session_id: runtime.id.clone(),
             reason: "user_stop".into(),
         })?;
         run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
@@ -1223,7 +1223,7 @@ pub(crate) async fn interrupt_planner_card(
 
     Ok(Json(InterruptPlannerCardResponse {
         card_id: card.id,
-        runtime_id: runtime.id.clone(),
+        worker_session_id: runtime.id.clone(),
         stopped,
     }))
 }
@@ -1233,14 +1233,14 @@ pub(crate) async fn interrupt_planner_card(
 /// Guard chain mirrors `/planner/interrupt` (card → role → kind), but unlike
 /// the write routes a dormant harness is a normal answer for a read: no
 /// active runtime row, or an active row with no registered harness, is
-/// `200 {runtime_id: null, phase: null}` rather than a 409.
+/// `200 {worker_session_id: null, phase: null}` rather than a 409.
 #[utoipa::path(
     get,
     path = "/api/cards/{id}/planner/run",
     tag = "cards",
     params(("id" = String, Path, description = "Planner card id")),
     responses(
-        (status = 200, description = "Current run snapshot; `runtime_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetPlannerRunResponse),
+        (status = 200, description = "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetPlannerRunResponse),
         (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -1267,7 +1267,7 @@ pub(crate) async fn get_planner_run(
 
     let dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
-        runtime_id: None,
+        worker_session_id: None,
         phase: None,
         token_usage: None,
     };
@@ -1288,7 +1288,7 @@ pub(crate) async fn get_planner_run(
     let snapshot = harness.snapshot().await;
     Ok(Json(GetPlannerRunResponse {
         card_id: card.id,
-        runtime_id: Some(runtime.id.clone()),
+        worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
         token_usage: snapshot
             .token_usage
@@ -1572,7 +1572,7 @@ async fn reset_planner_harness_card(
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
-            runtime_id: runtime.id.clone(),
+            worker_session_id: runtime.id.clone(),
         })?;
         run_planner_card_operation(&s, "planner-harness-shutdown", shutdown_payload).await?;
     }

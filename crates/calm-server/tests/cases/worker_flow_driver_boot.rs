@@ -104,23 +104,23 @@ async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
     assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0, "boot");
 
     let entries = [
-        Event::RuntimeStarted {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStarted {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             kind: seed.runtime.kind.clone(),
             agent_provider: seed.runtime.agent_provider.clone(),
             status: WorkerSessionState::Running,
         },
-        Event::RuntimeStatusChanged {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStatusChanged {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             old_status: WorkerSessionState::Starting,
             new_status: WorkerSessionState::Running,
         },
         Event::CardAdded(card),
-        Event::RuntimeSuperseded {
-            old_runtime_id: "old-plain-chat-runtime".into(),
-            new_runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionSuperseded {
+            old_worker_session_id: "old-plain-chat-runtime".into(),
+            new_worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
         },
     ];
@@ -163,8 +163,8 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     state.worker_flow.start_on_boot().await.unwrap();
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStarted {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStarted {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             kind: seed.runtime.kind.clone(),
             agent_provider: seed.runtime.agent_provider.clone(),
@@ -188,7 +188,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         &mut tx,
         &seed.runtime.id,
         ThreadAttribution {
-            runtime_id: seed.runtime.id.clone(),
+            worker_session_id: seed.runtime.id.clone(),
             provider: AgentProvider::Codex,
             thread_id: Some(thread_id.to_string()),
             session_id: Some(format!("sess-{thread_id}")),
@@ -204,8 +204,8 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
 
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStatusChanged {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStatusChanged {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             old_status: WorkerSessionState::Starting,
             new_status: WorkerSessionState::Running,
@@ -219,8 +219,8 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
 
     events.emit(
         ActorId::Kernel,
-        Event::RuntimeStatusChanged {
-            runtime_id: seed.runtime.id.clone(),
+        Event::WorkerSessionStatusChanged {
+            worker_session_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             old_status: WorkerSessionState::Running,
             new_status: WorkerSessionState::TurnPending,

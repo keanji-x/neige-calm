@@ -1030,7 +1030,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
@@ -1140,7 +1140,7 @@
       "oracle:CAP-CHATHIST-005"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['planner-run', event.data.card_id], ...conversationLists(event.data.track_id),\n   ])),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['planner-run', event.data.card_id], ...conversationLists(event.data.track_id),\n   ])),\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"
