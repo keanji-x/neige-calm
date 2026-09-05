@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, session_prepare_deferred_planner_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
@@ -1994,5 +1995,273 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
         if let Some(handle) = registry.get(runtime_id) {
             handle.shutdown().await.unwrap();
         }
+    }
+}
+
+/// #1449 — a start re-driven after a crash must hand the racer's undelivered
+/// sentence to the runtime it ACTUALLY starts, not only to the row.
+///
+/// The shape is the one `app_server_interact`'s deferred branch exists for: this
+/// operation's placeholder was displaced by another runtime while the thread was
+/// being minted, so at re-drive time the card's active row is a stranger. That
+/// stranger is retired here, and — since #1449 — whatever it never delivered is
+/// harvested into the successor.
+///
+/// Boot recovery rather than a hand-built race: the deferred window is inside
+/// one serially-driven operation, so nothing in-process can race into it, and
+/// buying the race with a second `fixtures`-gated park in the deferred window
+/// would be production state that exists only for a test. A crash between the
+/// mint transaction and the thread mint is a genuinely reachable path, and
+/// `recover_operations_on_boot` is the production code that re-drives it.
+///
+/// **What this pins that a row assertion would not.** The harvest writes three
+/// copies of "what the successor owes": the row (inside the transaction), the
+/// operation checkpoint (inside the transaction) and `output`.
+/// `spawn_side_effect` builds the harness from `output` and then calls
+/// `handle.persist_snapshot()`, which writes that snapshot straight back over
+/// the row. So a harvest that reached only the row is not merely incomplete —
+/// it is erased moments later, by the successful path, with the source rows
+/// already stamped as taken. Asserting on the started runtime is what catches
+/// that; asserting on the row inside the transaction would not.
+#[tokio::test]
+async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it_starts() {
+    const STRANDED: &str = "the racer never got to say this";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "raced-in-harvest.db");
+    let (card_id, track_id, racer_id, placeholder_id, op_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "raced-in-harvest".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "raced in".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let placeholder_id = new_id();
+        let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
+        // The racer carries a sentence a human typed into it during the window.
+        let racer_id = new_id();
+        let racer_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![Observation::UserMessage {
+                text: STRANDED.into(),
+            }],
+        );
+        let now = now_ms();
+        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
+            actor: ActorId::User,
+            track_id: track.id.to_string(),
+            planner_card_id: card.id.clone(),
+            report_card_id: None,
+            sort: None,
+            cwd: track.workspace.path.clone(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: true,
+            profile: Default::default(),
+            create_card: None,
+            opening_briefing: None,
+            first_message: None,
+            create_request_sha256: None,
+        })
+        .unwrap();
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        // Exactly what `prepare_tx` committed: the placeholder's own snapshot,
+        // which knows nothing about the racer.
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": placeholder_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(&placeholder_snapshot).unwrap(),
+        });
+        let op_id = new_id();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        // 1. the deferred placeholder this operation minted...
+        session_prepare_deferred_planner_tx(
+            &mut tx,
+            &WorkerSessionInit {
+                id: placeholder_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&placeholder_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        // 2. ...displaced by a runtime that took the card's active slot while
+        //    the thread was being minted. This is the production pair that does
+        //    it (`/planner/reset` reaches `session_supersede_and_start_tx`), and
+        //    it deliberately does NOT stamp the placeholder: nothing has taken
+        //    the placeholder's queue.
+        session_supersede_and_start_tx(
+            &mut tx,
+            &placeholder_id,
+            WorkerSessionInit {
+                id: racer_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some("thread-racer".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&racer_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
+        )
+        .bind(&op_id)
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (
+            card.id.to_string(),
+            track.id.to_string(),
+            racer_id,
+            placeholder_id,
+            op_id,
+        )
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    role_cache.insert(
+        CardId::from(card_id.clone()),
+        CardRole::Planner,
+        TrackId::from(track_id.clone()),
+    );
+    let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
+        .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+            repo.clone(),
+            None,
+        ));
+
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(&op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(phase, "succeeded", "premise: the re-drive must complete");
+    let racer_state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(&racer_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        racer_state, "superseded",
+        "premise: the re-drive must retire the runtime that raced in"
+    );
+    assert!(
+        state.harness.get(&placeholder_id).is_some(),
+        "premise: the re-drive must start the placeholder's harness"
+    );
+
+    // THE assertion: the sentence reached the runtime that was actually
+    // started. Either it is still on that harness's persisted queue, or the
+    // harness has already handed it to the daemon — both mean it arrived.
+    // Neither is ever true when the harvest stops at the row, because
+    // `handle.persist_snapshot()` writes the started harness's (shorter)
+    // snapshot back over it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let arrived = loop {
+        let handed_over =
+            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
+                .unwrap_or_default()
+                .contains(STRANDED);
+        let still_queued: Option<String> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+                .bind(&placeholder_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        let still_queued = still_queued
+            .and_then(|state| serde_json::from_str::<serde_json::Value>(&state).ok())
+            .and_then(|state| state.get("pending_queue").cloned())
+            .map(|queue| queue.to_string().contains(STRANDED))
+            .unwrap_or(false);
+        if handed_over || still_queued || std::time::Instant::now() >= deadline {
+            break handed_over || still_queued;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        arrived,
+        "the harvested sentence must reach the runtime the re-drive actually started — the row, \
+         the operation checkpoint and the started harness all have to agree, or the successful \
+         path erases it moments later with the source row already stamped as taken"
+    );
+    let racer_stamp: Option<i64> =
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(&racer_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        racer_stamp.is_some(),
+        "and the row it came from must be stamped, or the next start takes it again"
+    );
+
+    if let Some(handle) = state.harness.remove(&placeholder_id) {
+        handle.shutdown().await.unwrap();
     }
 }
