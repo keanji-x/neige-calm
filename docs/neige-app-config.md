@@ -144,6 +144,14 @@ fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 build_args = ["make", "build", "fe-build"]
 ```
 
+For an existing running instance, opt in during planned downtime **after**
+installing a package that includes the next frontend. `neige-app` reads its admin
+configuration at host startup: after editing these settings, restart the
+`neige-app` service (or stop/start the foreground host) before using its admin
+source-upgrade endpoint. `POST /restart` restarts only calm-server and does not
+reload this configuration. CLI source builds read the file on each invocation,
+but the running host still needs a restart to serve the newly enabled frontend.
+
 Custom build commands must also rebuild `fe/web/dist` when `fe_dist` is enabled;
 a directory left from a prior build is not evidence of a current frontend. For
 release artifacts use the Alpha build script, which unconditionally performs
@@ -168,7 +176,7 @@ existing checkout directory unless the marker and `origin` URL match the
 current config. The default build command is:
 
 ```text
-["make", "build"]
+["make", "build", "fe-build"]
 ```
 
 No arbitrary shell command is executed. Package compatibility is probed from
