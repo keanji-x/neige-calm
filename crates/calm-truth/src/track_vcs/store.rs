@@ -280,6 +280,27 @@ pub(super) async fn load_commit_record_pool(
     row.map(commit_record_from_row).transpose()
 }
 
+pub(super) async fn commit_records_for_track_prefix_pool(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    prefix: &str,
+) -> Result<Vec<CommitRecord>> {
+    let rows = sqlx::query(
+        r#"SELECT hash, track_id, parent_hash, tree_hash, manifest_schema_version,
+                  lifecycle, event_id, created_at, message, author
+           FROM track_vcs_commits
+           WHERE track_id = ?1
+             AND substr(hash, 1, length(?2)) = ?2
+           ORDER BY hash
+           LIMIT 2"#,
+    )
+    .bind(track_id.as_str())
+    .bind(prefix)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(commit_record_from_row).collect()
+}
+
 pub(super) async fn load_commit_record_for_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,

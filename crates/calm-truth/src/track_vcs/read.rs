@@ -5,8 +5,8 @@ use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::store::{
-    commit_records_for_track_pool, load_blob_bytes_pool, load_commit_record_pool,
-    load_tree_object_pool, normalize_path,
+    commit_records_for_track_pool, commit_records_for_track_prefix_pool, load_blob_bytes_pool,
+    load_commit_record_pool, load_tree_object_pool, normalize_path,
 };
 use super::{
     CommitHash, CommitLog, CommitLogEntry, CommitRecord, DEFAULT_PATCH_MAX_LINES, DiffEntry,
@@ -80,6 +80,25 @@ pub async fn commit_record(pool: &SqlitePool, commit_hash: &str) -> Result<Optio
     load_commit_record_pool(pool, commit_hash).await
 }
 
+pub async fn resolve_commit_prefix(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    prefix: &str,
+) -> Result<Option<CommitRecord>> {
+    if prefix.is_empty() {
+        return Err(CalmError::BadRequest(
+            "track-vcs commit prefix must not be empty",
+        ));
+    }
+    let mut matches = commit_records_for_track_prefix_pool(pool, track_id, prefix).await?;
+    if matches.len() > 1 {
+        return Err(CalmError::BadRequest(format!(
+            "track-vcs commit prefix {prefix} is ambiguous"
+        )));
+    }
+    Ok(matches.pop())
+}
+
 pub async fn commit_belongs_to_track(
     pool: &SqlitePool,
     track_id: &TrackId,
@@ -96,10 +115,11 @@ pub async fn log(
     track_id: &TrackId,
     path: Option<&str>,
     limit: usize,
+    include_empty: bool,
 ) -> Result<CommitLog> {
     let limit = limit.clamp(1, 200);
     let normalized = path.map(normalize_path).filter(|path| !path.is_empty());
-    let scan_limit = if normalized.is_some() {
+    let scan_limit = if normalized.is_some() || !include_empty {
         LOG_FILTER_SCAN_LIMIT
     } else {
         limit
@@ -112,6 +132,9 @@ pub async fn log(
     for record in records.into_iter().take(scan_limit) {
         examined += 1;
         let changed_paths = changed_paths_for_commit(pool, &record).await?;
+        if changed_paths.is_empty() && !include_empty {
+            continue;
+        }
         if let Some(path) = normalized.as_deref()
             && !changed_paths
                 .iter()

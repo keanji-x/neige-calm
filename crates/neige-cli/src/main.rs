@@ -167,13 +167,21 @@ async fn call_track_tool(socket: &str, token: &str, cli: &Cli) -> Result<Value, 
                 "path": path,
             }),
         ),
-        Command::Log { path, limit, .. } => {
+        Command::Log {
+            path,
+            limit,
+            include_empty,
+            ..
+        } => {
             let mut args = serde_json::Map::new();
             if let Some(path) = path {
                 args.insert("path".into(), Value::String(path.clone()));
             }
             if let Some(limit) = limit {
                 args.insert("limit".into(), Value::from(*limit));
+            }
+            if *include_empty {
+                args.insert("include_empty".into(), Value::Bool(true));
             }
             (TOOL_TRACK_LOG, Value::Object(args))
         }
@@ -790,9 +798,11 @@ impl Cli {
             "log" => {
                 let mut path: Option<String> = None;
                 let mut limit: Option<u64> = None;
+                let mut include_empty = false;
                 while let Some(arg) = iter.next() {
                     match arg.as_str() {
                         "--json" => json = true,
+                        "--include-empty" => include_empty = true,
                         "--limit" => {
                             let value = iter.next().ok_or_else(|| {
                                 AppError::usage("log requires a value after --limit", json)
@@ -824,6 +834,7 @@ impl Cli {
                     command: Command::Log {
                         path,
                         limit,
+                        include_empty,
                         json_output: json,
                     },
                 })
@@ -1126,6 +1137,7 @@ enum Command {
     Log {
         path: Option<String>,
         limit: Option<u64>,
+        include_empty: bool,
         json_output: bool,
     },
     TaskCompleted {
@@ -1183,7 +1195,7 @@ impl AppError {
             json,
             json!({
                 "kind": "usage",
-                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text> | neige track-gc --track-id <id> [--keep N] [--dry-run] --force | neige vacuum --force",
+                "usage": "neige [--json] ls [path] | neige cat <path> | neige state | neige diff <from> [to] [path] | neige cat-at <commit> <path> | neige log [path] [--limit N] [--include-empty] | neige task-completed --idempotency-key K [--result <json-or-text>] [--artifact <path>]... | neige task-failed --idempotency-key K --reason <text> | neige track-gc --track-id <id> [--keep N] [--dry-run] --force | neige vacuum --force",
             }),
         )
     }
@@ -1331,7 +1343,7 @@ mod tests {
     #[test]
     fn log_parses_path_and_limit() {
         let cli = Cli::parse(
-            ["log", "report.md", "--limit", "7"]
+            ["log", "report.md", "--limit", "7", "--include-empty"]
                 .into_iter()
                 .map(String::from),
         )
@@ -1340,10 +1352,12 @@ mod tests {
             Command::Log {
                 path,
                 limit,
+                include_empty,
                 json_output,
             } => {
                 assert_eq!(path.as_deref(), Some("report.md"));
                 assert_eq!(limit, Some(7));
+                assert!(include_empty);
                 assert!(!json_output);
             }
             _ => panic!("expected log"),

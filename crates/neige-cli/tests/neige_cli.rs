@@ -507,14 +507,18 @@ async fn log_passthrough_renders_commit_lines() {
     let tmp = calm_test_sockets::socket_dir("cli");
     let socket_path: PathBuf = calm_test_sockets::socket_path(tmp.path(), "kernel.sock");
     let listener = listen(&socket_path);
-    let child = spawn_neige(&socket_path, &["log", "report.md", "--limit", "3"]).await;
+    let child = spawn_neige(
+        &socket_path,
+        &["log", "report.md", "--limit", "3", "--include-empty"],
+    )
+    .await;
 
     let (mut reader, mut wr) = accept_initialized(listener).await;
     let call = read_frame(&mut reader).await;
     assert_eq!(call["params"]["name"], json!("calm.track.log"));
     assert_eq!(
         call["params"]["arguments"],
-        json!({ "path": "report.md", "limit": 3 })
+        json!({ "path": "report.md", "limit": 3, "include_empty": true })
     );
     write_frame(
         &mut wr,

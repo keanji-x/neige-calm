@@ -41,7 +41,7 @@ pub use gc::{
 };
 pub use read::{
     cat_at, commit_belongs_to_track, commit_record, diff, diff_with_patches, log,
-    since_last_turn_block,
+    resolve_commit_prefix, since_last_turn_block,
 };
 pub use snapshot::{backfill_existing_tracks, snapshot_tree};
 pub use store::{canonical_json_bytes, head, put_blob, tree_at};
