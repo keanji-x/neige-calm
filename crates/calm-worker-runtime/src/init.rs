@@ -104,34 +104,110 @@ fn launch(message: StartMessage) -> Result<()> {
         return Err(std::io::Error::last_os_error().into());
     }
     drop(null);
-    // waitpid(-1) also reaps adopted background children. This process exits
-    // when the provider exits; Linux then terminates all remaining descendants.
+    // The provider is one specific child. The namespace init also owns adopted
+    // direct children, inventoried below; neither path consumes arbitrary waits.
     drop(child);
     loop {
-        let mut status = 0;
-        let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
-        if pid < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error.into());
-        }
-        if pid == provider_pid {
-            let code = if libc::WIFEXITED(status) {
-                libc::WEXITSTATUS(status)
-            } else {
-                128 + libc::WTERMSIG(status)
-            };
+        if let Some(code) = poll_owned_child(provider_pid)? {
             std::process::exit(code);
         }
+        reap_adopted_children(provider_pid)?;
+        // No blocking provider wait: adopted zombies are collected while it is
+        // still active. One private-proc inventory per tick, at most 50Hz idle.
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+fn reap_adopted_children(provider_pid: i32) -> Result<()> {
+    if std::process::id() != 1 {
+        return Err(Error::Evidence(
+            "child inventory requires namespace init".into(),
+        ));
+    }
+    let children = std::fs::read_to_string("/proc/self/task/1/children")?;
+    for value in children.split_whitespace() {
+        let pid = value
+            .parse::<i32>()
+            .map_err(|_| Error::Evidence("invalid direct child PID".into()))?;
+        if pid == provider_pid {
+            continue;
+        }
+        match poll_owned_child(pid) {
+            Ok(_) => {}
+            Err(Error::Io(error)) if error.raw_os_error() == Some(libc::ECHILD) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// A positive, caller-owned child only; WNOHANG cannot stall orphan collection.
+fn poll_owned_child(pid: i32) -> Result<Option<i32>> {
+    if pid <= 1 {
+        return Err(Error::Evidence("specific child PID required".into()));
+    }
+    let mut status = 0;
+    let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    if result == 0 {
+        return Ok(None);
+    }
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::Interrupted {
+            Ok(None)
+        } else {
+            Err(error.into())
+        };
+    }
+    if libc::WIFEXITED(status) {
+        return Ok(Some(libc::WEXITSTATUS(status)));
+    }
+    if libc::WIFSIGNALED(status) {
+        return Ok(Some(128 + libc::WTERMSIG(status)));
+    }
+    Err(Error::Evidence(
+        "child wait returned nonterminal status".into(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn boundary_specific_child_wait_preserves_exit_codes_and_sibling_ownership() {
+        // Only an async-signal-safe immediate exit runs in the forked child.
+        // The parent explicitly owns/reaps this PID through the production helper.
+        let selected = unsafe { libc::fork() };
+        assert!(selected >= 0);
+        if selected == 0 {
+            unsafe {
+                libc::_exit(37);
+            }
+        }
+        let mut sibling = Command::new("/bin/sh")
+            .env_clear()
+            .args(["-c", "exit 41"])
+            .spawn()
+            .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let result = loop {
+            if let Some(code) = poll_owned_child(selected).unwrap() {
+                break code;
+            }
+            if std::time::Instant::now() >= until {
+                unsafe {
+                    libc::kill(selected, libc::SIGKILL);
+                    libc::waitpid(selected, std::ptr::null_mut(), 0);
+                }
+                panic!("specific child did not exit");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(result, 37);
+        assert_eq!(sibling.wait().unwrap().code(), Some(41));
+    }
 
     fn packet(token: &str) -> Vec<u8> {
         let message = StartMessage {

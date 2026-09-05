@@ -29,6 +29,10 @@ Linux terminates and waits for the rest of a PID namespace before its init can
 be reaped; session/process-group changes do not escape this ownership. The host
 launcher owns bwrap; a small init reaps adopted children and exits when the
 provider child exits. No systemd/cgroup manager or shared daemon is required.
+The init polls its specific provider PID and the direct-child inventory from its
+private proc mount using nonblocking per-PID waits. Adopted zombies are collected
+while the provider runs; the provider's exit code is preserved. No process-wide
+wait or supervisor wait-status stealing is used.
 The launcher survives ordinary caller exit. Launcher loss triggers bwrap parent
 death cleanup; a subsequent caller must still reconcile actual init evidence.
 

@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn boundary_init_reaps_adopted_orphans_while_provider_keeps_running() {
+    let mut f = Fixture::new();
+    f.config.args.clear();
+    let handle = f.prepare();
+    let mut client = f.runtime.connect_stdio(&handle).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    f.runtime.start(&handle).unwrap();
+    client.write_all(b"orphan-burst\n").unwrap();
+    let mut reader = BufReader::new(client);
+    let mut response = String::new();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(response, "orphans created\n");
+    let children_path = format!(
+        "/proc/{}/task/{}/children",
+        handle.init.pid, handle.init.pid
+    );
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let children = std::fs::read_to_string(&children_path).unwrap();
+        if children.split_whitespace().count() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "adopted children were not reaped: {children}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    reader.get_mut().write_all(b"still responsive\n").unwrap();
+    response.clear();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(response, "still responsive\n");
+    assert_eq!(f.runtime.probe(&handle).unwrap(), BoundaryState::Running);
+}
+
+#[test]
 fn boundary_closed_prepare_replay_survives_removed_launch_sources() {
     let mut f = Fixture::new();
     let provider = f._root.path().join("old-provider");

@@ -34,6 +34,27 @@ fn main() {
     }
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
+        if line == "orphan-burst" {
+            for _ in 0..24 {
+                unsafe {
+                    let middle = libc::fork();
+                    assert!(middle >= 0);
+                    if middle == 0 {
+                        let orphan = libc::fork();
+                        assert!(orphan >= 0);
+                        if orphan == 0 {
+                            libc::usleep(20_000);
+                        }
+                        libc::_exit(0);
+                    }
+                    let mut status = 0;
+                    assert_eq!(libc::waitpid(middle, &mut status, 0), middle);
+                }
+            }
+            println!("orphans created");
+            std::io::stdout().flush().unwrap();
+            continue;
+        }
         let mut requests = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
