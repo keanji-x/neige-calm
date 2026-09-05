@@ -48,11 +48,23 @@
 //! `a_message_less_create_writes_no_binding_row`).
 //!
 //! Two further arms are **not covered here, and no test pretends to cover
-//! them**: the in-flight duplicate and the cross-process primary-key race.
-//! `plan_first_message` takes an in-process claim before either lookup and
-//! holds it through the mint, so two same-key creates inside one process
-//! serialize and the second takes the resuming arm without ever reaching the
-//! primary key. Both need a cross-instance harness.
+//! them**: the in-flight duplicate and the primary-key race.
+//! `plan_first_message` takes a claim before either lookup and holds it through
+//! the mint, so two same-key creates served by **one `AppState`** serialize and
+//! the second takes the resuming arm without ever reaching the primary key.
+//!
+//! #1430 narrowed what that costs to close — this used to end "Both need a
+//! cross-instance harness", which was too strong in two ways, both measured.
+//! The serializing claim is `conversation_first_message_locks`, a
+//! **per-`AppState`** field, not a per-process one: two `AppState`s over one
+//! on-disk SQLite file, in **one process**, already race, and no second OS
+//! process is required. And the `Stuck` half needs no second instance at all —
+//! `retryable_operation_key` stops on any non-`Failed` phase, so an
+//! `operations` row inserted directly under the derived key drives it here, the
+//! way `a_binding_miss_with_an_occupied_key_mints_nothing` below already does.
+//! What is left needing two instances is the primary-key race and a *live*
+//! in-flight duplicate; see `docs/design-1384-track-idempotency.md` §9 gaps 2,
+//! 3 and 12.
 
 #![cfg(unix)]
 

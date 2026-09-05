@@ -633,19 +633,36 @@ const CLAIM_STAGING_PREFIX: &str = ".neige-claim-";
 /// poisoned the create's `Idempotency-Key`; what this version leaves is a
 /// strict subset of what it replaced.
 ///
-/// # Two processes, one track
+/// # Two claimers, one track
 ///
-/// The staging name is shared per track, so a second process entering this
-/// function can `remove_dir_all` a first one's staging mid-flight. The loser
-/// of that race gets a returned `Internal` error with `<path>` still empty, so
-/// the next call succeeds: `remove_dir_all` is called on `staging` and nowhere
-/// else in this module, and `<path>` is not a `remove_dir_all` target here at
-/// all. In one process the per-path mutex makes the interleaving unreachable;
-/// across processes it is untested ground, and
-/// `docs/design-1384-track-idempotency.md` §9 KNOWN GAP 3 already records the
-/// cross-process race as untested. Both windows were driven once through
-/// `claim_crash_point` during #1427's review; **no test pins them**, so treat
-/// this paragraph as a measurement, not as a guarantee.
+/// The staging name is shared per track, so a second claimer entering this
+/// function can `remove_dir_all` a first one's staging mid-flight. The per-path
+/// mutex in [`materialize_managed_workspace_inner`] makes that unreachable
+/// within one instance; a second **process** holds no such mutex.
+///
+/// #1430 drove both interleavings through `claim_crash_point` and **pinned
+/// them** (`tests.rs`), which corrected what this paragraph used to claim:
+///
+/// * If the peer wipes a staging that is still being assembled, the loser's
+///   marker write fails and it returns `Internal` having damaged nothing —
+///   `remove_dir_all` is called on `staging` and nowhere else in this module,
+///   and `<path>` is never a `remove_dir_all` target here. What `<path>` holds
+///   afterwards is the *winner's* correctly marked workspace, so the next
+///   materialization succeeds
+///   (`a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker`).
+/// * If the peer wipes a staging that is **fully assembled** — marker written,
+///   both fsyncs done — and `create_dir_all` puts a bare `.git` back under the
+///   same name, the first claimer renames *that* onto `<path>` and returns
+///   `Ok`. `<path>` is then non-empty and unmarked: the brick state this
+///   function exists to abolish, reached through a peer instead of through
+///   process death
+///   (`a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`).
+///   This is a **known defect**, recorded as
+///   `docs/design-1384-track-idempotency.md` §9 KNOWN GAP 13; the test
+///   characterizes it and must be inverted by the fix, not deleted.
+///
+/// So: crash-atomic against process death (#1427), **not** atomic against a
+/// concurrent second claimer on the same staging name.
 fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         CalmError::Internal(format!(

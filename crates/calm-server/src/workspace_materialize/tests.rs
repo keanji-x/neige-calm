@@ -1069,6 +1069,7 @@ thread_local! {
 /// panicking: a panic raised while the `RefCell` is borrowed would abort the
 /// process during unwind when the guard below tries to clear the slot.
 pub(super) fn claim_crash_point(path: &Path) {
+    claim_park_point();
     let sink = CRASH_OBSERVER.with(|slot| slot.borrow().clone());
     let Some(sink) = sink else { return };
     if let Err(violation) = workspace_dir_is_empty_or_ours(path) {
@@ -1222,5 +1223,279 @@ fn a_dot_git_only_directory_without_a_marker_is_still_refused() {
     assert!(
         error.to_string().contains("refusing to reuse"),
         "unexpected error: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1430 — two claims interleaved on one workspace path.
+// ---------------------------------------------------------------------------
+
+/// Bound on **every** wait in the interleaving tests below, including the park
+/// inside [`claim_crash_point`] itself.
+///
+/// Nothing here waits forever, by construction: a parked thread that is never
+/// released resumes on its own after this bound and runs to completion, so a
+/// broken rendezvous costs at most `PARK_BOUND` per wait and then fails on the
+/// test's own assertions. Every `join()` below is bounded for the same reason
+/// — a spawned thread can only ever block on the park, which is bounded. Worst
+/// case per test is three of these waits (hand-back, arrival, release), ~60 s;
+/// measured normal run time is under a second. A test that wedges a runner is
+/// worse than the gap it closes.
+const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A rendezvous armed on **one thread**, which parks that thread at the `at`-th
+/// call of [`claim_crash_point`] in [`super::claim_owner_marker`].
+///
+/// Thread-local for the same reason [`CRASH_OBSERVER`] is: the seam is a plain
+/// function call inside the claim, and each racing thread has to be steered
+/// independently.
+struct ClaimPark {
+    at: usize,
+    seen: usize,
+    arrived: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+thread_local! {
+    static CLAIM_PARK: std::cell::RefCell<Option<ClaimPark>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arm the calling thread to park at its `at`-th crash point. Returns the
+/// release handle and the arrival signal for the controlling thread.
+fn arm_park(at: usize) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    CLAIM_PARK.with(|slot| {
+        *slot.borrow_mut() = Some(ClaimPark {
+            at,
+            seen: 0,
+            arrived: arrived_tx,
+            release: release_rx,
+        })
+    });
+    (release_tx, arrived_rx)
+}
+
+/// Called by [`claim_crash_point`] before it observes anything. The armed
+/// rendezvous is `take`n when it fires, so the borrow is released before the
+/// wait and a thread parks at most once per arming.
+fn claim_park_point() {
+    let park = CLAIM_PARK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let park = slot.as_mut()?;
+        park.seen += 1;
+        if park.seen == park.at {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    let Some(park) = park else { return };
+    let _ = park.arrived.send(());
+    // Bounded: on timeout the thread simply carries on. See `PARK_BOUND`.
+    let _ = park.release.recv_timeout(PARK_BOUND);
+}
+
+/// A second claimer for `path`, parked at its `at`-th crash point.
+///
+/// It calls the **real** [`super::claim_owner_marker`] — the per-path mutex
+/// that would serialize two claims lives in the *caller*
+/// ([`super::materialize_managed_workspace_inner`]), so calling the claim
+/// directly is exactly the situation a second **process** is in: no shared
+/// mutex, one shared staging path. Nothing about the claim is restated here.
+fn spawn_parked_claim(
+    path: std::path::PathBuf,
+    at: usize,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+    std::thread::JoinHandle<crate::error::Result<()>>,
+) {
+    let (handback_tx, handback_rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        handback_tx
+            .send(arm_park(at))
+            .expect("hand the rendezvous back");
+        super::claim_owner_marker(&path, TRACK)
+    });
+    let (release_tx, arrived_rx) = handback_rx
+        .recv_timeout(PARK_BOUND)
+        .expect("the claimer thread must hand its rendezvous back");
+    (release_tx, arrived_rx, handle)
+}
+
+fn staging_path(path: &Path) -> std::path::PathBuf {
+    path.parent()
+        .expect("the workspace path has a parent")
+        .join(format!("{}{TRACK}", super::CLAIM_STAGING_PREFIX))
+}
+
+/// **#1430 — the benign half of the two-claimer race, as measured.**
+///
+/// A second claimer entering `claim_owner_marker` while the first sits between
+/// `create_dir_all(<staging>/.git)` and the marker write wipes that staging out
+/// from under it and publishes its own. The first then fails **closed** — it
+/// gets a returned `Internal` naming the vanished staging file — and what it
+/// leaves behind is the *winner's* correctly marked workspace, so the next
+/// materialization takes the "ours, for this track" branch and succeeds.
+///
+/// Measured, not assumed: the loser's error is
+/// `create ownership marker <staging>/.git/neige-workspace: No such file or
+/// directory`.
+///
+/// Mutation that must redden it: drop the `write_marker_file` call from
+/// `claim_owner_marker` (publish the staging directory without a marker). The
+/// winner then publishes an unmarked `<path>` and the marker assertion here
+/// fires.
+#[test]
+fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, path) = sandbox(&tmp);
+    std::fs::create_dir_all(&path).unwrap();
+
+    // The loser: parked right after it has created its staging `.git`, before
+    // it writes the marker into it.
+    let (release, arrived, loser) = spawn_parked_claim(path.clone(), 1);
+    arrived
+        .recv_timeout(PARK_BOUND)
+        .expect("the loser must reach its first crash point");
+
+    // The winner runs the whole claim on this thread, wiping the loser's
+    // staging on its way in and publishing its own with one rename.
+    super::claim_owner_marker(&path, TRACK).expect("the winner publishes its claim");
+    assert_eq!(
+        std::fs::read_to_string(super::owner_marker_path(&path))
+            .expect("the winner's marker")
+            .trim(),
+        TRACK,
+        "premise: the winner published a correctly marked workspace"
+    );
+
+    let _ = release.send(());
+    let error = loser
+        .join()
+        .expect("the loser thread must not panic")
+        .expect_err(
+            "the loser's staging was removed under it, so the claim must fail rather than \
+             publish something half-built",
+        );
+    assert!(
+        error.to_string().contains("create ownership marker"),
+        "the refusal must come from the vanished staging marker, not from something \
+         incidental: {error}"
+    );
+
+    // The post-state is the whole point: the loser damaged nothing.
+    workspace_dir_is_empty_or_ours(&path).expect(
+        "the fence must still accept the workspace after the losing claim returned — \
+         `remove_dir_all` is called on the staging directory and never on `<path>`",
+    );
+    materialize(&root, &path).expect(
+        "and the next materialization must succeed: it reads the winner's marker and takes \
+         the `Some(owner) if owner == track_id` branch",
+    );
+    assert!(
+        head_resolves(&path),
+        "the recovered workspace is a real repository"
+    );
+}
+
+/// **#1430 — the half the source comment did not measure, and it is a defect.**
+///
+/// `claim_owner_marker`'s `# Two processes, one track` paragraph says the loser
+/// of the staging race "gets a returned `Internal` error with `<path>` still
+/// empty, so the next call succeeds". That describes the interleaving pinned
+/// above. It is not the only one.
+///
+/// Park a claimer at the point where its staging is **fully assembled** —
+/// marker written, both directories fsynced — and let a second claimer in. The
+/// second one's `remove_dir_all(<staging>)` deletes that assembled claim and
+/// `create_dir_all` puts a **bare, unmarked** `.git` back under the same name.
+/// The first claimer then resumes and renames *that* onto `<path>`: it returns
+/// **`Ok`**, and `<path>` is left non-empty and unmarked — precisely the brick
+/// state #1427 exists to abolish, and the one that poisons the create's
+/// `Idempotency-Key` forever (`materialize_managed_workspace_inner`'s
+/// `None if dir_has_entries` arm).
+///
+/// So the claim is crash-atomic against process **death**, which is what #1427
+/// pinned, but not against a concurrent second claimer on the same staging
+/// name. This test characterizes today's behaviour so the window cannot close
+/// silently or reopen unnoticed; **when it is fixed, this test must be
+/// inverted, not deleted** — see `docs/design-1384-track-idempotency.md` §9
+/// KNOWN GAP 12.
+///
+/// Mutation that must redden it: remove the `NotFound`-tolerant
+/// `remove_dir_all(&staging)` from `claim_owner_marker`. The second claimer
+/// then leaves the first one's assembled staging alone, the rename publishes a
+/// *marked* workspace, and the assertions below fire.
+#[test]
+fn a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, path) = sandbox(&tmp);
+    std::fs::create_dir_all(&path).unwrap();
+    let staging = staging_path(&path);
+
+    // Claimer 1: parked after the fsyncs, with a complete claim staged and the
+    // publishing rename still ahead of it.
+    let (release_one, arrived_one, publisher) = spawn_parked_claim(path.clone(), 3);
+    arrived_one
+        .recv_timeout(PARK_BOUND)
+        .expect("claimer 1 must reach the crash point before the rename");
+    assert_eq!(
+        std::fs::read_to_string(staging.join(".git").join(super::OWNER_MARKER))
+            .expect("claimer 1's staged marker")
+            .trim(),
+        TRACK,
+        "premise: claimer 1 staged a complete, marked claim"
+    );
+
+    // Claimer 2: enters, wipes that staging, recreates a bare one, parks.
+    let (release_two, arrived_two, wiper) = spawn_parked_claim(path.clone(), 1);
+    arrived_two
+        .recv_timeout(PARK_BOUND)
+        .expect("claimer 2 must reach its first crash point");
+    assert!(
+        !staging.join(".git").join(super::OWNER_MARKER).exists(),
+        "premise: claimer 2's `remove_dir_all` took claimer 1's staged marker with it"
+    );
+
+    // Claimer 1 publishes what is now claimer 2's bare staging directory.
+    let _ = release_one.send(());
+    publisher
+        .join()
+        .expect("claimer 1 must not panic")
+        .expect("measured: the publishing rename succeeds and the claim reports success");
+
+    let violation = workspace_dir_is_empty_or_ours(&path).expect_err(
+        "measured: `<path>` is left non-empty and unmarked. If this now holds, the race was \
+         fixed — invert this test rather than deleting it",
+    );
+    assert!(
+        violation.contains("no readable marker"),
+        "the violation must be the unmarked-non-empty one: {violation}"
+    );
+
+    let _ = release_two.send(());
+    let error = wiper
+        .join()
+        .expect("claimer 2 must not panic")
+        .expect_err("claimer 2's staging was renamed away, so its marker write must fail");
+    assert!(
+        error.to_string().contains("create ownership marker"),
+        "unexpected error: {error}"
+    );
+
+    // The product-level consequence, which is what makes this worth pinning:
+    // the fence refuses this workspace from here on, for every key.
+    let refusal = materialize(&root, &path)
+        .expect_err("the fence must refuse the unmarked directory the race published");
+    assert!(
+        refusal
+            .to_string()
+            .contains("is not empty and carries no neige ownership marker"),
+        "unexpected refusal: {refusal}"
     );
 }
