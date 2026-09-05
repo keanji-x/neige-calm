@@ -44,6 +44,14 @@ const ASSISTANT_CARD = { ...PLANNER_CARD, id: 'conv-assistant-1', title: null, p
 /* A worker card, so "the CARDS panel lists what has a surface" is asserted
    against a track that really has one thing to list. */
 const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', payload: {}, sort: 3, updated_at: 4 };
+const cardStatusOverlay = (cardId: string, state: 'AwaitingInput' | 'Errored', updatedAt: number) => ({
+  id: `status-${cardId}`, plugin_id: 'kernel', entity_kind: 'card', entity_id: cardId,
+  kind: 'status', payload: { state }, updated_at: updatedAt,
+});
+const trackNeedsInputOverlay = {
+  id: 'needs-input', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1',
+  kind: 'any_card_needs_input', payload: { value: true }, updated_at: 3,
+};
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
@@ -236,6 +244,90 @@ describe('track conversations', () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await screen.findByRole('button', { name: 'Conversation Assistant' });
+  });
+
+  it('opens the planner conversation from the track input request', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [trackNeedsInputOverlay, cardStatusOverlay(PLANNER_CARD.id, 'AwaitingInput', 4)],
+        })
+      : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Planner notification' }));
+    expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    expect(screen.getByRole('region', { name: 'Notifications' })
+      .getAttribute('data-nc-notification-mode')).toBe('compact');
+    expect(screen.getByRole('region', { name: 'Notifications' }).querySelector('strong')).toBeNull();
+  });
+
+  it('opens the requesting worker card instead of the Planner conversation', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [trackNeedsInputOverlay, cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 4)],
+        })
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Worker notification' }));
+    await waitFor(() => expect(window.location.search).toContain('card=card-worker'));
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-worker"]')).toBeTruthy();
+  });
+
+  it('opens an Assistant input notification in its conversation instead of treating it as a worker card', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [trackNeedsInputOverlay, cardStatusOverlay(ASSISTANT_CARD.id, 'AwaitingInput', 4)],
+        })
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Assistant notification' }));
+    expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    expect(window.location.search).not.toContain('card=');
+  });
+
+  it('lists simultaneous Planner and Worker requests with a truthful count', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [
+            trackNeedsInputOverlay,
+            cardStatusOverlay(PLANNER_CARD.id, 'AwaitingInput', 4),
+            cardStatusOverlay(WORKER_CARD.id, 'Errored', 5),
+          ],
+        })
+      : undefined);
+
+    const notice = await screen.findByRole('region', { name: 'Notifications' });
+    expect(within(notice).getByText('2 items need attention')).toBeTruthy();
+    expect(within(notice).getByText('Planner')).toBeTruthy();
+    expect(within(notice).getByText('Worker')).toBeTruthy();
+    expect(within(notice).getByText('Stopped with an error and needs attention.')).toBeTruthy();
+    fireEvent.click(within(notice).getByRole('button', { name: 'Collapse notifications' }));
+    expect(await screen.findByRole('button', { name: 'Open 2 notifications' })).toBeTruthy();
+  });
+
+  it('ignores plugin-authored overlays that imitate the kernel status kind', async () => {
+    setup((request) => request.path === '/api/tracks/w1'
+      ? ok({
+          track: TRACK, can_resume: false,
+          cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
+          overlays: [
+            trackNeedsInputOverlay,
+            { ...cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5), plugin_id: 'third-party' },
+          ],
+        })
+      : undefined);
+
+    await screen.findByRole('button', { name: 'Rename track' });
+    expect(screen.queryByRole('region', { name: 'Notifications' })).toBeNull();
   });
 
   it('keeps the name derived from confirmed turns after the drawer closes', async () => {

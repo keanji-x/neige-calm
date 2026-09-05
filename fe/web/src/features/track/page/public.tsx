@@ -18,6 +18,7 @@ import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -63,6 +64,14 @@ import styles from './page.module.css';
  */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
+export type TrackInputNotification = Readonly<{
+  cardId: string;
+  source: string;
+  message: string;
+  state: 'awaiting-input' | 'errored';
+  updatedAt: number;
+}>;
+
 export type TrackPageProps = Readonly<{
   track: Track;
   cards: readonly CardWire[];
@@ -84,6 +93,12 @@ export type TrackPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
+  /** Actionable card-scoped requests, projected by the route from status overlays. */
+  inputNotifications?: readonly TrackInputNotification[];
+  onOpenInputNotification?: (cardId: string) => void;
+  /** The route's conversation drawer is open. Input notifications compact
+   *  beside it instead of covering its composer. */
+  conversationOpen?: boolean;
   /** Starts Chat from the mobile Report's dedicated floating action. */
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
@@ -148,9 +163,42 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
   return found;
 }
 
+function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
+  if (tasks.length === 0) return null;
+  let active = 0;
+  let queued = 0;
+  let waiting = 0;
+  let failed = 0;
+  let canceled = 0;
+  let done = 0;
+  for (const task of tasks) {
+    if (task.status === 'dispatched' || task.status === 'running' || task.status === 'verifying') {
+      active += 1;
+    } else if (task.status === 'failed') {
+      failed += 1;
+    } else if (task.status === 'done') {
+      done += 1;
+    } else if (task.status === 'canceled') {
+      canceled += 1;
+    } else if (task.pendingReason?.kind === 'budgetQueued') {
+      queued += 1;
+    } else if (task.status === 'pending' || task.pendingReason !== null) {
+      waiting += 1;
+    }
+  }
+  const parts: string[] = [];
+  if (active > 0) parts.push(`${active} active`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (queued > 0) parts.push(`${queued} queued`);
+  if (waiting > 0) parts.push(`${waiting} waiting`);
+  if (canceled > 0) parts.push(`${canceled} canceled`);
+  if (done > 0) parts.push(`${done} done`);
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
-  onStartConversation,
+  onStartConversation, conversationOpen = false, inputNotifications = [], onOpenInputNotification,
   cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
@@ -159,7 +207,15 @@ export function TrackPage({
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
   const resumeFeedback = useOperationFeedback();
   const [resumePending, setResumePending] = useState(false);
+  const notificationSignature = inputNotifications
+    .map(({ cardId, state, updatedAt }) => `${cardId}:${state}:${updatedAt}`)
+    .join('|');
+  const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
+  const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
   const resumePendingRef = useRef(false);
+  const previousNotificationSignatureRef = useRef('');
+  const previousNotificationCountRef = useRef(0);
+  const previousConversationOpenRef = useRef(conversationOpen);
   useEffect(() => {
     // The PATCH promise settles before its invalidation refetch. Keep Resume
     // fenced after a successful response until the authoritative capability
@@ -168,8 +224,23 @@ export function TrackPage({
     resumePendingRef.current = false;
     setResumePending(false);
   }, [canResumeTrack]);
+  useEffect(() => {
+    if (notificationSignature === previousNotificationSignatureRef.current) return;
+    const count = inputNotifications.length;
+    setNotificationAnnouncement(count > 0
+      ? `${count} ${count === 1 ? 'notification needs' : 'notifications need'} your attention.`
+      : (previousNotificationCountRef.current > 0 ? 'All notifications cleared.' : ''));
+    if (count > 0 && !conversationOpen) setNoticeExpanded(true);
+    previousNotificationSignatureRef.current = notificationSignature;
+    previousNotificationCountRef.current = count;
+  }, [conversationOpen, inputNotifications.length, notificationSignature]);
+  useEffect(() => {
+    if (conversationOpen && !previousConversationOpenRef.current) setNoticeExpanded(false);
+    previousConversationOpenRef.current = conversationOpen;
+  }, [conversationOpen]);
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
+  const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
   /** The drill-down page's entrance animation — a *panel* fact, not a card one:
    *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
@@ -231,7 +302,13 @@ export function TrackPage({
    * let this page's navigation decide the view model's contents.
    */
   const panelView = deriveTrackPageView({ cards, tasks });
-  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
+  const desktopPainter = makeDesktopPainter({
+    onOpenCard,
+    onOpenTask,
+    onDeleteCard,
+    cardsAction,
+    taskSummary: taskInventorySummary(tasks),
+  });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
@@ -426,12 +503,6 @@ export function TrackPage({
             </div>
           </>
         }
-        meta={track.anyCardNeedsInput ? (
-          <span className={styles.needsInput}>
-            <span className={styles.needsInputDot} aria-hidden="true" />
-            Needs input
-          </span>
-        ) : undefined}
         actions={(
           <span className={styles.headerActions}>
             <AstryxDropdownMenu
@@ -694,6 +765,80 @@ export function TrackPage({
           icon={<Icon name="chat" />}
           onClick={onStartConversation}
         />
+      )}
+
+      <VisuallyHidden
+        role="status"
+        aria-label="Input notifications"
+        aria-live="polite"
+        aria-atomic="true"
+      >{notificationAnnouncement}</VisuallyHidden>
+
+      {inputNotifications.length > 0 && (
+        <aside
+          className={`${styles.needsInputNotice} ${noticePanelOpen
+            ? styles.needsInputNoticeExpanded
+            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}`}
+          data-nc-needs-input-notice=""
+          data-nc-notification-mode={noticePanelOpen ? 'expanded' : 'compact'}
+          role="region"
+          aria-label="Notifications"
+        >
+          {noticePanelOpen ? (
+            <>
+              <span className={styles.needsInputNoticeHeader}>
+                <span className={styles.needsInputNoticeIcon}><Icon name="notification" /></span>
+                <span className={styles.needsInputNoticeCopy}>
+                  <strong className={styles.needsInputNoticeTitle}>Notifications</strong>
+                  <span className={styles.needsInputNoticeDetail}>
+                    {inputNotifications.length} {inputNotifications.length === 1 ? 'item needs' : 'items need'} attention
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  className={styles.needsInputCollapse}
+                  aria-label="Collapse notifications"
+                  title="Collapse notifications"
+                  onClick={() => setNoticeExpanded(false)}
+                ><Icon name="chevron-right" size="sm" /></button>
+              </span>
+              <ul className={styles.needsInputNoticeList}>
+                {inputNotifications.map((notification) => (
+                  <li
+                    key={notification.cardId}
+                    className={styles.needsInputNoticeItem}
+                    data-nc-notification-state={notification.state}
+                  >
+                    <span className={styles.needsInputNoticeCopy}>
+                      <strong className={styles.needsInputNoticeSource}>{notification.source}</strong>
+                      <span className={styles.needsInputNoticeDetail}>{notification.message}</span>
+                    </span>
+                    {onOpenInputNotification !== undefined && (
+                      <button
+                        type="button"
+                        className={styles.needsInputAction}
+                        aria-label={`Review ${notification.source} notification`}
+                        onClick={() => onOpenInputNotification(notification.cardId)}
+                      >Review</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={styles.needsInputLauncher}
+              data-nc-notification-launcher=""
+              aria-label={`Open ${inputNotifications.length} ${inputNotifications.length === 1 ? 'notification' : 'notifications'}`}
+              title="Open notifications"
+              onClick={() => setNoticeExpanded(true)}
+            >
+              <Icon name="notification" />
+              <span className={styles.needsInputIndicator} aria-hidden="true">{inputNotifications.length}</span>
+            </button>
+          )}
+        </aside>
       )}
 
       <ConfirmDialog

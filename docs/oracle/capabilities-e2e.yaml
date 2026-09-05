@@ -4920,7 +4920,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:1954-1963
+  source: fe/web/src/app/router/public.tsx:1956-1965
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:529-556
   owner_slice: features/track/create
   intentional_omission: false

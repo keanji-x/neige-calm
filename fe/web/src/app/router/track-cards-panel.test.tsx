@@ -380,8 +380,8 @@ describe('track route TASKS panel', () => {
      kind can go, not whether the kernel's verdict is reported. */
   it('reports the run on both rows, whichever card the work landed on', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    expect(await taskRow(/^has-adapter.?Status: running$/)).toBeTruthy();
-    expect(await taskRow(/^no-adapter.?Status: running$/)).toBeTruthy();
+    expect((await taskRow(/^has-adapter$/)).getAttribute('aria-description')).toBe('running');
+    expect((await taskRow(/^no-adapter$/)).getAttribute('aria-description')).toBe('running');
   });
 
   it('shows the server-provided dependency, budget, and admission reasons without deriving them', async () => {
@@ -463,7 +463,8 @@ describe('track route TASKS panel convergence', () => {
     setup(TASK_CARDS, { taskDiagnostics: () => verdicts });
     // Pre-stamp: the row knows it was dispatched and its kind is inert — the
     // verdict carries no `workerCardId` yet, so there is nothing to open.
-    await screen.findByRole('button', { name: /^has-adapter.?Status: dispatched$/ });
+    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
+      .toBe('dispatched');
     expect(screen.queryByRole('button', { name: 'terminal' })).toBeNull();
 
     verdicts = running;
@@ -473,12 +474,14 @@ describe('track route TASKS panel convergence', () => {
     // silent stamp lands, which is the whole reason this poll exists.
     const converged = await waitFor(() => screen.getByRole('button', { name: 'terminal' }));
     expect(converged.getAttribute('title')).toBe('Open the worker card for has-adapter');
-    expect(await screen.findByRole('button', { name: /^has-adapter.?Status: running$/ })).toBeTruthy();
+    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
+      .toBe('running');
   });
 
   it('stops polling once every task is terminal, so a settled track costs nothing', async () => {
     const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => done });
-    await screen.findByRole('button', { name: /^has-adapter.?Status: done$/ });
+    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
+      .toBe('done');
     const afterFirstRead = reportReads();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(reportReads()).toBe(afterFirstRead);

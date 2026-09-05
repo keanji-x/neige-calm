@@ -284,6 +284,7 @@ describe('deriveTrackPageView tasks', () => {
       },
     })]).rows;
     expect(row.badges).toEqual([]);
+    expect(row.status).toEqual({ token: 'pending', phrase: 'pending — Queued 1/1' });
     expect(row.actions[0]?.hint).toBe('Queued 1/1');
     expect(row.actions[0]?.description).toBe('pending — Queued 1/1');
   });

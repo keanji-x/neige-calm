@@ -203,23 +203,180 @@
     clip-path: inset(0);
   }
 
-  /* `any_card_needs_input` is a field the kernel really writes, so it can carry
-     a page's attention — unlike progress/eta/now, which have no writer at all. */
-  .needsInput {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
-    color: var(--warn-text);
+  /* A user-input request is an event, not permanent page metadata. Keep the
+     title row calm and surface the kernel-owned bit as one actionable toast. */
+  .needsInputNotice {
+    position: fixed;
+    inset-inline-end: var(--space-10);
+    inset-block-end: var(--space-10);
+    z-index: var(--z-toast);
   }
 
-  .needsInputDot {
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
+  .needsInputNoticeExpanded {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-4);
+    inline-size: min(22rem, calc(100vw - var(--space-10) * 2));
+    padding: var(--space-5);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+  }
+
+  .needsInputNoticeCompact {
+    display: grid;
+    inline-size: calc(var(--control-h-lg) + var(--space-4));
+    block-size: calc(var(--control-h-lg) + var(--space-4));
+  }
+
+  /* The drawer occupies the trailing panel track. Its compact notification
+     sits just outside the card instead of covering the composer or vanishing. */
+  .needsInputNoticeBesideDrawer {
+    inset-inline-end: calc(var(--space-10) + var(--panel-span, 25cqi) + var(--space-4));
+    inset-block-end: var(--space-11);
+  }
+
+  .needsInputNoticeIcon {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-lg);
+    block-size: var(--control-h-lg);
     border-radius: var(--radius-pill);
-    background: var(--warn);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .needsInputNoticeHeader {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  .needsInputNoticeCopy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .needsInputNoticeTitle {
+    color: var(--text);
+    font-size: var(--text-base);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+  }
+
+  .needsInputNoticeSource {
+    overflow: hidden;
+    color: var(--text);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .needsInputNoticeDetail {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+  }
+
+  .needsInputNoticeList {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-block-size: min(22rem, 45vh);
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+  }
+
+  .needsInputNoticeItem {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--hairline);
+  }
+
+  .needsInputAction {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-block-size: var(--control-h-lg);
+    padding-inline: var(--space-5);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    cursor: pointer;
+  }
+
+  .needsInputAction:hover,
+  .needsInputAction:focus-visible {
+    background: color-mix(in oklab, var(--accent) 88%, var(--text));
+  }
+
+  .needsInputCollapse,
+  .needsInputLauncher {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    border-radius: var(--radius-pill);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .needsInputCollapse {
+    inline-size: var(--control-h-lg);
+    block-size: var(--control-h-lg);
+  }
+
+  .needsInputCollapse:hover,
+  .needsInputCollapse:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  .needsInputLauncher {
+    inline-size: 100%;
+    block-size: 100%;
+    border: 1px solid var(--hairline);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    color: var(--accent);
+  }
+
+  .needsInputLauncher:hover,
+  .needsInputLauncher:focus-visible {
+    background: color-mix(in oklab, var(--paper) 92%, var(--accent-soft));
+  }
+
+  .needsInputIndicator {
+    position: absolute;
+    inset-block-start: calc(var(--space-1) * -1);
+    inset-inline-end: calc(var(--space-1) * -1);
+    display: grid;
+    place-items: center;
+    min-inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding-inline: var(--space-1);
+    border: 1px solid var(--paper);
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
   }
 
   /* Track-level mutations live behind one conventional overflow trigger. The
@@ -485,9 +642,7 @@
    * hover fill moves here so hovering *either* control lights the whole row,
    * which is what tells the reader they are two parts of one thing.
    *
-   * `position: relative` is what lets the status dot sit at the trailing edge
-   * while staying inside the reveal button in the DOM — the dot is a click
-   * target for the row's own action, not a hole in it.
+   * `position: relative` anchors the reveal control's full-row hit sheet.
    */
   .taskRow {
     position: relative;
@@ -505,11 +660,7 @@
     gap: var(--space-4);
     inline-size: 100%;
     min-block-size: var(--row-h-sm);
-    /* The trailing pad is the dot's lane: every row reserves it, dot or no dot,
-       so the kind column stays aligned down the list instead of stepping in and
-       out as tasks are dispatched. One `--space-4` each side of the dot, which
-       is what makes the kind→dot gap the same step as the key→kind one. */
-    padding-inline: var(--space-2) calc(var(--space-4) * 2 + var(--dot-md));
+    padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
   }
 
@@ -551,43 +702,10 @@
     text-align: start;
   }
 
-  /*
-   * ── "Clicking the row reveals the block" is a claim about a *rectangle* ───
-   *
-   * In flow, this button ends where the kind begins, and the row had two dead
-   * zones the prose above already claimed were live. Both were reachable in the
-   * ordinary case, not at an edge:
-   *
-   *   - the **kind, when there is no card behind it** — a `<span>` sibling
-   *     (every codex row today, because `app/router` clears `workerCardId` for
-   *     a card the registry cannot draw). A word sitting in a clickable row,
-   *     doing nothing;
-   *   - the **trailing lane, when the task has no status** — the row reserves
-   *     it unconditionally so the kind column stays aligned, and only
-   *     `.taskDot::before` ever filled it. An undispatched row therefore had a
-   *     24px hole at the corner the eye is drawn to.
-   *
-   * So the button also paints an invisible copy of the whole row. `inset: 0`
-   * resolves against `.taskRow` (the positioned ancestor), which is the row
-   * *including* its reserved lane, and a pseudo-element is hit-tested as its
-   * originating element — so the pointer lands on this button anywhere the row
-   * is, and the cursor says so.
-   *
-   * **`::before`, and the choice is load-bearing.** Pseudo-elements are laid
-   * out in tree order, and every one of these is a positioned descendant of a
-   * non-positioned in-flow button, so they paint in DOM order with no z-index
-   * anywhere: `::before` → the dot (and `.taskDot::before`, its lane target) →
-   * the kind button. `::after` would have painted this sheet *over* the dot and
-   * taken the status tooltip back off the lane — the exact defect
-   * `.taskDot::before` exists to fix. That ordering is what the two controls
-   * depend on, so it is asserted by hit test in
-   * `task-row.browser.test.tsx`, not by reading these declarations back.
-   *
-   * The kind *button* is `position: relative` for that reason and no other: an
-   * unpositioned sibling would paint under this sheet and lose its own click.
-   * The kind *span* is deliberately left unpositioned, which is what puts the
-   * row's action under it.
-   */
+  /* The invisible sheet makes every part of the row except the separately
+     positioned worker-kind button reveal the declaration. The status word is
+     inside this button and paints above the sheet so its native title remains
+     hoverable without creating another click target. */
   .taskReveal::before {
     content: '';
     position: absolute;
@@ -624,6 +742,36 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-3);
+  }
+
+  .taskStatusText {
+    /* Paint above the reveal button's full-row hit sheet so the status word
+       owns its detailed native tooltip; it remains inside that button, so a
+       click still reveals the task. */
+    position: relative;
+    flex: none;
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    white-space: nowrap;
+  }
+
+  /* A compact roll-up belongs in the Tasks head, where a long-running Track
+     can be scanned without opening each worker card. It is intentionally
+     quiet and single-line; every row below still carries the full status and
+     server-provided reason. */
+  .taskSummary {
+    max-inline-size: 75%;
+    min-inline-size: 0;
+    overflow: hidden;
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: end;
   }
 
   .taskWithdrawn {
@@ -675,270 +823,6 @@
     text-decoration: underline;
   }
 
-  /*
-   * ── The status, as a dot ─────────────────────────────────────────────────
-   *
-   * Absolutely positioned at the row's trailing edge while remaining a DOM
-   * child of the reveal button (see `public.tsx`): a click on it still reveals
-   * the block, because a click on a button's descendant is a click on the
-   * button no matter where the descendant was painted.
-   *
-   * **Colour is a shorthand here, never the message.** The element carries
-   * `aria-label` and `title`, both spelling the status out; this rule only
-   * decides which of the app's existing semantic fills it takes. No hue is
-   * invented: every value below is a token from `styles/tokens.css`, which is a
-   * frozen interface, and all four fills clear 3:1 against the panel card in
-   * both themes (`tools/styles/check-contrast.mjs` holds that).
-   *
-   *   accent   dispatched, running, verifying — in flight, the app's one accent
-   *   success  done
-   *   error    failed
-   *   text-3   pending, canceled, and anything this build has not heard of
-   *
-   * ── Why hue could not be the only channel ────────────────────────────────
-   *
-   * Each fill clears 3:1 against the *card*. None of them clears anything
-   * against *each other*, which is the comparison a reader actually makes when
-   * four rows are stacked. Painted and read back in Chromium by
-   * `task-row.browser.test.tsx` (ΔL in OKLCH, WCAG 2.x ratio between the two
-   * fills):
-   *
-   *                       light              dark
-   *   accent~text-3   ΔL 0.9  1.06:1    ΔL 2.1  1.07:1
-   *   success~error   ΔL 3.1  1.30:1    ΔL 0.0  1.12:1
-   *   error~text-3    ΔL 5.0  1.15:1    ΔL 3.8  1.21:1
-   *   accent~error    ΔL 5.9  1.22:1    ΔL 5.9  1.30:1
-   *   success~text-3  ΔL 8.1  1.50:1    ΔL 3.9  1.09:1
-   *   accent~success  ΔL 9.0  1.58:1    ΔL 5.9  1.16:1
-   *
-   * Against the card, for comparison, the same four measure 4.68–7.42:1 in
-   * light and 5.30–6.86:1 in dark. Every one of them is a legible mark; not one
-   * of them is legible *as against another one*.
-   *
-   * Dark's `--success` and `--error` are the same lightness to the decimal —
-   * done and failed differ by hue and nothing else, and at 6px that is a grey
-   * smudge for a reader with deuteranopia and a slow read for everyone. The
-   * ladder is built in ΔL on purpose (§6.5) and every semantic fill sits on one
-   * rung of it, so a *palette* answer here does not exist: separating them in
-   * lightness would mean new tokens, and `styles/` is frozen (§6.8).
-   *
-   * So the dot carries a second, independent channel — **form** — and the four
-   * forms are distinguishable with the colour taken away entirely:
-   *
-   *   hollow ring     pending, canceled, unknown  — nothing in it yet
-   *   filled disc     done                        — closed, quiet
-   *   filled square   failed                      — the one non-circle
-   *   bullseye        in flight                   — a core inside a ring
-   *
-   * Colour then reinforces a shape rather than carrying the state alone, and the
-   * size moves `--dot-sm` → `--dot-md`: at 6px a 2px stroke has no hole left to
-   * be hollow with, so the form channel needs the next rung of the dot scale to
-   * exist at all. The row's trailing lane widens with it.
-   *
-   * **All four are the same 8px box, and none of them paints outside it.** The
-   * first cut gave the in-flight state a detached `outline` ring, which made
-   * that one mark 14px wide in a column of 8px ones — read back as "大小有点不
-   * 统一", and correctly: a size difference is a channel of its own, and
-   * spending it on one state says that state is *bigger*, not that it is
-   * running. So the ring moved inside the box (border) and the core shrank to
-   * make room for it, `background-clip` keeping the two apart. Equal rendered
-   * diameter is asserted across all four in `task-row.browser.test.tsx`, off
-   * `getBoundingClientRect()`, which is the only thing that can see it.
-   *
-   * The neutral is the default rather than a case, which is the same
-   * fail-quiet the poll allowlist takes: a status word this build does not know
-   * gets the colour that claims nothing, and the label still says it.
-   *
-   * The first three are the pairings `features/track/lifecycle-badge` already
-   * makes for the same three ideas, so a running task and a running track are
-   * the same colour on one screen — that badge is where this vocabulary was
-   * settled, and a second opinion about it here would be the drift the token
-   * scale exists to stop.
-   *
-   * Where this *does* diverge from that badge is the neutral: `--text-3`, not
-   * its `--text-4`. The muted rank measures 2.30:1 against the card in light
-   * and 2.16:1 in dark, and a dot below 3:1 is a smudge. The badge can afford
-   * it because its dot sits beside a permanently visible word; this one is
-   * alone on the row until you hover or listen to it. There is
-   * no fifth semantic fill in the scale, so `pending` and `canceled` share the
-   * neutral — the scale has no token that distinguishes "not started yet" from
-   * "stopped", and inventing one to fill a gap in a *palette* would be exactly
-   * the hand-rolled hex this system exists to prevent. The word tells them
-   * apart.
-   */
-  .taskDot {
-    position: absolute;
-    /* Centred explicitly rather than left to the static position, which would
-       be resolved against the reveal button's flex alignment — correct today
-       and silently at the mercy of any change to that button's layout. */
-    inset-block-start: 50%;
-    inset-inline-end: var(--space-4);
-    transform: translateY(-50%);
-    inline-size: var(--dot-md);
-    block-size: var(--dot-md);
-    /* `--rule-h` is the scale's line thickness, and this stroke is a line: at
-       2px on an 8px box the hole is 4px, which is the smallest opening that
-       still reads as an opening. `box-sizing` is `border-box` globally
-       (`styles/reset.css`), so the stroke grows inward and the dot's footprint
-       is `--dot-md` in every state — the four forms differ in what is drawn,
-       never in how much room they take. */
-    border: var(--rule-h) solid var(--text-3);
-    border-radius: var(--radius-pill);
-    /* The default form is the hollow one. Every filled state below has to say
-       so, which is what keeps "a status this build has not heard of" from
-       silently inheriting a shape that claims something. */
-    background: transparent;
-  }
-
-  /*
-   * ── The mark is 8px; the *target* is the whole lane ──────────────────────
-   *
-   * The bug this fixes was reported as "hover 没状态", and it was not a missing
-   * `title`: the dot has carried one all along, and at the dot's own centre the
-   * browser resolves it correctly, detail tail and all. Measured, the defect is
-   * that the tooltip lived on an 8×8 island. Six pixels away in *any* direction
-   * the topmost element is the bare `<li>`, which has no `title` at all — so
-   * the reader got silence, not the wrong tooltip, and an 8px target is not one
-   * anybody hits on purpose in a 24px row.
-   *
-   * The row already reserves a 24px trailing lane for this mark (see
-   * `.taskRow`'s padding). This gives the whole of it to the dot: a transparent
-   * pseudo-element, hit-tested as the dot itself, so `title` and `aria-label`
-   * resolve from the dot across the entire lane while the painted mark stays
-   * exactly `--dot-md` — every size assertion in `task-row.browser.test.tsx`
-   * measures the element's own rect, which a pseudo-element does not change.
-   *
-   * Explicitly *not* `pointer-events: none` on the dot, which is the other way
-   * to keep clicks falling through and is the way that would re-break this: it
-   * would take the dot out of hit testing entirely and there would be no hover
-   * to resolve a `title` from. Clicks need no help — the dot is a DOM child of
-   * the reveal button, so they bubble to it whatever sits on top.
-   *
-   * The insets are the lane's own geometry, not a guess: `--space-4` each side
-   * is exactly what `.taskRow` padded, and the block inset is whatever is left
-   * of the row once the mark has taken its `--dot-md`. The leading edge lands
-   * on the kind's trailing edge — abutting it, never over it, which is why the
-   * kind keeps its own hover and its own click.
-   */
-  .taskDot::before {
-    content: '';
-    position: absolute;
-    inset-block: calc((var(--row-h-sm) - var(--dot-md)) / -2);
-    inset-inline: calc(var(--space-4) * -1);
-  }
-
-  /*
-   * In flight: a bullseye — a core inside a ring, both `--accent`, the whole
-   * thing inside the shared 8px box. The 8px divides 1 / 1 / 4 / 1 / 1: a
-   * hairline ring on the border, a transparent gap on the padding, and a 4px
-   * core that `background-clip: content-box` keeps off the ring.
-   *
-   * The gap is padding rather than a second painted circle because it has to be
-   * genuinely transparent: the row paints `--overlay-hover` behind the dot on
-   * hover, and a gap filled with `--surface-card` would turn into a light
-   * collar exactly when the pointer is on the row.
-   *
-   * The ring is 1px where the hollow ring is `--rule-h`, and that is the point
-   * — the hollow ring is the entire mark and needs the weight, this one is a
-   * frame around a core that already carries it. The two are the same diameter,
-   * which is the thing the eye compares down a column.
-   */
-  .taskDot[data-nc-status="dispatched"],
-  .taskDot[data-nc-status="running"],
-  .taskDot[data-nc-status="verifying"] {
-    border-width: 1px;
-    border-color: var(--accent);
-    padding: 1px;
-    background: var(--accent);
-    background-clip: content-box;
-    animation: task-dot-pulse var(--motion-pulse) ease-in-out infinite;
-  }
-
-  .taskDot[data-nc-status="done"] {
-    border-color: var(--success);
-    background: var(--success);
-  }
-
-  /*
-   * Failed: the only non-circle in the panel. `--radius-sm` is 4px, which on an
-   * 8px box is a circle again, so the corner is half a rung down the same
-   * scale — enough to keep the mark from being a hard chip, far enough from
-   * `--radius-pill` that the silhouette is unmistakably square.
-   */
-  .taskDot[data-nc-status="failed"] {
-    border-color: var(--error);
-    border-radius: calc(var(--radius-sm) / 2);
-    background: var(--error);
-  }
-
-  /*
-   * The one genuinely live state gets the one piece of motion, and it is
-   * allowed to touch **only `opacity`** — the same breath `features/track/row`
-   * and `features/chat/list` take, for a reason that is stricter here than
-   * house style. Every other animatable property on this element is either the
-   * form (border, padding, background-clip, radius) or the box (size, outline),
-   * and both of those are now load-bearing: an animation that touched them
-   * would make an in-flight dot periodically the wrong shape or the wrong size,
-   * which is precisely the two complaints this rule exists to answer. Opacity
-   * changes neither, so suppressing it below costs nothing but the breath.
-   *
-   * ── The floor is a contrast bound, not a taste ───────────────────────────
-   *
-   * 0.8, and it used to be 0.35. `opacity` composites the mark against what is
-   * behind it, so the dimmest frame is the frame the dot has to be legible in —
-   * and at 0.35 the in-flight `--accent` measured 1.43:1 against
-   * `--surface-card` in light and 3.06:1 in dark, so for half of every breath
-   * the one state that is actually moving fell under the 3:1 non-text floor the
-   * rest of this file is written to. "The mark is never absent" was the right
-   * instinct and the wrong number: absent is not the bar, legible is.
-   *
-   * 0.8 is the rounded ceiling of the two thresholds — light needs 0.771 and
-   * dark 0.340, light binding because `--surface-card` is nearly white there —
-   * which leaves the breath shallow on purpose. A pulse that dips below what
-   * the palette can carry is not a livelier signal, it is a mark that
-   * disappears half the time.
-   *
-   * **The number is read back, not restated.** `tools/styles/check-contrast.mjs`
-   * parses this keyframe's minimum `opacity` out of this file and measures the
-   * accent at *that* alpha over the card in both themes, so lowering the floor
-   * here reddens the style gate rather than quietly re-introducing the defect —
-   * which is what happened the first time, because both contrast checks
-   * measured the opaque token and could not see an animation at all.
-   */
-  @keyframes task-dot-pulse {
-    50% {
-      opacity: 0.8;
-    }
-  }
-
-  /*
-   * ── Reduced motion, at a specificity that can actually win ───────────────
-   *
-   * `[data-nc-status]`, not a bare `.taskDot`. A media query adds no
-   * specificity, and the pulse is declared at `.taskDot[data-nc-status=
-   * "running"]` — (0,2,0) against a bare class's (0,1,0) — so the override this
-   * rule replaces lost the cascade outright and never suppressed anything:
-   * under emulated `reduce` the effective `animation-name` was still
-   * `task-dot-pulse`. The attribute selector matches the same (0,2,0) and comes
-   * later in the sheet, so it wins on source order, which is the only tie-break
-   * left.
-   *
-   * The rule is not redundant with `styles/base.css`'s global sweep even though
-   * that sweep is what was really suppressing the motion (`animation-duration:
-   * 0.01ms !important`, `animation-iteration-count: 1 !important`): that one
-   * makes the animation *elapse* instantly and still leaves it running once,
-   * over an element whose only animated property is now bounded by a contrast
-   * floor. Saying `none` here is exact, and it is the thing this file claims a
-   * few paragraphs up ("suppressing it below costs nothing but the breath").
-   * `task-row.browser.test.tsx` emulates the media feature and reads the
-   * effective `animation-name` off the painted element, so a rule that loses
-   * the cascade again is red rather than merely present.
-   */
-  @media (prefers-reduced-motion: reduce) {
-    .taskDot[data-nc-status] {
-      animation: none;
-    }
-  }
 
   /* The trailing badges of a card row, kept in one box so the row's
      `space-between` still puts the name at the start and everything else at the
@@ -1051,7 +935,7 @@
       box-shadow: none !important;
     }
 
-    .needsInput {
+    .needsInputNotice {
       display: none;
     }
 

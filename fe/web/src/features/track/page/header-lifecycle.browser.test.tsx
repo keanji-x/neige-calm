@@ -38,6 +38,11 @@ function contrast(first: Rgb, second: Rgb): number {
   return (high + 0.05) / (low + 0.05);
 }
 
+const plannerNotification = [{
+  cardId: 'planner', source: 'Planner', message: 'Requires input to continue.',
+  state: 'awaiting-input' as const, updatedAt: 1,
+}];
+
 describe('the track lifecycle status in the page header', () => {
   it('sits directly beside the title as quiet text', async () => {
     await browserPage.viewport(1200, 800);
@@ -73,6 +78,42 @@ describe('the track lifecycle status in the page header', () => {
     const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
     const text2 = getComputedStyle(document.documentElement).getPropertyValue('--text-2');
     expect(paintedRgb(getComputedStyle(actions).color)).toEqual(paintedRgb(text2));
+  });
+
+  it('floats a worker input request at the viewport corner with a direct action', async () => {
+    await browserPage.viewport(1200, 800);
+    const onOpenInputNotification = vi.fn();
+    renderPage({ inputNotifications: plannerNotification, onOpenInputNotification });
+
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
+    const review = document.querySelector<HTMLButtonElement>('[aria-label="Review Planner notification"]')!;
+    const noticeBox = notice.getBoundingClientRect();
+    expect(review.innerText).toBe('Review');
+    expect(review.getBoundingClientRect().height).toBeGreaterThanOrEqual(32);
+    expect(window.innerWidth - noticeBox.right).toBeGreaterThanOrEqual(20);
+    expect(window.innerWidth - noticeBox.right).toBeLessThanOrEqual(28);
+    expect(window.innerHeight - noticeBox.bottom).toBeGreaterThanOrEqual(20);
+    expect(window.innerHeight - noticeBox.bottom).toBeLessThanOrEqual(28);
+    await userEvent.click(review);
+    expect(onOpenInputNotification).toHaveBeenCalledWith('planner');
+  });
+
+  it('compacts an input notification beside an open conversation drawer', async () => {
+    await browserPage.viewport(1200, 800);
+    renderPage({
+      inputNotifications: plannerNotification,
+      conversationOpen: true,
+    });
+
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
+    const launcher = document.querySelector<HTMLButtonElement>('[data-nc-notification-launcher]')!;
+    const box = notice.getBoundingClientRect();
+    expect(notice.dataset.ncNotificationMode).toBe('compact');
+    expect(box.width).toBe(40);
+    expect(window.innerWidth - box.right).toBeGreaterThan(250);
+    expect(notice.querySelector('strong')).toBeNull();
+    await userEvent.click(launcher);
+    expect(notice.dataset.ncNotificationMode).toBe('expanded');
   });
 
   it('returns focus to the Track actions button when Escape closes its menu', async () => {
@@ -139,17 +180,22 @@ describe('the track lifecycle status in the page header', () => {
     expect(popover()?.matches(':popover-open')).toBe(false);
   });
 
-  it('truncates a long title before the label can overlap trailing actions', async () => {
+  it('truncates a long title while the input notice stays out of the header', async () => {
     /* Stay just above the 60rem mobile navigation cutover: below it the
        desktop PageHeader is intentionally replaced by MobileHeader. */
     await browserPage.viewport(1000, 600);
     renderPage({
-      track: track({ title: 'A deliberately long track title '.repeat(12), lifecycle: 'working' }),
+      track: track({
+        title: 'A deliberately long track title '.repeat(12),
+        lifecycle: 'working',
+      }),
+      inputNotifications: plannerNotification,
     });
 
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const status = document.querySelector<HTMLElement>('[aria-label="Track lifecycle: Working"]')!;
     const actions = document.querySelector<HTMLElement>('[aria-label^="Track actions for "]')!;
+    const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;
     const titleBox = title.getBoundingClientRect();
     const statusBox = status.getBoundingClientRect();
 
@@ -157,6 +203,7 @@ describe('the track lifecycle status in the page header', () => {
     expect(statusBox.left - titleBox.right).toBeGreaterThanOrEqual(4);
     expect(statusBox.left - titleBox.right).toBeLessThanOrEqual(12);
     expect(statusBox.right).toBeLessThan(actions.getBoundingClientRect().left);
+    expect(notice.getBoundingClientRect().top).toBeGreaterThan(actions.getBoundingClientRect().bottom);
   });
 
   it('keeps the subdued running colour readable in both themes', async () => {

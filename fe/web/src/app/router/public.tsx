@@ -30,7 +30,7 @@ import { mintIdempotencyKey } from './idempotency-key.ts';
 import { TodayPage } from '../../features/today/public.tsx';
 import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
-import { TrackPage } from '../../features/track/page/public.tsx';
+import { TrackPage, type TrackInputNotification } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
 import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/track/new-card/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
@@ -1253,6 +1253,8 @@ function useConversationPanel(
   const draftOpen = openTarget?.kind === 'draft' && draft !== null;
 
   return {
+    isOpen: open !== null || draftOpen,
+    close: closeDrawer,
     list: (
       <ChatList
         conversations={store.conversations}
@@ -2213,17 +2215,50 @@ function TrackRoute({ transport, unauthorized, cardRuntime }: {
       track={track}
       canResumeTrack={detail.data.can_resume}
       cards={detail.data.cards}
+      overlays={detail.data.overlays}
       cardRuntime={cardRuntime}
     />
   );
 }
 
-function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards, cardRuntime }: {
+function cardInputNotifications(
+  cards: TrackDetailWire['cards'], overlays: TrackDetailWire['overlays'],
+): readonly TrackInputNotification[] {
+  const statusByCard = new Map<string, TrackInputNotification>();
+  for (const overlay of overlays) {
+    if (overlay.plugin_id !== 'kernel' || overlay.entity_kind !== 'card' || overlay.kind !== 'status') continue;
+    if (typeof overlay.payload !== 'object' || overlay.payload === null) continue;
+    const state = (overlay.payload as Record<string, unknown>).state;
+    if (state !== 'AwaitingInput' && state !== 'Errored') continue;
+    const card = cards.find((candidate) => candidate.id === overlay.entity_id);
+    if (card === undefined) continue;
+    const source = card.kind === 'codex' && isPlannerHarnessPayload(card.payload)
+      ? 'Planner'
+      : card.kind === 'codex' && isAssistantHarnessPayload(card.payload)
+        ? card.title ?? 'Assistant'
+        : card.title ?? card.kind;
+    const current = statusByCard.get(card.id);
+    if (current !== undefined && current.updatedAt >= overlay.updated_at) continue;
+    statusByCard.set(card.id, {
+      cardId: card.id,
+      source,
+      message: state === 'AwaitingInput'
+        ? 'Requires input to continue.'
+        : 'Stopped with an error and needs attention.',
+      state: state === 'AwaitingInput' ? 'awaiting-input' : 'errored',
+      updatedAt: overlay.updated_at,
+    });
+  }
+  return [...statusByCard.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards, overlays, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
   canResumeTrack: boolean;
   cards: TrackDetailWire['cards'];
+  overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
 }) {
   const trackMutations = useTrackMutations(transport, unauthorized);
@@ -2479,6 +2514,17 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
         deletable: slot.wire.deletable,
       }));
   }, [cardRegistry, cards]);
+  const inputNotifications = useMemo(
+    () => cardInputNotifications(cards, overlays),
+    [cards, overlays],
+  );
+  const conversationNotificationCardIds = useMemo(
+    () => new Set(cards
+      .filter((card) => card.kind === 'codex'
+        && (isPlannerHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)))
+      .map((card) => card.id)),
+    [cards],
+  );
   /*
    * A task row may only offer its worker card when that card can actually be
    * opened — and "openable" is asked of the *registry*, through the very list
@@ -2800,6 +2846,17 @@ function TrackRouteBody({ transport, unauthorized, track, canResumeTrack, cards,
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
+      conversationOpen={chat.isOpen}
+      inputNotifications={inputNotifications}
+      onOpenInputNotification={(cardId) => {
+        if (conversationNotificationCardIds.has(cardId)) {
+          registry.requestOpen(cardId, { focusComposer: true });
+          return;
+        }
+        if (!gridItems.some((item) => item.card.id === cardId)) return;
+        chat.close();
+        go({ name: 'track', trackId: track.id, cardId, from: routeFrom });
+      }}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       onResumeTrack={() => trackMutations.patch(track.id, track.areaId, { lifecycle: 'working' }).then(() => undefined)}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal).then(() => {

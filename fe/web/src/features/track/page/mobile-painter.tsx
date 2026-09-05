@@ -117,17 +117,11 @@ function taskBadge(badge: RowBadge): ReactNode {
 /**
  * The status, in the meta lane.
  *
- * **The word, not the desktop's dot.** The two carriers the projection reads are
+ * The two carriers the projection reads are
  * the same on both surfaces — `data-nc-status` holds the bare token and `title`
- * holds the phrase. The token has to stay bare on both: the desktop's
- * stylesheet keys the dot's colour off `.taskDot[data-nc-status="failed"]` and
- * friends, so folding the kernel's reason into the token would leave a failed
- * row uncoloured. (This surface draws no colour off it — it prints the word
- * instead — but the attribute is the projection's carrier either way.) What
- * differs is the chrome around them, and deliberately: the desktop dot is a
- * graphic with no text, so it needs `role="img"` and an `aria-label` of
- * `Status: ${phrase}` to be reachable at all. Here the element **prints the
- * token**, so it is reachable already, and adding an `aria-label` would override
+ * holds the phrase. The token stays bare on both desktop and mobile so the
+ * visible column remains scannable. This element **prints the token**, so it is
+ * reachable already, and adding an `aria-label` would override
  * that visible word rather than add to it (the same WCAG 2.5.3 rule the action
  * wording follows). A dot in a drill-down list would also be a colour with no
  * legend on the one surface that has no hover.
@@ -135,8 +129,8 @@ function taskBadge(badge: RowBadge): ReactNode {
  * **The token on screen is not the whole story a reader is owed.** This element
  * is `endContent`, which Astryx lays out as a **sibling** of the invisible button
  * — so the row's accessible name is the task key and the kernel's reason is
- * nowhere in it, while the desktop's reveal button *encloses* its status dot and
- * therefore names `Status: failed — track … is not a git repository` in full.
+ * nowhere in it, while the desktop reveal button already carries the complete
+ * phrase as its accessible description.
  * That asymmetry is missing information, not a wording choice, so `taskRow`
  * hands the same `phrase` to `MobileListItem`'s `accessibleDescription` channel.
  * The row action's explicit `description` already combines a server-owned

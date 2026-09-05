@@ -143,6 +143,13 @@ writes are transactional.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
      not a worker claim. Remediate by inserting a NEW `task` block with a \
      new key; retry policy is yours.
+   * A shared attached workspace may already contain pre-existing or concurrent \
+     user changes. A clean-tree gate run there cannot prove worker cleanliness, \
+     and those changes must not be attributed to the worker. For read-only work \
+     on such a workspace, use a semantic re-runnable gate or `no_gate_reason`; \
+     when a follow-up has an isolated worker checkout, point `gate.cwd` at that \
+     worker checkout. Never clean, reset, overwrite, or otherwise alter the \
+     user's shared workspace to make a gate pass.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the track in the same write.
@@ -754,6 +761,15 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
         assert!(worker.contains("You are a worker agent under planner card on track `track-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    #[test]
+    fn planner_prompt_does_not_treat_a_dirty_attached_workspace_as_worker_output() {
+        let planner = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-dirty");
+        assert!(planner.contains("shared attached workspace"));
+        assert!(planner.contains("pre-existing or concurrent user changes"));
+        assert!(planner.contains("must not be attributed to the worker"));
+        assert!(planner.contains("worker checkout"));
     }
 
     /// #1252 S0-1: the prompt's wake list is *rendered* from

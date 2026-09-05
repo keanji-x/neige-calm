@@ -167,6 +167,40 @@ describe('BoardHost react-grid-layout wiring', () => {
 });
 
 describe('BoardHost lifecycle', () => {
+  it('scrolls the newly selected worker card into view', () => {
+    const registry = createCardRegistry();
+    registry.register(entry);
+    const host = createCardHost(registry);
+    const items = ['card-a', 'card-b'].map((id, originalIndex) => Object.freeze({
+      card: { type: 'board-host-term' as const, id, title: null, terminalId: `t-${id}` },
+      title: id,
+      originalIndex,
+    }));
+    const rect = (top: number, bottom: number): DOMRect => ({
+      x: 0, y: top, top, bottom, left: 0, right: 100,
+      width: 100, height: bottom - top,
+      toJSON: () => ({}),
+    });
+    const geometry = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function bounds(this: Element) {
+      if ((this as HTMLElement).dataset.ncCardBoard !== undefined) return rect(0, 300);
+      if ((this as HTMLElement).dataset.ncCardId === 'card-b') return rect(500, 700);
+      return rect(0, 200);
+    });
+    try {
+      const board = render(
+        <BoardHost host={host} items={items} activeCardId="card-a" visible />,
+      );
+      const scrollport = document.querySelector<HTMLElement>('[data-nc-card-board]')!;
+      scrollport.scrollTop = 0;
+      board.rerender(
+        <BoardHost host={host} items={items} activeCardId="card-b" visible />,
+      );
+      expect(scrollport.scrollTop).toBe(400);
+    } finally {
+      geometry.mockRestore();
+    }
+  });
+
   it('replays the current visible and focused state when replacing the host', () => {
     const registry = createCardRegistry();
     registry.register(entry);
