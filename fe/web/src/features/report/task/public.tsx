@@ -1,5 +1,7 @@
+import type { ReactNode } from 'react';
 import type { ReportTaskRow, TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
+import { useState } from '../../../ui/state/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
 
@@ -18,11 +20,13 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload, blockId, task }: {
+export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   payload: TaskBlockPayload;
   blockId: string;
   task?: ReportTaskRow;
+  renderExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
@@ -54,7 +58,7 @@ export function ReportTaskBlock({ payload, blockId, task }: {
     task?.pendingReason?.message,
   ].filter(Boolean).join(' — ');
   return (
-    <details className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
+    <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
       <summary className={styles.head}>
         <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
         <span className={styles.kindLabel}>Task</span>
@@ -68,6 +72,7 @@ export function ReportTaskBlock({ payload, blockId, task }: {
         </span>
       </summary>
 
+      {task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
       <p className={styles.goal}>
         {live.kind === 'terminal' ? live.command : live.goal}
       </p>

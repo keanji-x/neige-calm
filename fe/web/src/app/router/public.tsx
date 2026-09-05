@@ -39,6 +39,7 @@ import {
 } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
+import { TaskRecovery } from './task-recovery.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
@@ -3016,6 +3017,12 @@ function TrackRouteBody({
       report={<ReportDocument
         report={report}
         taskVerdicts={verdicts}
+        renderTaskExecution={(task, expanded) => <TaskRecovery
+          key={`${track.id}:${task.key}`} trackId={track.id} taskKey={task.key} expanded={expanded}
+          transport={transport} unauthorized={unauthorized}
+          openableWorkerIds={new Set(gridItems.map((item) => item.card.id))}
+          openWorker={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
+        />}
         rail={<ReportOutline items={outline} />}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
