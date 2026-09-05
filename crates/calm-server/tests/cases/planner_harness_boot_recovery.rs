@@ -2272,11 +2272,13 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
 /// constructions the second review round found, and it is the reason the row is
 /// now the single home for a queue.
 ///
-/// Staged at `SpawnStarted`, which re-drives `spawn_side_effect` directly, with
-/// the two copies deliberately disagreeing: the row's queue is empty (the
-/// sentence has been moved away), the carried output still holds it.
+/// Staged at **`TxCommitted`**, not `SpawnStarted`. That is the whole point of
+/// the phase choice: `app_server_interact` runs on the way through and writes
+/// the row itself, so a version of this rule that only converted
+/// `spawn_side_effect` passes at `SpawnStarted` and fails here — which is
+/// exactly how the second writer survived a round of review.
 #[tokio::test]
-async fn a_redriven_spawn_starts_from_the_row_not_from_the_carried_output() {
+async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_output() {
     const MOVED_AWAY: &str = "this sentence already belongs to somebody else";
 
     let tmp = TempDir::new().unwrap();
@@ -2381,7 +2383,7 @@ async fn a_redriven_spawn_starts_from_the_row_not_from_the_carried_output() {
                    tx_output_json, phase, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
-                       'card', ?4, ?5, ?6, ?7, 'spawn_started', ?8, ?8)"#,
+                       'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
         )
         .bind(&op_id)
         .bind(new_id())
